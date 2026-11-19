@@ -34,6 +34,9 @@ function render(page, r0) {
   let shardFilter = r0.params.get("shard"), focusId = r0.params.get("event");
   const hidden = new Set(JSON.parse(localStorage.getItem("chloedb.cc.tl.hidden") || "[]"));
   let events = [], source = "events", stats = [], statsSince = null, q = "", spans = [];
+  // From when the server holds every event: its start, unless its shards
+  // or a log store kept what came before (OLU-301).
+  let recordFrom = null;
   const open = new Set(); // grouped rows shown in full
 
   const presets = seg([["1h", "1h"], ["6h", "6h"], ["overnight", "Overnight"], ["24h", "24h"], ["7d", "7d"]], presetNow(), (v) => {
@@ -82,6 +85,7 @@ function render(page, r0) {
       const j = await api(`/v1/events?from=${from}&to=${to}&limit=5000`, { timeout: 15000 });
       events = (j.events || []).slice();
       source = "events";
+      recordFrom = j.record_from_ms ?? null;
     } catch (e) {
       if (e.status !== 404 && e.status !== 405) { if (!events.length) clear(listBody, h("div", { class: "error", style: { margin: "0 14px 14px" } }, "The events: " + e.message)); return; }
       events = await fallbackEvents(from, to);
@@ -136,8 +140,12 @@ function render(page, r0) {
   }
   function drawAll() { drawFilter(); drawSummary(); drawAxis(); drawList(); }
 
+  // When the window starts before the record: what came before is not known.
+  const recordSince = () => (source === "events" && recordFrom && recordFrom > timeRange().from + 60e3 ? recordFrom : null);
   function drawFilter() {
-    clear(filterNote, shardFilter != null && shardFilter !== "" ? h("div", { class: "notice row nw", style: { marginBottom: "14px" } }, icon("filter"), `Only shard ${shardFilter}'s events.`, h("span", { class: "sep" }), h("button", { class: "btn xs", onclick: () => { shardFilter = null; location.hash = link("timeline"); } }, "Show the whole fleet")) : null,
+    const since = recordSince();
+    clear(filterNote, since ? h("div", { class: "notice row nw", style: { marginBottom: "14px" } }, icon("info"), h("span", {}, `The record of events starts at ${when(since, { sec: false })}: nothing kept what happened before it. A coordinator's copies keep its latest 5,000 events across its restarts, and a log store (`, h("code", {}, "--log-store"), ") keeps every one for 30 days.")) : null,
+      shardFilter != null && shardFilter !== "" ? h("div", { class: "notice row nw", style: { marginBottom: "14px" } }, icon("filter"), `Only shard ${shardFilter}'s events.`, h("span", { class: "sep" }), h("button", { class: "btn xs", onclick: () => { shardFilter = null; location.hash = link("timeline"); } }, "Show the whole fleet")) : null,
       source === "fallback" ? h("div", { class: "notice", style: { marginBottom: "14px" } }, "This server keeps no events (it has no /v1/events): the timeline shows the alerts' changes and the audit log's changes only. Copies going down, failovers and rollouts show once the server records them.") : null);
   }
 
@@ -167,12 +175,14 @@ function render(page, r0) {
     const tile = (label, val, sub, tone, href) => h(href ? "a" : "div", { class: "tl-tile " + (tone || ""), href }, h("div", { class: "small dim" }, label), h("div", { class: "v" }, val), h("div", { class: "small muted", title: typeof sub === "string" ? sub : null }, sub));
     // The server cannot tell "new" for a window that starts before it kept statements.
     const blind = statsSince != null && statsSince + 60e3 > r.from;
+    // "Nothing" is said for the time the record covers.
+    const rec = recordSince(), since = rec ? ` since ${when(rec, { sec: false })}` : "";
     clear(sumBody,
-      tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((x) => `${x.what} (${when(x.from, { sec: false })}, ${x.open ? "still open" : fmt.dur((x.to - x.from) / 1000).replace(/ 0s$/, "")}${x.n > 1 ? `, ${x.n} signals` : ""})`).join(" · ") : "no shard lost its majority, no critical alert", incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0].first) : null),
-      tile("Copies down", String(copiesDown.length), [copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : copiesRolling ? "none outside a rollout" : "every copy stayed up", copiesRolling ? `${copiesRolling} more restarted by a rollout, as planned` : null].filter(Boolean).join(" · "), copiesDown.length ? "warn" : ""),
-      tile("Primaries moved", String(prim.length), prim.length ? [auto ? `${auto} failover${auto === 1 ? "" : "s"}` : null, prim.length - auto ? `${prim.length - auto} handed over` : null].filter(Boolean).join(" · ") : "no primary moved", auto ? "warn" : ""),
-      tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout", "", rolls[0] ? (rolls[0].id?.startsWith("spec-") ? link("rollout", { tab: "history" }) : eventLink(rolls[0])) : null),
-      tile("Changes by people", String(people.length), [people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything", machine.length ? `${machine.length} more by ${byApp.join(", ")}` : null].filter(Boolean).join(" · "), ""),
+      tile("Incidents", String(incidents.length), incidents.length ? incidents.slice(0, 2).map((x) => `${x.what} (${when(x.from, { sec: false })}, ${x.open ? "still open" : fmt.dur((x.to - x.from) / 1000).replace(/ 0s$/, "")}${x.n > 1 ? `, ${x.n} signals` : ""})`).join(" · ") : "no shard lost its majority, no critical alert" + since, incidents.length ? "crit" : "", incidents[0] ? eventLink(incidents[0].first) : null),
+      tile("Copies down", String(copiesDown.length), [copiesDown.length ? [...new Set(copiesDown.map((e) => e.where?.copy || e.title))].slice(0, 3).join(", ") : copiesRolling ? "none outside a rollout" : "every copy stayed up" + since, copiesRolling ? `${copiesRolling} more restarted by a rollout, as planned` : null].filter(Boolean).join(" · "), copiesDown.length ? "warn" : ""),
+      tile("Primaries moved", String(prim.length), prim.length ? [auto ? `${auto} failover${auto === 1 ? "" : "s"}` : null, prim.length - auto ? `${prim.length - auto} handed over` : null].filter(Boolean).join(" · ") : "no primary moved" + since, auto ? "warn" : ""),
+      tile("Rollouts", rolls.length ? String(rolls.length) : "0", rolls.length ? rolls[0].title : "no rollout" + since, "", rolls[0] ? (rolls[0].id?.startsWith("spec-") ? link("rollout", { tab: "history" }) : eventLink(rolls[0])) : null),
+      tile("Changes by people", String(people.length), [people.length ? who.slice(0, 3).join(", ") + (who.length > 3 ? ` +${who.length - 3}` : "") : "nobody changed anything" + since, machine.length ? `${machine.length} more by ${byApp.join(", ")}` : null].filter(Boolean).join(" · "), ""),
       tile("New client traffic", blind && !shapes.length ? "?" : String(shapes.length), shapes.length ? shapes.slice(0, 2).map((e) => e.who ? "key " + e.who : "a new shape").join(" · ") + (blind ? ` · others can't be told: this server started at ${when(statsSince, { sec: false })}` : "") : blind ? `Can't tell: this server started at ${when(statsSince, { sec: false })}, after the window began` : stats.length && !stats.some((s) => "new" in s) ? "this server does not mark new shapes" : "no new statement shape", shapes.length ? "warn" : ""),
       tile("Capacity", dk?.max != null ? fmt.pct(dk.max, 0) : "–", dk?.max != null ? `fullest disk now, ${dk.where || ""}${dk.days_to_full != null ? ` · full in about ${fmt.fills(dk.days_to_full)}` : ""}` : "not known", dk?.max > 0.85 ? "warn" : "", link("cluster", { tab: "capacity" })),
     );
@@ -284,7 +294,8 @@ function render(page, r0) {
     }
     const lines = rows.flatMap((r) => open.has(r.k + r.e.ts_ms) ? [r, ...r.all.slice(1).map((e) => ({ e, all: [e], first: e.ts_ms, sub: true }))] : [r]);
     listSub.textContent = `newest first · ${fmt.plural(evs.length, "event")} in the window${rows.length < evs.length ? " · repeats grouped" : ""}`;
-    if (!rows.length) { clear(listBody, empty("timeline", q ? "No event matches" : "Nothing happened in this window", source === "events" ? "Copies going down or up, primaries moving, alerts, rollouts, people's changes and notes show here as they happen." : "This server keeps no events.")); return; }
+    const rec = recordSince();
+    if (!rows.length) { clear(listBody, empty("timeline", q ? "No event matches" : rec ? `Nothing happened since ${when(rec, { sec: false })}, when the record starts` : "Nothing happened in this window", source === "events" ? "Copies going down or up, primaries moving, alerts, rollouts, people's changes and notes show here as they happen." : "This server keeps no events.")); return; }
     clear(listBody, h("div", { class: "tbl-wrap", style: { maxHeight: "520px" } }, h("table", { class: "t tl-list" },
       h("thead", {}, h("tr", {}, h("th", {}, "Time"), h("th", {}, "Kind"), h("th", {}, "What"), h("th", {}, "Who"), h("th", {}, ""))),
       h("tbody", {}, lines.slice(0, 400).map((row) => { const { e, all, first, sub } = row; const n = all.length; return h("tr", { class: (e.id === focusId ? "sel" : "") + (sub ? " tl-sub" : "") },

@@ -11,7 +11,7 @@
 // ack or backtest) the same pages show what that server has and say what
 // it cannot do.
 
-import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow, failure, signInNeeded } from "../core.js";
+import { h, s, icon, clear, fmt, card, api, bus, drawer, toast, pill, seg, empty, menu, copy, showTip, hideTip, table, every, debounce, confirm, can, needs, limited, copyName, findCopy, link, ago, when, whenTitle, ApiError, isNarrow, failure, signInNeeded } from "../core.js";
 import { state, refreshAlerts, timeRange, isCoordinator, firesOn } from "../data.js";
 import { niceStep } from "../charts.js";
 import { pattern } from "./logs.js";
@@ -58,7 +58,8 @@ const single = () => !coordinator() && !allCopies();
 const range = () => timeRange();
 /** Asks before a change, with a required reason: resolves {reason} or false. */
 const ask = ({ title, body, ok, danger, typed, reason = true }) => confirm({ title, body, ok, danger, typed, reason });
-const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} ${needs("write", ACK)}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer chloedb-server)` : `${what}: ${e.message}`;
+// A refusal in the server's own words (MARCO-301): what it says is true of this key and this route.
+const failMsg = (e, what) => e instanceof ApiError && e.status === 403 ? `${what} was refused: ${e.message}` : e instanceof ApiError && (e.status === 404 || e.status === 405) ? `${what}: this server cannot do that yet (it needs a newer chloedb-server)` : `${what}: ${e.message}`;
 const missing = (e) => e instanceof ApiError && (e.status === 404 || e.status === 405);
 // A backtest point: the rule's evaluated value over its window (`window`), else the raw value.
 const btPoint = (p) => [p.t, p.window !== undefined ? p.window : p.value];
@@ -948,7 +949,7 @@ function alertHub(page, id, r) {
     clear(tools, ackBtn, silBtn,
       h("button", { class: "btn", disabled: !fleet || !w8, title: !fleet ? "This server keeps no notes yet" : !w8 ? Needs("write", ACK) : "Add a note to the alert's timeline", onclick: () => { noteIn.scrollIntoView({ block: "center", behavior: "smooth" }); noteIn.focus({ preventScroll: true }); } }, icon("edit"), h("span", { class: "al-wide-only" }, "Add note"), h("span", { class: "al-narrow-only" }, "Note")),
       h("button", { class: "btn al-ico", title: "Copy a link to this alert at this time", onclick: () => { const t = since(); copy(location.origin + location.pathname + alertLink(id, { from: Math.round(t - 30 * 60e3), to: Math.round(x.state === "firing" ? Date.now() : t + 60 * 60e3) }), "Link copied: it opens this alert at this time"); } }, icon("link"), h("span", { class: "al-wide-only" }, "Copy link")),
-      h("button", { class: "btn ghost al-ico", title: "Edit the rule", onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, "Edit rule")),
+      h("button", { class: "btn ghost al-ico", title: can("admin", "PUT /v1/alerts/rules") ? "Edit the rule" : `The rule's settings, to read: changing them ${needs("admin", "PUT /v1/alerts/rules")}`, onclick: () => editRule(rule, { after: load }) }, icon("sliders"), h("span", { class: "al-wide-only" }, can("admin", "PUT /v1/alerts/rules") ? "Edit rule" : "View rule")),
       can("admin", "POST /v1/admin/oncall") ? h("a", { class: "btn al-ico", href: "#/oncall?alert=" + encodeURIComponent(id) + (st === "firing" || st === "pending" ? "&start=1" : ""), title: st === "firing" || st === "pending" ? "The on-call agent looks into it now, with read-only tools, and proposes what to do" : "Ask the on-call agent about this alert" }, icon("agent"), h("span", { class: "al-wide-only" }, "Investigate")) : null);
     noteIn.disabled = noteBtn.disabled = !fleet || !w8;
     noteIn.placeholder = !fleet ? "Notes need a newer server" : !w8 ? Needs("write", ACK) : "Add a note: what you found, what you did";
@@ -1148,7 +1149,7 @@ function alertHub(page, id, r) {
       ], { rows: list, compact: true }) : h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, "No warn or error lines since it fired."),
       h("div", { class: "tiny muted", style: { padding: "4px 14px 10px" } }, `${rows.length >= 2000 ? "Patterns of the newest 2,000 lines" : `${fmt.plural(rows.length, "line")}`} from ${fmt.plural((j.nodes || []).length - missed.length, "server")}${missed.length ? `; ${missed.length} did not answer (${missed.slice(0, 3).map((n) => n.url ? copyName(n.url) : nodeShort(n.node)).join(", ")})` : ""}.`));
     } catch (e) {
-      clear(logsBox, h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, e instanceof ApiError && e.status === 403 ? "Log lines need an admin key." : "No log store on this server: its lines are not kept."));
+      clear(logsBox, h("div", { class: "small muted", style: { padding: "4px 14px 12px" } }, e instanceof ApiError && e.status === 403 ? ["The server's own log lines need an admin key of the server.", limited() ? [" ", h("a", { href: link("explorer") }, "Search your log tables in the Log explorer")] : null] : "No log store on this server: its lines are not kept."));
     }
   }
 

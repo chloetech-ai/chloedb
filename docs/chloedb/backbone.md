@@ -18,7 +18,7 @@
 
 ## The rules
 
-Each rule is one statement over the tables, run every minute; its rows are the alerts, kept open while it finds them, and alerts that share an owner, an announcer, a carrier or a country are grouped into incidents.
+Each rule is one statement over the tables, run every minute (`flapping`, which counts an hour of every prefix's updates, every five); its rows are the alerts, kept open while it finds them, and alerts that share an owner, an announcer, a carrier or a country are grouped into incidents.
 
 | rule | finds |
 |---|---|
@@ -40,7 +40,7 @@ chloedb-backbone feed --dir DATA --from 6h --live   # RIS's archive from six hou
 chloedb-backbone serve --public            # the page and its API at 127.0.0.1:7890
 ```
 
-`feed --resume` starts the archive after the newest update kept, so a restart fills its gap, and `--hours 24` stops it after a day so a supervisor starts it again after a new `fetch` and `load`. RIS Live sends every collector's messages whatever filter it is asked for, so the feed keeps those of `--collectors` itself. On Kubernetes, `chloedb-backbone/deploy/k8s.yaml` runs the server, the feed and the app on a node of their own, and `deploy/backup.yaml` checkpoints the database each night and copies it to a volume.
+`feed --resume` starts the archive after the newest update kept, so a restart fills its gap, and `--hours 24` stops it after a day so a supervisor starts it again after a new `fetch` and `load`. `fetch` keeps a file fetched less than `--fresh-hours` ago (20 by default; 0 fetches every one) and keeps the last file of a source that fails, such as PeeringDB's 429 to an address that asked too often, and `load` loads only the latest Atlas rounds and outages when the other files are those it loaded last: so a restart within the day neither asks the sources again nor writes two million rows again. `serve` works out the pages everyone sees first (Now, the map, the strip) in the background every 15 seconds, after the rules, and answers them from memory. RIS Live sends every collector's messages whatever filter it is asked for, so the feed keeps those of `--collectors` itself. On Kubernetes, `chloedb-backbone/deploy/k8s.yaml` runs the server, the feed and the app on a node of their own, and `deploy/backup.yaml` checkpoints the database each night and copies it to a volume.
 
 ## Sizes
 

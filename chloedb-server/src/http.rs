@@ -833,8 +833,10 @@ fn event_of_row(r: &Json) -> Json {
 
 /// `GET /v1/events?from=&to=&kind=a,b&limit=` ([`crate::events`]): the
 /// events from `from` to `to` (ms; the last 24 hours by default), the
-/// newest first; from the log store for what memory no longer holds. Who
-/// did what is the admin's to read.
+/// newest first; on a coordinator, those its shards kept from before it
+/// started ([`crate::kept`], OLU-301), and from the log store what memory
+/// no longer holds. `record_from_ms` says from when the answer holds every
+/// event. Who did what is the admin's to read.
 async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal>>, Query(q): Params) -> Res {
     let limit = param_u64(&q, "limit", 500)?.clamp(1, 5000) as usize;
     let kinds: Vec<String> = q.get("kind").map(|k| k.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()).unwrap_or_default();
@@ -865,17 +867,36 @@ async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal
     let from = param_u64(&q, "from", to.saturating_sub(86_400_000))?;
     let (kept, oldest) = app.svc.events.range(from, to, &kinds, limit);
     let mut events: Vec<Json> = kept.iter().map(|r| json!(**r)).collect();
+    let mut ids: std::collections::HashSet<i64> = kept.iter().map(|r| r.id).collect();
     let mut source = vec!["memory"];
     let mut error = None;
     // What memory no longer holds (or never held, before a restart).
     let held = app.svc.events.held_from();
+    let mut record = held;
+    // What the shards kept of the coordinators before this one started.
+    if from < held {
+        let restored = app.svc.kept.restored_events(from, held.min(to), &kinds, limit);
+        let shards = app.svc.kept.events_from();
+        if let Some(f) = shards {
+            record = record.min(f);
+        }
+        if shards.is_some() || !restored.is_empty() {
+            source.push("shards");
+        }
+        for e in restored {
+            if e["id"].as_i64().is_none_or(|id| ids.insert(id)) {
+                events.push(e);
+            }
+        }
+    }
     if let (Some(store), true) = (&app.svc.log_store, from < held) {
         let and = (!kinds.is_empty()).then(|| format!("kind IN ({})", kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")));
         match store.kept_rows(crate::logstore::EVENTS, from, held.min(to), and, limit).await {
             Ok(rows) => {
-                let ids: std::collections::HashSet<i64> = kept.iter().map(|r| r.id).collect();
                 events.extend(rows.iter().filter(|r| r["id"].as_i64().is_none_or(|id| !ids.contains(&id))).map(event_of_row));
                 source.push("log_store");
+                // It keeps them for 30 days.
+                record = record.min(from);
             }
             Err(e) => error = Some(format!("the log store did not answer: {}", e.message)),
         }
@@ -892,7 +913,7 @@ async fn events_list(State(app): State<App>, w: Option<axum::Extension<Principal
             }
         }
     }
-    let mut j = json!({"events": events, "from_ms": from, "to_ms": to, "source": source, "memory_from_ms": held, "oldest_in_memory_ms": oldest});
+    let mut j = json!({"events": events, "from_ms": from, "to_ms": to, "source": source, "memory_from_ms": held, "record_from_ms": record, "oldest_in_memory_ms": oldest});
     if let Some(e) = error {
         j["error"] = json!(e);
     }
@@ -7402,6 +7423,12 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         may["reason_required"] = json!(true);
     }
     j["may"] = may;
+    // MARCO-301: a key limited to tables calls some of the server's routes
+    // alone: which, each as "METHOD /route", so that the command center
+    // offers what it may do and says why it may not do the rest.
+    if w.limited() {
+        j["may"]["routes"] = json!(limited_routes(&w));
+    }
     j["caller"] = json!(caller);
     // The presets a key limited to tables can be made from.
     j["presets"] = json!(keys::PRESETS.iter().map(|(n, w)| json!({"name": n, "what": w})).collect::<Vec<_>>());
@@ -7411,6 +7438,19 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
         j["signed_in"] = json!({"email": email, "provider": provider});
     }
     AxJson(j)
+}
+
+/// The routes key `w`, limited to tables, may call, as `"METHOD /route"`:
+/// those every such key calls ([`crate::scoped::route_ok`]; a connector's
+/// push key, [`crate::scoped::push_route_ok`]) and its groups'
+/// ([`keys::Allow`]), each with the scope it needs. What it then may do on
+/// each is checked by its tables, as ever.
+pub(crate) fn limited_routes(w: &Principal) -> Vec<String> {
+    let reaches = |m: &axum::http::Method, route: &str| match w.push_only() {
+        true => crate::scoped::push_route_ok(m, route),
+        false => crate::scoped::route_ok(m, route) || w.allowed_route(m, route),
+    };
+    crate::catalog::routes().iter().flat_map(|r| r.methods.iter().filter(|m| reaches(m, r.path) && w.scope >= route_scope(m, r.path)).map(move |m| format!("{m} {}", r.path))).collect()
 }
 
 // ----- sign-in: people sign in to the command center with Google ([`crate::signin`])

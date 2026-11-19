@@ -7,8 +7,11 @@
 //! coordinator's `/metrics`, and on a server alone (OLU-202, OLU-3); the runbook's calls through
 //! a coordinator, `POST /v1/admin/verify` comparing every shard and `GET
 //! /v1/logs` saying where the copies' lines are (OLU-206); and the
-//! checkpoints of every copy, listed (OLU-211). Server processes, as an
-//! operator runs them on machines of their own.
+//! checkpoints of every copy, listed (OLU-211). And of the third round
+//! (18 November 2026): the Timeline's events, kept on the shards too
+//! (OLU-301), and a coordinator started again on its first `--shards`
+//! after a copy was replaced serving the cluster as it is (OLU-302).
+//! Server processes, as an operator runs them on machines of their own.
 
 #![cfg(unix)]
 
@@ -154,9 +157,18 @@ struct Cluster {
 
 impl Cluster {
     async fn start(dir: &Path) -> Cluster {
-        let mut copies = vec![Copy::new(dir, "s0a"), Copy::new(dir, "s0b")];
-        copies[0].role = vec!["--replicas".into(), copies[1].url()];
-        copies[1].role = vec!["--replica".into(), "--replicas".into(), copies[0].url()];
+        Cluster::start_with(dir, 2).await
+    }
+
+    /// A shard of `n` copies, the first its primary.
+    async fn start_with(dir: &Path, n: usize) -> Cluster {
+        let mut copies: Vec<Copy> = (0..n).map(|k| Copy::new(dir, &format!("s0{}", (b'a' + k as u8) as char))).collect();
+        let replicas: Vec<String> = copies[1..].iter().map(Copy::url).collect();
+        copies[0].role = vec!["--replicas".into(), replicas.join(",")];
+        let primary = copies[0].url();
+        for c in &mut copies[1..] {
+            c.role = vec!["--replica".into(), "--replicas".into(), primary.clone()];
+        }
         for c in &mut copies {
             c.start().await;
         }
@@ -171,9 +183,14 @@ impl Cluster {
 
     async fn start_coordinator(&mut self) {
         let list = self.copies.iter().map(Copy::url).collect::<Vec<_>>().join("|");
+        self.start_coordinator_on(&list).await;
+    }
+
+    /// Started on `list` as `--shards`, as the guide starts it.
+    async fn start_coordinator_on(&mut self, list: &str) {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("coordinator.log")).unwrap();
         let child = Command::new(bin())
-            .args(["--shards", &list, "--listen", &format!("127.0.0.1:{}", self.http), "--grpc", "off", "--log", "info", "--token", ADMIN, "--cluster-token", CLUSTER, "--start-apps", "off", "--node-name", "coord"])
+            .args(["--shards", list, "--listen", &format!("127.0.0.1:{}", self.http), "--grpc", "off", "--log", "info", "--token", ADMIN, "--cluster-token", CLUSTER, "--start-apps", "off", "--node-name", "coord"])
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -386,4 +403,138 @@ async fn a_servers_metrics_count_every_table_as_its_health_does() {
     assert_eq!(value(&m, "chloedb_table_docs{table=\"t\"}"), Some(2.0), "{m}");
     assert_eq!(value(&m, "chloedb_segments"), value(&m, "chloedb_table_segments{table=\"t\"}"), "{m}");
     assert!(!m.contains("chloedb_copy_info"), "a server that is not a copy has no copy_info: {m}");
+}
+
+/// The events of `GET /v1/events` (the last 24 hours), and the answer.
+async fn events(c: &Cluster) -> (Vec<Json>, Json) {
+    let (s, j) = c.call("GET", "/v1/events?limit=5000", None).await;
+    assert_eq!(s, 200, "{j}");
+    (j["events"].as_array().cloned().unwrap_or_default(), j)
+}
+
+/// OLU-301: a coordinator without a log store (the guide's) lost its
+/// events at each restart, so after a rolling upgrade, which restarts the
+/// coordinator last, the Timeline said nothing happened. Its shards keep
+/// them: a copy that went down and came back, and a note, are on the
+/// Timeline of the coordinator started again, once each, and the answer
+/// says from when its record runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_without_a_log_store_keeps_its_events_on_its_shards() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Cluster::start(dir.path()).await;
+    let started = chloedb_server::telemetry::now_ms();
+    let (s, j) = c.call("POST", "/v1/events/notes", Some(json!({"text": "drill: the replica goes down"}))).await;
+    assert_eq!(s, 200, "{j}");
+    // The replica goes down and comes back: two events of the cluster.
+    let replica = c.copies[1].url();
+    {
+        let k = &mut c.copies[1];
+        let mut child = k.child.take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    c.until("the coordinator records the replica down", || async { events(&c).await.0.iter().any(|e| e["kind"] == "copy_down") }).await;
+    c.copies[1].start().await;
+    c.until("the coordinator records the replica back", || async { events(&c).await.0.iter().any(|e| e["kind"] == "copy_up") }).await;
+    let (before, _) = events(&c).await;
+    let kinds = |evs: &[Json]| evs.iter().filter_map(|e| e["kind"].as_str().map(String::from)).collect::<Vec<_>>();
+    for k in ["note", "copy_down", "copy_up"] {
+        assert!(kinds(&before).iter().any(|x| x == k), "{k} before the restart: {before:?}");
+    }
+    // Every copy holds them, the replica too once it is back.
+    c.until("every copy holds the coordinator's events", || async {
+        c.copies.iter().all(|k| {
+            let held = k.kept();
+            let evs = held["events"].as_array().cloned().unwrap_or_default();
+            ["note", "copy_down", "copy_up"].iter().all(|kind| evs.iter().any(|e| e["kind"] == *kind && e["coordinator"] == "coord")) && held["events_from"].as_u64().is_some_and(|f| f > 0 && f <= started)
+        })
+    })
+    .await;
+
+    c.kill_coordinator();
+    c.start_coordinator().await;
+    let (after, j) = events(&c).await;
+    assert!(j["source"].as_array().unwrap().contains(&json!("shards")), "{j}");
+    for k in ["note", "copy_down", "copy_up"] {
+        assert_eq!(after.iter().filter(|e| e["kind"] == k).count(), 1, "{k} once after the restart: {after:?}\n{}", c.logs());
+    }
+    let down = after.iter().find(|e| e["kind"] == "copy_down").unwrap();
+    assert_eq!((down["where"]["shard"].as_u64(), down["detail"]["url"].as_str()), (Some(0), Some(replica.as_str())), "{down}");
+    assert!(down.get("who").is_none() || down["who"].is_null(), "{down}");
+    assert_eq!(after.iter().find(|e| e["kind"] == "note").unwrap()["title"], "drill: the replica goes down");
+    // The record runs from before the first coordinator's note, not from
+    // this coordinator's start.
+    let record = j["record_from_ms"].as_u64().unwrap();
+    assert!(record <= started && record < j["memory_from_ms"].as_u64().unwrap(), "{j}");
+    // What it read at its start is said with the rest of what it kept.
+    let (_, a) = c.call("GET", "/v1/alerts", None).await;
+    assert!(a["kept"]["shards"]["started_with"]["events"].as_u64().is_some_and(|n| n >= 3), "{}", a["kept"]);
+}
+
+/// OLU-302: a copy killed for good (s0c) and replaced by a new one (s0d)
+/// through a plan; the coordinator started again on the `--shards` it was
+/// first given, which names s0c and not s0d. It served the list: s0c down,
+/// s0d nowhere, "A copy is down" firing without end. It serves the cluster
+/// map, as the guide says: s0d in, s0c out, every copy up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_coordinator_started_on_its_first_list_after_a_copy_was_replaced_serves_the_cluster_as_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Cluster::start_with(dir.path(), 3).await;
+    let first = c.copies.iter().map(Copy::url).collect::<Vec<_>>().join("|");
+    let ops: Vec<Json> = (0..30).map(|i| json!({"op": "upsert", "table": "acks", "doc": {"id": format!("r{i}"), "n": i}})).collect();
+    let (s, j) = c.call("POST", "/v1/write", Some(json!({"ops": ops}))).await;
+    assert_eq!(s, 200, "{j}");
+
+    // s0c is gone for good; s0d is a new, empty server.
+    let gone = c.copies[2].url();
+    {
+        let mut child = c.copies[2].child.take().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let mut d = Copy::new(dir.path(), "s0d");
+    d.start().await;
+    let (a, b) = (c.copies[0].url(), c.copies[1].url());
+    let new = d.url();
+    let (s, p) = http(&c.base(), "POST", "/v1/admin/plan", CLUSTER, Some(json!({"shards": [{"shard": 0, "copies": [a, b, new]}]}))).await;
+    assert_eq!(s, 200, "{p}");
+    let (s, j) = http(&c.base(), "POST", "/v1/admin/plan/apply", CLUSTER, Some(json!({"steps": p["steps"]}))).await;
+    assert_eq!(s, 200, "{j}");
+    c.until("the plan replaces s0c with s0d", || async {
+        let (_, r) = c.call("GET", "/v1/admin/plan/run", None).await;
+        let (_, cl) = c.call("GET", "/v1/cluster", None).await;
+        let urls: Vec<&str> = cl["shards"][0]["replicas"].as_array().into_iter().flatten().filter_map(|x| x["url"].as_str()).collect();
+        r["run"]["state"] == "done" && urls.contains(&new.as_str()) && !urls.contains(&gone.as_str())
+    })
+    .await;
+    c.copies.push(d);
+
+    // Started again on its first list, which names s0c and not s0d.
+    c.kill_coordinator();
+    c.start_coordinator_on(&first).await;
+    let (_, cl) = c.call("GET", "/v1/cluster", None).await;
+    let copies = cl["shards"][0]["replicas"].as_array().cloned().unwrap_or_default();
+    let urls: Vec<&str> = copies.iter().filter_map(|x| x["url"].as_str()).collect();
+    assert!(urls.contains(&new.as_str()) && !urls.contains(&gone.as_str()), "the cluster map's copies, not the list's: {urls:?}\n{cl}\n{}", c.logs());
+    c.until("every copy answers", || async {
+        let (_, cl) = c.call("GET", "/v1/cluster", None).await;
+        cl["shards"][0]["replicas"].as_array().is_some_and(|v| v.len() == 3 && v.iter().all(|x| x["status"] != "down"))
+    })
+    .await;
+    // No alert for the copy that left, and the coordinator says why it
+    // left out a server it was given.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let (_, al) = c.call("GET", "/v1/alerts", None).await;
+    let firing: Vec<&Json> = al["states"].as_array().into_iter().flatten().filter(|x| x["state"] == "firing").collect();
+    assert!(firing.iter().all(|x| !x.to_string().contains(gone.trim_start_matches("http://"))), "nothing fires for the copy that left: {firing:?}");
+    let down = al["states"].as_array().into_iter().flatten().find(|x| x["rule"] == "copy-down").cloned().unwrap_or_default();
+    assert!(down["state"] != "firing" && down["state"] != "pending", "A copy is down, for no copy: {down}");
+    let log = std::fs::read_to_string(dir.path().join("coordinator.log")).unwrap_or_default();
+    assert!(log.contains("do not answer and that the cluster map leaves out"), "{log}");
+    // The copies keep the coordinator's state again: none fails.
+    c.until("every copy keeps the coordinator's state", || async {
+        let (_, al) = c.call("GET", "/v1/alerts", None).await;
+        al["kept"]["shards"]["holding"] == 3 && al["kept"]["shards"]["failed"].as_array().is_some_and(|f| f.is_empty())
+    })
+    .await;
 }

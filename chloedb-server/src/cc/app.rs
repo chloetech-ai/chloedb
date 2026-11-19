@@ -289,6 +289,8 @@ pub struct App {
     pub log_back: usize,
     pub level: usize,
     pub log_q: String,
+    /// The log table picked, for a key that does not read the server's own log.
+    pub log_table: usize,
     pub table: usize,
     pub event: usize,
     pub sql: Input,
@@ -317,6 +319,7 @@ impl Default for App {
             log_back: 0,
             level: 0,
             log_q: String::new(),
+            log_table: 0,
             table: 0,
             event: 0,
             sql: Input::default(),
@@ -485,7 +488,7 @@ impl App {
             Screen::Cluster => self.cluster_key(k, seen),
             Screen::Alerts => self.alerts_key(k, seen),
             Screen::Queries => self.queries_key(k, seen),
-            Screen::Logs => self.logs_key(k),
+            Screen::Logs => self.logs_key(k, seen),
             Screen::Tables => {
                 let n = seen.data.tables["tables"].as_array().map_or(0, Vec::len);
                 match k.code {
@@ -636,7 +639,26 @@ impl App {
         Effect::None
     }
 
-    fn logs_key(&mut self, k: KeyEvent) -> Effect {
+    fn logs_key(&mut self, k: KeyEvent, seen: &Seen) -> Effect {
+        // MARCO-313: a key that does not read the server's own log picks
+        // one of its log tables, whose newest lines open in SQL.
+        if !seen.who.reads_server_log() {
+            let tables = model::log_tables(&seen.data.log_tables);
+            match k.code {
+                KeyCode::Down => down(&mut self.log_table, tables.len()),
+                KeyCode::Up => up(&mut self.log_table),
+                KeyCode::Enter => {
+                    let Some((t, ts)) = tables.get(self.log_table.min(tables.len().saturating_sub(1))) else { return self.refuse("the key reads no table with a TIMESTAMP: it has no log table") };
+                    self.go(Screen::Sql);
+                    self.sql = Input::of(&model::newest_lines_sql(t, ts));
+                    let run = self.run_sql(seen);
+                    self.sql_focus = false;
+                    return run;
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         match k.code {
             KeyCode::Up => self.log_back += 1,
             KeyCode::Down => self.log_back = self.log_back.saturating_sub(1),

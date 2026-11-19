@@ -26,7 +26,7 @@ import { h, s, icon, clear, fmt, card, api, every, toast, modal, pill, empty, bu
 import * as core from "../core.js";
 import { verifyWords } from "./system.js";
 import { slotMap } from "./slotmap.js";
-import { state, isCoordinator, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
+import { state, isCoordinator, healthSays, refreshCluster, fresh, staleText, isProduction, firingNow, isPast } from "../data.js";
 
 /** A phone or a narrow window: the shell's isNarrow() once it has one, else the same breakpoint. */
 const narrow = () => (typeof core.isNarrow === "function" ? core.isNarrow() : matchMedia("(max-width: 900px)").matches);
@@ -631,9 +631,27 @@ const mayRun = (route) => can("admin", route);
 const whyNot = (route) => needs("admin", route);
 
 // ---------------------------------------------------------------- the view
+// A server that is not a coordinator says so in its health once a key reads
+// it: read with none, health says only that the server is up, and a page
+// opened by a link before signing in took that for one database and stayed
+// so after the sign-in (OLU-308). The page shows what the server is as it
+// learns it, and changes when that changes.
 function render(page, r) {
-  if (!isCoordinator() && state.health) return renderNotCoordinator(page);
+  const kind = () => (!isCoordinator() && healthSays() ? "one" : "cluster");
+  let shown = null, stop = null;
+  const show = () => {
+    const k = kind();
+    if (k === shown) return;
+    try { stop?.(); } catch (err) { console.error(err); }
+    shown = k; clear(page);
+    stop = k === "one" ? renderNotCoordinator(page) : renderCluster(page, r);
+  };
+  show();
+  const offs = ["health", "cluster", "system", "whoami"].map((ev) => bus.on(ev, show));
+  return () => { for (const off of offs) off(); try { stop?.(); } catch (err) { console.error(err); } };
+}
 
+function renderCluster(page, r) {
   const P = readParams(r?.params);
   let mode = P.mode, tab = P.tab, lens = P.lens, group = P.group, sel = P.shard, selCopy = P.copy, filter = P.q;
   let problemsFirst = store.get("cluster.problemsFirst", true);
@@ -2757,7 +2775,6 @@ function render(page, r) {
   const offs = [
     bus.on("cluster", () => { if (state.cluster && "plan" in state.cluster && !canAdmin()) takeRun(state.cluster.plan); else if (state.cluster?.plan?.state === "running" && !planRunning()) loadRun(); update(); }),
     bus.on("fleet", () => { if (alive && !state.paused) update(); }),
-    bus.on("health", () => { if (!isCoordinator() && state.health) { /* a server that is not a coordinator */ clear(page); renderNotCoordinator(page); } }),
     bus.on("paused", () => { if (!state.paused) update(); }),
     bus.on("fresh", () => { if (alive && M) markStale(); }),
     bus.on("narrow", onNarrow),

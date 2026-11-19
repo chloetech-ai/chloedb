@@ -786,6 +786,9 @@ fn queries(cv: &mut Canvas, r: Rect, app: &App, s: &Shared) -> Vec<(&'static str
 // ---------------------------------------------------------------- Logs
 
 fn logs(cv: &mut Canvas, r: Rect, app: &App, s: &Shared) -> Vec<(&'static str, &'static str)> {
+    if !s.who.reads_server_log() {
+        return log_tables(cv, r, app, s);
+    }
     let w = r.width as usize;
     let lines = s.data.logs["lines"].as_array().map_or(&[][..], Vec::as_slice);
     let follow = if app.log_back == 0 { "following new lines".to_string() } else { format!("{} lines up · End follows", app.log_back) };
@@ -812,6 +815,38 @@ fn logs(cv: &mut Canvas, r: Rect, app: &App, s: &Shared) -> Vec<(&'static str, &
         cv.put(3, r.y + 2, "No line matches.", dim());
     }
     vec![("↑↓ PgUp PgDn", "scroll"), ("End", "follow"), ("f", "level"), ("/", "filter"), ("space", "pause")]
+}
+
+/// The Logs screen of a key that does not read the server's own log
+/// (MARCO-313): what this screen is and which key reads it, and the log
+/// tables the key reads, whose newest lines Enter opens in SQL.
+fn log_tables(cv: &mut Canvas, r: Rect, app: &App, s: &Shared) -> Vec<(&'static str, &'static str)> {
+    let w = r.width as usize - 2;
+    let key = match &s.who.limited {
+        Some(g) => format!("The key {} is limited to tables ({g})", s.who.name),
+        None => format!("The key {} is a {} key", s.who.name, s.who.scope),
+    };
+    cv.put(1, r.y, &fit("This screen is the server's own log, which an admin key of the server reads (or an ops or propose key).", w), dim());
+    let tables = model::log_tables(&s.data.log_tables);
+    if s.data.log_tables.is_null() {
+        cv.put(1, r.y + 1, &fit(&format!("{key}: reading the tables it reads…"), w), dim());
+        return vec![];
+    }
+    if tables.is_empty() {
+        cv.put(1, r.y + 1, &fit(&format!("{key}, and reads no table with a TIMESTAMP: it has no log table here."), w), fg());
+        return vec![];
+    }
+    cv.put(1, r.y + 1, &fit(&format!("{key}. Its log tables, the tables with a TIMESTAMP it reads: Enter shows the newest lines in SQL."), w), fg());
+    cv.put(1, r.y + 3, &format!("{} {}", pad("TABLE", 32), pad("TIME", 20)), bold(dim()));
+    let at = app.log_table.min(tables.len() - 1);
+    let rows = r.height.saturating_sub(6) as usize;
+    let skip = at.saturating_sub(rows.saturating_sub(1));
+    for (k, (t, ts)) in tables.iter().enumerate().skip(skip).take(rows) {
+        cv.put(1, r.y + 4 + (k - skip) as u16, &pad(&format!("{} {}", pad(t, 32), pad(ts, 20)), w), if k == at { sel() } else { fg() });
+    }
+    let n = tables.len().min(rows) as u16;
+    cv.put(1, r.y + 5 + n, &fit(&format!("In a browser the Log explorer searches them: {}/#/explorer", s.base), w), dim());
+    vec![("↑↓", "pick a table"), ("Enter", "newest lines in SQL")]
 }
 
 // ---------------------------------------------------------------- Tables
@@ -1026,7 +1061,7 @@ fn help(cv: &mut Canvas) {
         ("Cluster", "←→ shard, ↑↓ copy, L lens, G by shard or node, p make it the primary"),
         ("Alerts", "a acknowledge, s silence for a while, u unsilence"),
         ("Queries", "o sort, x cancel a query that runs now"),
-        ("Logs", "f level, / filter, ↑↓ PgUp PgDn scroll, End follows"),
+        ("Logs", "f level, / filter, ↑↓ PgUp PgDn scroll, End follows; a key without the server's log: ↑↓ a log table, Enter its newest lines"),
         ("SQL", "i type, ⏎ run, ↑↓ history, Esc leave the editor, W allow writes"),
         ("S", "stop the plan that runs on the coordinator"),
         (":ctx", "through a hub: its connections, to open another cluster"),
@@ -1141,6 +1176,29 @@ mod tests {
         assert!(t.contains("Make s0-1 shard 0's primary"), "{t}");
         assert!(t.contains("Why? Kept in the audit log with the change"), "{t}");
         assert!(t.contains("fill in the fields first"), "{t}");
+    }
+
+    /// MARCO-313: Logs, for a key limited to tables, says it is the
+    /// server's own log and who reads it, and lists the key's log tables.
+    #[test]
+    fn logs_of_a_key_limited_to_tables_are_its_log_tables() {
+        let mut s = shared();
+        s.who = Who { name: "netops".into(), scope: "write".into(), limited: Some("logs_* write, ctx_incidents read".into()), ..Who::default() };
+        s.data.log_tables = json!({"tables": [
+            {"table": "logs_syslog", "short": {"fields": [{"name": "ts", "type": "timestamp"}, {"name": "body", "type": "text"}]}},
+            {"table": "logs_app", "short": {"fields": [{"name": "observed", "type": "timestamp"}, {"name": "ts", "type": "timestamp"}]}},
+            {"table": "ctx_incidents", "short": {"fields": [{"name": "id", "type": "keyword"}]}}]});
+        assert_eq!(model::log_tables(&s.data.log_tables), [("logs_app".to_string(), "ts".to_string()), ("logs_syslog".into(), "ts".into())]);
+        let t = render(&App { screen: Screen::Logs, log_table: 1, ..App::default() }, &s, 140, 30);
+        assert!(t.contains("This screen is the server's own log, which an admin key of the server reads"), "{t}");
+        assert!(t.contains("The key netops is limited to tables (logs_* write, ctx_incidents read)"), "{t}");
+        let listed: Vec<&str> = t.lines().filter_map(|l| l.trim_start().split_whitespace().next()).filter(|w| w.starts_with("logs_") || w.starts_with("ctx_")).collect();
+        assert_eq!(listed, ["logs_app", "logs_syslog"], "{t}");
+        assert!(t.contains("https://hub.example:7700/c/prod/#/explorer"), "{t}");
+        assert!(!t.contains("No line matches"), "{t}");
+        s.data.log_tables = json!({"tables": []});
+        let t = render(&App { screen: Screen::Logs, ..App::default() }, &s, 140, 30);
+        assert!(t.contains("reads no table with a TIMESTAMP"), "{t}");
     }
 
     #[test]
