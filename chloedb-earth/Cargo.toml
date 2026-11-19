@@ -1,0 +1,43 @@
+[package]
+name = "chloedb-earth"
+version = "0.3.8"
+edition = "2021"
+license = "Apache-2.0"
+description = "The Earth on ChloeDB: California and Chile from orbit, every fire GOES sees as it starts, places found by how they look, their twins across the equator, how they changed, and the fires that began like this one"
+
+# A client of chloedb-server over HTTP, as chloedb-backbone and chloedb-hn
+# are: no ChloeDB crate in its build. `tools/places.py` turns Major TOM's
+# pictures and the land's layers into rows, `load` puts them in, `goes`
+# reads GOES's fire product (its archive or as it comes) into detections and
+# fires, and `serve` is the app, which runs the alert rules (SQL).
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "gzip", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
+axum = "0.7"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "ansi"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+rustc-hash = "2"
+anyhow = "1"
+base64 = "0.22"
+# GOES's fire product is NetCDF-4 (HDF5): read in Rust, with no C library.
+netcdf-reader = { version = "0.13", default-features = false, features = ["netcdf4"] }
+ndarray = "0.17"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+# CI's tests (cargo test --profile ci), as in the other crates.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16

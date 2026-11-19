@@ -1,0 +1,146 @@
+# Earth Explorer in a Kubernetes cluster (DOKS strata-e2e, beside the
+# command center), on one node of its own (16 GB; labelled and tainted
+# chloedb/pool=earth):
+#   earth-db     chloedb-server built with --features vision: the tables, and
+#                SigLIP so400m for searches by words and by a picture (the
+#                model in /work/models, fetched by the work pod, so the
+#                server fetches nothing: --no-fetch-models)
+#   earth-feed   one container a region: GOES's scans after the newest kept
+#                (at most a day back), then each new one as it lands
+#   earth-app    the app (API, the page, the command center's view, the
+#                alert rules every minute, the yearly pictures); public: the
+#                page and its reads to anyone within limits per address
+#                (earth.chloetech.ai, through the web namespace's Caddy);
+#                everything else needs the token the command center's app
+#                proxy sends (secret e2e-admin)
+#   earth-work   Debian with curl, for putting files in place
+# Everything is on the node's own disk, hostPath /mnt/chloedb/earth:
+#   bin/         chloedb-server (--features vision) and chloedb-earth
+#   models/      siglip-so400m-patch14-384
+#   rows/        the rows tools/places.py and tools/years.py wrote, and
+#                chips/ (each place's picture of a year)
+#   db/          the database; backup/ its checkpoints (deploy/backup.yaml
+#                copies the newest off the node)
+# Secrets: earth-admin (token: the server's), e2e-admin (token: what the
+# command center's app proxy sends).
+#
+# Binaries are copied in: kubectl cp to earth-work:/work/bin/<name>.new, mv
+# over the old one, kubectl rollout restart the deployment. The rows are
+# loaded from the work pod: chloedb-earth load --dir /work/rows.
+apiVersion: v1
+kind: Service
+metadata: {name: earth-db, namespace: strata}
+spec:
+  selector: {app: earth-db}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: earth-app, namespace: strata}
+spec:
+  selector: {app: earth-app}
+  ports: [{name: http, port: 7790, targetPort: 7790}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: earth-work, namespace: strata, labels: {app: earth-work}}
+spec:
+  nodeSelector: {chloedb/pool: earth}
+  tolerations: [{key: chloedb/pool, operator: Equal, value: earth, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: mirror.gcr.io/library/debian:trixie-slim
+    command: ["sh", "-c", "apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates curl zstd >/dev/null && touch /tmp/ready && sleep infinity"]
+    env:
+    - {name: CHLOEDB_URL, value: "http://earth-db.strata.svc:7700"}
+    - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: earth-admin, key: token}}}
+    - {name: CHLOEDB_MODELS, value: /work/models}
+    resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {memory: 2Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/earth, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: earth-db, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: earth-db}}
+  template:
+    metadata: {labels: {app: earth-db}}
+    spec:
+      nodeSelector: {chloedb/pool: earth}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: earth, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-server", "--db", "/work/db/earth.chloedb", "--listen", "0.0.0.0:7700", "--grpc", "off", "--no-fetch-models", "--backup-dir", "/work/db/backup"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: earth-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /work/models}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        # SigLIP so400m is a 3.5 GB model; with the places' vectors
+        # (103,664 of 1152 numbers) the server held 5.4 GB measured in a
+        # cloud container. The limit sizes its memory budgets and leaves
+        # the feeds and the app room on a 16 GB node.
+        resources: {requests: {cpu: "2", memory: 6Gi}, limits: {memory: 10Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/earth, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: earth-feed, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: earth-feed}}
+  template:
+    metadata: {labels: {app: earth-feed}}
+    spec:
+      nodeSelector: {chloedb/pool: earth}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: earth, effect: NoSchedule}]
+      containers:
+      - name: california
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-earth", "goes", "--region", "california", "--live"]
+        env: &feed-env
+        - {name: CHLOEDB_URL, value: "http://earth-db.strata.svc:7700"}
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: earth-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_earth=info}
+        resources: &feed-res {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 1536Mi}}
+        volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
+      - name: chile
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-earth", "goes", "--region", "chile", "--live"]
+        env: *feed-env
+        resources: *feed-res
+        volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/earth, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: earth-app, namespace: strata}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: earth-app}}
+  template:
+    metadata: {labels: {app: earth-app}}
+    spec:
+      nodeSelector: {chloedb/pool: earth}
+      tolerations: [{key: chloedb/pool, operator: Equal, value: earth, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-earth", "serve", "--strata", "http://earth-db.strata.svc:7700", "--listen", "0.0.0.0:7790", "--public", "--per-minute", "600", "--chips", "/work/rows/chips"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: earth-admin, key: token}}}
+        - {name: CHLOEDB_EARTH_TOKEN, valueFrom: {secretKeyRef: {name: e2e-admin, key: token}}}
+        - {name: RUST_LOG, value: chloedb_earth=info}
+        ports: [{containerPort: 7790}]
+        readinessProbe: {httpGet: {path: /healthz, port: 7790}, periodSeconds: 5}
+        resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/earth, type: Directory}}]
