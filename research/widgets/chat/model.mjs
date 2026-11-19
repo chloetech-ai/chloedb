@@ -210,7 +210,9 @@ An app can also work things out itself, with no data from anywhere: a calculator
 
 A follow-up that changes what the app shown just before should show (another time, fewer people, not spicy, a cheaper one) is "use" of that app with the new arguments: it is filled again in the conversation.
 
-A request to put something into an app in the conversation that keeps a list (an expense, an item, a card, a price, a job: "add lunch 4.80 to my budget", "I spent 12 on dinner", "add 3 cards: null hypothesis, type II error, statistical power") is "use" of that app with its first tool and its arguments, with args.values.add: one entry or a list of them, each in the field names the app reads (such as {"item": "lunch", "amount": 4.8}), with what the person leaves out that you know filled in (a card's definition, today's date). A request to correct an entry ("the groceries were 32.40, not 23.40") is the same with args.values.edit: {"find": {the fields that pick the entry}, "set": {the fields to change}}. Read decimal commas as decimals (1,20 is 1.2). The app shows whether it took the entry, and the answer is written from that.
+A request to put something into an app in the conversation that keeps a list (an expense, an item, a card, a price, a job: "add lunch 4.80 to my budget", "I spent 12 on dinner", "add 3 cards: null hypothesis, type II error, statistical power") is "use" of that app with its first tool and its arguments, with args.values.add: one entry or a list of them, each in the field names the app reads (such as {"item": "lunch", "amount": 4.8}), with what the person leaves out that you know filled in (a card's definition, today's date). A request to correct an entry ("the groceries were 32.40, not 23.40") is the same with args.values.edit: {"find": {the fields that pick the entry}, "set": {the fields to change}}. Several corrections at once go in a list: args.values.edit: [{"find": ..., "set": ...}, ...]. In find, give the values the entry shows (530, "groceries"), not guessed field names. Read decimal commas as decimals (1,20 is 1.2). The app shows whether it took the entry, and the answer is written from that.
+
+Give every value the request settles, including a choice the app offers (lawn or mulch, a type, a unit, a currency), under the app's names: a value left out keeps what the app showed last.
 
 A request to find, research or look up things on the web (the best of something to buy or visit, reviews, what people say, news, papers, how to do something, a question the tools have no data for) uses the tool "findings" with args {"query": the request in a few words}: the chat searches the web for it first and fills the app with what it found, shaped to the request (for a pick, the options compared and which one for which need, with the sources behind each claim). The saved app "Search results" shows it; make another app on findings only when the request needs another way to show it (a reading list, a trip plan). A follow-up to a "Search results" app in the conversation that changes what it should show (a need of the person's, a budget, a narrower question, "which should I get if I fly a lot") is "use" of that app with tool "findings", which starts from what it shows; a question it already answers is "chat".
 
@@ -266,7 +268,7 @@ ${said}
 
 ${shown}
 
-The apps in the conversation, newest first, and what they show now (use this to answer questions about them, such as "which one is quickest?" or "is the first one any good?", in "chat" mode):
+The apps in the conversation, the one the person used or changed last first, and what they show now (use this to answer questions about them, such as "which one is quickest?" or "is the first one any good?", in "chat" mode; "this", "it" and "the plan" mean the first one that fits):
 ${screenText(screen)}
 
 The person's saved apps, best matches first (ranked by words and meaning):
@@ -327,7 +329,7 @@ Search the web (at most 4 searches), then read 3 or 4 of the most useful pages, 
 Answer with:
 - "goal": pick (choosing among things to buy, visit or use, or browsing things to see: breeds, places, dishes), answer (a question), overview (a subject), how-to (steps) or news (what happened).
 - "answer": the bottom line in 1 to 3 sentences, as a friend who read everything would say it ("Get the X unless you fly a lot: then Y"), with "cites", the numbers of the documents behind it.
-- "items": for a pick, the 3 to 6 options themselves, best first, each with "name", "verdict" (one sentence: who it is for and the catch), "facts", "pros" and "cons" (a few words each) and "says" ({doc, text}: what each source says about it, quoted or close); for an answer or an overview, its 3 to 6 points ("name" a short heading, "about" the point, "says" its evidence); for a how-to, its steps in order; for news, its events with "when".
+- "items": for a pick, the 3 to 6 options themselves, best first, each with "name", "verdict" (one sentence: who it is for and the catch), "facts", "pros" and "cons" (a few words each) and "says" ({doc, text}: what each source says about it, quoted or close); for an answer or an overview, its 3 to 6 points ("name" a short heading, "about" the point, "says" its evidence); for a how-to, its steps in order; for a plan or an itinerary, one item a day, for every day the dates cover (up to 20: a trip of 14 days has 14 or 15); for news, its events with "when".
 - "facts": the same 3 to 6 names for every item, short values that compare at a glance (449, "30 h", "best tested", "250 g"), in the same units for every item; a price as a number in dollars when there is one. Leave a fact out of an item when the sources do not give it; never write that it is unknown.
 - "needs": for a pick, the best item for 2 to 4 kinds of need ("most people", "long flights", "on a budget"), by the item's exact name, with "why" and "cites".
 - "criteria": the facts' names exactly as in the items, most important for this request first.
@@ -335,7 +337,7 @@ Answer with:
 - "image" for an item: the address of a photo of the item itself from the "Pictures on the page" of a page you read (a product photo whose description names it, the place, the animal, the dish), never a logo, a person or a picture of something else, and never an address you did not see. "url" for an item: its own page (the maker's, the place's, its Wikipedia article) when you saw it; its photo is taken from there when you give no image. Every item of a pick gets a photo this way when one can be found, and when the person asks to see pictures, give every item one.
 - "query": the request in a few words, and "notes": what the sources disagree on or leave out, and what to check, in a sentence or two.
 
-When what was found before is given and the request follows it up (a need of the person's, a budget, a narrower question), start from it: re-rank, add or drop items and update the answer and needs for them, and search only for what is missing.`
+When what was found before is given and the request follows it up (a need of the person's, a budget, a narrower question), start from it: re-rank, add or drop items and update the answer and needs for them, and search only for what is missing. When it comes with changes the person made to that answer (a place taken out because it closed, a price corrected), those hold: never bring back what they took out, and never use a source for it.`
 
 // The reader of public web pages (../server/reader.mjs), for the facts a
 // search result's snippet leaves out.
@@ -396,19 +398,20 @@ const RESEARCH_SCHEMA = {
 
 // What was found before, as the research step reads it: what the app shows,
 // without the numbering and the fields the view adds.
-function before(found) {
+function before(found, changes = []) {
   if (!found?.documents?.length) return ''
   const { query, goal, answer, needs, criteria, items, documents, notes } = found
   const text = JSON.stringify({ query, goal, answer, needs, criteria, items, documents, notes })
-  return `What was found before in this conversation:\n${text.length > 24000 ? `${text.slice(0, 24000)}... (cut)` : text}\n\n`
+  const held = changes.length ? `The person changed that answer since, and these changes hold:\n${changes.map(c => `- ${c}`).join('\n')}\n\n` : ''
+  return `What was found before in this conversation:\n${text.length > 24000 ? `${text.slice(0, 24000)}... (cut)` : text}\n\n${held}`
 }
 
-function researchPrompt({ request, query, history = [], found }) {
+function researchPrompt({ request, query, history = [], found, changes }) {
   const said = history.length ? `The conversation so far:\n${history.map(h => `${h.role}: ${h.text}`).join('\n')}\n\n` : ''
-  return `Today is ${new Date().toDateString()}.\n\n${said}${before(found)}Look up on the web: ${query}\n\n(The person asked: ${request})`
+  return `Today is ${new Date().toDateString()}.\n\n${said}${before(found, changes)}Look up on the web: ${query}\n\n(The person asked: ${request})`
 }
 
-const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). You get what the app shows on screen: when it shows the answer (a payment, a total, a margin, a pick, a count), give that answer with the app's own numbers exactly as it shows them. Never work out yourself a number the app shows, and never give a different one. Never say the app failed, is missing something or shows something unless what it shows says so, and never say that something was added, changed, kept, saved, restored or remembered unless what it shows says so: when the request asked for one of those and the screen does not show it done, say plainly that it was not done. If the data is made up for a demo, say so in a few words. When nothing on screen is given, answer from the data the app was filled with; when the request asks about several things (three stocks, two cities), the app loads the others itself, so never say that the rest is missing. Plain text: no markdown, no asterisks.`
+const REPLY = `You answer in a chat. An app with the details is shown above your answer, so answer the request in one or two short sentences, at most 45 words: the answer itself, not every number or option, and nothing about the app or its buttons (the person can see them). You get what the app shows on screen: when it shows the answer (a payment, a total, a margin, a pick, a count), give that answer with the app's own numbers exactly as it shows them. Never work out yourself a number the app shows, and never give a different one. Never say the app failed, is missing something or shows something unless what it shows says so, and never say that something was added, changed, kept, saved, restored or remembered unless what it shows says so: when the request asked for one of those and the screen does not show it done, say plainly that it was not done. Say that data is made up only when the app or its data says so in words (demo, simulated, sample, made up): what the person typed or asked to put in, and what the app worked out from it, is theirs and real to them, never demo data. Photos the app shows are listed on screen ("Photos shown"): never say you can't show pictures when they are there. When nothing on screen is given, answer from the data the app was filled with; when the request asks about several things (three stocks, two cities), the app loads the others itself, so never say that the rest is missing. Plain text: no markdown, no asterisks.`
 
 const NOTE = `You are the assistant in a chat in which answers come with small apps. The person just did something in one of the apps (booked, added to a cart). Write what you say about it in the chat: one or two short sentences, at most 35 words, in plain words. The person did it themselves, so do not say you did it: confirm what happened in their terms ("Your table at ... is booked", "The whisk is in your cart"; if it is a demo and nothing real happened, say so in a few words), then offer one useful next step you could help with. No markdown, no lists.`
 

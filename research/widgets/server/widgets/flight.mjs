@@ -78,7 +78,14 @@ export function countryAt(lat, lon) {
 let cache = { at: 0, states: null }
 async function states() {
   if (Date.now() - cache.at < 10_000 && cache.states) return cache.states
-  const body = await fetchJson('https://opensky-network.org/api/states/all', { timeoutMs: 20_000 })
+  // OpenSky's anonymous feed fails now and then (a 503, a reset): once more before giving up.
+  let body
+  try {
+    body = await fetchJson('https://opensky-network.org/api/states/all', { timeoutMs: 20_000 })
+  } catch {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    body = await fetchJson('https://opensky-network.org/api/states/all', { timeoutMs: 20_000 })
+  }
   cache = { at: Date.now(), states: body.states ?? [] }
   return cache.states
 }
@@ -196,7 +203,7 @@ export default {
       try {
         data = await live(flight)
       } catch (error) {
-        data = { found: false, unavailable: true, query: flight, callsign: callsignOf(flight), airborne: [], asOf: Date.now(), source: 'OpenSky Network', note: `Live positions unavailable (${error.message}).` }
+        data = { found: false, unavailable: true, query: flight, callsign: callsignOf(flight), airborne: [], asOf: Date.now(), source: 'OpenSky Network', note: `The flight radar (OpenSky) isn't answering right now (${error.message}), after two tries.` }
       }
     }
     data ??= simulated(flight)

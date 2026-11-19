@@ -10,16 +10,18 @@ import { z } from 'zod'
 
 const SCALAR = z.union([z.string().max(2000), z.number(), z.boolean(), z.null()])
 // An entry the person asked to put into the app (values.add, a list of
-// them) or to change (values.edit: { find, set }): fields by name.
+// them) or to change (values.edit: { find, set }, or a list of those):
+// fields by name.
 const ENTRY = z.record(z.string().max(60), SCALAR)
-const VALUE = z.union([SCALAR, z.array(z.union([SCALAR, ENTRY])).max(50), z.record(z.string().max(60), z.union([SCALAR, ENTRY]))])
+const NESTED = z.record(z.string().max(60), z.union([SCALAR, ENTRY]))
+const VALUE = z.union([SCALAR, z.array(z.union([SCALAR, NESTED])).max(50), NESTED])
 
 export const INPUT = {
   request: z.string().min(1).max(500).describe('What the person asked for, in a few words'),
   values: z
     .record(z.string().max(60), VALUE)
     .optional()
-    .describe('The values the request gives, by name, for the app to start from: {"f": "x^2 sin(x)"}, {"amount": 600000, "rate": 6}; {} when it gives none. An entry to put into an app that keeps a list goes in add ({"add": [{"item": "lunch", "amount": 4.8}]}), one to correct in edit ({"edit": {"find": {"item": "groceries"}, "set": {"amount": 32.4}}})'),
+    .describe('The values the request gives, by name, for the app to start from: {"f": "x^2 sin(x)"}, {"amount": 600000, "rate": 6}; {} when it gives none. An entry to put into an app that keeps a list goes in add ({"add": [{"item": "lunch", "amount": 4.8}]}), one to correct in edit ({"edit": {"find": {"item": "groceries"}, "set": {"amount": 32.4}}}, or a list of them for several corrections)'),
 }
 
 export const inputs = {

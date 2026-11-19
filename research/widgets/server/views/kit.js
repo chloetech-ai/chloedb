@@ -43,7 +43,26 @@ async function connect(name, draw) {
 // makes as it opens (await Kit.kept(app, key) right after connect): an
 // app written to copy kept values in then would otherwise copy them over
 // the values just asked for.
+//
+// A result marked again (the app opened again, changed or undone, with
+// what it was last asked) carries old values: what was kept since is
+// newer, so a value the app kept under the same name is not handed in.
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+function names(value, depth = 0, out = new Set()) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || depth > 2) return out
+  for (const [k, v] of Object.entries(value)) {
+    out.add(k.toLowerCase())
+    names(v, depth + 1, out)
+  }
+  return out
+}
+function replayed(data, kept) {
+  if (!data?.again || !data.values || typeof data.values !== 'object') return data
+  const have = names(kept)
+  if (!have.size) return data
+  const values = Object.fromEntries(Object.entries(data.values).filter(([k]) => !have.has(k.toLowerCase())))
+  return { ...data, values }
+}
 function drawing(draw, connection, keeps = true) {
   let queue = Promise.resolve()
   let first = true
@@ -62,7 +81,7 @@ function drawing(draw, connection, keeps = true) {
       } catch {
         // An app whose host keeps nothing gets none.
       }
-      draw({ ...data, kept })
+      draw({ ...replayed(data, kept), kept })
     }).catch(error => broke(error?.message ?? error)))
 }
 
@@ -107,10 +126,21 @@ function fieldsText() {
   }
   return out.join('; ')
 }
+// The photos it shows, by what they show: innerText has none of them.
+function photosText() {
+  const out = []
+  for (const img of document.images) {
+    if (!img.complete || !img.naturalWidth || img.closest('[hidden]') || img.width < 24) continue
+    out.push((img.alt || img.title || 'a photo').replace(/\s+/g, ' ').trim().slice(0, 80))
+    if (out.length >= 20) break
+  }
+  return out.length ? `Photos shown (${out.length}): ${out.join('; ')}` : ''
+}
 function onScreen() {
-  const text = (document.body?.innerText ?? '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim().slice(0, 2500)
+  const text = (document.body?.innerText ?? '').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim().slice(0, 5000)
   const fields = fieldsText()
-  return `${text}${fields ? `\nFields: ${fields}` : ''}`
+  const photos = photosText()
+  return `${text}${fields ? `\nFields: ${fields}` : ''}${photos ? `\n${photos}` : ''}`
 }
 // Told once the page is still for 700 ms, and at least every 2 s while it
 // keeps changing (an animation's readout), so the chat is never left waiting.
@@ -130,6 +160,7 @@ function report() {
 }
 addEventListener('input', report, true)
 addEventListener('change', report, true)
+addEventListener('load', e => e.target instanceof HTMLImageElement && report(), true)
 
 // What an app keeps from one opening to the next (a chore chart's stars,
 // prices typed into a tracker, the rate the person set): stored with the
@@ -153,8 +184,29 @@ function link(app, url) {
   return /^https?:\/\//i.test(String(url ?? '')) ? app.openLink({ url: String(url) }).catch(() => {}) : Promise.resolve()
 }
 
-const money = (value, currency = 'USD') =>
-  new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: value >= 1000 ? 0 : 2 }).format(value)
+// Money with its cents, always: a total of $1,726.45 is not $1,726.
+const money = (value, currency = 'USD') => new Intl.NumberFormat(undefined, { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)
+// A number as people type it: "2,50" and "2.50" are 2.5, "1.234,56" and
+// "1,234.56" are 1234.56, "1,500" is 1500, "7,5 %" is 7.5, "€ 3,50" is 3.5.
+// NaN when it is not a number. Read every number field with it.
+function parse(text) {
+  if (typeof text === 'number') return text
+  let t = String(text ?? '').replace(/[\s\u00a0\u202f']/g, '').replace(/^[^\d.,+-]+|[^\d.,]+$/g, '')
+  if (!/^[+-]?[\d.,]*\d[\d.,]*$/.test(t)) return NaN
+  const comma = t.lastIndexOf(','), dot = t.lastIndexOf('.')
+  if (comma >= 0 && dot >= 0) {
+    const decimal = comma > dot ? ',' : '.'
+    t = t.split(decimal === ',' ? '.' : ',').join('').replace(decimal, '.')
+  } else if (comma >= 0) {
+    const parts = t.split(',')
+    // One comma and three digits after it is a thousands separator (1,500); else a decimal one (2,50).
+    t = parts.length > 2 || (parts.length === 2 && parts[1].length === 3 && parts[0].replace(/^[+-]/, '').length > 0 && parts[0] !== '0') ? parts.join('') : parts.join('.')
+  } else if ((t.match(/\./g) ?? []).length > 1) {
+    t = t.split('.').join('')
+  }
+  const n = Number(t)
+  return Number.isFinite(n) ? n : NaN
+}
 const number = (value, digits = 0) => new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value)
 const ago = ms => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
@@ -252,4 +304,4 @@ new MutationObserver(changes => {
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, drawing, call, ask, tell, keep, kept, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, link, money, number, parse, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

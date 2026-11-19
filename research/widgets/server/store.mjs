@@ -203,6 +203,16 @@ export class Apps {
     return this.put({ ...app, source: before.source, version: app.version - 1 }, null)
   }
 
+  // The changes that made the version it is at now, oldest first ("take
+  // the Berardo museum out"), so a follow-up keeps them.
+  async changesOf(appId) {
+    const app = await this.get(appId)
+    if (!app || app.version <= 1) return []
+    const ids = Array.from({ length: Math.min(app.version - 1, 20) }, (_, i) => `${appId}@${app.version - i}`)
+    const rows = (await this.db.get('ia_versions', ids)).filter(Boolean)
+    return rows.sort((a, b) => a.version - b.version).map(v => String(v.change ?? '').slice(0, 300)).filter(Boolean)
+  }
+
   // Forward again to the version an undo left.
   async redo(appId) {
     const app = await this.get(appId)

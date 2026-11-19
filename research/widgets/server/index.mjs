@@ -96,15 +96,16 @@ export function html(view) {
 // An app's source as the app view mounts it: a made app's fragment as it
 // is, and a view made by hand as one too (its styles and its body, the kit
 // being the view's own).
-export function fragmentOf(source) {
+// For a change (prompt), the world's outlines stay a marker: the page
+// that draws it puts them in.
+export function fragmentOf(source, { prompt = false } = {}) {
   if (!source.startsWith('view:')) return source
   const doc = readFileSync(here(`./views/${source.slice(5)}.html`), 'utf8')
   const head = /<head>([\s\S]*?)<\/head>/i.exec(doc)?.[1] ?? ''
   const styles = head.match(/<style>[\s\S]*?<\/style>/gi) ?? []
   const body = (/<body>([\s\S]*?)<\/body>/i.exec(doc)?.[1] ?? '').replace(/<!-- kit:\w+ -->/g, '')
-  return [...styles, body]
-    .join('\n')
-    .replace('/* kit:world */', () => `globalThis.WORLD=${readFileSync(here('./assets/world.json'), 'utf8')};`)
+  const fragment = [...styles, body].join('\n')
+  return prompt ? fragment : fragment.replace('/* kit:world */', () => `globalThis.WORLD=${readFileSync(here('./assets/world.json'), 'utf8')};`)
 }
 
 // A made app is a fragment (its <style>, markup and <script type="module">)

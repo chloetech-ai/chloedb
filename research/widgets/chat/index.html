@@ -109,6 +109,7 @@
   .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; padding: 6px 0; height: 28px; max-height: 140px; }
   .send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 17px; }
   .send:disabled { opacity: .45; }
+  .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
 
   .hello { margin: 9vh auto 0; max-width: 620px; text-align: center; }
   .hello h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
@@ -175,6 +176,7 @@
     <div class="log" id="log"><div class="col" id="col"></div></div>
     <div class="composer">
       <form id="ask"><textarea id="text" rows="1" placeholder="Ask anything"></textarea><button class="send" id="send" aria-label="Send">↑</button></form>
+      <p class="composer-note">Claude reads what your apps show, and what you type in them, to answer you.</p>
     </div>
   </main>
   <aside class="rail" id="rail" aria-label="Your apps">
@@ -367,8 +369,9 @@ window.widgets = widgets
 
 // Every app in the conversation, newest first, folded ones too: the chat
 // reads what each shows on screen to answer about it, and its id to change it.
+// The apps on screen, the one the person used or changed last first.
 function screen() {
-  return widgets.slice().reverse().slice(0, 12).map(w => ({ id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
+  return widgets.map((w, i) => [w, i]).sort((a, b) => (b[0].touched ?? 0) - (a[0].touched ?? 0) || b[1] - a[1]).map(([w]) => w).slice(0, 12).map(w => ({ id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
 }
 
 const withoutEntries = payload => {
@@ -385,6 +388,7 @@ const withoutEntries = payload => {
   }
 }
 
+const REPLAY = new Set(['opened', 'again', 'changed', 'undone'])
 async function draw(w) {
   const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
@@ -407,6 +411,7 @@ async function draw(w) {
       lastApp = { id: w.app.id, args: params.arguments }
       w.shows = said
     }
+    w.touched = Date.now()
     if (acted) {
       w.did.push(said)
       note(w, said)
@@ -436,7 +441,12 @@ async function draw(w) {
   bridge.onopenlink = async ({ url }) => { window.open(url, '_blank', 'noopener'); return {} }
   bridge.oninitialized = async () => {
     await bridge.sendToolInput({ arguments: w.payload.args ?? {} })
-    await bridge.sendToolResult(w.payload.result)
+    // Drawn again (opened again, changed, undone), it gets what it was last
+    // asked: what the person typed in it since is kept and newer (Kit.replayed).
+    const again = w.drawn || REPLAY.has(w.payload.how)
+    const data = w.payload.result?.structuredContent
+    await bridge.sendToolResult(again && data ? { ...w.payload.result, structuredContent: { ...data, again: true } } : w.payload.result)
+    w.drawn = true
     // An entry asked for is sent once: drawn again (a change, an undo), the app has it kept.
     w.payload = withoutEntries(w.payload)
   }
@@ -454,7 +464,7 @@ function sentOf(args) {
   const parts = []
   for (const [k, x] of Object.entries(values)) {
     if (k === 'add') parts.push(...(Array.isArray(x) ? x : [x]).map(e => `add ${short(e)}`))
-    else if (k === 'edit') parts.push(`change ${short(x?.find)} to ${short(x?.set)}`)
+    else if (k === 'edit') parts.push(...(Array.isArray(x) ? x : [x]).map(e => `change ${short(e?.find)} to ${short(e?.set)}`))
     else parts.push(`${k} ${short(x)}`)
   }
   const text = parts.join(', ')
@@ -483,7 +493,7 @@ function widget(body, payload, { at = null, request = '' } = {}) {
   // An earlier widget of this app folds to its bar: the new one is its state now.
   for (const old of widgets) if (old.app.id === app.id && !old.folded) fold(old, true)
   if (at) at.replaceWith(node)
-  const w = { node, app, payload, how, shows: textOf(payload.result), did: [], told: '', folded: false, shownId: payload.shown, newer: Boolean(payload.newer), request }
+  const w = { node, app, payload, how, shows: textOf(payload.result), did: [], told: '', folded: false, shownId: payload.shown, newer: Boolean(payload.newer), request, touched: Date.now() }
   widgets.push(w)
   node.querySelector('.wname').onclick = () => w.folded && fold(w, false)
   node.querySelector('.reopen').onclick = () => fold(w, false)
@@ -611,6 +621,9 @@ function bar(w) {
         w.newer = false
         w.how = 'changed'
         w.payload = { ...w.payload, html: ev.html }
+        // "This one" in the next request is the app just changed.
+        w.touched = Date.now()
+        lastApp = { id: w.app.id, args: w.payload.args }
         stale(w)
         await draw(w)
         bar(w)

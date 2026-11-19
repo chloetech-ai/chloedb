@@ -22,7 +22,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
-import { TOOLS, callTool, domainsOf, render } from '../server/index.mjs'
+import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
 import { KEEPING, keeping } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
@@ -130,7 +130,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       folded: Boolean(w.folded),
       shows: String(w.shows ?? '').slice(0, i < 3 ? 900 : 300),
       did: (Array.isArray(w.did) ? w.did : []).slice(-3).map(d => String(d).slice(0, 300)),
-      told: String(w.told ?? '').slice(0, i < 3 ? 2500 : 400),
+      told: String(w.told ?? '').slice(0, i === 0 ? 6000 : i < 3 ? 2500 : 400),
     }))
 
   // An entry the person asked the chat to put into an app (values.add):
@@ -140,6 +140,18 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (!values || typeof values !== 'object' || values.add == null) return args
     const add = (Array.isArray(values.add) ? values.add : [values.add]).filter(e => e && typeof e === 'object').map(e => ({ id: String(e.id ?? randomBytes(5).toString('hex')), ...e }))
     return { ...args, values: { ...values, add } }
+  }
+  // Whether a query may be about what a kept answer found: it shares a
+  // word that says what it is about with the answer's query or name. A
+  // question about General Mills is not about loan rates.
+  const STOP = new Set('the and for with from that this what which who how why when where about again show find open kept keep answer answers saved one ones please can you your mine our are was were has have had any all its into than then them they there here just more most some much many very like want need give tell look see best good new now'.split(' '))
+  function sameSearch(asked, ...kept) {
+    const words = text => new Set((String(text ?? '').toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter(w => !STOP.has(w)))
+    const a = words(asked)
+    if (!a.size) return true
+    const b = words(kept.join(' '))
+    for (const w of a) if (b.has(w) || b.has(w.replace(/s$/, '')) || b.has(`${w}s`)) return true
+    return false
   }
   // What an app opens with next time: not the entries asked for once.
   function lasting(args) {
@@ -191,7 +203,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     }
     let app = plan.mode === 'use' && plan.use ? await apps.get(plan.use) : null
     let args = entries(plan.args ?? {})
-    // A kept answer opens with what it found then; a new search is Search results'.
+    // A kept answer opens with what it found then; a new search is Search
+    // results', even when the router took a kept answer for it.
+    if (app?.id.startsWith('answer-') && plan.tool === 'findings' && !sameSearch(plan.args?.query, app.args?.query, app.args?.request, app.name)) app = await apps.get('search-results')
     const keptAnswer = app?.id.startsWith('answer-')
     if (keptAnswer) args = app.args
     // An app of what was found: the web searched first, and what it found
@@ -201,7 +215,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       try {
         // A follow-up starts from what the app shown just before found.
         const found = last?.tool === 'findings' ? (lastApp.args ?? last.args) : null
-        args = await model.research({ request: text, query: String(args.query || text), history: history.slice(-6), found })
+        // What the person changed in that answer holds (a place taken out stays out).
+        const changes = found ? await apps.changesOf(last.id).catch(() => []) : []
+        args = await model.research({ request: text, query: String(args.query || text), history: history.slice(-6), found, changes })
       } catch (error) {
         send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
         return
@@ -279,7 +295,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     send({ type: 'status', text: `Changing ${app.name}` })
     const source = await model.edit({
       app,
-      source: app.source,
+      // A page made by hand is changed from its own code, so what it does (side by side, its sources) stays.
+      source: fragmentOf(app.source, { prompt: true }),
       change: text,
       tool: was.tool,
       args: was.args,
@@ -409,7 +426,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         if (!turned) return json(res, { error: 'nothing to say' }, 404)
         sayable.delete(String(token))
         const { request, summary } = turned
-        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 3000) }).catch(() => '')
+        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 6000) }).catch(() => '')
         return json(res, { text: said || String(summary ?? '') })
       }
       // What the chat says after something was done in an app.

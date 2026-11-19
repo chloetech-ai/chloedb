@@ -107,11 +107,17 @@ export default {
   output: Output,
   async run({ symbol, range = '1d' }) {
     const ticker = symbol.trim().toUpperCase()
+    // One ticker a call: "SBUX,GIS,MDLZ" is three, never a stock of its own.
+    const several = ticker.split(/[\s,;/&+]+/).filter(Boolean)
+    if (several.length > 1) throw new Error(`One ticker a call: ask for ${several.join(', ')} one at a time`)
+    if (!/^[A-Z0-9^.=-]{1,15}$/.test(ticker)) throw new Error(`"${symbol}" is not a ticker as an exchange lists it (NVDA, BRK-B, ^GSPC)`)
     let data
     if (!SIMULATE) {
       try {
         data = await live(ticker, range)
       } catch (error) {
+        // A ticker that isn't listed is said so; made-up prices are only for a quote service that can't be reached.
+        if (/answered 404|No data found|delisted/i.test(error.message)) throw new Error(`No stock, fund or index is listed as ${ticker}`)
         data = { ...simulated(ticker, range), note: `Live quote unavailable (${error.message}); simulated.` }
       }
     }

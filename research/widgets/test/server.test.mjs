@@ -114,3 +114,50 @@ test('the sources answer a sentence and their data: a table to book, recipes to 
   const dish = await call('recipe_get', { id: dishes.structuredContent.recipes[0].id })
   assert.ok(dish.structuredContent.amounts.length > 0)
 })
+
+test('stock_quote never makes up a stock: three tickers in one, or text that is not a ticker, are refused', async () => {
+  for (const symbol of ['SBUX,GIS,MDLZ', 'SBUX GIS']) {
+    const r = await client.callTool({ name: 'stock_quote', arguments: { symbol } })
+    assert.equal(r.isError, true, symbol)
+    assert.match(r.content[0].text, /One ticker a call/)
+  }
+  const odd = await client.callTool({ name: 'stock_quote', arguments: { symbol: 'Mondelez!' } })
+  assert.equal(odd.isError, true)
+  assert.match(odd.content[0].text, /not a ticker/)
+})
+
+test('an app asked for several corrections at once gets them all; a plan keeps every day', async () => {
+  const { INPUT } = await import('../server/widgets/inputs.mjs')
+  const two = { add: [{ item: 'lunch', amount: 4.8 }], edit: [{ find: { client: 'Johnson' }, set: { day: 'Tuesday' } }, { find: { client: 'Patel' }, set: { time: '10:00' } }] }
+  assert.ok(INPUT.values.safeParse(two).success, 'two edits in one request (MARCUS-1)')
+  assert.ok(INPUT.values.safeParse({ edit: { find: { item: 'groceries' }, set: { amount: 32.4 } } }).success)
+  const { clip } = await import('../server/widgets/findings.mjs')
+  const days = Array.from({ length: 15 }, (_, i) => ({ name: `Apr ${6 + i}`, about: 'a day' }))
+  assert.equal(clip({ query: 'trip', documents: [{ title: 'Guide', summary: 'x' }], items: days }).items.length, 15, 'a 14-day plan keeps all its days (TOM-2)')
+})
+
+// The kit's own helpers, read from its source as the page runs them.
+const kit = (await import('node:fs')).readFileSync(new URL('../server/views/kit.js', import.meta.url), 'utf8')
+const fn = name => new Function(`${kit.match(new RegExp(`function names\\([\\s\\S]*?\\n}`))?.[0] ?? ''}\n${kit.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))[0]}\nreturn ${name}`)()
+
+test('the kit reads numbers as people type them, and money keeps its cents', () => {
+  const parse = fn('parse')
+  for (const [typed, n] of [['2,50', 2.5], ['2.50', 2.5], ['1.234,56', 1234.56], ['1,234.56', 1234.56], ['1,500', 1500], ['7,5 %', 7.5], ['€ 3,50', 3.5], ['0,500', 0.5], ['-3,2', -3.2], [' 680 ', 680], ['12.5 hrs', 12.5]]) assert.equal(parse(typed), n, typed)
+  assert.ok(Number.isNaN(parse('abc')))
+  assert.ok(Number.isNaN(parse('')))
+  const money = new Function(`${kit.match(/const money = [^\n]*/)[0]}\nreturn money`)()
+  assert.match(money(1726.45), /1,726\.45/, 'LENA-5: a total over $1,000 keeps its cents')
+  assert.match(money(3703), /3,703\.00/)
+})
+
+test('an app opened again keeps what was typed since over what it was last asked', () => {
+  const replayed = fn('replayed')
+  const asked = { again: true, values: { budget: 650, month: 'Nov', f: 'tan(x)' } }
+  // INES-1: 680 typed in the budget box, then the app opened again.
+  assert.deepEqual(replayed(asked, { state: { budget: 680 } }).values, { month: 'Nov', f: 'tan(x)' })
+  assert.deepEqual(replayed(asked, { Budget: 680, month: 'Oct' }).values, { f: 'tan(x)' })
+  // Nothing kept here (another browser): the request's values are all there.
+  assert.deepEqual(replayed(asked, {}).values, asked.values)
+  // A new request's values win, as before.
+  assert.deepEqual(replayed({ values: { budget: 700 } }, { budget: 680 }).values, { budget: 700 })
+})

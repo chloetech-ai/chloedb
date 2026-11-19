@@ -51,11 +51,13 @@ function draw(next) {
   if (!data.found) {
     root.innerHTML = `
       <div class="title">${esc(data.callsign)}${data.airline ? ` · ${esc(data.airline)}` : ''}</div>
-      <div class="empty">${data.unavailable ? `Can't reach live positions right now.<br><span class="faint">${esc(data.note)}</span>` : 'Not in the air right now.'}</div>
+      <div class="empty">${data.unavailable ? `The flight radar isn't answering right now.<br><span class="faint">${esc(data.note)}</span><br><button class="btn" data-again>Try again</button>` : 'Not in the air right now.'}</div>
       ${data.airborne?.length ? `<div class="faint" style="text-align:center">${esc(data.airline ?? 'This airline')} in the air now</div>
         <div class="others">${data.airborne.map(c => `<button class="btn" data-cs="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : ''}
       <div class="foot faint">${esc(data.source)} · ${ago(data.asOf)}</div>`
     root.querySelectorAll('[data-cs]').forEach(b => b.onclick = () => load(b.dataset.cs))
+    const again = root.querySelector('[data-again]')
+    if (again) again.onclick = () => { again.disabled = true; again.textContent = 'Trying…'; load(data.query ?? data.callsign) }
     return
   }
   const climb = data.climbFpm > 300 ? 'climbing' : data.climbFpm < -300 ? 'descending' : 'level'

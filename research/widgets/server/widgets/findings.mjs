@@ -56,7 +56,7 @@ export const INPUT = {
     cites: CITES.optional(),
   })).max(6).optional().describe('For a pick: the best item for each kind of need'),
   criteria: z.array(z.string().min(1).max(60)).max(8).optional().describe('The facts that matter most for this request, most important first, named as in the items’ facts'),
-  items: z.array(ITEM).max(12).optional()
+  items: z.array(ITEM).max(20).optional()
     .describe('The things the request is about, best first: the options to pick from, the points of an answer, the steps of a how-to, the events of the news'),
   documents: z.array(DOCUMENT).max(40).describe('The sources, best first; they are numbered from 1 in this order, and doc and cites use those numbers'),
   notes: z.string().max(1000).optional().describe('What the sources disagree on or leave out, and what to check, in a sentence or two'),
@@ -219,7 +219,7 @@ export function clip(found = {}) {
     answer: found.answer && cut(found.answer.text, 800) ? tidy({ text: cut(found.answer.text, 800), cites: nums(found.answer.cites) }) : undefined,
     needs: list(found.needs, 6).filter(x => x && cut(x.need, 80) && cut(x.pick, 120)).map(x => tidy({ need: cut(x.need, 80), pick: cut(x.pick, 120), why: cut(x.why, 240), cites: nums(x.cites) })),
     criteria: texts(found.criteria, 8, 60),
-    items: list(found.items, 30).filter(t => t && cut(t.name, 120)).slice(0, 12).map(t => tidy({
+    items: list(found.items, 30).filter(t => t && cut(t.name, 120)).slice(0, 20).map(t => tidy({
       name: cut(t.name, 120),
       about: cut(t.about, 400),
       verdict: cut(t.verdict, 300),

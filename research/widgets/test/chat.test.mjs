@@ -67,8 +67,9 @@ function scripted() {
       calls.make++
       return FRAGMENT('v1')
     },
-    async edit({ change }) {
+    async edit({ change, source }) {
       calls.edit++
+      calls.editSource = source
       return FRAGMENT(`v2: ${change}`)
     },
     async reply({ summary, shows }) {
@@ -204,7 +205,9 @@ test('the flow: make, act, change, undo, save, and recall', { skip }, async () =
   const seen = model.calls.route.at(-1).screen
   assert.equal(seen.length, 12)
   assert.equal(seen[1].folded, true)
-  assert.equal(seen[0].told.length, 2500)
+  // The one used last in full, the next two in part, the rest in short.
+  assert.equal(seen[0].told.length, 3000 + 'On screen now:\n'.length)
+  assert.equal(seen[1].told.length, 2500)
   assert.equal(seen[5].told.length, 400)
 })
 
@@ -266,6 +269,12 @@ test('a conversation is kept for its browser, and each app in it opens again as 
   assert.equal(asked.app.id, keptApp.id)
   assert.equal(asked.result.structuredContent.documents[0].title, 'Quiet headphones, tested')
   assert.equal(model.calls.research.length, searches)
+  // A new question the router took the kept answer for is a new search (LENA-2).
+  model.pick = keptApp.id
+  const other = (await events('/api/turn', { text: 'find why General Mills stock fell this year', talk })).find(e => e.type === 'app')
+  delete model.pick
+  assert.equal(other.app.id, 'search-results')
+  assert.equal(model.calls.research.length, searches + 1)
 })
 
 test('an app gets all it kept with its data, and an entry asked for in words is sent once, with an id', { skip }, async () => {
@@ -302,6 +311,9 @@ test('a change is made to what that widget shows, and a web answer changes as a 
   assert.match(changed.app.name, /^Reviews of quiet headphones · /)
   assert.equal(changed.args.documents[0].title, 'Quiet headphones, tested', 'that answer’s own findings, not the latest search’s')
   assert.match(changed.html, /v2: bigger text/)
+  // The change starts from the answer's own page, so what it does stays (PRIYA-1).
+  assert.doesNotMatch(model.calls.editSource, /a page made by hand/)
+  assert.match(model.calls.editSource, /Kit\.connect|connect\(/)
   const after = await chat.apps.get('search-results')
   assert.equal(after.version, before.version, 'Search results itself is unchanged')
   assert.equal(after.source, before.source)
@@ -311,6 +323,11 @@ test('a change is made to what that widget shows, and a web answer changes as a 
   // Another answer kept under the same name gets an id of its own.
   const twin = await chat.apps.keepAnswer('search-results', { name: changed.app.name, request: 'x', args: first.args })
   assert.notEqual(twin.id, changed.app.id)
+  // What the person changed in it holds when a search follows it up (INES-2).
+  await events(`/api/apps/${changed.app.id}/change`, { text: 'take the Sony out, it is discontinued', shown: first.shown, talk })
+  assert.deepEqual(await chat.apps.changesOf(changed.app.id), ['bigger text', 'take the Sony out, it is discontinued'])
+  await events('/api/turn', { text: 'find which of these is lightest', talk, lastApp: { id: changed.app.id, args: changed.args } })
+  assert.deepEqual(model.calls.research.at(-1).changes, ['bigger text', 'take the Sony out, it is discontinued'])
 })
 
 test('a saved app is recalled by meaning, with no word in common', { skip }, async () => {
