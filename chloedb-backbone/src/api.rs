@@ -47,10 +47,40 @@ pub struct Service {
     pub names: tokio::sync::RwLock<Arc<Names>>,
     /// The last run of the rules: when, and what it found.
     pub last_rules: Mutex<Option<(Instant, Value)>>,
-    /// The pages everyone sees the same (Now, the world map), kept 20
-    /// seconds: the data under them moves by the minute.
-    pub shared: HashMap<&'static str, tokio::sync::Mutex<Option<(Instant, Value)>>>,
+    /// The pages everyone sees the same (Now, the world map, the strip):
+    /// worked out in the background every few seconds, so a reader is
+    /// answered from memory and never waits for their SQL.
+    pub shared: HashMap<&'static str, Kept>,
 }
+
+/// One shared page: its last answer, and a lock so that one reading of it
+/// runs at a time.
+#[derive(Default)]
+pub struct Kept {
+    answer: Mutex<Option<(Instant, Value)>>,
+    working: tokio::sync::Mutex<()>,
+}
+
+impl Kept {
+    /// The last answer, if it was worked out after `after`, or is younger
+    /// than `young`.
+    fn get(&self, after: Option<Instant>, young: Duration) -> Option<Value> {
+        let held = self.answer.lock().unwrap_or_else(|e| e.into_inner());
+        let (at, v) = held.as_ref()?;
+        if !(after.is_some_and(|a| *at >= a) || at.elapsed() < young) {
+            return None;
+        }
+        let mut v = v.clone();
+        v["kept_s"] = json!(at.elapsed().as_secs());
+        Some(v)
+    }
+}
+
+/// How often the background loop works the shared pages out again.
+const SHARED_EVERY: Duration = Duration::from_secs(15);
+/// The oldest shared answer a reader is given; older (the loop could not
+/// reach ChloeDB), the reader's request works it out itself.
+const SHARED_KEEP: Duration = Duration::from_secs(300);
 
 pub type Shared = Arc<Service>;
 
@@ -129,13 +159,16 @@ pub async fn serve(o: Opts) -> Result<()> {
         started: Instant::now(),
         names: tokio::sync::RwLock::new(Arc::new(Names::default())),
         last_rules: Mutex::new(None),
-        shared: ["now", "world", "timeline"].into_iter().map(|k| (k, tokio::sync::Mutex::new(None))).collect(),
+        shared: SHARED.into_iter().map(|k| (k, Kept::default())).collect(),
     });
     {
         let svc = svc.clone();
         let run_rules = o.rules;
         tokio::spawn(async move {
             let mut read_at: Option<Instant> = None;
+            let mut rules_at: Option<Instant> = None;
+            // One loop, so the rules and the shared pages never read at
+            // the same moment: the rules each minute, the pages after.
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) {
                     let n = names(&svc.db).await;
@@ -145,7 +178,8 @@ pub async fn serve(o: Opts) -> Result<()> {
                         read_at = Some(Instant::now());
                     }
                 }
-                if run_rules {
+                if run_rules && rules_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                    rules_at = Some(Instant::now());
                     let n = svc.names.read().await.clone();
                     let t0 = Instant::now();
                     match rules::run_once(&svc.db, &n).await {
@@ -156,7 +190,12 @@ pub async fn serve(o: Opts) -> Result<()> {
                         Err(e) => tracing::warn!(error = %e, "rules"),
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                for page in SHARED {
+                    if let Err(e) = refresh(&svc, page).await {
+                        tracing::warn!(page, error = %e.1, "shared page");
+                    }
+                }
+                tokio::time::sleep(SHARED_EVERY).await;
             }
         });
     }
@@ -315,16 +354,28 @@ macro_rules! ctx {
     };
 }
 
-/// One answer for everyone for 20 seconds; the lock makes a crowd that
-/// arrives together wait for one reading rather than start one each.
+/// The pages kept in memory for everyone.
+const SHARED: [&str; 3] = ["now", "world", "timeline"];
+
+/// One answer for everyone: the background loop's, so a reader never waits
+/// for its SQL (which takes seconds while the rules or the feed are busy).
+/// Only when there is none yet (the app just started), or the loop could
+/// not reach ChloeDB for minutes, does the reader's request read it.
 async fn kept(svc: &Shared, page: &'static str) -> Answer {
-    let mut held = svc.shared[page].lock().await;
-    if let Some((at, v)) = held.as_ref() {
-        if at.elapsed() < Duration::from_secs(20) {
-            let mut v = v.clone();
-            v["kept_s"] = json!(at.elapsed().as_secs());
-            return Ok(Json(v));
-        }
+    if let Some(v) = svc.shared[page].get(None, SHARED_KEEP) {
+        return Ok(Json(v));
+    }
+    refresh(svc, page).await
+}
+
+/// Works a shared page out again. The lock makes a crowd that arrives
+/// together wait for one reading rather than start one each.
+async fn refresh(svc: &Shared, page: &'static str) -> Answer {
+    let k = &svc.shared[page];
+    let asked = Instant::now();
+    let _one = k.working.lock().await;
+    if let Some(v) = k.get(Some(asked), Duration::ZERO) {
+        return Ok(Json(v));
     }
     let t0 = Instant::now();
     ctx!(svc, trace, c);
@@ -334,7 +385,7 @@ async fn kept(svc: &Shared, page: &'static str) -> Answer {
         _ => pages::world(&c).await?,
     };
     let Json(v) = done(&trace, v, t0)?;
-    *held = Some((Instant::now(), v.clone()));
+    *k.answer.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v.clone()));
     Ok(Json(v))
 }
 
