@@ -159,7 +159,7 @@ class Memory:
 
     def remember(self, session, n, role, text, at):
         &quot;&quot;&quot;Store one turn of a session.&quot;&quot;&quot;
-        self.db.upsert({&quot;id&quot;: f&quot;{session}/{n:04d}&quot;, &quot;session&quot;: session, &quot;role&quot;: role, &quot;text&quot;: text, &quot;at&quot;: at})
+        self.db.upsert({&quot;id&quot;: f&quot;{session}/{n:04d}&quot;, &quot;session&quot;: session, &quot;role&quot;: role, &quot;text&quot;: text, &quot;at&quot;: at}, table=&quot;turns&quot;)
 
     def learn(self, key, value, at):
         &quot;&quot;&quot;Store a fact; a newer value of the same key replaces the old one.&quot;&quot;&quot;

@@ -147,7 +147,7 @@ def test_a_sequence_model_trained_from_a_table_ranks_in_strata_as_in_pytorch(tmp
     schema = {"table": "items", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "tag", "type": "keyword"}, {"name": "emb", "type": "vector", "dim": 8, "index": "flat"}]}
     db = chloedb.Database.create(tmp_path / "db", schema, models=models)
     db.sql("CREATE TABLE events (id INT PRIMARY KEY, usr KEYWORD NOT NULL, item KEYWORD NOT NULL, action KEYWORD, ts TIMESTAMP NOT NULL)")
-    db.upsert([{"id": f"i{i}", "tag": f"t{i % 3}", "emb": [rng.gauss(0, 0.3) for _ in range(8)]} for i in range(30)])
+    db.upsert([{"id": f"i{i}", "tag": f"t{i % 3}", "emb": [rng.gauss(0, 0.3) for _ in range(8)]} for i in range(30)], table="items")
     # Each user walks the items two at a time from a start of their own.
     events, e = [], 0
     for u in range(60):
