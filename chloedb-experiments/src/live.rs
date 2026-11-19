@@ -1663,6 +1663,35 @@ pub(crate) async fn call(http: &reqwest::Client, base: &str, key: &str, fallback
     unreachable!()
 }
 
+/// One answer by a tool: `tool`'s input, and what the call cost. The
+/// newest models refuse a forced `tool_choice`, so the call is `auto` with
+/// the tool named in the message, and made again (twice at most) when no
+/// call of it comes back.
+pub(crate) async fn tool_answer(http: &reqwest::Client, base: &str, key: &str, model: &str, system: &str, tool: &Value, message: &str, max_tokens: u32) -> Result<(Value, f64)> {
+    let name = tool["name"].as_str().unwrap_or("answer");
+    let (_, _, _, _, fallbacks) = model_of(model);
+    let mut body = json!({
+        "model": model, "max_tokens": max_tokens, "system": system, "tools": [tool],
+        "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
+        "messages": [{"role": "user", "content": format!("{message}\n\nAnswer only by calling the {name} tool, once.")}],
+    });
+    if fallbacks {
+        body["fallbacks"] = json!("default");
+    }
+    let mut cost = 0.0;
+    for _ in 0..3 {
+        let r = call(http, base, key, fallbacks, &body).await?;
+        cost += cost_of(model, &r["usage"]);
+        if let Some(b) = r["content"].as_array().into_iter().flatten().find(|b| b["type"] == "tool_use" && b["name"] == name) {
+            return Ok((b["input"].clone(), cost));
+        }
+        if r["stop_reason"] == "max_tokens" {
+            return Err(format!("the answer was cut off at {max_tokens} tokens: ask for less"));
+        }
+    }
+    Err(format!("the model did not call {name}"))
+}
+
 /// Whether a live run whose last second's numbers are `snapshot` is
 /// decided, after `searches` of them: at least [`MIN_DECIDE`], every arm's
 /// `primary` metric called by its always-valid p value (below 0.05), and

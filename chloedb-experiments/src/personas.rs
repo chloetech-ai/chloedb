@@ -115,21 +115,8 @@ pub async fn write(brain: &Brain, http: &reqwest::Client, set_id: &str, describe
     let Brain::Claude { key, model, base } = brain else {
         return Ok((scripted(set_id, rows, count, needs, seed), 0.0));
     };
-    let (_, _, _, _, fallbacks) = live::model_of(model);
-    let mut body = json!({
-        "model": model, "max_tokens": 16000, "system": SYSTEM, "tools": [tool()],
-        "tool_choice": {"type": "tool", "name": "personas"},
-        "messages": [{"role": "user", "content": prompt(describe, rows, count, needs)}],
-    });
-    if fallbacks {
-        body["fallbacks"] = json!("default");
-    }
-    let r = live::call(http, base, key, fallbacks, &body).await?;
-    let cost = live::cost_of(model, &r["usage"]);
-    if r["stop_reason"] == "max_tokens" {
-        return Err("the personas were cut off: ask for fewer".into());
-    }
-    let input = r["content"].as_array().into_iter().flatten().find(|b| b["type"] == "tool_use").map(|b| b["input"].clone()).ok_or("the model wrote no personas")?;
+    // The models think first, so the room is for the thinking and the people.
+    let (input, cost) = live::tool_answer(http, base, key, model, SYSTEM, &tool(), &prompt(describe, rows, count, needs), 32000).await?;
     Ok((read(set_id, &input, rows), cost))
 }
 

@@ -124,14 +124,7 @@ impl Judge {
                         msg.push_str(&format!("   Its text: {}\n", clip(&t.replace('\n', " "), 700)));
                     }
                 }
-                let (_, _, _, _, fallbacks) = live::model_of(model);
-                let mut body = json!({"model": model, "max_tokens": 2000, "system": SYSTEM, "tools": [tool()], "tool_choice": {"type": "tool", "name": "grades"}, "messages": [{"role": "user", "content": msg}]});
-                if fallbacks {
-                    body["fallbacks"] = json!("default");
-                }
-                let r = live::call(&self.http, base, key, fallbacks, &body).await?;
-                let cost = live::cost_of(model, &r["usage"]);
-                let input = r["content"].as_array().into_iter().flatten().find(|b| b["type"] == "tool_use").map(|b| b["input"].clone()).unwrap_or(Value::Null);
+                let (input, cost) = live::tool_answer(&self.http, base, key, model, SYSTEM, &tool(), &msg, 8000).await?;
                 let mut out: HashMap<String, u8> = rows.iter().map(|r| (r.id.clone(), 0)).collect();
                 for g in input["grades"].as_array().into_iter().flatten() {
                     let n = g["n"].as_u64().unwrap_or(0) as usize;

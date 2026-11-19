@@ -7,13 +7,19 @@
 //! it is against the broken arm, scripted (no model), to a report that
 //! says the broken arm finds less, need by need.
 //!
+//! The same study is then run by Claude, against a stand-in of the
+//! Messages API that refuses a forced tool choice as the newest models do:
+//! it writes the people, plays them on each arm, and grades what a topical
+//! need was shown.
+//!
 //! It needs the chloedb-server binary, as tests/app.rs does.
 
 mod common;
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -93,6 +99,57 @@ async fn site() -> String {
     url
 }
 
+type Seen = Arc<Mutex<Vec<Value>>>;
+
+/// A stand-in of the Messages API. It refuses a forced tool choice, as
+/// Claude Opus 5.5 and Sonnet 5.5 do; it writes two people (each
+/// remembering a row, and wanting a topic), grades the rows about
+/// telescopes 2 and the rest 0, and plays a person: the need's words
+/// searched, the first result opened and named.
+async fn messages(State(seen): State<Seen>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    seen.lock().unwrap().push(b.clone());
+    if b["tool_choice"]["type"] != "auto" {
+        return (StatusCode::BAD_REQUEST, Json(json!({"type": "error", "error": {"type": "invalid_request_error", "message": "tool_choice: type \"tool\" and \"any\" are not supported for this model."}})));
+    }
+    let tool = b["tools"][0]["name"].as_str().unwrap_or("").to_string();
+    let msgs = b["messages"].as_array().cloned().unwrap_or_default();
+    let first = msgs[0]["content"].as_str().unwrap_or("").to_string();
+    let call = match tool.as_str() {
+        "personas" => json!({"name": "personas", "input": {"personas": [
+            {"name": "Ana, a compiler engineer", "about": "Builds compilers.", "needs": [{"kind": "known", "need": "rust compiler builds faster", "row": 1}, {"kind": "topical", "need": "space telescope galaxies", "row": 0}]},
+            {"name": "Ben, a sysadmin", "about": "Runs Linux machines.", "needs": [{"kind": "known", "need": "linux kernel drivers safely", "row": 8}, {"kind": "topical", "need": "telescope finds galaxies", "row": 0}]}
+        ]}}),
+        "grades" => {
+            let grades: Vec<Value> = first
+                .lines()
+                .filter_map(|l| {
+                    let (n, t) = l.split_once(". ")?;
+                    let n: u64 = n.trim().parse().ok()?;
+                    Some(json!({"n": n, "grade": if t.to_lowercase().contains("telescope") { 2 } else { 0 }}))
+                })
+                .collect();
+            json!({"name": "grades", "input": {"grades": grades}})
+        }
+        _ => {
+            let need = first.split("looking for this:\n\n\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_string();
+            match msgs.iter().filter(|m| m["role"] == "assistant").count() {
+                0 => json!({"name": "search", "input": {"query": need, "why": "my words"}}),
+                1 => json!({"name": "open", "input": {"result": 1, "why": "the first looks right"}}),
+                _ => json!({"name": "done", "input": {"found": true, "result": 1, "note": "that was it"}}),
+            }
+        }
+    };
+    let turn = msgs.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": b["model"], "stop_reason": "tool_use",
+            "content": [{"type": "thinking", "thinking": "", "signature": "sig"}, {"type": "tool_use", "id": format!("toolu_{turn}"), "name": call["name"], "input": call["input"]}],
+            "usage": {"input_tokens": 1000, "output_tokens": 200},
+        })),
+    )
+}
+
 async fn until(c: &Client, path: &str, what: &str, ok: impl Fn(&Value) -> bool) -> Value {
     let t0 = Instant::now();
     loop {
@@ -109,10 +166,15 @@ async fn until(c: &Client, path: &str, what: &str, ok: impl Fn(&Value) -> bool) 
 async fn a_study_of_a_real_site_finds_the_broken_arm() {
     let Some((server, _guard, _dir)) = common::shop_server().await else { return };
     let site_url = site().await;
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let fake = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", fake.local_addr().unwrap());
+    let r = Router::new().route("/v1/messages", post(messages)).with_state(seen.clone());
+    tokio::spawn(async move { axum::serve(fake, r).await.unwrap() });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let sources = vec![Source::new("made-up", Kind::App, &site_url, Some(TOKEN.into())), Source::new("closed", Kind::App, &site_url, Some("wrong".into()))];
-    tokio::spawn(app::serve(server.clone(), listener, Opts { token: Some("t".into()), beir: Vec::new(), anthropic_key: None, anthropic_base: None, sources }));
+    tokio::spawn(app::serve(server.clone(), listener, Opts { token: Some("t".into()), beir: Vec::new(), anthropic_key: Some("k".into()), anthropic_base: Some(base), sources }));
     let c = Client { url, http: reqwest::Client::new() };
     common::ready(&c).await;
 
@@ -183,4 +245,24 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
         assert!(t0.elapsed() < Duration::from_secs(10), "the study is kept: {a}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    // The same, by Claude: the people written, played and judged.
+    let w = c.post("/v1/personas", json!({"source": "made-up", "brain": "claude"})).await;
+    let cid = w["id"].as_str().unwrap().to_string();
+    let set = until(&c, &format!("/v1/personas/{cid}"), "Claude's personas", |v| v["status"] == "ready" || v["status"] == "failed").await;
+    assert_eq!(set["status"], "ready", "{set}");
+    assert_eq!(set["personas"][0]["needs"][0]["target"], "s1", "{set}");
+    assert!(set["cost"].as_f64().unwrap() > 0.0, "{set}");
+    let s = c.post("/v1/studies", json!({"name": "Broken, by Claude", "personas": cid, "arms": arms, "brain": "claude", "agent_model": "claude-haiku-5-5", "judge_model": "claude-haiku-5-5", "budget": 1, "workers": 2})).await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let v = until(&c, &format!("/v1/studies/{sid}"), "Claude's study", |v| v["status"] != "running").await;
+    assert_eq!((v["status"].clone(), v["done"].clone(), v["error"].clone()), (json!("done"), json!(8), Value::Null), "{v}");
+    let r = &v["report"];
+    let k = |a: usize, m: &str| r["arms"][a][m]["k"].as_u64().unwrap();
+    assert_eq!((k(0, "known_success"), k(1, "known_success")), (2, 0), "{r}");
+    assert_eq!(k(0, "topical_success"), 2, "the judge's 2 for the telescope: {r}");
+    assert!(v["judge_spent"].as_f64().unwrap() > 0.0 && v["spent"].as_f64().unwrap() > 0.0, "{v}");
+    let calls = seen.lock().unwrap().clone();
+    assert!(calls.iter().all(|b| b["tool_choice"]["type"] == "auto"), "no forced tool choice");
+    assert!(calls.iter().any(|b| b["tools"][0]["name"] == "grades"), "the judge was asked");
 }
