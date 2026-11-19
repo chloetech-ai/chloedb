@@ -103,6 +103,36 @@ chloedb-hn crawl --strata http://coordinator:7700 --key "$CHLOEDB_KEY" --min-poi
 | `GET /v1/minds?topic=`, `/v1/minds/arc?topic=&who=` | the people who wrote about a topic for years, with the arcs already read; one person's arc (read and kept when it is new) |
 | `GET /v1/digest/write?week=&id=` | writes one entry (`id` a story of the week's picks, or `intro`) and keeps it |
 
+## Experiments
+
+The Experiments app ([its README](../../chloedb-experiments/README.md#real-sites)) can study this site's real search. It puts AI agents, playing people written from the stories, on the search with some of it changed. The app takes experiments only when it is started with a token for them:
+
+```bash
+chloedb-hn serve ... --experiments-token "$HN_EXPERIMENTS_TOKEN" --experiment-index v2=hn_stories_v2
+chloedb-experiments serve ... --source hn=app:http://hn-host:7850     # with CHLOEDB_SOURCE_HN_TOKEN=$HN_EXPERIMENTS_TOKEN
+```
+
+The token (`--experiments-token`, or `CHLOEDB_HN_EXPERIMENTS_TOKEN`) opens only `/v1/experiment`. These routes read: they write nothing, and hold no key of the cluster. They answer in `--public` mode too. Without the token they answer 404, and with a wrong one 401.
+
+| route | what |
+|---|---|
+| `GET /v1/experiment` | the site, its knobs, presets and indexes |
+| `POST /v1/experiment/search` | `{q, knobs, per}`: the site's own search of stories, with the knobs, and what it understood |
+| `GET /v1/experiment/item/:id` | a story's title, link and text |
+| `GET /v1/experiment/sample?n=&seed=` | stories to write people from: well voted and ordinary, across the years |
+
+The knobs, by group (an arm names the ones it changes; the rest stay as the site is):
+
+| group | knobs |
+|---|---|
+| Query understanding | `understand`: "by pg", "in 2015", "ask hn", "points>100" and questions in a sentence become filters and sorts; off, every word is searched as typed |
+| Retrieval | `typos` (fuzzy title words), `synonyms`, `meaning` (stories near the words in meaning are candidates and meaning counts in the ranking), `exact` (code such as `std::move` found as written by the substring index) |
+| Ranking | `votes` (the exponent of points + 1), `recency` (the share of the score a five-year decay of age decides), `meaning_weight`, `phrase` (the words as a phrase in the title), `body`, `link`; `rank`, a whole `ORDER BY` expression of ChloeDB's SQL over `hn_stories` (`:q`, `:phrase`, `:v`) in place of them; `tiers` (every word in the title first) |
+| Blending | `max_per_site` (a site's stories past this many in the page move below the others), `fresh` (places of the page for the best stories of the last year) |
+| Index | `index`: `main`, or an index named by `--experiment-index NAME=TABLE`, the stories indexed another way (other analyzers, fields or embeddings) beside the main one |
+
+A knob it does not have, a number out of its range, an index it was not given, or an expression with more than an expression in it (a `;`, a comment, a statement's words) is refused with 400.
+
 ## Measured against hn.algolia.com
 
 `eval/compare.py` asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in [`chloedb-hn/eval/results`](../../chloedb-hn/eval/results/), with the machine and the date they were measured on.

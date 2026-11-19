@@ -59,6 +59,9 @@ struct ServeArgs {
     /// The collections of --beir to load.
     #[arg(long, default_value = "nfcorpus,scifact")]
     collections: String,
+    /// A real site to study, as NAME=KIND:URL: an app of ChloeDB that takes experiments (app, its token in CHLOEDB_SOURCE_<NAME>_TOKEN), or a public search (hn-public, arxiv-public, algolia-hn); repeated for more.
+    #[arg(long = "source")]
+    sources: Vec<String>,
 }
 
 #[derive(Args, Clone)]
@@ -361,7 +364,8 @@ async fn run_serve(a: ServeArgs) {
             beir.push((d, c.to_ascii_lowercase()));
         }
     }
-    let r = chloedb_experiments::app::serve(server, listener, chloedb_experiments::app::Opts { token, beir, anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(), anthropic_base: std::env::var("ANTHROPIC_BASE_URL").ok() }).await;
+    let sources = a.sources.iter().map(|s| chloedb_experiments::source::Source::parse(s).unwrap_or_else(|e| fail(e))).collect();
+    let r = chloedb_experiments::app::serve(server, listener, chloedb_experiments::app::Opts { token, beir, anthropic_key: std::env::var("ANTHROPIC_API_KEY").ok(), anthropic_base: std::env::var("ANTHROPIC_BASE_URL").ok(), sources }).await;
     if let Some(l) = local {
         l.stop().await;
     }

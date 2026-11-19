@@ -32,9 +32,14 @@ parts it stands on:
   cohort. A share of the users can explore instead, and its log values
   every arm off-policy, beside what the arms measured.
 
-It is a client of chloedb-server over HTTP, as the crawler is. Interleaving,
-bandits, learning to rank and the agents that use a site come in later
-phases.
+- **Studies of real sites** ([below](#real-sites)). AI agents play
+  people written from a site's own rows, on the site's real search. Every
+  arm is the site with some of its search changed (query understanding,
+  retrieval, ranking, blending, the index), or another engine over the
+  same rows. Each need is tried on every arm and compared need by need.
+
+It is a client of chloedb-server over HTTP, as the crawler is. Bandits and
+learning to rank come in later phases.
 
 ## The app
 
@@ -182,6 +187,87 @@ difference (the groups add up to the whole) and a sentence on where the
 arm moved most, and the queries that lost and gained most, each with
 its share of the traffic, its measured and true success rate and the
 judged quality (nDCG) of what each arm showed for it.
+
+## Real sites
+
+A real site's study puts AI agents on a site's real search instead of a
+simulator. Each agent plays one person, and the people are written from
+the site's own rows. Every arm is the site with some of its search
+changed, or another engine over the same rows. Nothing is written to the
+site, and no clicks are made up: the agents search, open what they want
+to read and say what they found, as people would.
+
+```bash
+CHLOEDB_SOURCE_HN_TOKEN=... ANTHROPIC_API_KEY=... chloedb-experiments serve --local /tmp/exp \
+  --source hn=app:http://hn-app:7850 \
+  --source algolia=algolia-hn:https://hn.algolia.com/api/v1
+```
+
+Real sites on the home page lists the sources. A study takes these
+steps:
+
+1. **A site, and what it lets an arm change.** A ChloeDB app says it
+   takes experiments when it is started with `--experiments-token`. It
+   then serves a protocol under `/v1/experiment` that needs that token
+   (and no cluster key), and its answer lists its knobs in five groups:
+   query understanding, retrieval, ranking (weights, or a whole `ORDER BY`
+   expression of ChloeDB's SQL), blending after the ranking, and the
+   index. An index can be one built another way, beside the main one
+   (`--experiment-index NAME=TABLE`). chloedb-hn and chloedb-arxiv take
+   experiments ([hn](../docs/chloedb/hn.md#experiments),
+   [arXiv](../docs/chloedb/arxiv.md#experiments)). A public search with
+   no protocol (`hn-public`, `arxiv-public`, `algolia-hn`) can be an arm
+   too, with the few choices its URL takes. The site's page shows every
+   knob: switches, sliders, choices and an expression box. Beside them, a
+   search is shown as the site is and with your knobs, with a line from
+   each row to where it moved.
+2. **People.** Write personas reads a sample of the site's rows (well
+   voted and ordinary, across the years) and asks Claude Opus 5.5 for
+   people who would use the site, each with needs in their own words. A
+   need is either known or topical. A **known** need is a row the person
+   remembers and wants again, described the way they remember it, never
+   by its title. The row is the exact truth: the agent found it or did
+   not. A **topical** need wants rows on a subject, and any row may
+   answer it. Without a key, a plain stand-in writes the people, for
+   tests.
+3. **A paired study.** Every need is tried on every arm, by the same
+   person, each time in a fresh session. The order of the arms turns from
+   need to need. A few sessions run at once, so the site sees a few
+   people, not load. The agents are Claude through the Messages API, with
+   the live runs' tools: search, open, done. The spend stops at the
+   budget.
+4. **A judge.** For a topical need, Claude grades every row shown, once:
+   2 answers the need, 1 is related, 0 is not. The grades are kept
+   (`exp_judged`), so every arm's rows are graded alike, and a study run
+   again costs nothing more to judge.
+5. **The report.** Success means the row the agent named answers the
+   need: the remembered row, or one the judge grades 2. Each arm gets its
+   success with a Wilson interval, and the same split by known and
+   topical needs. It also gets the remembered row on the first page and
+   its MRR, nDCG of the first page over the pooled grades, how often it
+   was wrongly sure, searches, seconds, the site's time per search, and
+   cost. Each arm is set against the control need by need: the difference
+   in success with a t interval, McNemar's exact test on the needs only
+   one of them found, and a sentence. The page has a grid of needs by
+   arms, and each need opens the arms' sessions side by side, step by
+   step.
+
+Its API:
+
+| route | what |
+|---|---|
+| `GET /v1/real` | the sources, each with its knobs and presets, or why it takes no experiments |
+| `POST /v1/real/<source>/search`, `GET /v1/real/<source>/item/<id>` | a search with knobs (`q`, `knobs`, `per`), as an arm sees it; one row's text |
+| `GET /v1/personas`, `POST /v1/personas` | the people written so far; write more from a source (`source`, `count`, `needs`, `brain`), in the background |
+| `GET /v1/personas/<id>`, `DELETE /v1/personas/<id>` | one set, its people and their needs |
+| `GET /v1/studies`, `POST /v1/studies` | the studies; a spec (`personas`, `arms` of `source` and `knobs`, `agent_model`, `judge_model`, `budget`, `workers`, `needs`) starts one, one at a time |
+| `GET /v1/studies/<id>`, `GET /v1/studies/<id>/sessions?need=`, `POST /v1/studies/<id>/stop` | a study and its report; each session, step by step; stop it |
+
+Before a study starts, each arm's knobs are checked by a search, so a
+knob the site refuses fails at once. People and studies are rows of the
+server (`exp_personas`, `exp_studies`). A source's token is read from
+`CHLOEDB_SOURCE_<NAME>_TOKEN`, and the app sends a source at most four
+requests at a time.
 
 ## The simulator
 
@@ -375,6 +461,8 @@ cargo test --profile ci
 `tests/served.rs`, `tests/app.rs` (the app's API, a fast and a served
 experiment, on a site of its own tables) and `tests/live.rs` (a live run
 with Claude agents against a fake Messages API, a visitor, the rate
-changed, stopped into a report) need the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
+changed, stopped into a report) and `tests/real.rs` (a made-up site that
+takes experiments: its knobs, personas from its rows, a paired study that
+finds its broken arm) need the chloedb-server binary: `CHLOEDB_SERVER_BIN`, or
 `../chloedb-server/target/{ci,release}/chloedb-server`. Without it, they
 are skipped unless `CHLOEDB_EXPERIMENTS_NEED_SERVER` is set.

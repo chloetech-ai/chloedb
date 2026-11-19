@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 const TOKEN: &str = "arxiv-test-token";
+const EXP_TOKEN: &str = "arxiv-experiments-token";
 
 fn server_bin() -> Option<PathBuf> {
     if let Some(b) = std::env::var_os("CHLOEDB_SERVER_BIN").or_else(|| std::env::var_os("STRATA_SERVER_BIN")) {
@@ -223,7 +224,7 @@ async fn two_servers_every_page() {
         .arg(&rows)
         .arg("--server-bin")
         .arg(&bin)
-        .args(["--model", "hash:512", "--token", TOKEN])
+        .args(["--model", "hash:512", "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=ax_papers"])
         .args(["--listen", &format!("127.0.0.1:{port}")])
         .args(["--local-listen", &format!("127.0.0.1:{search}")])
         .args(["--local-graph-listen", &format!("127.0.0.1:{graph}")])
@@ -453,5 +454,60 @@ async fn two_servers_every_page() {
     for path in ["/v1/home", "/v1/trends?q=recommendation,quantum", "/v1/hot", "/v1/hot/people", "/v1/gaps", "/v1/born", "/v1/spread", "/v1/code", "/v1/labs", "/v1/labs/find?q=university", "/v1/feeds/example", "/app.json"] {
         get(&http, &app, path).await;
     }
+
+    // Experiments: the Experiments app's own token, and nobody else's.
+    let exp = |path: &str| http.get(format!("{}{path}", app.url));
+    assert_eq!(exp("/v1/experiment").bearer_auth(TOKEN).send().await.unwrap().status(), 401);
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(d["allowed"] == true && d["site"] == "arxiv", "{d}");
+    let keys: Vec<&str> = d["knobs"].as_array().unwrap().iter().filter_map(|k| k["key"].as_str()).collect();
+    for k in ["understand", "meaning", "typos", "authors", "cites", "rank", "max_per_category", "index"] {
+        assert!(keys.contains(&k), "{k}: {keys:?}");
+    }
+    let es = |q: &str, knobs: Value| {
+        let h = http.post(format!("{}/v1/experiment/search", app.url)).bearer_auth(EXP_TOKEN).json(&json!({"q": q, "knobs": knobs, "per": 5}));
+        async move {
+            let r = h.send().await.unwrap();
+            let status = r.status();
+            let v: Value = r.json().await.unwrap();
+            (status, v)
+        }
+    };
+    // As it is, the arm is the site's search.
+    let (st, as_is) = es("sequential recommendation", json!({})).await;
+    assert!(st.is_success(), "{as_is}");
+    let site = get(&http, &app, "/v1/search?q=sequential%20recommendation&facets=0").await;
+    assert_eq!(ids(&as_is["rows"]), ids(&site["papers"]).into_iter().take(5).collect::<Vec<_>>(), "{as_is}");
+    assert!(as_is["rows"][0]["snippet"].as_str().unwrap().contains("citations"), "{as_is}");
+    // A ranking of its own: the most cited first.
+    let (_, cited) = es("sequential recommendation", json!({"rank": "cites", "meaning": false})).await;
+    assert_eq!(ids(&cited["rows"])[0], rec_id(0), "{cited}");
+    // Blending: every abstract says benchmarks (as words, not the kind of
+    // paper the site reads it as), the oldest first puts the January field
+    // first, and at most two of a category mixes the other in.
+    let rank = "1 - decay(created, now(), 157680000)";
+    let (_, one) = es("benchmarks", json!({"rank": rank, "understand": false})).await;
+    let (_, two) = es("benchmarks", json!({"rank": rank, "understand": false, "max_per_category": 2})).await;
+    let cats = |v: &Value| v["rows"].as_array().unwrap().iter().map(|r| if qec.contains(&r["id"].as_str().unwrap().to_string()) { 'q' } else { 'r' }).collect::<String>();
+    assert_eq!(cats(&one), "rrrrr", "{one}");
+    assert_eq!(cats(&two), "rrqqr", "{two}");
+    assert_eq!(ids(&two["rows"])[..3], [rec_id(0), rec_id(1), qec_id(0)], "{two}");
+    // Understanding: "by ada recsys" is a filter, or three more words.
+    let (_, by) = es("recommendation by ada recsys", json!({})).await;
+    assert!(by["understood"].as_array().is_some_and(|n| !n.is_empty()), "{by}");
+    assert!(by["rows"].as_array().unwrap().iter().all(|r| r["snippet"].as_str().unwrap().to_lowercase().contains("ada recsys")), "{by}");
+    let (_, typed) = es("recommendation by ada recsys", json!({"understand": false})).await;
+    assert!(typed["understood"].as_array().is_some_and(|n| n.is_empty()), "{typed}");
+    // Another index, and knobs it refuses.
+    assert!(es("sequential recommendation", json!({"index": "v2"})).await.0.is_success());
+    for bad in [json!({"index": "v3"}), json!({"cites": 9}), json!({"rank": "1; DROP TABLE ax_papers"}), json!({"nope": true})] {
+        let (st, v) = es("sequential recommendation", bad.clone()).await;
+        assert_eq!(st, 400, "{bad}: {v}");
+    }
+    // Opening a paper, and the papers personas are written from.
+    let it: Value = exp(&format!("/v1/experiment/item/{}", rec_id(0))).bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(it["text"].as_str().unwrap().contains("We study"), "{it}");
+    let sm: Value = exp("/v1/experiment/sample?n=10&seed=1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert!(sm["rows"].as_array().unwrap().len() >= 5 && sm["rows"][0]["abstract"].is_string(), "{sm}");
     drop(app);
 }

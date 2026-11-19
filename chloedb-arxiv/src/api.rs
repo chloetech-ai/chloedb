@@ -60,6 +60,10 @@ pub struct Service {
     pub spread: tokio::sync::Mutex<Option<(Instant, Value)>>,
     /// Answers kept for a while by their key (rising people, people to work with).
     pub memo: Mutex<HashMap<String, (Instant, Value)>>,
+    /// The Experiments app's token: experiments are taken only with one.
+    pub experiments_token: Option<String>,
+    /// Other indexes of the papers an arm may read: (name, table).
+    pub indexes: Vec<(String, String)>,
 }
 
 pub type Shared = Arc<Service>;
@@ -149,8 +153,169 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/watches/:id/delete", post(drop_watch))
         .route("/watches/:id/rss.xml", get(watch_rss))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
+        // Experiments carry their own token, in public too (crate::experiment).
+        .merge(
+            Router::new()
+                .route("/v1/experiment", get(exp_describe))
+                .route("/v1/experiment/search", post(exp_search))
+                .route("/v1/experiment/item/*id", get(exp_item))
+                .route("/v1/experiment/sample", get(exp_sample))
+                .layer(axum::middleware::from_fn_with_state(svc.clone(), exp_guard)),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .with_state(svc)
+}
+
+async fn exp_guard(State(svc): State<Shared>, req: Request, next: Next) -> Response {
+    let Some(t) = &svc.experiments_token else {
+        return ApiError(StatusCode::NOT_FOUND, "this site takes no experiments (start it with --experiments-token)".into()).into_response();
+    };
+    let got = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    if !got.is_some_and(|g| constant_eq(g.as_bytes(), t.as_bytes())) {
+        return ApiError(StatusCode::UNAUTHORIZED, "experiments need the site's experiments token".into()).into_response();
+    }
+    next.run(req).await
+}
+
+async fn exp_describe(State(svc): State<Shared>) -> Json<Value> {
+    let mut d = crate::experiment::describe(&svc.indexes);
+    d["allowed"] = json!(true);
+    Json(d)
+}
+
+#[derive(serde::Deserialize)]
+struct ExpSearch {
+    q: String,
+    #[serde(default)]
+    knobs: Value,
+    #[serde(default)]
+    per: Option<usize>,
+}
+
+/// A paper of a page, as an arm shows it: the title, and a line of what
+/// the site shows under it.
+fn exp_row(r: &crate::strata::Row) -> Value {
+    let authors = r.s("authors");
+    let mut names: Vec<&str> = authors.split(',').map(str::trim).filter(|s| !s.is_empty()).take(3).collect();
+    if authors.split(',').count() > 3 {
+        names.push("et al.");
+    }
+    let mut line = vec![names.join(", ")];
+    let year = r.i("year");
+    if year > 0 {
+        line.push(year.to_string());
+    }
+    let cat = r.s("pcat");
+    if !cat.is_empty() {
+        line.push(cat);
+    }
+    line.push(format!("{} citations", r.i("cites")));
+    let venue = r.s("venue");
+    if !venue.is_empty() {
+        line.push(venue);
+    }
+    let id = r.s("id");
+    json!({"id": id, "title": r.s("title"), "snippet": line.join(" · "), "url": format!("https://arxiv.org/abs/{id}"), "cites": r.i("cites"), "year": year, "created": r.s("created")})
+}
+
+/// The first page of the papers for `q`, searched with an arm's knobs.
+async fn exp_search(State(svc): State<Shared>, Json(b): Json<ExpSearch>) -> Answer {
+    let t0 = Instant::now();
+    let k = crate::experiment::Knobs::from_json(&b.knobs, &svc.indexes).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let q: String = b.q.chars().take(300).collect();
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let p = if k.understand {
+        let mut p = understand::parse(&q, crate::live::now());
+        if let Some(who) = p.author_maybe.clone() {
+            let found = search::person(&c, &who).await;
+            p.confirm_author(found);
+        }
+        p
+    } else {
+        understand::Parsed { text: q.clone(), ..Default::default() }
+    };
+    let per = b.per.unwrap_or(10).clamp(1, 30);
+    let sort = p.sort.clone().unwrap_or_else(|| "best".into());
+    let r = SearchReq { sort, mode: String::new(), knobs: k };
+    let (mut rows, total) = search::papers(&c, &p, &r, per, 0).await?;
+    search::trim_abstract(&mut rows, 300);
+    let queries = trace.take();
+    let server_ms: f64 = queries.iter().filter_map(|q| q["ms"].as_f64()).sum();
+    let out: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            let mut v = exp_row(r);
+            let abs = r.s("abstract");
+            if !abs.is_empty() {
+                v["snippet"] = json!(format!("{} — {}", v["snippet"].as_str().unwrap_or(""), abs));
+            }
+            v
+        })
+        .collect();
+    Ok(Json(json!({
+        "q": q, "rows": out, "total": total,
+        "understood": p.notes, "took_ms": (t0.elapsed().as_secs_f64() * 10_000.0).round() / 10.0, "server_ms": server_ms,
+    })))
+}
+
+/// What a reader sees on opening a paper: its title, authors, abstract,
+/// and how it is cited.
+async fn exp_item(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let id = understand::clean_id(&id);
+    let rows = c.soft("the paper", &format!("SELECT {}, comments, journal FROM ax_papers WHERE id = :id", search::COLS_ABS), json!({"id": id})).await;
+    let Some(r) = rows.first() else { return Err(not_found(&format!("paper {id}"))) };
+    let row = exp_row(r);
+    let mut text = format!("{}\n{}\n{}\n\n{}\n", r.s("title"), r.s("authors"), row["snippet"].as_str().unwrap_or(""), r.s("abstract"));
+    for (k, what) in [("comments", "Comments"), ("journal", "Journal")] {
+        let x = r.s(k);
+        if !x.is_empty() {
+            text.push_str(&format!("\n{what}: {x}"));
+        }
+    }
+    let _ = trace.take();
+    Ok(Json(json!({"id": id, "title": r.s("title"), "url": row["url"], "text": text})))
+}
+
+#[derive(serde::Deserialize)]
+struct ExpSample {
+    #[serde(default)]
+    n: Option<usize>,
+    #[serde(default)]
+    seed: Option<u64>,
+}
+
+/// Papers to write personas and needs from: well cited ones and ordinary
+/// ones of every year, a slice of each that the seed picks.
+async fn exp_sample(State(svc): State<Shared>, Query(a): Query<ExpSample>) -> Answer {
+    let trace = Trace::new();
+    let c = Ctx { db: &svc.db, g: &svc.graph, trace: &trace };
+    let n = a.n.unwrap_or(60).clamp(4, 120);
+    let seed = a.seed.unwrap_or(7);
+    let cols = search::COLS_ABS;
+    // The seed picks four years for each half, the well cited and the rest.
+    let years = |k: u64| (0..4u64).map(|i| (2007 + (seed.wrapping_mul(31).wrapping_add(k + i * 5)) % 20).to_string()).collect::<Vec<_>>().join(", ");
+    let (top, plain) = tokio::join!(
+        c.rows("well cited papers", &format!("SELECT {cols} FROM ax_papers WHERE cites >= 50 AND year IN ({}) ORDER BY cites DESC LIMIT {}", years(0), n / 2), Value::Null),
+        c.rows("ordinary papers", &format!("SELECT {cols} FROM ax_papers WHERE cites < 50 AND cites >= 2 AND year IN ({}) ORDER BY created DESC LIMIT {}", years(2), n - n / 2), Value::Null),
+    );
+    let mut rows: Vec<crate::strata::Row> = top?.into_iter().chain(plain?).collect();
+    if rows.len() < n / 2 {
+        // A small site: its papers, most cited first.
+        let more = c.soft("papers, most cited first", &format!("SELECT {cols} FROM ax_papers ORDER BY cites DESC, id LIMIT {n}"), Value::Null).await;
+        let have: std::collections::HashSet<String> = rows.iter().map(|r| r.s("id")).collect();
+        rows.extend(more.into_iter().filter(|r| !have.contains(&r.s("id"))).take(n - rows.len()));
+    }
+    search::trim_abstract(&mut rows, 600);
+    let _ = trace.take();
+    let out: Vec<Value> = rows.iter().map(|r| {
+        let mut v = exp_row(r);
+        v["abstract"] = json!(r.s("abstract"));
+        v
+    }).collect();
+    Ok(Json(json!({"rows": out})))
 }
 
 fn constant_eq(a: &[u8], b: &[u8]) -> bool {
@@ -335,7 +500,7 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
         return done(&trace, json!({"q": a.q, "understood": p, "open": {"paper": id}}), t0);
     }
     let sort = if !a.sort.is_empty() { a.sort.clone() } else { p.sort.clone().unwrap_or_else(|| "best".into()) };
-    let r = SearchReq { sort: sort.clone(), mode: a.mode.clone() };
+    let r = SearchReq { sort: sort.clone(), mode: a.mode.clone(), knobs: Default::default() };
     let per = a.per.unwrap_or(match p.limit { Some(n) if n <= 50 => n, _ => 20 }).clamp(1, 50);
     let off = a.page * per;
     let words = p.words();

@@ -403,6 +403,28 @@ or one server), so shards of older versions need nothing new.
   where the difference came from
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
 
+- **Experiments on real sites** (`chloedb-experiments`, `chloedb-hn`,
+  `chloedb-arxiv`, demos). The Experiments app studies a site's real
+  search with AI agents, who play people written from the site's own
+  rows. A ChloeDB app opts in with `--experiments-token`, which opens
+  only `/v1/experiment`: these routes read, hold no key of the cluster,
+  and list the knobs an arm may change. The knobs are query understanding,
+  retrieval (typos, synonyms, meaning, code as written, authors), ranking
+  (each weight, or a whole `ORDER BY` expression), blending after the
+  ranking (at most so many of one site, category or author; places for
+  the last year), and an index built another way beside the main one
+  (`--experiment-index NAME=TABLE`). chloedb-hn and chloedb-arxiv take
+  experiments. A public search can be an arm too: HN's or arXiv's on
+  ChloeDB, or Algolia's of the same stories (`--source NAME=KIND:URL`).
+  Personas have needs that are either a row they remember (the exact
+  truth) or a topic, which a judge grades once, with the grades kept. A
+  study tries every need on every arm and compares them need by need,
+  with McNemar's test. Its page shows each need's sessions side by side,
+  and a site's page shows a search as it is beside your knobs, with a
+  line from each row to where it moved
+  ([chloedb-experiments/README.md](chloedb-experiments/README.md#real-sites),
+  [hn](docs/chloedb/hn.md#experiments), [arXiv](docs/chloedb/arxiv.md#experiments)).
+
 ### Query plans
 
 Rules that read only the rows that can be in an answer, from what ChloeDB
