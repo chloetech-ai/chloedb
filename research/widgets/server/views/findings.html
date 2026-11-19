@@ -22,6 +22,10 @@
   .opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .opt.flash { background: var(--bg-2); }
   .opt .top { display: flex; gap: 10px; align-items: baseline; }
+  .opt::after { content: ''; display: block; clear: both; }
+  .photo { float: right; width: 104px; height: 104px; margin: 0 0 6px 12px; border-radius: 10px; object-fit: cover; background: var(--bg-2); }
+  .thumb { display: block; width: 100%; max-width: 140px; aspect-ratio: 4 / 3; margin-bottom: 6px; border-radius: 8px; object-fit: cover; background: var(--bg-2); }
+  @media (max-width: 420px) { .photo { width: 76px; height: 76px; } }
   .rank { flex: none; width: 22px; height: 22px; border-radius: 7px; background: var(--bg-2); color: var(--ink-2); font-size: 12px; font-weight: 600; display: grid; place-items: center; }
   .name { font-weight: 600; font-size: 15px; line-height: 1.3; }
   a.name { color: var(--ink); text-decoration: none; cursor: pointer; } a.name:hover { text-decoration: underline; }
@@ -93,6 +97,9 @@ function says(item) {
     ${item.says.length > 2 ? `<button class="more" data-more="${item.n}">${open.has(item.n) ? 'Less' : `What ${item.says.length - 2} more source${item.says.length > 3 ? 's' : ''} say`}</button>` : ''}`
 }
 
+// The item's photo, when one was found (a picture handed in with the data).
+const photo = (item, cls) => (/^data:image\//.test(item.image ?? '') ? `<img class="${cls}" src="${esc(item.image)}" alt="${esc(item.name)}"${item.imageFrom ? ` title="Photo: ${esc(item.imageFrom)}"` : ''}>` : '')
+
 function name(item) {
   return item.url ? `<a class="name" data-link="${esc(item.url)}" title="${esc(item.url)}">${esc(item.name)}</a>` : `<span class="name">${esc(item.name)}</span>`
 }
@@ -103,6 +110,7 @@ function card(item) {
   const best = bestFor(item)
   const lead = data.goal === 'news' && item.when ? `<span class="when">${esc(item.when)}</span>` : `<span class="rank">${item.n}</span>`
   return `<div class="opt${chosen === item.n ? ' on' : ''}" id="item-${item.n}">
+    ${photo(item, 'photo')}
     <div class="top">${lead}<div>${name(item)}${best.length ? `<div class="bestfor">Best for ${best.map(b => esc(/^[A-Z][a-z]/.test(b) ? b[0].toLowerCase() + b.slice(1) : b)).join(', ')}</div>` : ''}</div></div>
     <div class="in">
       ${item.verdict ? `<div class="verdict">${esc(item.verdict)}</div>` : ''}
@@ -119,7 +127,7 @@ function card(item) {
 function table() {
   const items = data.items
   const row = (lab, cell) => `<tr><td class="lab">${lab}</td>${items.map(t => `<td>${cell(t)}</td>`).join('')}</tr>`
-  return `<div class="table"><table><thead><tr><th></th>${items.map(t => `<th>${esc(t.name)}</th>`).join('')}</tr></thead><tbody>
+  return `<div class="table"><table><thead><tr><th></th>${items.map(t => `<th>${photo(t, 'thumb')}${esc(t.name)}</th>`).join('')}</tr></thead><tbody>
     ${data.needs.length ? row('best for', t => esc(bestFor(t).join(', ') || '—')) : ''}
     ${data.criteria.map(c => row(esc(label(c)), t => esc(value(c, t.facts[c])))).join('')}
     ${row('verdict', t => esc(t.verdict ?? '—'))}

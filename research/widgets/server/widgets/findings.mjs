@@ -12,6 +12,7 @@
 // app_open and app_make take it as that tool's arguments. This only checks
 // and tidies it.
 import { z } from 'zod'
+import { picturesFor } from '../pictures.mjs'
 
 const FACT = z.union([z.string().max(200), z.number(), z.boolean(), z.null()])
 const CITES = z.array(z.number().int().min(1)).max(8)
@@ -38,6 +39,7 @@ const ITEM = z.object({
     .describe('What each source says about it'),
   when: z.string().max(40).optional().describe('For news and history: when it happened'),
   url: z.string().max(2000).optional().describe('Its own page (the maker’s, the place’s), when there is one'),
+  image: z.string().max(2000).optional().describe('The address of a photo of it that you saw on a page you read (the thing itself, not a logo or a person), when there is one'),
 })
 
 const GOALS = ['pick', 'answer', 'overview', 'how-to', 'news']
@@ -80,7 +82,7 @@ const hostOf = url => {
 
 const SHAPE = 'Give the request in "query"; "goal" (pick, answer, overview, how-to or news); "answer" {text, cites}, the bottom line citing documents by number; ' +
   'for a pick, "items" (the products, places or options themselves, best first, each with name, verdict, facts under the same names across items, pros, cons, ' +
-  'and says: [{doc, text}] for what each source says about it), "needs" [{need, pick, why}] (the best item for each kind of need) and "criteria" (the facts that ' +
+  'and says: [{doc, text}] for what each source says about it, and image, the address of a photo of it seen on a page you read), "needs" [{need, pick, why}] (the best item for each kind of need) and "criteria" (the facts that ' +
   'matter, most important first); for an answer or an overview, items are its points; for a how-to, its steps; for news, its events with "when"; and "documents", ' +
   'the sources numbered from 1 (title, url, source, date, kind, a summary of what each says for this request, quotes passed exactly), with "notes" on what they ' +
   'disagree on or leave out.'
@@ -158,7 +160,18 @@ export const findings = {
       says: (it.says ?? []).filter(s => known(s.doc)),
       when: it.when ?? null,
       url: it.url ? web(it.url) : null,
+      image: null,
+      imageFrom: null,
     }))
+    // A photo of each item, fetched here (the app's page loads nothing):
+    // the one the research saw, else its own page's; for a pick, else its
+    // Wikipedia article's.
+    const pick = goal ? goal === 'pick' : needs.length > 0
+    const pics = await picturesFor(items.map((it, i) => ({ name: it.name, image: it.image ? web(it.image) : null, url: things[i].url })), { wiki: pick })
+    things.forEach((t, i) => {
+      t.image = pics[i]?.src ?? null
+      t.imageFrom = pics[i]?.from ?? null
+    })
     const named = name => things.find(t => t.name.toLowerCase() === String(name).toLowerCase())?.n ?? null
     // The criteria named, then any other fact the items give, most given first.
     const given = things.flatMap(t => Object.keys(t.facts))
@@ -216,6 +229,7 @@ export function clip(found = {}) {
       says: list(t.says, 20).filter(s => s && Number.isInteger(s.doc) && s.doc >= 1 && cut(s.text, 400)).slice(0, 8).map(s => ({ doc: s.doc, text: cut(s.text, 400) })),
       when: cut(t.when, 40),
       url: cut(t.url, 2000),
+      image: typeof t.image === 'string' && /^https?:\/\//i.test(t.image) ? cut(t.image, 2000) : undefined,
     })),
     documents: docs.map(d => tidy({
       title: cut(d.title.trim(), 300),

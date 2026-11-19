@@ -68,33 +68,35 @@ async function checked(url) {
   return { u, address: found[0] }
 }
 
-function get(u, address) {
+function get(u, address, { accept = 'text/html,text/plain;q=0.9,*/*;q=0.1', timeout = TIMEOUT_MS } = {}) {
   const lib = u.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
     const req = lib.request(
       u,
       {
         method: 'GET',
-        headers: { 'user-agent': 'Mozilla/5.0 (compatible; instant-apps-reader/0.1)', accept: 'text/html,text/plain;q=0.9,*/*;q=0.1', 'accept-language': 'en' },
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; instant-apps-reader/0.1)', accept, 'accept-language': 'en' },
         // To the address checked, whatever the name resolves to now; the
         // name still goes in the TLS handshake and the Host header.
         lookup: (_host, options, done) => (options?.all ? done(null, [address]) : done(null, address.address, address.family)),
-        timeout: TIMEOUT_MS,
+        timeout,
       },
       res => resolve(res),
     )
-    req.on('timeout', () => req.destroy(new Error('the page took too long')))
+    req.on('timeout', () => req.destroy(new Error('it took too long')))
     req.on('error', reject)
     req.end()
   })
 }
 
-// The page at a public address: its final address, title and text.
-export async function readPage(url, { redirects = 4 } = {}) {
+// What a public address holds, when it is one of `types`: its final
+// address, type and bytes, up to maxBytes (cut there, or refused when
+// `whole` and it is longer).
+async function fetchPublic(url, { types, accept, maxBytes = MAX_BYTES, whole = false, timeout, redirects = 4 }) {
   let at = url
   for (let hop = 0; hop <= redirects; hop++) {
     const { u, address } = await checked(at)
-    const res = await get(u, address)
+    const res = await get(u, address, { accept, timeout })
     if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
       res.resume()
       at = new URL(res.headers.location, u).href
@@ -102,27 +104,52 @@ export async function readPage(url, { redirects = 4 } = {}) {
     }
     if (res.statusCode >= 400) {
       res.resume()
-      throw new Error(`the page answered ${res.statusCode}`)
+      throw new Error(`it answered ${res.statusCode}`)
     }
-    const type = String(res.headers['content-type'] ?? '')
-    if (type && !/text\/html|text\/plain|application\/xhtml/i.test(type)) {
+    const type = String(res.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+    if (!types.test(type)) {
       res.resume()
-      throw new Error(`not a page of text (${type.split(';')[0]})`)
+      throw new Error(`not what was asked for (${type || 'no type'})`)
+    }
+    if (whole && Number(res.headers['content-length']) > maxBytes) {
+      res.resume()
+      throw new Error('too big')
     }
     const chunks = []
     let size = 0
     for await (const chunk of res) {
       size += chunk.length
-      if (size > MAX_BYTES) {
+      if (size > maxBytes) {
         res.destroy()
+        if (whole) throw new Error('too big')
         break
       }
       chunks.push(chunk)
     }
-    const body = Buffer.concat(chunks).toString('utf8')
-    return { url: u.href, ...text(body, /html/i.test(type) || /<html|<body/i.test(body.slice(0, 2000))) }
+    return { url: u.href, type, bytes: Buffer.concat(chunks) }
   }
   throw new Error('too many redirects')
+}
+
+// The page at a public address: its final address, title, text and the
+// pictures on it.
+export async function readPage(url, { timeout } = {}) {
+  const got = await fetchPublic(url, { types: /^(text\/html|text\/plain|application\/xhtml\+xml|)$/, timeout })
+  const body = got.bytes.toString('utf8')
+  return { url: got.url, ...text(body, /html/.test(got.type) || /<html|<body/i.test(body.slice(0, 2000)), got.url) }
+}
+
+// A picture at a public address (a photo a page shows), when it is a
+// JPEG, PNG, WebP, GIF or AVIF of at most maxBytes.
+export async function fetchPicture(url, { maxBytes = 400_000, timeout = 6000 } = {}) {
+  const got = await fetchPublic(url, { types: /^image\/(jpeg|png|webp|gif|avif)$/, accept: 'image/avif,image/webp,image/jpeg,image/png,image/gif;q=0.9', maxBytes, whole: true, timeout })
+  return { url: got.url, type: got.type, bytes: got.bytes }
+}
+
+// JSON at a public address (an open API such as Wikipedia's).
+export async function fetchJson(url, { timeout = 6000 } = {}) {
+  const got = await fetchPublic(url, { types: /^application\/(json|[a-z.+-]*\+json)$/, accept: 'application/json', maxBytes: 1_000_000, whole: true, timeout })
+  return JSON.parse(got.bytes.toString('utf8'))
 }
 
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—', ndash: '–', hellip: '…', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', pound: '£', euro: '€', copy: '©', reg: '®', trade: '™', deg: '°' }
@@ -136,16 +163,57 @@ const decode = s =>
   })
 
 // A page's title and readable text: no scripts, styles, menus or forms;
-// a line for each block, and tables as rows of cells.
-export function text(body, html = true) {
-  if (!html) return { title: null, text: body.replace(/\s+\n/g, '\n').trim().slice(0, MAX_TEXT) }
+// a line for each block, and tables as rows of cells; and its pictures.
+export function text(body, html = true, url = null) {
+  if (!html) return { title: null, text: body.replace(/\s+\n/g, '\n').trim().slice(0, MAX_TEXT), pictures: [] }
   const title = decode((/<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1] ?? '').replace(/\s+/g, ' ').trim()) || null
   // The page's main part when it has one that holds most of its text.
   const whole = lines(body)
   const main = /<(main|article)[\s>][\s\S]*<\/\1>/i.exec(body)?.[0]
   const part = main ? lines(main) : null
   const chosen = part && part.join('\n').length > whole.join('\n').length * 0.4 ? part : whole
-  return { title, text: chosen.join('\n').slice(0, MAX_TEXT) }
+  return { title, text: chosen.join('\n').slice(0, MAX_TEXT), pictures: url ? pictures(body, main && chosen === part ? main : body, url) : [] }
+}
+
+const attr = (tag, name) => {
+  const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag)
+  return m ? decode(m[1] ?? m[2] ?? m[3] ?? '') : null
+}
+const NOT_A_PHOTO = /logo|icon|sprite|avatar|badge|pixel|spacer|blank|placeholder|loading|1x1|gravatar|emoji|flag|button|banner-ad|doubleclick|\/ads?\//i
+
+// The pictures a page shows, its own first (og:image, twitter:image),
+// then the photos in its main part with their alt text; no icons, logos
+// or tracking pixels, at most 8.
+export function pictures(head, part, base) {
+  const out = []
+  const add = (src, alt) => {
+    if (!src || /^data:/i.test(src)) return
+    let href
+    try {
+      href = new URL(src.trim(), base)
+    } catch {
+      return
+    }
+    if (!/^https?:$/.test(href.protocol) || /\.svg(\?|$)/i.test(href.pathname) || NOT_A_PHOTO.test(href.pathname)) return
+    if (!out.some(p => p.url === href.href)) out.push({ url: href.href, alt: alt ? alt.replace(/\s+/g, ' ').trim().slice(0, 120) : null })
+  }
+  for (const tag of head.match(/<meta\b[^>]*>/gi) ?? []) {
+    if (/^(og:image(:secure_url|:url)?|twitter:image(:src)?)$/i.test(attr(tag, 'property') ?? attr(tag, 'name') ?? '')) add(attr(tag, 'content'), null)
+  }
+  for (const tag of part.match(/<img\b[^>]*>/gi) ?? []) {
+    const w = Number(attr(tag, 'width')), h = Number(attr(tag, 'height'))
+    if ((w && w < 120) || (h && h < 90)) continue
+    const set = attr(tag, 'srcset') ?? attr(tag, 'data-srcset')
+    const best = set
+      ?.split(',')
+      .map(s => s.trim().split(/\s+/))
+      .map(([u, d]) => ({ u, n: parseFloat(d) || 1 }))
+      .filter(c => c.n <= 1200)
+      .sort((a, b) => b.n - a.n)[0]?.u
+    add(attr(tag, 'data-src') ?? best ?? attr(tag, 'src'), attr(tag, 'alt'))
+    if (out.length >= 8) break
+  }
+  return out.slice(0, 8)
 }
 
 function lines(html) {
@@ -172,14 +240,15 @@ async function main() {
     'read_page',
     {
       title: 'Read a web page',
-      description: 'Reads a public web page (one a search found) and returns its title and text, up to about 15,000 characters, to take facts from the page itself.',
+      description: 'Reads a public web page (one a search found) and returns its title and text, up to about 15,000 characters, to take facts from the page itself, and the addresses of the pictures it shows.',
       inputSchema: { url: z.string().url().max(2000).describe('The page’s address, https://...') },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ url }) => {
       try {
         const page = await readPage(url)
-        return { content: [{ type: 'text', text: `${page.title ? `# ${page.title}\n` : ''}${page.url}\n\n${page.text}` }] }
+        const pics = page.pictures.length ? `\n\nPictures on the page:\n${page.pictures.map(p => `- ${p.url}${p.alt ? ` (${p.alt})` : ''}`).join('\n')}` : ''
+        return { content: [{ type: 'text', text: `${page.title ? `# ${page.title}\n` : ''}${page.url}\n\n${page.text}${pics}` }] }
       } catch (error) {
         return { content: [{ type: 'text', text: `Could not read ${url}: ${error.message}` }], isError: true }
       }

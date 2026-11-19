@@ -42,8 +42,11 @@ const ARGS = z.record(z.string(), z.any())
 // What the view and the mod are told about the app they show.
 const meta = (app, how) => ({ id: app.id, name: app.name, about: app.about, kind: app.kind, tool: app.tool, tools: app.tools, version: app.version, saved: app.saved, how })
 
+// A photo handed in with the data is shown as one, not as its bytes.
+const photo = (k, v) => (typeof v === 'string' && v.startsWith('data:image/') ? `${v.slice(0, v.indexOf(',') + 1)}... (a photo, ready for <img src>)` : v)
+
 function sample(data) {
-  const text = JSON.stringify(data, null, 1)
+  const text = JSON.stringify(data, photo, 1)
   return text.length > 6000 ? `${text.slice(0, 6000)}\n... (cut)` : text
 }
 

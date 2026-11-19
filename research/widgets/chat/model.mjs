@@ -266,8 +266,11 @@ async function makeSystem() {
   return MAKE
 }
 
+// A photo handed in with the data is shown as one, not as its bytes.
+const photo = (k, v) => (typeof v === 'string' && v.startsWith('data:image/') ? `${v.slice(0, v.indexOf(',') + 1)}... (a photo, ready for <img src>)` : v)
+
 function sample(data) {
-  const text = JSON.stringify(data, null, 1)
+  const text = JSON.stringify(data, photo, 1)
   return text.length > 6000 ? `${text.slice(0, 6000)}\n... (cut)` : text
 }
 
@@ -304,13 +307,14 @@ const RESEARCH = `You look things up on the web for a chat, and what you find is
 Search the web (at most 4 searches), then read 3 or 4 of the most useful pages, from different sites, with read_page (a test with measurements, a review, a shop or the maker's page for prices and specs): search results alone are too thin for facts. Use 4 to 8 sources in all: what you read, and the search results that add something. Search or read again for what is missing that matters (current prices, specs, dates, the newest models). Use only what the pages and results say; never invent a page, an address, a date, a price or a quote. Prefer sources that tested or know first hand, recent ones, and several that disagree over many that agree.
 
 Answer with:
-- "goal": pick (choosing among things to buy, visit or use), answer (a question), overview (a subject), how-to (steps) or news (what happened).
+- "goal": pick (choosing among things to buy, visit or use, or browsing things to see: breeds, places, dishes), answer (a question), overview (a subject), how-to (steps) or news (what happened).
 - "answer": the bottom line in 1 to 3 sentences, as a friend who read everything would say it ("Get the X unless you fly a lot: then Y"), with "cites", the numbers of the documents behind it.
 - "items": for a pick, the 3 to 6 options themselves, best first, each with "name", "verdict" (one sentence: who it is for and the catch), "facts", "pros" and "cons" (a few words each) and "says" ({doc, text}: what each source says about it, quoted or close); for an answer or an overview, its 3 to 6 points ("name" a short heading, "about" the point, "says" its evidence); for a how-to, its steps in order; for news, its events with "when".
 - "facts": the same 3 to 6 names for every item, short values that compare at a glance (449, "30 h", "best tested", "250 g"), in the same units for every item; a price as a number in dollars when there is one. Leave a fact out of an item when the sources do not give it; never write that it is unknown.
 - "needs": for a pick, the best item for 2 to 4 kinds of need ("most people", "long flights", "on a budget"), by the item's exact name, with "why" and "cites".
 - "criteria": the facts' names exactly as in the items, most important for this request first.
 - "documents": the 4 to 8 sources used, numbered from 1 in this order (doc and cites use those numbers): title, url, source (the site or publisher), date only when the results give one, kind (review, test, article, news, forum, shop...), a summary of what each says for this request, and quotes passed exactly.
+- "image" for an item: the address of a photo of the item itself from the "Pictures on the page" of a page you read (a product photo whose description names it, the place, the animal, the dish), never a logo, a person or a picture of something else, and never an address you did not see. "url" for an item: its own page (the maker's, the place's, its Wikipedia article) when you saw it; its photo is taken from there when you give no image. Every item of a pick gets a photo this way when one can be found, and when the person asks to see pictures, give every item one.
 - "query": the request in a few words, and "notes": what the sources disagree on or leave out, and what to check, in a sentence or two.
 
 When what was found before is given and the request follows it up (a need of the person's, a budget, a narrower question), start from it: re-rank, add or drop items and update the answer and needs for them, and search only for what is missing.`
@@ -346,6 +350,7 @@ const RESEARCH_SCHEMA = {
           says: { type: 'array', items: { type: 'object', properties: { doc: { type: 'integer' }, text: { type: 'string' } }, required: ['doc', 'text'] } },
           when: { type: 'string' },
           url: { type: 'string' },
+          image: { type: 'string' },
         },
         required: ['name'],
       },

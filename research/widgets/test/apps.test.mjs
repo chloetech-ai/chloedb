@@ -274,6 +274,30 @@ test('the research step reads public pages only', async () => {
   assert.equal(page.text, '# Best\nSony first.\nBattery | 30 h |')
 })
 
+test('a page\'s pictures are its own photo and the photos in its main part, no logos or icons; and with made-up data no photo is fetched', async () => {
+  const { text } = await import('../server/reader.mjs')
+  const html = `<html><head><title>Best</title><meta content="/img/hero.jpg" property="og:image"><meta name="twitter:image" content="https://cdn.example.com/img/hero.jpg"></head>
+    <body><header><img src="/logo.png" alt="Site"></header><main><h1>Best</h1><p>${'Long enough text. '.repeat(20)}</p>
+    <img src="/icons/star.png" alt="star"><img src="/a.svg" alt="drawing"><img src="/tiny.jpg" width="40" height="40" alt="tiny"><img src="data:image/gif;base64,R0lGOD" alt="pixel">
+    <img data-src="/img/sony.jpg" src="/img/blank.gif" alt="Sony WH-1000XM6 over-ear headphones">
+    <img srcset="/img/bose-400.jpg 400w, /img/bose-800.jpg 800w, /img/bose-2400.jpg 2400w" src="/img/bose-400.jpg" alt="Bose QC Ultra">
+    </main></body></html>`
+  const page = text(html, true, 'https://reviews.example.com/best/headphones')
+  assert.deepEqual(page.pictures, [
+    { url: 'https://reviews.example.com/img/hero.jpg', alt: null },
+    { url: 'https://cdn.example.com/img/hero.jpg', alt: null },
+    { url: 'https://reviews.example.com/img/sony.jpg', alt: 'Sony WH-1000XM6 over-ear headphones' },
+    { url: 'https://reviews.example.com/img/bose-800.jpg', alt: 'Bose QC Ultra' },
+  ])
+
+  const { picturesFor } = await import('../server/pictures.mjs')
+  assert.deepEqual(await picturesFor([{ name: 'Sony', image: 'https://reviews.example.com/img/sony.jpg' }], { wiki: true }), [null], 'nothing is fetched with made-up data')
+  const { findings } = await import('../server/widgets/findings.mjs')
+  const found = await findings.run({ query: 'q', goal: 'pick', items: [{ name: 'Sony', image: 'https://reviews.example.com/img/sony.jpg' }], documents: [{ title: 't', summary: 's' }] })
+  assert.equal(found.items[0].image, null)
+  assert.equal(found.items[0].imageFrom, null)
+})
+
 test('an app that works things out itself: made on its own inputs, a script that does not run refused, and found again', { skip }, async () => {
   const kit = await ok('app_kit', { tool: 'inputs', args: { request: 'animate the derivative of x^2 sin(x)', values: { f: 'x^2 sin(x)' } } })
   assert.match(text(kit), /Kit\.math\.parse\(text\)/)
