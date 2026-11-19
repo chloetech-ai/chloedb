@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { KINDS, fragment, kitGuide, toolList } from '../server/guide.mjs'
+import { KINDS, checkFragment, fragment, kitGuide, toolList } from '../server/guide.mjs'
 import { clip } from '../server/widgets/findings.mjs'
 
 export { fragment }
@@ -137,6 +137,28 @@ export function claude({
     }
   }
 
+  // An app as the model writes it, checked before anyone sees it: a
+  // script that does not run goes back once with what is wrong.
+  async function written(prompt) {
+    const system = await makeSystem()
+    const ask = text => run({ system, prompt: text, model: strong, timeoutMs: 480_000 })
+    let answer = await ask(prompt)
+    let problem
+    let source
+    try {
+      source = fragment(answer)
+      problem = await checkFragment(source)
+    } catch (error) {
+      problem = error.message
+    }
+    if (!problem) return source
+    answer = await ask(`${prompt}\n\nYou wrote this:\n\`\`\`html\n${source ?? answer}\n\`\`\`\n\nIt does not run: ${problem}\nAnswer with the whole fixed fragment, changing nothing else.`)
+    source = fragment(answer)
+    const still = await checkFragment(source)
+    if (still) throw new Error(`the app Claude wrote does not run: ${still}`)
+    return source
+  }
+
   return {
     budget,
     async route(input) {
@@ -149,10 +171,10 @@ export function claude({
       return clip({ ...found, query: found.query || input.query })
     },
     async make(input) {
-      return fragment(await run({ system: await makeSystem(), prompt: makePrompt(input), model: strong }))
+      return written(makePrompt(input))
     },
     async edit(input) {
-      return fragment(await run({ system: await makeSystem(), prompt: editPrompt(input), model: strong }))
+      return written(editPrompt(input))
     },
     async reply(input) {
       return (await run({ system: REPLY, prompt: replyPrompt(input), model: fast, timeoutMs: 90_000 })).trim()
@@ -168,21 +190,23 @@ const ROUTE = `You run a chat in which answers can come with small apps: interac
 For each request you decide one of three things:
 - "use": a saved app (or the app shown just before) does the job the request asks for, even with other inputs (another stock, another city, another dish). Give its id in "use" and, in "tool" and "args", the tool call that fills it for this request. Prefer a saved app whenever it does the same job: that is the point of saving it. Sharing a tool is not enough: comparing products side by side is another job than a shop's list, and a recipe to cook tonight another than browsing ideas.
 - "make": no saved app fits, and the request is better served by an app than by text: live data, things to compare, something to book or buy, things to browse. Describe the new app in "make" and give its first tool call in "tool" and "args".
-- "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for). Write the answer in "reply", in at most three sentences.
+- "chat": the request needs no app (an explanation, an opinion, small talk, a question about what an app in the conversation already shows, something no tool has data for and no app could work out). Write the answer in "reply", in at most three sentences.
+
+An app can also work things out itself, with no data from anywhere: a calculator of any kind (calculus, loans, units, statistics), a function plotted with its derivative or integral and animated, a simulation (physics, growth, a queue), a visual explanation, a timer, a small game, a drawing or music toy. When a request asks for one ("make me", "build", "a calculator that", "show me how ... changes", "animate"), it is "make" (or "use" of a saved app that does the same job) with tool "inputs" and args {"request": the request in a few words, "values": the values it names, such as {"f": "x^2 sin(x)"} or {"amount": 600000, "rate": 6, "years": 30}; {} when none}, and kind "tool". Its "look" says what it draws and every control it has (a field for the formula, sliders, play and pause, presets), as an expert would build it, in up to 6 sentences.
 
 A follow-up that changes what the app shown just before should show (another time, fewer people, not spicy, a cheaper one) is "use" of that app with the new arguments: it is filled again in the conversation.
 
 A request to find, research or look up things on the web (the best of something to buy or visit, reviews, what people say, news, papers, how to do something, a question the tools have no data for) uses the tool "findings" with args {"query": the request in a few words}: the chat searches the web for it first and fills the app with what it found, shaped to the request (for a pick, the options compared and which one for which need, with the sources behind each claim). The saved app "Search results" shows it; make another app on findings only when the request needs another way to show it (a reading list, a trip plan). A follow-up to a "Search results" app in the conversation that changes what it should show (a need of the person's, a budget, a narrower question, "which should I get if I fly a lot") is "use" of that app with tool "findings", which starts from what it shows; a question it already answers is "chat".
 
-For "make": name it in 2 or 3 words that fit later requests of the same kind ("Stock chart", "Product comparison", "Table booking", "Dinner ideas"; never one stock, product or city). "about" is one sentence on what it does, also general. "look" says what it shows and which controls it has, in 2 to 4 sentences that fit the tools' data. "tools" lists every tool it may call: its first one and those its buttons need (booking needs the search and the booking tool; a shop needs the cart tools; recipes the recipe tool).
+For "make": name it in 2 or 3 words that fit later requests of the same kind ("Stock chart", "Product comparison", "Table booking", "Dinner ideas", "Derivative explorer"; never one stock, product, city or formula). "about" is one sentence on what it does, also general. "look" says what it shows and which controls it has, in 2 to 4 sentences that fit the tools' data. "tools" lists every tool it may call: its first one and those its buttons need (booking needs the search and the booking tool; a shop needs the cart tools; recipes the recipe tool).
 
-The tools and their arguments are listed in the request; use only those, with arguments that fit them. "kind" is info, action or discover. "why" is a few words the chat shows beside the app: for "use", why that saved app fits ("your stock chart, for another stock"); for "make", what is new ("no saved app compares products yet").`
+The tools and their arguments are listed in the request; use only those, with arguments that fit them. "kind" is info, action, discover or tool. "why" is a few words the chat shows beside the app: for "use", why that saved app fits ("your stock chart, for another stock"); for "make", what is new ("no saved app compares products yet").`
 
 const ROUTE_SCHEMA = {
   type: 'object',
   properties: {
     mode: { type: 'string', enum: ['use', 'make', 'chat'] },
-    kind: { type: 'string', enum: ['info', 'action', 'discover'] },
+    kind: { type: 'string', enum: ['info', 'action', 'discover', 'tool'] },
     use: { type: ['string', 'null'] },
     make: {
       type: ['object', 'null'],

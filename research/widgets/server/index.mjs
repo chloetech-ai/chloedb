@@ -25,6 +25,7 @@ import { z } from 'zod'
 import { RUNNER, SHELF, registerApps } from './apps.mjs'
 import { tableBook, tableSearch } from './widgets/booking.mjs'
 import { findings } from './widgets/findings.mjs'
+import { inputs } from './widgets/inputs.mjs'
 import flight from './widgets/flight.mjs'
 import { recipeGet, recipesBrowse } from './widgets/recipes.mjs'
 import { cartAdd, cartShow, shopSearch } from './widgets/shop.mjs'
@@ -35,8 +36,9 @@ export const WIDGETS = [stock, flight, shopSearch, cartAdd, cartShow]
 // Every tool an app can get its data from or act through: the widgets',
 // sources that only made apps draw (booking a table, recipes), and what the
 // Claude of the conversation found itself (findings), which it hands to an
-// app rather than calls.
-export const TOOLS = [...WIDGETS, tableSearch, tableBook, recipesBrowse, recipeGet, findings]
+// app rather than calls, and the starting values of an app that works
+// everything out itself (inputs).
+export const TOOLS = [...WIDGETS, tableSearch, tableBook, recipesBrowse, recipeGet, findings, inputs]
 
 export const VIEWS = {
   stock: { title: 'Stock widget', domains: [] },
@@ -65,6 +67,8 @@ export const INSTRUCTIONS = [
   'to find, research, compare or pick things, call show_findings before you answer, shaped to what the person',
   'wants: for the best headphones to buy, the headphones compared, the pick for each need and what each source',
   'says about each, not a list of pages.',
+  'An app that works things out itself (a calculator, a function plotted with its derivative, a converter, a simulation, a',
+  'game) needs no data: make it with the tool inputs, whose args are the request and the values it names.',
 ].join(' ')
 
 const here = path => new URL(path, import.meta.url)
@@ -136,7 +140,7 @@ function page(doc, domains) {
     .replace(/<head>/i, () => `<head>\n<meta http-equiv="Content-Security-Policy" content="${csp}">`)
     .replace('<!-- kit:css -->', () => `<style>${readFileSync(here('./views/kit.css'), 'utf8')}</style>`)
     .replace('<!-- kit:sdk -->', () => `<script type="module">${SDK.replaceAll('</script', '<\\/script')}</script>`)
-    .replace('<!-- kit:js -->', () => `<script type="module">${readFileSync(here('./views/kit.js'), 'utf8')}</script>`)
+    .replace('<!-- kit:js -->', () => `<script type="module">${readFileSync(here('./views/math.js'), 'utf8')}\n${readFileSync(here('./views/kit.js'), 'utf8')}</script>`)
     .replace('/* kit:world */', () => `globalThis.WORLD=${readFileSync(here('./assets/world.json'), 'utf8')};`)
 }
 

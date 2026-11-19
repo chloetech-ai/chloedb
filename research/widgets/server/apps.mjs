@@ -13,7 +13,7 @@ import path from 'node:path'
 import { registerAppTool } from '@modelcontextprotocol/ext-apps/server'
 import { z } from 'zod'
 
-import { described, fragment, kitGuide, toolList } from './guide.mjs'
+import { checkFragment, described, fragment, kitGuide, toolList } from './guide.mjs'
 import { Apps } from './store.mjs'
 import { INPUT as FOUND } from './widgets/findings.mjs'
 
@@ -36,7 +36,7 @@ export function useStore(apps) {
   opened = Promise.resolve(apps)
 }
 
-const KIND = z.enum(['info', 'action', 'discover'])
+const KIND = z.enum(['info', 'action', 'discover', 'tool'])
 const ARGS = z.record(z.string(), z.any())
 
 // What the view and the mod are told about the app they show.
@@ -185,11 +185,11 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       inputSchema: {
         name: z.string().min(1).max(40).describe('2 or 3 words that fit later requests of the same kind ("Product comparison", "Table booking"; never one product or city)'),
         about: z.string().min(1).max(300).describe('One sentence on what it does, as general as the name'),
-        kind: KIND.describe('info (looking something up), action (getting something done: book, buy) or discover (browsing for ideas)'),
+        kind: KIND.describe('info (looking something up), action (getting something done: book, buy), discover (browsing for ideas) or tool (working something out: a calculator, a plot, a simulation)'),
         tool: TOOL.describe('Its first tool, which fills it'),
         args: ARGS.describe('That tool’s arguments for this request'),
         tools: z.array(TOOL).max(8).describe('Every tool it calls: the first and those its buttons need'),
-        html: z.string().min(40).max(60000).describe('The app’s fragment, written as app_kit says: a <style>, the markup and one <script type="module">'),
+        html: z.string().min(40).max(120000).describe('The app’s fragment, written as app_kit says: a <style>, the markup and one <script type="module">'),
         request: z.string().max(500).describe('The person’s request, which is the first of those that find this app later'),
       },
       annotations: { openWorldHint: true },
@@ -202,6 +202,8 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       } catch (error) {
         return fail(`${error.message}: write it as app_kit says.`)
       }
+      const broken = await checkFragment(source)
+      if (broken) return fail(`The app's script does not run: ${broken}\nFix it and call app_make again.`)
       // Filled first, so arguments its tool refuses make no app.
       let data
       try {
@@ -226,7 +228,7 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
         '(app_source) as app_kit says. It is a new version, shown in the conversation with what it showed last; app_undo goes back.',
       inputSchema: {
         id: z.string().min(1).max(64).describe('The app’s id'),
-        html: z.string().min(40).max(60000).describe('The app’s whole new fragment'),
+        html: z.string().min(40).max(120000).describe('The app’s whole new fragment'),
         change: z.string().min(1).max(300).describe('What was asked, in a few words'),
         tools: z.array(TOOL).max(8).optional().describe('Its tools, when the change needs others'),
       },
@@ -243,6 +245,8 @@ export function registerApps(server, { TOOLS, callTool, fragmentOf }) {
       } catch (error) {
         return fail(`${error.message}: write it as app_kit says.`)
       }
+      const broken = await checkFragment(source)
+      if (broken) return fail(`The app's script does not run: ${broken}\nFix it and call app_change again.`)
       let next = await apps.change(id, source, change)
       if (tools) next = await apps.put({ ...next, tools: [...new Set([next.tool, ...tools])].filter(t => known.has(t)) }, null)
       return show(apps, next, next.args, '', 'changed', `Changed "${next.name}" (version ${next.version}): ${change}.`)

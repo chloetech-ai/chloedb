@@ -273,3 +273,65 @@ test('the research step reads public pages only', async () => {
   assert.equal(page.title, 'A & B')
   assert.equal(page.text, '# Best\nSony first.\nBattery | 30 h |')
 })
+
+test('an app that works things out itself: made on its own inputs, a script that does not run refused, and found again', { skip }, async () => {
+  const kit = await ok('app_kit', { tool: 'inputs', args: { request: 'animate the derivative of x^2 sin(x)', values: { f: 'x^2 sin(x)' } } })
+  assert.match(text(kit), /Kit\.math\.parse\(text\)/)
+  assert.match(text(kit), /Kit\.plot\(canvas, view\)/)
+  assert.match(text(kit), /An app on the tool inputs works everything out in the page/)
+
+  const args = { request: 'animate the derivative of x^2 sin(x)', values: { f: 'x^2 sin(x)' } }
+  const base = { name: 'Derivative explorer', about: 'Plots a function and its derivative, with the tangent sliding along it.', kind: 'tool', tool: 'inputs', args, tools: ['inputs'], request: 'a calculus calculator that animates derivatives' }
+  const broken = await call('app_make', { ...base, html: '<canvas></canvas><script type="module">const f = (x => x * x;\nKit.connect("d", data => {})</script>' })
+  assert.equal(broken.isError, true)
+  assert.match(text(broken), /does not run: SyntaxError/)
+
+  const html = '<canvas id="c" style="width:100%;height:240px"></canvas><script type="module">const { connect, math, plot } = globalThis.Kit\nconnect("d", data => { const e = math.parse(data.values.f); plot(document.getElementById("c"), { x: [-4, 4], curves: [{ f: e.f }, { f: e.derive().f }] }) })</script>'
+  const made = await ok('app_make', { ...base, html })
+  assert.equal(made.structuredContent.instant.kind, 'tool')
+  assert.deepEqual(made.structuredContent.values, { f: 'x^2 sin(x)' })
+  assert.match(text(made), /x = |f = x\^2 sin\(x\)/)
+  await ok('app_save', { id: made.structuredContent.instant.id })
+  const found = await ok('apps_find', { request: 'show me the derivative of cos(3x) animated' })
+  assert.equal(found.structuredContent.apps[0].id, made.structuredContent.instant.id)
+  const refused = await call('app_open', { id: made.structuredContent.instant.id, args: { values: { f: 'x' } } })
+  assert.equal(refused.isError, true, 'inputs needs the request')
+})
+
+test('the math kit reads formulas as typed and takes exact derivatives', async () => {
+  await import('../server/views/math.js')
+  const M = globalThis.KitMath
+  const near = (a, b) => Math.abs(a - b) < 1e-4 * (1 + Math.abs(b))
+  const derivatives = {
+    'x^2 sin x': '2x·sin(x) + x^2·cos(x)',
+    'sin(x)/x': '(x·cos(x) - sin(x))/x^2',
+    'e^(-x^2)': '-2x·e^(-x^2)',
+    'ln(x^2)': '2/x',
+    'sqrt(1-x^2)': '-x/√(1 - x^2)',
+    'x^3 - 3x + 1': '3x^2 - 3',
+    'x^(1/3)': '1/(3x^(2/3))',
+    'y = 3x^4 - 2x': '12x^3 - 2',
+    '(x+1)/(x-1)': '-2/(x - 1)^2',
+    'sin^-1 x': '1/√(1 - x^2)',
+  }
+  for (const [formula, want] of Object.entries(derivatives)) {
+    const e = M.parse(formula)
+    const d = e.derive()
+    assert.equal(d.text, want, formula)
+    for (const x of [0.3, 0.7]) assert.ok(near(d.f(x), M.slope(e.f, x)), `${formula} at ${x}`)
+  }
+  for (const formula of ['x^x', 'tan x', 'atan(x)', '|x|', 'cos(3x)', 'e^x cos x', '2^x', 'log(x)', 'sinx cosx', 'x(x+1)']) {
+    const e = M.parse(formula)
+    assert.ok(near(e.derive().f(0.7), M.slope(e.f, 0.7)), formula)
+  }
+  assert.equal(M.parse('x^2').html, '<i>x</i><sup>2</sup>')
+  assert.equal(M.parse('x^(1/3)').f(-8), -2)
+  assert.deepEqual(M.parse('a x^2 + t').vars, ['x', 'a', 't'])
+  assert.equal(M.parse('a x^2 + t').eval({ x: 2, a: 3, t: 1 }), 13)
+  assert.ok(near(M.integrate(Math.sin, 0, Math.PI), 2))
+  assert.deepEqual(M.zeros(M.parse('x^3 - 3x + 1').f, -3, 3).map(z => z.toFixed(4)), ['-1.8794', '0.3473', '1.5321'])
+  assert.ok(Number.isNaN(M.parse('ln(x)').f(-1)))
+  for (const [bad, said] of [['sin(x', /Missing \)/], ['x +', /ends too soon/], ['x $ 2', /can't read "\$"/], ['', /Type a formula/], ['sin', /needs something to work on/]]) {
+    assert.throws(() => M.parse(bad), said, bad)
+  }
+})

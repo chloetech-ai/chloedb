@@ -261,7 +261,7 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const { apps } = await read($, shelf)
     if (!apps.length) return <Text dimColor>No saved apps yet. Press Save on an app’s card, or ask for one: “compare two blenders side by side”.</Text>
-    const groups: [Shelved['kind'], string][] = [['info', 'Look things up'], ['action', 'Get things done'], ['discover', 'Discover']]
+    const groups: [Shelved['kind'], string][] = [['info', 'Look things up'], ['action', 'Get things done'], ['discover', 'Discover'], ['tool', 'Work things out']]
     return (
       <Box flexDirection="column" gap={1}>
         {groups

@@ -9,14 +9,14 @@
     color-scheme: light;
     --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #67655f; --ink-3: #9a978f;
     --line: #e5e2d9; --bubble: #efece3; --accent: #c4623f; --accent-ink: #ffffff;
-    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3;
+    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3; --tool: #b8650f; --tool-bg: #fbeedd;
     --shadow: 0 1px 2px rgba(30, 28, 20, .06), 0 4px 18px rgba(30, 28, 20, .05);
   }
   :root[data-theme='dark'] {
     color-scheme: dark;
     --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #b4b2ac; --ink-3: #85837d;
     --line: #3b3a37; --bubble: #33322f; --accent: #d97757;
-    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537;
+    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537; --tool: #f0a85a; --tool-bg: #3d2d1c;
     --shadow: none;
   }
   * { box-sizing: border-box; }
@@ -50,6 +50,7 @@
   .k-info { background: var(--info-bg); color: var(--info); }
   .k-action { background: var(--action-bg); color: var(--action); }
   .k-discover { background: var(--discover-bg); color: var(--discover); }
+  .k-tool { background: var(--tool-bg); color: var(--tool); }
 
   /* A widget: the app, framed lightly, with a slim bar that names it and keeps it. */
   .widget { max-width: 680px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
@@ -148,11 +149,13 @@ const KINDS = {
   info: { label: 'Look things up', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12l4-4 3 3 5-6"/></svg>' },
   action: { label: 'Get things done', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>' },
   discover: { label: 'Discover', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.8l1.6 4.6 4.6 1.6-4.6 1.6L8 14.2 6.4 9.6 1.8 8l4.6-1.6z"/></svg>' },
+  tool: { label: 'Work things out', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13c2.5 0 3-10 6-10s3.5 10 6 10"/></svg>' },
 }
 const IDEAS = {
   info: ['How is Apple doing this month?', 'Compare noise cancelling headphones'],
   action: ['Book a table for 4 on Friday at 8 in North Beach', 'I need a new phone case'],
   discover: ['Dinner ideas, something Thai', 'Desserts I could bake this weekend'],
+  tool: ['Animate the derivative of x^2 sin(x)', 'Mortgage calculator: $600k at 6% over 30 years'],
 }
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
@@ -283,7 +286,10 @@ async function draw(w) {
     if (following) scroll()
   }
   bridge.onmessage = async params => {
-    ask(params.content.map(c => c.text).join(' '))
+    const text = params.content.map(c => c.text).join(' ')
+    // An app that hit an error asks to be fixed: that is a change of it.
+    if (/^Fix this app:/.test(text) && w.change) w.change(text, 'Fixing it')
+    else ask(text)
     return {}
   }
   bridge.onupdatemodelcontext = async params => {
@@ -359,11 +365,14 @@ function bar(w) {
   })
   changer.onsubmit = async e => {
     e.preventDefault()
+    const what = changer.querySelector('input').value.trim()
+    if (what) w.change(what)
+  }
+  // A change asked in the bar, or a fix the app asks for when it hits an error.
+  w.change = async (what, label = 'Changing it') => {
     const input = changer.querySelector('input')
-    const what = input.value.trim()
-    if (!what) return
     changer.hidden = true
-    acts.innerHTML = `<span class="status"><span class="spin"></span>Changing it</span>`
+    acts.innerHTML = `<span class="status"><span class="spin"></span>${esc(label)}</span>`
     const res = await fetch(`/api/apps/${encodeURIComponent(app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what }) })
     await events(res, async ev => {
       if (ev.type === 'app') {

@@ -14,6 +14,8 @@ function theme(context) {
 
 // Connects to the host and hands every tool result to `draw`. Returns the
 // App, whose callServerTool and sendMessage the views use for their buttons.
+let connected = null // the connection, once a view or app made it
+
 async function connect(name, draw) {
   const app = new App({ name, version: '0.1.0' })
   app.ontoolinput = params => draw.input?.(params.arguments ?? {})
@@ -26,7 +28,8 @@ async function connect(name, draw) {
   }
   app.onhostcontextchanged = theme
   if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
-  await app.connect()
+  connected = app.connect().then(() => app)
+  await connected
   theme(app.getHostContext())
   return app
 }
@@ -96,4 +99,30 @@ document.addEventListener(
   true,
 )
 
-globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc }
+// An app that hits an error says so in place and offers to be fixed: the
+// message goes to the conversation, where Claude changes the app (the
+// chat sends it straight to a change of this app).
+const seen = new Set()
+function broke(message) {
+  message = String(message ?? '').replace(/^Uncaught\s+/, '').slice(0, 300)
+  if (!message || /ResizeObserver loop/.test(message) || seen.has(message)) return
+  seen.add(message)
+  let bar = document.getElementById('kit-broke')
+  if (!bar) {
+    bar = document.createElement('div')
+    bar.id = 'kit-broke'
+    bar.className = 'kit-broke'
+    document.body.append(bar)
+  }
+  bar.innerHTML = `<span>This app hit an error: ${esc(message)}</span><button class="btn" type="button">Fix it</button>`
+  bar.querySelector('button').onclick = async () => {
+    bar.querySelector('button').disabled = true
+    bar.querySelector('button').textContent = 'Asked'
+    const app = await (connected ?? connect('app', () => {}))
+    ask(app, `Fix this app: it stopped with "${message}". Keep everything else as it is.`)
+  }
+}
+addEventListener('error', e => broke(e.error?.message ?? e.message))
+addEventListener('unhandledrejection', e => broke(e.reason?.message ?? e.reason))
+
+globalThis.Kit = { connect, call, ask, tell, link, money, number, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

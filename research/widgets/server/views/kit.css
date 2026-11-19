@@ -67,3 +67,5 @@ button { font: inherit; color: inherit; }
 .empty { padding: 18px 0; text-align: center; color: var(--ink-2); }
 svg text { font-family: var(--font); }
 @media (max-width: 480px) { .stats { grid-template-columns: 1fr 1fr !important; } }
+.kit-broke { position: sticky; bottom: 0; margin-top: 10px; display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: var(--radius); background: var(--down-bg); color: var(--down); font-size: 13px; z-index: 10; }
+.kit-broke span { min-width: 0; overflow-wrap: anywhere; }

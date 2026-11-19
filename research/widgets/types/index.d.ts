@@ -9,7 +9,7 @@ export type Instant = {
   id: string
   name: string
   about: string
-  kind: 'info' | 'action' | 'discover'
+  kind: 'info' | 'action' | 'discover' | 'tool'
   tool: string
   tools: string[]
   version: number
