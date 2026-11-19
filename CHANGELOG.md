@@ -11,6 +11,35 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **An answer gives its columns' types, and a column's type follows its
+  expression** (persona study round 3, SAM-301, SAM-308). `POST
+  /v1/query` answers `types` beside `columns` (`"timestamp"`, `"int"`,
+  `"float"`, `"bool"`, `"text"`, `"vector"`, `"list"`, `null` for a column
+  of only NULLs), and so do Python's and JavaScript's `Result.types` and
+  Rust's `ResultSet::types`, from the values, so that `MAX(ts)`, `ts AS
+  d`, `i.ts` in a join and `date_trunc('month', ts)` are timestamps as
+  `ts` is. Python's DB-API driver and `Result.to_pandas()` use them: those
+  columns come back as datetimes, where they were text unless selected by
+  their bare name. A `UNION` of an `INT` and a `FLOAT` column is `FLOAT`
+  (`SELECT 1 UNION ALL SELECT 2.5` is 1.0 and 2.5), on either engine
+  ([query-language.md](docs/chloedb/query-language.md#the-types-of-an-answers-columns)).
+- **Python's `add_column` embeds the rows already there** (PRIYA-301).
+  `db.add_column("emb", "vector", embed=["title"], model=...)`, as
+  python.md showed it, was "unknown option model": a schema's short form
+  takes `embed` as the fields with `model` beside it. The form that worked
+  left every row written before without a vector, so `similarity()` found
+  none of them and said nothing; `add_column` and `db.sql("ALTER TABLE
+  ... ADD COLUMN ...")` now embed them before returning (with progress on
+  stderr when it takes a while), or warn when the field's model is not
+  open. `db.embed_backfill(field)` and `db.missing_vectors(field)` are new.
+- **A vector parameter is the field it is ranked against** (PRIYA-303).
+  `{"embed": text}` and `{"vector_of": key}` without `"field"` took the
+  table's first vector field, so `similarity(bge, :v)` failed with "the
+  vector has 512 dimensions, and bge has 384"; they take `bge`, the field
+  `similarity`, `distance`, `maxsim` or `dot` names, in Python,
+  JavaScript and over HTTP, and for a field of no model the error says
+  so. The error for text against such a field names the query's own
+  parameter (`:v`), not `:q`.
 - **chloedb-server's OpenSearch API: a filtered alias keeps to its
   documents, unknown keys are refused, and an alias swap is seen whole**
   (persona study round 3, KENJI-301, KENJI-302, KENJI-303, KENJI-305;

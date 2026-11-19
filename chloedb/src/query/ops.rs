@@ -343,7 +343,9 @@ impl<'a> Ops<'a, '_> {
                 if l.columns.len() != r.columns.len() {
                     return Err(err(format!("{}: one side has {} columns and the other {}", op.name(), l.columns.len(), r.columns.len())));
                 }
-                let rows = match op {
+                // The columns of INTs on a side and FLOATs on either.
+                let floats = float_columns(l.rows.iter().chain(&r.rows), l.columns.len());
+                let mut rows = match op {
                     SetOp::Union => {
                         let mut rows = l.rows;
                         rows.extend(r.rows);
@@ -385,6 +387,7 @@ impl<'a> Ops<'a, '_> {
                         l.rows.into_iter().zip(keep).filter_map(|(row, k)| k.then_some(row)).collect()
                     }
                 };
+                widen(&mut rows, &floats);
                 Ok(Rows { columns: l.columns, rows, keys: None, scores: None })
             }
             Node::Window { input, funcs } => {
@@ -1881,6 +1884,39 @@ pub(crate) fn part(v: &Value) -> Part {
     match v {
         Value::Float(x) if x.fract() == 0.0 && x.abs() < 9e15 => Part::Int(*x as i64),
         v => Part::of(v),
+    }
+}
+
+/// Which of `width` columns of a [`Node::SetOp`]'s rows (both sides')
+/// hold FLOATs and otherwise only INTs and NULLs: the set operation's
+/// column is then FLOAT, the wider type, as Postgres and DuckDB type it
+/// and DataFusion casts it (`SELECT 1 UNION ALL SELECT 2.5` is 1.0 and
+/// 2.5).
+fn float_columns<'a>(rows: impl Iterator<Item = &'a Vec<Value>>, width: usize) -> Vec<bool> {
+    let (mut floats, mut other) = (vec![false; width], vec![false; width]);
+    for r in rows {
+        for (c, v) in r.iter().enumerate().take(width) {
+            match v {
+                Value::Float(_) => floats[c] = true,
+                Value::Null | Value::Int(_) => {}
+                _ => other[c] = true,
+            }
+        }
+    }
+    floats.iter().zip(&other).map(|(f, o)| *f && !o).collect()
+}
+
+/// `rows` with the INTs of the columns `floats` marks made FLOATs.
+fn widen(rows: &mut [Vec<Value>], floats: &[bool]) {
+    if !floats.contains(&true) {
+        return;
+    }
+    for r in rows.iter_mut() {
+        for (v, &f) in r.iter_mut().zip(floats) {
+            if let (true, Value::Int(x)) = (f, &*v) {
+                *v = Value::Float(*x as f64);
+            }
+        }
     }
 }
 

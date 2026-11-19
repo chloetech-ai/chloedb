@@ -899,6 +899,45 @@ pub struct ResultSet {
     pub stats: ExecStats,
 }
 
+impl ResultSet {
+    /// Each column's type, as its values have it, so that a client types
+    /// a column by its expression rather than by its name: `MAX(ts)`,
+    /// `ts AS d` and `date_trunc('month', ts)` are `timestamp` as `ts`
+    /// is ([`column_type`]).
+    pub fn types(&self) -> Vec<Option<&'static str>> {
+        (0..self.columns.len()).map(|c| column_type(self.rows.iter().map(|r| r.get(c).unwrap_or(&Value::Null)))).collect()
+    }
+}
+
+/// The type of a column of `values`: `int`, `float`, `bool`, `timestamp`,
+/// `text`, `vector` or `list`, the names a schema's short form gives its
+/// fields' types. A column of INTs and FLOATs is `float` (the operators
+/// and DataFusion widen a UNION's to FLOAT). None when it holds only
+/// NULLs, or values of types that do not mix (a CASE of text and
+/// numbers).
+pub fn column_type<'a>(values: impl Iterator<Item = &'a Value>) -> Option<&'static str> {
+    let name = |v: &Value| match v {
+        Value::Null => None,
+        Value::Int(_) => Some("int"),
+        Value::Float(_) => Some("float"),
+        Value::Bool(_) => Some("bool"),
+        Value::Timestamp(_) => Some("timestamp"),
+        Value::Str(_) => Some("text"),
+        Value::Vector(_) => Some("vector"),
+        Value::List(_) => Some("list"),
+    };
+    let mut ty = None;
+    for t in values.filter_map(name) {
+        ty = match (ty, t) {
+            (None, t) => Some(t),
+            (Some(a), b) if a == b => Some(a),
+            (Some("int" | "float"), "int" | "float") => Some("float"),
+            _ => return None,
+        };
+    }
+    ty
+}
+
 /// A search leaf's rows for DataFusion ([`Executor::execute_arrow`]):
 /// as rows, or as Arrow columns.
 #[derive(Debug)]

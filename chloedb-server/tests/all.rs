@@ -77,6 +77,7 @@ mod rank_cross;
 mod rank_log;
 mod rank_models;
 mod rank_profiles;
+mod result_types;
 mod recommender;
 mod replication;
 mod restore;
