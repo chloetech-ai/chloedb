@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping } from '../server/apps.mjs'
+import { KEEPING, keeping, takesOut } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -84,6 +84,27 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   }
   // A browser's own ids (its conversation, its kept values): random, from the page.
   const own = value => (typeof value === 'string' && /^[A-Za-z0-9-]{16,64}$/.test(value) ? value : '')
+  // Whose kept values a browser reaches for an app, and what it may do with
+  // them: its own ("own"), or a share link's ("s-<token>"): the link that
+  // made it changes everything ("full"), a helper link adds and ticks but
+  // takes nothing out ("helper"), a view link only looks ("viewer").
+  const LINKS = '-links-'
+  async function owning(appId, me) {
+    const id = own(me)
+    if (!id) return null
+    if (!id.startsWith('s-')) return { owner: id, role: 'own' }
+    const link = await apps.kept(appId, `link:${id.slice(2)}`, LINKS).catch(() => null)
+    return link ? { owner: link.owner, role: link.role } : { owner: id, role: 'full' }
+  }
+  // What a helper or view link may not keep: a view link changes nothing, a
+  // helper link adds and changes but takes nothing out (an entry, a field, a
+  // value cleared).
+  async function refusal(who, appId, args) {
+    if (who.role === 'viewer') return 'Not kept: this link can only look. Whoever shared it can change it.'
+    if (who.role !== 'helper') return ''
+    const before = await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null)
+    return takesOut(before, args?.value) ? 'Not kept: this link can add and tick, but not take anything out. Whoever shared it can.' : ''
+  }
   // Each app sent to a page with a conversation is recorded as shown in it,
   // with what it was filled with, so it opens again as it was.
   function recording(talk, send) {
@@ -409,7 +430,12 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       if (req.method === 'POST' && url.pathname === '/api/call') {
         const { app: appId, name, arguments: args, me } = await body(req)
         const app = await apps.get(appId)
-        if (app && KEEPING.includes(name)) return json(res, await keeping(apps, app.id, name, args, own(me)))
+        if (app && KEEPING.includes(name)) {
+          const who = await owning(app.id, me)
+          const refused = who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
+          if (refused) return json(res, { content: [{ type: 'text', text: refused }], isError: true })
+          return json(res, await keeping(apps, app.id, name, args, who?.owner ?? ''))
+        }
         if (!app || !app.tools.includes(name)) return json(res, { content: [{ type: 'text', text: `${name} is not one of this app's tools` }], isError: true })
         const { result, data } = await run(name, args)
         // A call of its first tool (another range, another search) is what
@@ -436,13 +462,24 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       // once; the link is as private as the person keeps it.
       if (req.method === 'POST' && url.pathname === '/api/share') {
         const { app: appId, me } = await body(req)
-        const owner = own(me)
-        const app = owner && appId ? await apps.get(String(appId)) : null
-        if (!app) return json(res, { error: 'no such app' }, 404)
-        if (owner.startsWith('s-')) return json(res, { token: owner.slice(2) })
-        const token = randomBytes(16).toString('hex')
-        for (const [key, value] of Object.entries(await apps.keptAll(app.id, owner))) await apps.keep(app.id, key, value, `s-${token}`)
-        return json(res, { token })
+        const app = appId ? await apps.get(String(appId)) : null
+        const who = app && (await owning(app.id, me))
+        if (!who) return json(res, { error: 'no such app' }, 404)
+        if (who.role === 'helper' || who.role === 'viewer') return json(res, { error: 'Only whoever shared it can share it further.' }, 403)
+        let token = who.role === 'full' ? who.owner.slice(2) : ''
+        if (!token) {
+          token = randomBytes(16).toString('hex')
+          for (const [key, value] of Object.entries(await apps.keptAll(app.id, who.owner))) await apps.keep(app.id, key, value, `s-${token}`)
+        }
+        // Its helper and view links, made once and the same each time after.
+        let links = await apps.kept(app.id, '-links', `s-${token}`)
+        if (!links) {
+          links = { helper: randomBytes(16).toString('hex'), viewer: randomBytes(16).toString('hex') }
+          await apps.keep(app.id, `link:${links.helper}`, { owner: `s-${token}`, role: 'helper' }, LINKS)
+          await apps.keep(app.id, `link:${links.viewer}`, { owner: `s-${token}`, role: 'viewer' }, LINKS)
+          await apps.keep(app.id, '-links', links, `s-${token}`)
+        }
+        return json(res, { token, ...links })
       }
       if (req.method === 'POST' && url.pathname === '/api/note') {
         const { app: appId, summary, history = [] } = await body(req)

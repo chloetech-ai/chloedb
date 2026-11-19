@@ -87,6 +87,7 @@ function drawing(draw, connection, keeps = true) {
         sharedKept = true
         if (document.body) textForm(document.body)
       }
+      if (data?.role === 'viewer') banner('Shared with you to look at: what you change here is not kept.')
       const start = performance.now()
       try {
         draw({ ...replayed(data, kept), kept })
@@ -244,8 +245,34 @@ addEventListener('load', e => e.target instanceof HTMLImageElement && report(), 
 // app for this browser (the chat's id for it), in the same place as the
 // app. The frame itself keeps nothing (no storage, cookies or IndexedDB).
 // A value is anything JSON holds.
+// A keep the link can't make (a view link, or a helper link taking something
+// out) is said on the app itself, so nobody thinks it was kept.
 async function keep(app, key, value) {
-  await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
+  try {
+    await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
+    return true
+  } catch (error) {
+    banner(error.message)
+    return false
+  }
+}
+function banner(text) {
+  if (!document.body) return
+  let box = document.getElementById('kit-banner')
+  if (!box) {
+    box = document.createElement('div')
+    box.id = 'kit-banner'
+    box.setAttribute('role', 'status')
+    box.style.cssText = 'position:sticky;top:0;z-index:9;margin:-14px -16px 10px;padding:8px 16px;background:var(--bg-2);border-bottom:1px solid var(--line);color:var(--ink);font-size:13px'
+    document.body.prepend(box)
+  }
+  box.textContent = text
+}
+
+// A file for the person to take elsewhere (a CSV for a spreadsheet, a file
+// for their accounts): the page downloads it, as the frame can't.
+function download(app, name, text, type = 'text/csv') {
+  return globalThis.Kit.call(app, 'app_download', { name: String(name), text: String(text ?? ''), type: String(type) })
 }
 const reads = new Set() // Kit.kept calls not answered yet
 async function kept(app, key) {
@@ -382,4 +409,4 @@ new MutationObserver(changes => {
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, download, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

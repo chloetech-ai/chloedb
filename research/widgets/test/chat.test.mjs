@@ -477,3 +477,34 @@ test('a request to find things searches the web first, and the Search results ap
   assert.ok(!none.some(e => e.type === 'app'))
   assert.match(none.find(e => e.type === 'reply').text, /couldn’t find anything on the web for “find nothing at all”/)
 })
+
+test('a helper link adds and ticks but takes nothing out, and a view link only looks', { skip }, async () => {
+  const me = '3'.repeat(32)
+  const list = await chat.apps.put({ name: 'Shared list', about: 'What to buy.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('list'), args: { request: 'list' }, saved: true }, 'made by hand')
+  const items = [{ id: 'a', name: 'milk', done: false }, { id: 'b', name: 'eggs', done: false }]
+  await post('/api/call', { app: list.id, me, name: 'app_keep', arguments: { key: 'items', value: items } })
+  const share = await post('/api/share', { app: list.id, me })
+  assert.match(share.helper, /^[0-9a-f]{32}$/)
+  assert.match(share.viewer, /^[0-9a-f]{32}$/)
+  const keep = (who, value) => post('/api/call', { app: list.id, me: `s-${who}`, name: 'app_keep', arguments: { key: 'items', value } })
+  const read = async who => (await post('/api/call', { app: list.id, me: `s-${who}`, name: 'app_kept', arguments: { all: true } })).structuredContent.values
+  assert.deepEqual(await read(share.viewer), { items }, 'every link sees the same, and none of the links themselves')
+  // MAYA-12: her husband ticks milk and adds bread.
+  const ticked = [{ ...items[0], done: true }, items[1], { id: 'c', name: 'bread', done: false }]
+  assert.equal((await keep(share.helper, ticked)).isError, undefined)
+  assert.deepEqual((await read(share.token)).items, ticked)
+  // But can't take eggs out, or clear the list.
+  const out = await keep(share.helper, [ticked[0], ticked[2]])
+  assert.equal(out.isError, true)
+  assert.match(out.content[0].text, /can add and tick, but not take anything out/)
+  assert.equal((await keep(share.helper, [])).isError, true)
+  assert.deepEqual((await read(share.token)).items, ticked, 'nothing was taken out')
+  // A view link changes nothing; the full link can take things out.
+  assert.match((await keep(share.viewer, ticked)).content[0].text, /can only look/)
+  assert.equal((await keep(share.token, [ticked[0]])).isError, undefined)
+  // Only a full link shares further, and sharing again gives the same links.
+  assert.equal((await fetch(`${chat.url}api/share`, { method: 'POST', body: JSON.stringify({ app: list.id, me: `s-${share.helper}` }) })).status, 403)
+  assert.deepEqual(await post('/api/share', { app: list.id, me: `s-${share.token}` }), share)
+  // An app can't read or write the share's own records.
+  assert.equal((await post('/api/call', { app: list.id, me: `s-${share.token}`, name: 'app_kept', arguments: { key: '-links' } })).isError, true)
+})

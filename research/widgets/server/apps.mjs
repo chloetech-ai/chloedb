@@ -43,17 +43,45 @@ const ARGS = z.record(z.string(), z.any())
 // openings, stored with it for one person (owner: the chat's browser; one
 // person alone in Claude Desktop or Claude Code).
 export const KEEPING = ['app_keep', 'app_kept']
+
+// Whether a new value takes out something the old one had: an entry of a
+// list (by its id, else by how many there are), a field of a record, or a
+// value cleared. Ticking an entry or changing a number takes nothing out.
+export function takesOut(before, after, depth = 0) {
+  const empty = v => v == null || v === '' || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length)
+  if (empty(before)) return false
+  if (empty(after)) return true
+  if (depth > 6) return false
+  if (Array.isArray(before)) {
+    if (!Array.isArray(after)) return true
+    const ids = before.filter(e => e && typeof e === 'object' && e.id != null)
+    if (ids.length) {
+      return ids.some(e => {
+        const now = after.find(x => x && typeof x === 'object' && String(x.id) === String(e.id))
+        return !now || takesOut(e, now, depth + 1)
+      })
+    }
+    return after.length < before.length
+  }
+  if (typeof before === 'object') {
+    if (typeof after !== 'object' || Array.isArray(after)) return true
+    return Object.entries(before).some(([k, v]) => !empty(v) && (empty(after[k]) || takesOut(v, after[k], depth + 1)))
+  }
+  return false
+}
 export async function keeping(apps, appId, name, args = {}, owner = '') {
   // All of it at once, for the kit to hand draw as data.kept.
   if (name === 'app_kept' && args?.all === true) {
     try {
-      return { content: [{ type: 'text', text: 'What this app kept.' }], structuredContent: { values: await apps.keptAll(appId, owner) } }
+      // Names from "-" on are the chat's own (a share's links), never the app's.
+      const values = Object.fromEntries(Object.entries(await apps.keptAll(appId, owner)).filter(([k]) => !k.startsWith('-')))
+      return { content: [{ type: 'text', text: 'What this app kept.' }], structuredContent: { values } }
     } catch (error) {
       return { content: [{ type: 'text', text: error.message }], isError: true }
     }
   }
   const key = String(args?.key ?? '').slice(0, 80)
-  if (!key) return { content: [{ type: 'text', text: 'Say what to keep it as (a key).' }], isError: true }
+  if (!key || key.startsWith('-')) return { content: [{ type: 'text', text: 'Say what to keep it as (a key that does not start with "-").' }], isError: true }
   try {
     if (name === 'app_keep') {
       await apps.keep(appId, key, args.value, owner)

@@ -185,3 +185,18 @@ test('a typed pattern that runs without end is refused outside the chat, and mat
   assert.equal(matchAll('a*', '', 'bab').matches.length, 4, 'an empty match moves on')
   assert.match(matchAll('(', '', 'x').error, /Invalid|Unterminated|group/i)
 })
+
+test('what takes something out of a kept value, for a helper link', async () => {
+  const { takesOut } = await import('../server/apps.mjs')
+  const list = [{ id: 1, item: 'milk', done: false }, { id: 2, item: 'eggs' }]
+  assert.equal(takesOut(list, [{ ...list[0], done: true }, list[1], { id: 3, item: 'bread' }]), false, 'ticking and adding')
+  assert.equal(takesOut(list, [list[0]]), true, 'an entry taken out')
+  assert.equal(takesOut(list, []), true, 'the list cleared')
+  assert.equal(takesOut(list, [{ id: 1, done: true }, list[1]]), true, 'a field of an entry taken out')
+  assert.equal(takesOut({ Nov: [{ id: 'x', amount: 3 }], budget: 650 }, { Nov: [{ id: 'x', amount: 3.5 }], Dec: [], budget: 700 }), false, 'a month added, a number changed')
+  assert.equal(takesOut({ Nov: [{ id: 'x' }] }, { Dec: [] }), true, 'a month taken out')
+  assert.equal(takesOut(['a', 'b'], ['a', 'b', 'c']), false)
+  assert.equal(takesOut(['a', 'b'], ['a']), true)
+  assert.equal(takesOut(null, []), false, 'nothing was there')
+  assert.equal(takesOut('note', ''), true)
+})
