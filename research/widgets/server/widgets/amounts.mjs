@@ -203,8 +203,9 @@ export function shopping(recipes, people = 4, units = 'us') {
     const n = Math.ceil(kinds.reduce((s, p) => s + p.qty, 0) - 1e-9)
     // Things with no number ("Grape Tomatoes, halved", "Boiled rice"), or
     // a seasoning counted ("1 1/2 Cumin"): some, unless bought by the piece.
-    const some = counted && ((kinds.every(p => p.unsaid) && (/s$/.test(line.name.trim()) || !COUNTABLE.test(line.name))) || SEASONING.test(line.name) || !COUNTABLE.test(line.name))
-    const name = counted && !some ? (n > 1 ? plural(line.name.toLowerCase(), n) : single(line.name.toLowerCase())) : line.name.toLowerCase()
+    const some = counted && ((kinds.every(p => p.unsaid) && (/s$/.test(line.name.trim()) || !COUNTABLE.test(line.name))) || SEASONING.test(line.name))
+    // Only what is bought by the piece takes a plural ("2 limes", "2 salmon").
+    const name = counted && !some && COUNTABLE.test(line.name) ? (n > 1 ? plural(line.name.toLowerCase(), n) : single(line.name.toLowerCase())) : line.name.toLowerCase()
     const amount = some ? 'some' : amounts.join(' + ')
     const out = { name, buy: `${amount} ${name}`, amount, for: line.dishes, ...(line.notes.size ? { note: [...line.notes].join(', ') } : {}) }
     ;(PANTRY.test(keyOf(line.name)) || PANTRY.test(line.name.trim()) ? pantry : items).push(out)
