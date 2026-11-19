@@ -56,7 +56,7 @@ chloedb-earth backtest --region california                 # how well the fires 
 chloedb-earth serve --public --chips DATA/chips            # the page and its API at 127.0.0.1:7790
 ```
 
-`goes` reads GOES-West's CONUS product over California (GOES-17 from February 2019, GOES-18 from January 2023) and GOES-East's full disk over Chile (GOES-16, GOES-19 from April 2025), from NOAA's buckets on AWS, keeping only the pixels within 4 km of a place. Low-probability pixels (masks 15 and 35) start no fire: alone they are mostly hot ground and cloud edges, a whole desert valley on a summer night; beside a fire burning they are its edge. A feed started again takes back the fires burning in the 12 hours before where it starts, and marks out those it left burning longer ago. Without `vision` on the server the app still runs, and searches by the description; searches by a picture or by meaning say why they cannot.
+`goes` reads GOES-West's CONUS product over California (GOES-17 from February 2019, GOES-18 from January 2023) and GOES-East's full disk over Chile (GOES-16, GOES-19 from April 2025), from NOAA's buckets on AWS, keeping only the pixels within 4 km of a place. Low-probability pixels (masks 15 and 35) are left out: most are hot ground and cloud edges with no power worked out, a whole desert valley on a summer night, and beside a real fire they made it look ten times its size. A feed started again takes back the fires burning in the 12 hours before where it starts, and marks out those it left burning longer ago. Without `vision` on the server the app still runs, and searches by the description; searches by a picture or by meaning say why they cannot.
 
 ## Tests
 

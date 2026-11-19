@@ -231,11 +231,6 @@ impl Tracker {
         for blob in blobs {
             // The fires it touches.
             let mut hit: Vec<usize> = (0..self.fires.len()).filter(|&f| blob.iter().any(|&i| self.fires[f].near(pixels[i].lat, pixels[i].lon, recent))).collect();
-            // Low-probability pixels alone start no fire: they join one
-            // already burning (its edge), and are dropped otherwise.
-            if hit.is_empty() && blob.iter().all(|&i| crate::goes::is_low(pixels[i].mask)) {
-                continue;
-            }
             let fi = if hit.is_empty() {
                 // A new fire starts at its strongest pixel.
                 let best = blob.iter().copied().max_by(|&a, &b| pixels[a].mw.unwrap_or(0.0).total_cmp(&pixels[b].mw.unwrap_or(0.0))).unwrap_or(blob[0]);
@@ -496,21 +491,6 @@ mod tests {
         // A new fire later was watched starting.
         let ids3 = t.scan(1600, 300, &[px(37.0, -120.0, 5.0, 9)], &p);
         assert!(t.fires.iter().find(|f| f.id == ids3[0]).unwrap().seen_start);
-    }
-
-    #[test]
-    fn low_probability_pixels_alone_start_no_fire() {
-        let mut t = Tracker::new("california");
-        let p = places();
-        let low = |lat: f64, row: u32| Pixel { mask: 35, mw: None, ..px(lat, -118.10, 0.0, row) };
-        let ids = t.scan(1000, 300, &[low(34.20, 1), low(34.22, 2)], &p);
-        assert!(ids.iter().all(|i| i.is_empty()) && t.fires.is_empty());
-        // Beside a fire burning, they are its edge.
-        let ids = t.scan(1300, 300, &[px(34.20, -118.10, 50.0, 3), low(34.22, 4)], &p);
-        assert_eq!(t.fires.len(), 1);
-        assert_eq!(ids[0], ids[1]);
-        let ids = t.scan(1600, 300, &[low(34.24, 5)], &p);
-        assert_eq!(ids[0], t.fires[0].id);
     }
 
     #[test]

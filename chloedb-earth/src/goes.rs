@@ -82,16 +82,13 @@ impl Pixel {
     }
 }
 
-/// Whether a mask value is a low-probability fire (15 and 35): most are
-/// hot ground or cloud edges (a whole desert valley on a summer night),
-/// with no power worked out.
-pub fn is_low(m: i16) -> bool {
-    m % 20 == 15
-}
-
-/// Whether a mask value is a fire.
+/// Whether a mask value is a fire: processed (10, 30), saturated (11,
+/// 31), cloudy (12, 32), and high and medium probability (13, 14, 33, 34).
+/// Low probability (15, 35) is left out: most such pixels are hot ground or
+/// cloud edges, with no power worked out (a whole desert valley on a summer
+/// night), and beside a real fire they would count as fire burning.
 pub fn is_fire(m: i16) -> bool {
-    (10..=15).contains(&m) || (30..=35).contains(&m)
+    (10..=14).contains(&m) || (30..=34).contains(&m)
 }
 
 /// A scan's fire pixels inside `bounds` (south, north, west, east).
@@ -342,6 +339,12 @@ mod tests {
         assert!(lat.abs() < 1e-9 && (lon + 137.0).abs() < 1e-9);
         // Off the disk's edge there is no Earth.
         assert!(p.to_lat_lon(0.2, 0.0).is_none());
+    }
+
+    #[test]
+    fn low_probability_pixels_are_not_fires() {
+        assert!([10, 11, 12, 13, 14, 30, 31, 32, 33, 34].iter().all(|&m| is_fire(m)));
+        assert!([15, 35, 0, 40, 50, 100].iter().all(|&m| !is_fire(m)));
     }
 
     #[test]
