@@ -72,12 +72,16 @@ const TYPES: [&str; 8] = ["INT", "FLOAT", "TEXT", "KEYWORD", "BOOL", "TIMESTAMP"
 /// Names the binder gives a meaning of its own, which no stored function
 /// takes.
 pub(crate) const RESERVED: &[&str] = &[
-    "abs", "approx_percentile", "array_agg", "at_least", "avg", "bm25", "btrim", "ceil", "ceiling", "char_length", "character_length", "clamp", "classify", "coalesce", "concat", "corr", "count", "count_true", "covar_pop", "covar_samp", "cross_encoder", "cume_dist", "date", "date_add",
-    "date_bin", "date_diff", "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart", "datetrunc", "day", "dayofweek", "decay", "dense_rank", "distance", "dot", "embed", "encode", "exp", "extract", "features", "first_value",
-    "floor", "gbdt", "greatest", "group_concat", "hash", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower",
-    "ltrim", "match", "max", "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nullif", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "position", "pow", "power", "ppr", "prefix", "rand",
-    "random", "rank", "rank_profile", "ranked", "reachable", "replace", "reverse", "right", "round", "row_number", "rrf", "rtrim", "score", "seq_no", "sid_at", "sigmoid", "similarity", "sparse", "split_part",
-    "sqrt", "stddev", "stddev_pop", "stddev_samp", "strftime", "string_agg", "strpos", "substr", "substring", "sum", "time_bucket", "tmm", "to_char", "trim", "trunc", "truncate", "ucase", "upper", "var_pop", "var_samp", "variance", "week", "weekday", "year", "zscore",
+    "abs", "acos", "approx_percentile", "array_agg", "asin", "at_least", "atan", "atan2", "avg", "bm25", "btrim", "ceil", "ceiling", "char_length", "character_length", "clamp", "classify", "coalesce", "concat", "corr",
+    "cos", "cot", "count", "count_true", "covar_pop", "covar_samp", "cross_encoder", "cume_dist", "date", "date_add", "date_bin", "date_diff", "date_format", "date_part", "date_sub", "date_trunc", "datediff", "datepart",
+    "datetrunc", "day", "dayofweek", "decay", "degrees", "dense_rank", "distance", "dot", "embed", "encode", "exp", "extract", "features", "first_value", "floor", "gbdt", "greatest", "group_concat",
+    "h3_cell_to_boundary", "h3_cell_to_parent", "h3_cell_to_point", "h3_get_resolution", "h3_grid_distance", "h3_int_to_string", "h3_is_valid_cell", "h3_latlng_to_cell", "h3_latlng_to_cell_string", "h3_string_to_int",
+    "hash", "haversine", "hops", "hour", "ifnull", "instr", "isnull", "json_extract", "lag", "last_value", "lcase", "lead", "least", "left", "len", "length", "llm", "ln", "log", "lower", "ltrim", "match", "max",
+    "maxsim", "min", "minmax", "month", "now", "nth_value", "ntile", "nullif", "nvl", "path", "percent_rank", "percentile_cont", "percentile_disc", "pi", "position", "pow", "power", "ppr", "prefix", "radians", "rand",
+    "random", "rank", "rank_profile", "ranked", "reachable", "replace", "reverse", "right", "round", "row_number", "rrf", "rtrim", "score", "seq_no", "sid_at", "sigmoid", "similarity", "sin", "sparse", "split_part",
+    "sqrt", "st_area", "st_asgeojson", "st_astext", "st_contains", "st_distance", "st_dwithin", "st_geogfromgeojson", "st_geogfromtext", "st_geogpoint", "st_geomfromgeojson", "st_geomfromtext", "st_intersects",
+    "st_makepoint", "st_point", "st_within", "st_x", "st_y", "stddev", "stddev_pop", "stddev_samp", "strftime", "string_agg", "strpos", "substr", "substring", "sum", "tan", "time_bucket", "tmm", "to_char", "trim",
+    "trunc", "truncate", "ucase", "upper", "var_pop", "var_samp", "variance", "week", "weekday", "year", "zscore",
 ];
 
 /// A parameter: its name (lower case), type, and default as a SQL literal.

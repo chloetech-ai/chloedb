@@ -11,6 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Places on the Earth in SQL: trigonometry, `haversine`, H3 cells and
+  shapes kept as text.** `sin`, `cos`, `tan`, `cot`, `asin`, `acos`,
+  `atan`, `atan2`, `radians`, `degrees` and `pi` answer as PostgreSQL's;
+  `haversine(lat1, lon1, lat2, lon2)` is Snowflake's, in kilometres;
+  `h3_latlng_to_cell` (and `_string`), `h3_cell_to_parent`,
+  `h3_get_resolution`, `h3_grid_distance`, `h3_cell_to_point`,
+  `h3_cell_to_boundary`, `h3_int_to_string`, `h3_string_to_int` and
+  `h3_is_valid_cell` are H3 version 4's with Snowflake's names, cells as
+  INTs or hex text; and `st_point`, `st_x`, `st_y`, `st_contains`,
+  `st_within`, `st_intersects`, `st_distance` (metres), `st_dwithin`,
+  `st_area` (square metres), `st_astext` and `st_asgeojson` take shapes as
+  WKT or GeoJSON text, longitude first. There is no geometry type or
+  spatial index: they are computed row by row, in `SELECT`, `WHERE`,
+  `GROUP BY` and `ORDER BY` (`ORDER BY haversine(...)` is nearest first),
+  over joined rows, on both engines and over shards, and the trigonometry
+  and `haversine` in ranking expressions. A plan with them needs the plan
+  feature `geo` and the shard protocol's new function numbers 32 to 58, so
+  a shard of an older version refuses it by name
+  ([query-language.md](docs/chloedb/query-language.md#places-on-the-earth-trigonometry-haversine-h3-cells-and-shapes)).
 - **Blends stack, and Labs → Blending builds them by drag and drop.** A
   blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
   ... WITH (k => n))`: it runs into its own k slots under its own rules,

@@ -776,6 +776,18 @@ fn interval(e: &Expr, leaves: &[Interval]) -> Interval {
                 }
                 // Conditions, 0 or 1 each.
                 Func::CountTrue => Interval::new(0.0, a.len() as f64, false),
+                // Of angles, and the great-circle distance; NULL in is NULL
+                // out, as is asin and acos of a value beyond -1 to 1.
+                _ if matches!(func, Func::Sin | Func::Cos | Func::Asin | Func::Acos | Func::Atan2 | Func::Haversine) && a.iter().any(Interval::is_empty) => Interval::NULL,
+                Func::Sin | Func::Cos => Interval::new(-1.0, 1.0, a[0].null),
+                Func::Asin | Func::Acos => {
+                    let beyond = a[0].lo < -1.0 || a[0].hi > 1.0;
+                    let h = std::f64::consts::FRAC_PI_2;
+                    if *func == Func::Asin { Interval::new(-h, h, a[0].null || beyond) } else { Interval::new(0.0, 2.0 * h, a[0].null || beyond) }
+                }
+                Func::Atan => a[0].rising(one(Func::Atan)),
+                Func::Atan2 => Interval::new(-std::f64::consts::PI, std::f64::consts::PI, a.iter().any(|x| x.null)),
+                Func::Haversine => Interval::new(0.0, std::f64::consts::PI * crate::geo::HAVERSINE_RADIUS_KM, a.iter().any(|x| x.null)),
                 _ => any(true),
             }
         }
@@ -1002,6 +1014,33 @@ mod tests {
                         fin((v[0]? * m).round() / m)
                     }
                     Func::CountTrue => Some(some.iter().filter(|&&x| x != 0.0).count() as f64),
+                    Func::Sin => fin(v[0]?.sin()),
+                    Func::Cos => fin(v[0]?.cos()),
+                    Func::Tan => fin(v[0]?.tan()),
+                    Func::Asin => v[0].filter(|x| x.abs() <= 1.0).map(f64::asin),
+                    Func::Acos => v[0].filter(|x| x.abs() <= 1.0).map(f64::acos),
+                    Func::Atan => fin(v[0]?.atan()),
+                    Func::Atan2 => fin(v[0]?.atan2(v[1]?)),
+                    Func::Haversine => fin(crate::geo::haversine(v[0]?, v[1]?, v[2]?, v[3]?, 6371.0)),
+                    Func::H3LatLngToCell
+                    | Func::H3LatLngToCellString
+                    | Func::H3CellToParent
+                    | Func::H3GetResolution
+                    | Func::H3GridDistance
+                    | Func::H3CellToPoint
+                    | Func::H3CellToBoundary
+                    | Func::H3IntToString
+                    | Func::H3StringToInt
+                    | Func::H3IsValidCell
+                    | Func::StPoint
+                    | Func::StX
+                    | Func::StY
+                    | Func::StContains
+                    | Func::StIntersects
+                    | Func::StDistance
+                    | Func::StArea
+                    | Func::StAsText
+                    | Func::StAsGeoJson => None,
                     Func::Lower
                     | Func::Upper
                     | Func::Length

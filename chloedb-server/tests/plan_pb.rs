@@ -88,7 +88,8 @@ const SELECTS: &[&str] = &[
     // Some of the conditions, and how many hold.
     "SELECT id, count_true(year > 2000, tags = 'x', MATCH(body, 'net')) AS k FROM papers WHERE AT_LEAST(2, MATCH(body, 'graph'), year >= 2019, NOT AT_LEAST('50%', rating > 1, category IN ('a', 'b'))) ORDER BY bm25(body, 'graph') * (1 + count_true(done, rating IS NULL)) DESC LIMIT 5",
     "SELECT id FROM papers WHERE category LIKE 'm%' OR (PREFIX(id, 'p1') AND id NOT LIKE 'p1!_%' ESCAPE '!') ORDER BY year DESC LIMIT 5",
-    "SELECT id FROM papers WHERE PREFIX(category, 'mtah', fuzzy => 'auto') OR PREFIX(id, 'p2', fuzzy => 1) ORDER BY year DESC LIMIT 5",
+    "SELECT id FROM papers WHERE PREFIX(category, 'mtah', fuzzy => 'auto') OR PREFIX(id, 'p2', fuzzy => 1) ORDER BY year DESC LIMIT 5",    // A ranking by relevance and nearness.
+    "SELECT id FROM papers ORDER BY bm25(body, 'graph') / (1 + haversine(rating, rating, 0, 0)) * (1 + sin(rating)) DESC LIMIT 5",
 ];
 
 /// Compound queries: operators over single-table queries.
@@ -133,6 +134,11 @@ const COMPOUND: &[&str] = &[
     // The everyday functions and STRING_AGG with its separator and order
     // (persona study SAM-7).
     "SELECT category, STRING_AGG(substr(title, 1, 3) || concat(nullif(category, 'x'), floor(rating), ceil(rating)), '; ' ORDER BY year DESC), COUNT(*) FROM papers WHERE trim(title) <> '' AND ltrim(title, 'g') <> rtrim(title) AND replace(title, 'a', 'b') <> '' AND date_diff('day', published, '2026-11-01') > 3 GROUP BY category",
+    // Trigonometry, haversine, H3 cells and shapes kept as WKT or GeoJSON
+    // text, each of the 27 functions (`Func::GEO`) at least once.
+    "SELECT id, sin(rating), cos(radians(rating)), tan(rating), cot(rating), asin(rating / 10), acos(rating / 10), atan(rating), atan2(rating, year), degrees(pi()), haversine(rating, year % 90, 37.77, -122.42) AS km, h3_latlng_to_cell(rating, year % 180, 5), h3_latlng_to_cell_string(rating, rating, 7) FROM papers WHERE st_dwithin(st_point(rating, rating), 'POINT(1 1)', 50000) ORDER BY km LIMIT 5",
+    "SELECT h3_cell_to_parent(h3_latlng_to_cell(rating, rating, 6), 2) AS c, COUNT(*) FROM papers WHERE h3_is_valid_cell(category) OR h3_grid_distance(category, '8928308280fffff') < h3_get_resolution(category) GROUP BY c",
+    "SELECT id, st_x(h3_cell_to_point(category)), st_y(st_point(rating, 1)), st_area(h3_cell_to_boundary(category)), h3_int_to_string(year), h3_string_to_int(category), st_astext(title), st_asgeojson(title), st_distance(title, 'POINT(0 0)') FROM papers WHERE st_contains(body, st_point(rating, 0)) AND NOT st_intersects(title, 'LINESTRING(0 0, 1 1)') AND st_within('POINT(0 0)', body)",
 ];
 
 /// Writes of each kind.

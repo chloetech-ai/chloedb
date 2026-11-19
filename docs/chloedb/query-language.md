@@ -192,6 +192,39 @@ def chloedb_hash(data: bytes, seed: int = 0) -> int:     # data: "u42".encode(),
 
 In `WHERE`, `hash` is a [condition the indexes cannot answer](#statement-shape): the other conditions narrow the rows by their indexes, and those rows are hashed one by one. `ORDER BY hash(id, 7)` sorts the rows by it, as `ORDER BY lower(name)` or a part of a time sorts them: the rows the table's query finds, in memory. In a [ranking expression](#ranking-expressions) with a score, `hash(field, seed)` of the key or a stored field is the same number, a value of each row the score finds: `bm25(body, :q) * 0 + hash(id, 7)` shows what a search finds in a seeded random order (an arm of an experiment that shuffles its results, or a sample of a search's rows), and a small share of it breaks ties at random. `rrf` does not fuse it. A plan that uses it needs the plan feature `hash`, which shards of a version without the function refuse, and a shard of a version from before it in rankings refuses it there. A [frame](frames.md) samples and splits with it: `frame.sample(fraction=0.1, seed=7)`, `train, test = frame.split(0.8, seed=7)`.
 
+### Places on the Earth: trigonometry, `haversine`, H3 cells and shapes
+
+```sql
+-- The 10 fires nearest a point, in kilometres.
+SELECT id, haversine(lat, lon, 37.7749, -122.4194) AS km FROM fires ORDER BY km LIMIT 10;
+-- A count per H3 cell of resolution 4 (about 1,770 km² each), with each cell's outline to draw.
+SELECT h3_cell_to_boundary(h3_latlng_to_cell(lat, lon, 4)) AS cell, COUNT(*) FROM fires GROUP BY cell;
+-- The fires inside a shape given as WKT or GeoJSON, and those within 20 km of a point.
+SELECT id FROM fires WHERE st_contains(:perimeter, st_point(lon, lat));
+SELECT id FROM fires WHERE st_dwithin(st_point(lon, lat), 'POINT(-122.42 37.77)', 20000);
+```
+
+ChloeDB has no geometry type: a place is two `FLOAT` columns, or a shape kept as `TEXT`, and these functions compute with them row by row.
+
+- **`sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan` and `atan2(y, x)`** are in radians, and **`radians(x)`**, **`degrees(x)`** and **`pi()`** convert, as PostgreSQL's do. `asin` and `acos` of a number beyond -1 to 1 are `NULL` (PostgreSQL's are an error).
+- **`haversine(lat1, lon1, lat2, lon2)`** is the great-circle distance between two points given in degrees, latitude first, in kilometres on a sphere of radius 6,371 km, as Snowflake's `HAVERSINE` is to the last digit. Over the Earth's real shape it is within about 0.5% of the truth.
+- **The H3 functions** are those of [H3](https://h3geo.org) version 4, the hexagonal grid of the Earth, with Snowflake's names. A cell is an `INT` or its hex text (`'8928308280fffff'`); a resolution is 0 (cells of about 4.4 million km²) to 15 (about 1 m²).
+  - `h3_latlng_to_cell(lat, lon, resolution)` is the cell holding a point, an `INT`, and `h3_latlng_to_cell_string` the same as text.
+  - `h3_cell_to_parent(cell, resolution)` is the coarser cell holding it, of the kind its argument is.
+  - `h3_get_resolution(cell)` is its resolution, and `h3_grid_distance(a, b)` how many steps from cell to cell there are between two cells of one resolution (`NULL` where H3 cannot tell, as across a pentagon).
+  - `h3_cell_to_point(cell)` is its center and `h3_cell_to_boundary(cell)` its outline, as WKT.
+  - `h3_int_to_string(cell)` and `h3_string_to_int(cell)` convert, and `h3_is_valid_cell(x)` says whether `x` is a cell.
+- **Shapes** are `TEXT` in WKT (`POINT(-122.42 37.77)`, `LINESTRING`, `POLYGON` with holes, the `MULTI` kinds, `GEOMETRYCOLLECTION`, an `SRID=4326;` before it, Z and M values ignored) or GeoJSON (a geometry, a `Feature` or a `FeatureCollection`), with longitude before latitude in degrees (WGS 84), as PostGIS and GeoJSON write them.
+  - `st_point(lon, lat)` is a point as WKT, and `st_x(p)` and `st_y(p)` its longitude and latitude.
+  - `st_contains(a, b)` is whether `b` is inside `a` (a point on the outline is not, as in PostGIS), `st_within(a, b)` is `st_contains(b, a)`, and `st_intersects(a, b)` whether they meet at all, outlines included.
+  - `st_distance(a, b)` is the shortest distance between them in metres, 0 when they meet, and `st_dwithin(a, b, metres)` is `st_distance(a, b) <= metres`.
+  - `st_area(s)` is a shape's area in square metres.
+  - `st_astext(s)` and `st_asgeojson(s)` write a shape as WKT or GeoJSON.
+
+Whether shapes contain or meet each other is decided with their edges straight on a flat map of longitude and latitude, as GeoJSON and PostGIS's `geometry` draw them; a shape across longitude 180 is written as two, split there, as GeoJSON asks. Distances and areas are on a sphere of the Earth's mean radius, 6,371,008.8 m, as BigQuery's and Turf's are; PostGIS's `geography` measures on the ellipsoid, within about 0.5%.
+
+Any `NULL` argument gives `NULL`. A text that is not a shape, a cell that is not one and a resolution beyond 0 to 15 are errors that say which. Over one table they are computed row by row, in `SELECT`, `WHERE`, `GROUP BY` and `ORDER BY` (`ORDER BY haversine(…)` is nearest first, and `DESC` farthest), as over joined and derived rows. In a `WHERE` they are a [condition the indexes cannot answer](#statement-shape): give the rows a range of `lat` and `lon` as well (`lat BETWEEN 37 AND 38 AND lon BETWEEN -123 AND -122`) and only the rows in the box are tested. A long shape written out in a query (a perimeter of thousands of vertices) is read once and kept while queries use it, not once per row. A join needs an equality, so to join points to the shapes they fall in, join on a coarse key both have (a region, or an H3 cell the shapes are listed under) and test `st_contains` in the `WHERE`. In a [ranking expression](#ranking-expressions), the trigonometric functions and `haversine` of numeric columns are values of each row the score finds: `bm25(body, :q) / (1 + haversine(lat, lon, :lat, :lon))` ranks a search by its relevance and nearness. A plan that uses any of them but `radians`, `degrees` and `pi` needs the plan feature `geo`, which shards of a version without these functions refuse.
+
 ### JSON fields: keys no schema names
 
 A `JSON` field holds an object whose keys are not declared, for attributes that only a few rows have and that nobody knew when the table was made: a product's `voltage`, `certs` or `dims.w`. A row adds keys by holding them, and filters on any key run from the field's index:

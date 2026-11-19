@@ -51,6 +51,9 @@ icu_segmenter_data = "=2.4.0"
 libsais-sys = { version = "0.2", default-features = false }
 # MEDIA values (`media`): bytes given as base64.
 base64 = "0.23"
+# The H3 cells of points in SQL (`h3_latlng_to_cell` and the others,
+# `geo::sql`): H3 v4 in Rust, without its std feature (its hash maps).
+h3o = { version = "0.11", default-features = false }
 # SQLite (bundled, with FTS5): importing and exporting SQLite databases
 # (feature `sqlite`, `chloedb::sqlite`) and the SQLite baseline (`baselines`).
 rusqlite = { version = "0.41", features = ["bundled", "functions"], optional = true }
