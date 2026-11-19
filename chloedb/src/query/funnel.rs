@@ -983,8 +983,8 @@ impl Probes {
         if self.inputs.iter().any(|i| i.generates && i.matches.is_none()) {
             notes.push("a search by meaning matches every row with a vector: its nearest rows are its candidates".into());
         }
-        if self.fused.is_some() && candidates.is_some_and(|c| c as usize >= self.ranked_n) {
-            notes.push(format!("the ranking shows its first {} candidates", self.ranked_n));
+        if self.fused.is_some() && candidates.is_some_and(|c| c as usize > self.ranked_n) {
+            notes.push(format!("the ranks of the first {} candidates were read; the others are listed as ranked past them", self.ranked_n));
         }
         rows.sort_by(|a, b| {
             let rank_a = (fate_order(a.fate), a.page.or(a.rank).unwrap_or(usize::MAX), best_input(a));
