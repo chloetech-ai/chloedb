@@ -434,7 +434,7 @@ pub async fn mix(c: &Ctx<'_>, id: &str, plus: &str, minus: &str, w: f32, f: Filt
         and.push("NOT MATCH(about, :take)".into());
         p["take"] = json!(take.join(" OR "));
     }
-    // The guarded MATCH last: ChloeDB refuses one followed by another AND.
+    // The guarded MATCH last: older servers refused one followed by another AND.
     if !add.is_empty() {
         and.push("MATCH(about, :add, min => 1, min_rows => 24)".into());
         p["add"] = json!(add.join(" "));

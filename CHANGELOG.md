@@ -11,6 +11,17 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A guarded condition can be written anywhere among ANDs.** `MATCH(...,
+  min => n, min_rows => m)` (and `max_rows`, and `AT_LEAST`'s) written
+  first or between two others, `WHERE MATCH(...) AND a > 2 AND c != 'x'`,
+  was refused as not joined by AND, since `a AND b AND c` binds as `(a AND
+  b) AND c`; only one written last ran. Now it is found wherever it is.
+- **The model `siglip-so400m-patch14-384`** (Google's SigLIP so400m, 1152
+  numbers, pinned by hash): `chloedb-server fetch-model
+  siglip-so400m-patch14-384` on a server built with `--features vision`
+  embeds pictures and words into the space of Major TOM's Sentinel-2
+  vectors, as the Earth explorer (`chloedb-earth`, a new demo app:
+  California and Chile from orbit, [earth.md](docs/chloedb/earth.md)) does.
 - **A query's funnel: each stage's time, and the rows each stage kept and
   dropped.** Everything a query does between its text and its rows is laid
   on thirteen stages in order (wait, understand, expand terms, embed, plan,
