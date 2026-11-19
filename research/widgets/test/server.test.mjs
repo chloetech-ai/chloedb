@@ -35,9 +35,9 @@ test('the server says when to open an app', () => {
 test('every widget tool names its view, and the sources are plain tools', async () => {
   const { tools } = await client.listTools()
   const names = tools.map(t => t.name).sort()
-  assert.deepEqual(names, ['app_call', 'app_change', 'app_kit', 'app_make', 'app_open', 'app_save', 'app_source', 'app_undo', 'apps_find', 'cart_add', 'cart_view', 'flight_track', 'my_apps', 'recipe_get', 'recipes_browse', 'shop_search', 'show_findings', 'stock_quote', 'table_book', 'table_search'])
+  assert.deepEqual(names, ['app_call', 'app_change', 'app_kit', 'app_make', 'app_open', 'app_save', 'app_source', 'app_undo', 'apps_find', 'cart_add', 'cart_view', 'exchange_rate', 'flight_track', 'my_apps', 'recipe_get', 'recipes_browse', 'shop_search', 'show_findings', 'stock_quote', 'table_book', 'table_search'])
   for (const tool of tools) {
-    if (/^(table|recipe)|^(apps_find|app_kit|app_save|app_undo)$/.test(tool.name)) {
+    if (/^(table|recipe)|^(apps_find|app_kit|app_save|app_undo|exchange_rate)$/.test(tool.name)) {
       assert.equal(tool._meta?.ui, undefined, tool.name)
       continue
     }
@@ -46,6 +46,16 @@ test('every widget tool names its view, and the sources are plain tools', async 
     // (the chart's every point) in place of the short text.
     assert.equal(tool.outputSchema, undefined, tool.name)
   }
+})
+
+test('exchange_rate answers a rate with its time and source, simulated and labelled so here', async () => {
+  const r = await call('exchange_rate', { from: 'eur', to: 'USD', amount: 80 })
+  const d = r.structuredContent
+  assert.equal(d.from, 'EUR')
+  assert.equal(d.to, 'USD')
+  assert.equal(d.source, 'simulated')
+  assert.equal(d.converted, Math.round(80 * d.rate * 100) / 100)
+  assert.match(r.content[0].text, /^1 EUR = [\d.]+ USD \(so [\d.]+ USD\)\. Source: simulated/)
 })
 
 test('stock_quote answers a sentence and the chart data', async () => {
