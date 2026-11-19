@@ -277,7 +277,8 @@ test('an app gets all it kept with its data, and an entry asked for in words is 
   assert.deepEqual(all.structuredContent.values, { rows: [{ item: 'rent', amount: 600 }], month: 'Oct' })
   assert.deepEqual((await post('/api/call', { app: budget.id, me: 'f'.repeat(32), name: 'app_kept', arguments: { all: true } })).structuredContent.values, {}, 'another browser has none')
 
-  const added = (await events('/api/turn', { text: 'add lunch 4,80', screen: [{ id: budget.id, version: 1, name: 'Budget tracker', shows: '', did: [] }] })).find(e => e.type === 'app')
+  const talk = '7'.repeat(32)
+  const added = (await events('/api/turn', { text: 'add lunch 4,80', talk, screen: [{ id: budget.id, version: 1, name: 'Budget tracker', shows: '', did: [] }] })).find(e => e.type === 'app')
   assert.equal(added.app.id, budget.id)
   assert.ok(!added.result.isError, 'the app’s own inputs take entries')
   assert.match(added.result.content[0].text, /add = \[\{"id"/)
@@ -286,6 +287,8 @@ test('an app gets all it kept with its data, and an entry asked for in words is 
   assert.equal(entry.amount, 4.8)
   assert.match(entry.id, /^[0-9a-f]{10}$/, 'each entry has an id, so the app adds it once')
   assert.deepEqual((await chat.apps.get(budget.id)).args.values, { month: 'Nov' }, 'the app opens next time without the entry')
+  const again = await (await fetch(`${chat.url}api/shown/${added.shown}?talk=${talk}`)).json()
+  assert.deepEqual(again.args.values, { month: 'Nov' }, 'and so does that place in the conversation: the entry is in what it kept')
 })
 
 test('a change is made to what that widget shows, and a web answer changes as a copy of its own', { skip }, async () => {

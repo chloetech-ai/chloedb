@@ -252,8 +252,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const row = shownId && talk ? await apps.shownOf(shownId, talk) : null
     if (row && row.app === app.id) {
       const tool = app.tools.includes(row.tool) ? row.tool : app.tool
-      const { result, data } = await run(tool, row.args)
-      return { args: row.args, result, data, tool }
+      const args = lasting(row.args)
+      const { result, data } = await run(tool, args)
+      return { args, result, data, tool }
     }
     const was = shown.get(app.id)
     if (was) return was
@@ -314,9 +315,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const app = await apps.get(row.app)
     if (!app) return { removed: true }
     const tool = app.tools.includes(row.tool) ? row.tool : app.tool
-    const { result, data } = await run(tool, row.args)
-    shown.set(app.id, { args: row.args, result, data, tool })
-    return { type: 'app', app: view(app), html: htmlOf(app), tool, args: row.args, result, how: 'again', shown: row.id }
+    // An entry asked for then is in what the app kept: it is not asked for again.
+    const args = lasting(row.args)
+    const { result, data } = await run(tool, args)
+    shown.set(app.id, { args, result, data, tool })
+    return { type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how: 'again', shown: row.id }
   }
 
   const body = req =>

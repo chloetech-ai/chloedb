@@ -371,6 +371,20 @@ function screen() {
   return widgets.slice().reverse().slice(0, 12).map(w => ({ id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told }))
 }
 
+const withoutEntries = payload => {
+  const strip = values => {
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null)) return values
+    const { add, edit, ...rest } = values
+    return rest
+  }
+  const data = payload.result?.structuredContent
+  return {
+    ...payload,
+    args: payload.args?.values ? { ...payload.args, values: strip(payload.args.values) } : payload.args,
+    result: data?.values ? { ...payload.result, structuredContent: { ...data, values: strip(data.values) } } : payload.result,
+  }
+}
+
 async function draw(w) {
   const frame = w.node.querySelector('.frame')
   frame.innerHTML = ''
@@ -423,6 +437,8 @@ async function draw(w) {
   bridge.oninitialized = async () => {
     await bridge.sendToolInput({ arguments: w.payload.args ?? {} })
     await bridge.sendToolResult(w.payload.result)
+    // An entry asked for is sent once: drawn again (a change, an undo), the app has it kept.
+    w.payload = withoutEntries(w.payload)
   }
   await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow))
   iframe.srcdoc = w.payload.html
