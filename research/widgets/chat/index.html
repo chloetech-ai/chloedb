@@ -120,6 +120,7 @@
   .morebox .faint { flex: 1 1 220px; }
   .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
   .sharebox .people { display: contents; }
+  .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
   .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
   .sharebox select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); max-width: 100%; }
   .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
@@ -602,6 +603,123 @@ if (stuck) {
   local.set('instant-apps-froze', JSON.stringify(froze))
 }
 
+// ---- with no signal (MAYA-8, INES-4) ----
+// What each app kept, as last read here, so it opens with no signal; and
+// what was kept with no signal, sent in order when there is some, put
+// together with what the others kept meanwhile (an entry added, changed
+// or taken out here is that, on top of theirs).
+const CACHE = 'instant-apps-cache'
+const OUTBOX = 'instant-apps-outbox'
+const cache = stored(CACHE)
+let outbox = (() => { try { return JSON.parse(local.get(OUTBOX) || '[]') ?? [] } catch { return [] } })()
+const slotOf = id => `${id}|${ownerOf(id)}`
+const saveOffline = () => {
+  local.set(OUTBOX, JSON.stringify(outbox))
+  local.set(CACHE, JSON.stringify(cache))
+}
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+function merged(base, mine, theirs) {
+  if (same(mine, base)) return theirs
+  const listed = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && e.id != null)
+  if (listed(mine) && listed(base ?? []) && listed(theirs ?? [])) {
+    const was = new Map((base ?? []).map(e => [e.id, e]))
+    const now = new Set(mine.map(e => e.id))
+    const out = (theirs ?? []).filter(e => !(was.has(e.id) && !now.has(e.id)))
+    for (const e of mine) {
+      const at = out.findIndex(x => x.id === e.id)
+      if (!was.has(e.id)) at < 0 && out.push(e)
+      else if (!same(e, was.get(e.id))) at < 0 ? out.push(e) : (out[at] = merged(was.get(e.id), e, out[at]))
+    }
+    return out
+  }
+  const plain = v => v && typeof v === 'object' && !Array.isArray(v)
+  if (plain(mine) && plain(base) && plain(theirs)) {
+    const out = { ...theirs }
+    for (const k of new Set([...Object.keys(mine), ...Object.keys(base)])) if (!same(mine[k], base[k])) out[k] = merged(base[k], mine[k], theirs[k])
+    return out
+  }
+  return mine
+}
+const offlineSaid = 'Kept on this phone with no signal. It goes to everyone else when there is signal.'
+function offlineNote(id) {
+  const waiting = outbox.filter(o => o.app === id).length
+  for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node)) {
+    let box = w.node.querySelector('.offline-note')
+    if (!waiting) {
+      if (box) {
+        box.textContent = 'Back online: what was kept with no signal is sent.'
+        setTimeout(() => box.remove(), 4000)
+      }
+      continue
+    }
+    if (!box) {
+      box = el('offline-note', '', w.node)
+      w.node.querySelector('.wbar').after(box)
+    }
+    box.textContent = 'No signal: what you do here is kept on this phone, and sent when there is signal.'
+  }
+}
+const viaServer = async payload => (await fetch('/api/call', { method: 'POST', body: JSON.stringify(payload) })).json()
+let flushing = null
+async function flush() {
+  if (flushing) return flushing
+  flushing = (async () => {
+    const touched = new Set()
+    while (outbox.length && navigator.onLine !== false) {
+      const o = outbox[0]
+      try {
+        const now = (await viaServer({ app: o.app, me: o.me, self: o.self, name: 'app_kept', arguments: { key: o.key } })).structuredContent?.value ?? null
+        const value = merged(o.base, o.value, now)
+        const out = await viaServer({ app: o.app, me: o.me, self: o.self, name: 'app_keep', arguments: { key: o.key, value } })
+        if (out.isError) touched.add(o.app)
+        ;(cache[`${o.app}|${o.me}`] ??= {})[o.key] = out.isError ? now : value
+        if (!same(value, o.value)) touched.add(o.app)
+      } catch {
+        break
+      }
+      outbox.shift()
+      saveOffline()
+      offlineNote(o.app)
+    }
+    // What the others kept meanwhile is drawn, now it's here.
+    for (const w of widgets) if (touched.has(w.app.id) && !w.folded && !w.stub && !w.removed) draw(w)
+  })().finally(() => (flushing = null))
+  return flushing
+}
+window.addEventListener('online', () => flush())
+setInterval(() => outbox.length && flush(), 15000)
+// What an app keeps and reads, through the server, or here with no signal.
+async function keptCall(w, params) {
+  const a = params.arguments ?? {}
+  const slot = slotOf(w.app.id)
+  const payload = { app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }
+  try {
+    if (navigator.onLine === false) throw new TypeError('offline')
+    if (outbox.length) await flush()
+    const result = await viaServer(payload)
+    if (!result.isError) {
+      const mine = (cache[slot] ??= {})
+      if (params.name === 'app_keep') mine[String(a.key)] = a.value ?? null
+      else if (a.all) cache[slot] = { ...result.structuredContent?.values }
+      else mine[String(a.key)] = result.structuredContent?.value ?? null
+      saveOffline()
+    }
+    return result
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    const values = { ...cache[slot] }
+    for (const o of outbox) if (`${o.app}|${o.me}` === slot) values[o.key] = o.value
+    if (params.name === 'app_kept') return { content: [{ type: 'text', text: 'What this app kept, as last seen on this phone (no signal).' }], structuredContent: a.all ? { values } : { key: a.key, value: values[a.key] ?? null } }
+    const key = String(a.key)
+    const waiting = outbox.find(o => o.app === w.app.id && o.me === payload.me && o.key === key)
+    if (waiting) waiting.value = a.value ?? null
+    else outbox.push({ app: w.app.id, me: payload.me, self: me, key, value: a.value ?? null, base: values[key] ?? null, at: Date.now() })
+    saveOffline()
+    offlineNote(w.app.id)
+    return { content: [{ type: 'text', text: offlineSaid }], structuredContent: { key, kept: true, queued: true } }
+  }
+}
+
 async function draw(w) {
   if (!w.folded) inUse(w)
   const frame = w.node.querySelector('.frame')
@@ -653,6 +771,7 @@ async function draw(w) {
       w.node.querySelector('.wbar').after(box)
       return { content: [{ type: 'text', text: 'nothing kept' }], structuredContent: params.arguments?.all ? { values: {} } : { value: null } }
     }
+    if (params.name === 'app_keep' || params.name === 'app_kept') return keptCall(w, params)
     const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }) })).json()
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
     if (!result.isError && params.name === w.app.tool) {
@@ -764,7 +883,7 @@ function stub(body, shown, request) {
     const button = node.querySelector('.reopen')
     if (!button) return
     button.textContent = 'Opening…'
-    const res = await fetch(`/api/shown/${encodeURIComponent(shown.id)}?talk=${talk}`)
+    const res = await fetch(seenHere(`/api/shown/${encodeURIComponent(shown.id)}?talk=${talk}`))
     const ev = await res.json().catch(() => ({}))
     if (!res.ok || ev.removed || w.removed) {
       button.outerHTML = `<span class="gone">${ev.removed || w.removed ? 'This app was removed' : 'It can’t be opened again'}</span>`
@@ -1166,11 +1285,17 @@ async function ask(question) {
   }
 }
 
+// Settles once the page has opened what it opens at the start.
+let loaded = Promise.resolve()
+const openedHere = new Set()
+const shownHere = new Set()
+const seenHere = url => (shownHere.add(url), url)
 async function openFromRail(id, name, how) {
   if (busy) return
   col.querySelector('.hello')?.remove()
   const body = bot()
   const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, body)
+  openedHere.add(id)
   const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) })
   await events(res, async ev => {
     if (ev.type === 'app') {
@@ -1286,16 +1411,30 @@ if (guest) {
   // Only what was given to this browser, each opened as it is now.
   document.querySelector('.top .faint').textContent = 'shared with you by a link'
   el('guest-note', 'This page has only what was shared with you. What you can do is on each app’s bar.', col)
-  ;(async () => {
+  loaded = (async () => {
     for (const id of guestApps()) await openFromRail(id, 'the shared app', 'linked')
   })()
-} else restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
+} else loaded = restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
 // A shared app shows what the others kept since, when the page is looked at again.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return
   for (const w of widgets) if (!w.folded && !w.stub && !w.removed && shared[w.app.id]) draw(w)
 })
 rail()
+// The page opens with no signal too, with what it showed last (MAYA-8).
+// On the first visit the worker starts after the page loaded, so what it
+// loaded is asked for once more, through it, to be there next time.
+if (navigator.serviceWorker && !navigator.serviceWorker.controller) {
+  navigator.serviceWorker.addEventListener('controllerchange', async () => {
+    const drain = r => r.text().catch(() => '')
+    await loaded.catch(() => {})
+    await Promise.all([fetch('/').then(drain), fetch('/bridge.js').then(drain), fetch('/api/apps').then(drain), fetch(`/api/talk?talk=${talk}`).then(drain)].map(p => p.catch(() => {})))
+    for (const url of shownHere) await fetch(url).then(drain).catch(() => {})
+    for (const id of openedHere) await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) }).then(drain).catch(() => {})
+  }, { once: true })
+}
+navigator.serviceWorker?.register('/sw.js').catch(() => {})
+if (outbox.length) flush()
 </script>
 </body>
 </html>

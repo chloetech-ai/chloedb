@@ -238,3 +238,15 @@ test('found facts show money in dollars with commas (MARCUS-6)', async () => {
   for (const name of ['total_with_destination', 'cummins_option', 'msrp', 'price']) assert.ok(MONEY.test(name), name)
   assert.ok(!MONEY.test('towing_lbs'))
 })
+
+test('what was kept with no signal goes on top of what the others kept meanwhile (MAYA-8, INES-4)', async () => {
+  const page = (await import('node:fs')).readFileSync(new URL('../chat/index.html', import.meta.url), 'utf8')
+  const merged = new Function(`${page.match(/const same = [^\n]*/)[0]}\n${page.match(/function merged\([\s\S]*?\n}/)[0]}\nreturn merged`)()
+  const base = [{ id: 'a', item: 'milk', done: false }, { id: 'b', item: 'eggs', done: false }, { id: 'c', item: 'jam', done: false }]
+  // Here: milk ticked, bread added, jam taken out. There: rice added, eggs' amount changed.
+  const mine = [{ id: 'a', item: 'milk', done: true }, { id: 'b', item: 'eggs', done: false }, { id: 'd', item: 'bread', done: false }]
+  const theirs = [{ id: 'a', item: 'milk', done: false }, { id: 'b', item: 'eggs', done: false, amount: 12 }, { id: 'c', item: 'jam', done: false }, { id: 'r', item: 'rice', done: false }]
+  assert.deepEqual(merged(base, mine, theirs), [{ id: 'a', item: 'milk', done: true }, { id: 'b', item: 'eggs', done: false, amount: 12 }, { id: 'r', item: 'rice', done: false }, { id: 'd', item: 'bread', done: false }])
+  assert.deepEqual(merged({ budget: 600, month: 'Nov' }, { budget: 650, month: 'Nov' }, { budget: 600, month: 'Dec' }), { budget: 650, month: 'Dec' }, 'only what changed here')
+  assert.equal(merged(5, 5, 7), 7, 'nothing changed here: theirs')
+})

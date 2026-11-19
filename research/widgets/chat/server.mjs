@@ -68,6 +68,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   const tooMany = 'You’ve asked a lot this hour. Please try again in a little while.'
   apps ??= await Apps.open({ dir: data ?? path.join(os.tmpdir(), 'instant-apps'), log, shared })
   const page = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
+  const worker = readFileSync(new URL('./sw.js', import.meta.url), 'utf8')
   const bridgeJs = await bridge()
   // What each app shown in this process last drew, so a change redraws it
   // with the same data.
@@ -430,6 +431,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const parts = url.pathname.split('/').filter(Boolean)
     try {
       if (req.method === 'GET' && url.pathname === '/') return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page)
+      if (req.method === 'GET' && url.pathname === '/sw.js') return res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' }).end(worker)
       if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true, spend: model.budget?.status() })
       if (req.method === 'GET' && url.pathname === '/bridge.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(bridgeJs)
       if (req.method === 'GET' && url.pathname === '/api/apps') return json(res, { apps: (await apps.saved()).map(view) })
