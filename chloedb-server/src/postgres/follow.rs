@@ -41,6 +41,10 @@ pub struct Options {
     pub copy: bool,
     /// How many tables are copied at once.
     pub copy_workers: usize,
+    /// Tables to copy again once following (`--copy-table`), over the rows
+    /// ChloeDB holds: Postgres's name (`orders`, `sales.orders`) or
+    /// ChloeDB's.
+    pub copy_tables: Vec<String>,
     /// For tests: once this many more writes are done (when set above 0),
     /// the follower stops as if killed.
     pub crash_after: Option<Arc<AtomicU64>>,
@@ -170,6 +174,10 @@ struct Kept {
     /// The tables followed (by Postgres OID): the Strata table, and
     /// whether still followed (rather than taken out of the publication).
     tables: BTreeMap<u32, (String, bool, i64)>,
+    /// The tables whose copy was owed when it stopped (held, or a column
+    /// added whose rows it did not write), by OID, with when it was owed
+    /// (ms).
+    owed: BTreeMap<u32, u64>,
 }
 
 fn pg(e: wire::Error) -> ApiError {
@@ -231,7 +239,17 @@ fn document(rel: &Rel, schema: &Schema, tuple: &[Datum], mut fill: impl FnMut(&s
         let f = &schema.fields[fi];
         let v = match tuple.get(i) {
             None | Some(Datum::Null) => Json::Null,
-            Some(Datum::Text(t)) => json_of(f, &rel.types[i], t).map_err(|e| format!("column {} of {}: {e}", c.name, rel.shown))?,
+            Some(Datum::Text(t)) => {
+                let mut v = json_of(f, &rel.types[i], t).map_err(|e| format!("column {} of {}: {e}", c.name, rel.shown))?;
+                if matches!(f.ty, chloedb::schema::FieldType::Json) && v.is_object() {
+                    // Postgres's jsonb takes an empty key, ChloeDB's JSON
+                    // does not: it is written as EMPTY_KEY (ROSA-402).
+                    rename_empty_keys(&mut v);
+                    // Any other limit names the row it holds back.
+                    chloedb::json::check(&v).map_err(|e| format!("column {} of {}, in the row of key {}: {e}; ChloeDB's JSON keeps at most 16 levels, 1,000 values and paths of 256 bytes", c.name, rel.shown, row_key(rel, tuple)))?;
+                }
+                v
+            }
             Some(Datum::Unchanged) => match fill(&f.name) {
                 Some(v) => v,
                 None => continue,
@@ -303,6 +321,8 @@ struct Stats {
     writes: u64,
     copied: u64,
     skipped: u64,
+    /// Changes of held tables, not applied.
+    skipped_held: u64,
 }
 
 /// How the follower stands, shared with the task that tells ChloeDB
@@ -322,9 +342,57 @@ struct Shared {
     now: Mutex<Now>,
 }
 
+/// A table the follower holds: it stopped following it (ROSA-404), with
+/// the error that stopped it, and tries it again; the other tables go on.
+#[derive(Clone, Debug)]
+struct Held {
+    /// The ChloeDB table, and the Postgres one as `schema.table`.
+    table: String,
+    shown: String,
+    error: String,
+    /// Since when (ms), and how many tries failed since.
+    since_ms: u64,
+    attempts: u32,
+    /// When it is tried again.
+    retry_at: Instant,
+    /// The columns Postgres changed the type of, which are made anew in
+    /// ChloeDB before the table is copied again.
+    retype: Vec<String>,
+}
+
+/// When a held table is tried again.
+enum Retry {
+    Now,
+    /// After a wait that doubles from [`POLL_EVERY`] to [`RETRY_MAX`]
+    /// with each failed try.
+    Later,
+}
+
+/// The longest a held table waits before it is tried again.
+const RETRY_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// Whether `e` is a table's fault (Postgres or ChloeDB refused something
+/// about it: a status of the 4xx), which holds that table; any other
+/// (ChloeDB or Postgres not answering, a test's stop) stops the follower's
+/// session as it did.
+fn table_fault(e: &ApiError) -> bool {
+    // Not a key ChloeDB refuses (401, 403), which is every table's.
+    (400..500).contains(&e.status) && !matches!(e.status, 401 | 403 | 408 | 425 | 429)
+}
+
+/// A table that could not be read from the catalog.
+struct Failed {
+    oid: u32,
+    table: String,
+    shown: String,
+    error: ApiError,
+}
+
 /// The follower's state and errors.
 #[derive(Default)]
 struct Now {
+    /// Each table followed or held, as the status shows it.
+    tables: Vec<Json>,
     /// `starting`, `copying`, `following`, `retrying` (the stream or
     /// ChloeDB failed, and it connects again) or `failed` (it stopped).
     state: &'static str,
@@ -346,6 +414,11 @@ impl Shared {
             n.last_error = Some((e.clone(), crate::telemetry::now_ms()));
         }
         n.error = error;
+    }
+
+    /// Keeps `error` as the last one, without changing the state.
+    fn note_error(&self, error: String) {
+        self.now.lock().unwrap_or_else(|e| e.into_inner()).last_error = Some((error, crate::telemetry::now_ms()));
     }
 
     fn copying(&self, table: Option<String>) {
@@ -408,7 +481,7 @@ fn status_body(info: &Info, sh: &Shared, flushed: Lsn) -> Json {
         "copying": n.copying, "error": n.error,
         "last_error": n.last_error.as_ref().map(|(m, at)| json!({"message": m, "at_ms": at})),
         "postgres_error": n.postgres_error,
-        "tables": sh.tables.load(Ordering::Relaxed), "transactions": sh.transactions.load(Ordering::Relaxed), "changes": sh.changes.load(Ordering::Relaxed),
+        "tables": sh.tables.load(Ordering::Relaxed), "held_tables": n.tables.iter().filter(|t| t["state"] == "held").count(), "table_states": n.tables, "transactions": sh.transactions.load(Ordering::Relaxed), "changes": sh.changes.load(Ordering::Relaxed),
         "rows_copied": sh.rows_copied.load(Ordering::Relaxed),
         "started_ms": info.started_ms, "time_ms": crate::telemetry::now_ms(),
     })
@@ -485,6 +558,11 @@ struct Follower {
     tables: HashMap<String, Arc<Schema>>,
     /// The tables followed, by OID: Strata's name.
     followed: BTreeMap<u32, String>,
+    /// The tables held (ROSA-404), by OID: followed ones (their rows stay,
+    /// and writes to them stay refused) or not yet joined.
+    held: BTreeMap<u32, Held>,
+    /// The operations of the last write ChloeDB refused.
+    rejected: Option<Vec<Json>>,
     types: HashMap<u32, PgType>,
     /// This session's relations, from the stream.
     rels: HashMap<u32, Arc<Rel>>,
@@ -534,8 +612,18 @@ async fn follow_all(f: &mut Follower) -> Result<(), ApiError> {
             let at = kept.applied.unwrap_or(0);
             f.written = at;
             f.flushed.store(at, Ordering::Relaxed);
+            // Copies owed when it stopped (a table held, or a column added
+            // whose rows Postgres wrote) are made again, one table at a time,
+            // while the others follow.
+            for (oid, since_ms) in &kept.owed {
+                if let Some(t) = f.followed.get(oid).cloned() {
+                    let error = "a copy of it was owed when the follower stopped: copying it again".to_string();
+                    f.held.insert(*oid, Held { table: t.clone(), shown: t, error, since_ms: *since_ms, attempts: 0, retry_at: Instant::now(), retype: Vec::new() });
+                }
+            }
+            f.asked(&kept).await?;
             f.mirror();
-            tracing::info!(slot = %f.slot, at = %lsn_text(at), tables = f.followed.len(), "resuming from what ChloeDB applied");
+            tracing::info!(slot = %f.slot, at = %lsn_text(at), tables = f.followed.len(), held = f.held.len(), "resuming from what ChloeDB applied");
             None
         }
         (resume, s) => {
@@ -611,6 +699,8 @@ impl Follower {
             copy: 0,
             tables: HashMap::new(),
             followed: BTreeMap::new(),
+            held: BTreeMap::new(),
+            rejected: None,
             types: HashMap::new(),
             rels: HashMap::new(),
             written: 0,
@@ -625,6 +715,24 @@ impl Follower {
         })
     }
 
+    /// Holds the tables `--copy-table` names (ROSA-403), to be copied
+    /// again at once: the rows ChloeDB holds stay readable until the new
+    /// copy is in, and the other tables follow meanwhile.
+    async fn asked(&mut self, _kept: &Kept) -> Result<(), ApiError> {
+        for name in self.o.copy_tables.clone() {
+            let want = match name.split_once('.') {
+                Some((schema, table)) => table_name(schema, table),
+                None => name.clone(),
+            };
+            let Some((oid, table)) = self.followed.iter().find(|(_, t)| t.eq_ignore_ascii_case(&want)).map(|(o, t)| (*o, t.clone())) else {
+                let have: Vec<&str> = self.followed.values().map(String::as_str).collect();
+                return Err(ApiError::bad(format!("--copy-table {name}: no such table is followed here (ChloeDB's names of the tables it follows: {})", have.join(", "))));
+            };
+            self.hold(oid, &table, &table, "a copy of it was asked for (--copy-table)".to_string(), Retry::Now, Vec::new()).await?;
+        }
+        Ok(())
+    }
+
     /// What the reporter shows of the follower's own counts.
     fn mirror(&self) {
         let sh = &self.shared;
@@ -633,6 +741,49 @@ impl Follower {
         sh.changes.store(self.stats.changes, Ordering::Relaxed);
         sh.tables.store(self.followed.len() as u64, Ordering::Relaxed);
         sh.rows_copied.store(self.stats.copied, Ordering::Relaxed);
+        let mut states: Vec<Json> = self
+            .followed
+            .iter()
+            .map(|(oid, t)| match self.held.get(oid) {
+                Some(h) => self.held_json(h),
+                None => json!({"table": t, "state": "following"}),
+            })
+            .collect();
+        states.extend(self.held.iter().filter(|(oid, _)| !self.followed.contains_key(oid)).map(|(_, h)| self.held_json(h)));
+        sh.now.lock().unwrap_or_else(|e| e.into_inner()).tables = states;
+    }
+
+    fn held_json(&self, h: &Held) -> Json {
+        json!({
+            "table": h.table, "postgres_table": h.shown, "state": "held", "error": h.error, "since_ms": h.since_ms, "attempts": h.attempts,
+            "retry_in_s": h.retry_at.saturating_duration_since(Instant::now()).as_secs(),
+        })
+    }
+
+    /// Holds table `oid`: it stops following, with `error`, and is tried
+    /// again; the stream's changes of it are skipped and every other table
+    /// goes on (ROSA-404). A followed table's owed copy is marked, so that
+    /// a follower started again still owes it, and the table stays
+    /// guarded from writes here.
+    async fn hold(&mut self, oid: u32, table: &str, shown: &str, error: String, retry: Retry, retype: Vec<String>) -> Result<(), ApiError> {
+        let was = self.held.get(&oid).cloned();
+        let attempts = was.as_ref().map_or(0, |h| h.attempts + matches!(retry, Retry::Later) as u32);
+        let wait = match retry {
+            Retry::Now => Duration::ZERO,
+            Retry::Later => (POLL_EVERY * 2u32.saturating_pow(attempts.min(10))).min(RETRY_MAX),
+        };
+        let since_ms = was.as_ref().map_or_else(crate::telemetry::now_ms, |h| h.since_ms);
+        self.shared.copying(None);
+        tracing::warn!(table = %shown, into = %table, "holding the table (it stops following; the others go on, and it is tried again): {error}");
+        self.shared.note_error(format!("table {shown}: {error}"));
+        let retype = if retype.is_empty() { was.map(|h| h.retype).unwrap_or_default() } else { retype };
+        let fresh = !self.held.contains_key(&oid);
+        self.held.insert(oid, Held { table: table.to_string(), shown: shown.to_string(), error, since_ms, attempts, retry_at: Instant::now() + wait, retype });
+        if fresh && self.followed.contains_key(&oid) {
+            self.write(vec![mark(self.names.again(self.copy, oid), since_ms as i64 * 2 + 1)]).await?;
+        }
+        self.mirror();
+        Ok(())
     }
 
     /// The catalog connection, connected again if it was lost.
@@ -744,6 +895,13 @@ impl Follower {
                 *e = (table.to_string(), offset % 2 == 1, *offset);
             }
         }
+        let again = format!("postgres/{}/{c}/again/", self.o.name);
+        for (name, offset) in &all {
+            let Some(oid) = name.strip_prefix(&again).and_then(|o| o.parse::<u32>().ok()) else { continue };
+            if offset % 2 == 1 {
+                k.owed.insert(oid, (*offset / 2) as u64);
+            }
+        }
         Ok(k)
     }
 
@@ -836,8 +994,10 @@ impl Follower {
         Ok(Rel { oid, shown, table, columns, types, key, attnums, filter, schema_name: schema.to_string(), rel_name: name.to_string() })
     }
 
-    /// The publication's tables now, from the catalog, with their columns.
-    async fn publication(&mut self) -> Result<Vec<Rel>, ApiError> {
+    /// The publication's tables now, from the catalog, with their columns;
+    /// and those whose key or columns it cannot make a table of (they
+    /// are held, and do not stop the others).
+    async fn publication(&mut self) -> Result<(Vec<Rel>, Vec<Failed>), ApiError> {
         let v = self.conn().await?.version;
         let extra = if v >= 150000 { ", p.attnames::text AS attnames, p.rowfilter" } else { "" };
         let r = self
@@ -849,6 +1009,7 @@ impl Follower {
             ))
             .await?;
         let mut out = Vec::new();
+        let mut failed = Vec::new();
         for i in 0..r.rows.len() {
             let oid: u32 = r.get(i, "oid").and_then(|o| o.parse().ok()).unwrap_or(0);
             let (schema, name) = (r.get(i, "schemaname").unwrap_or_default().to_string(), r.get(i, "tablename").unwrap_or_default().to_string());
@@ -865,9 +1026,13 @@ impl Follower {
                 .filter(|c| only.as_ref().is_none_or(|o| o.contains(&c.name)))
                 .collect();
             let filter = r.get(i, "rowfilter").map(String::from);
-            out.push(self.rel_of(oid, &schema, &name, columns, filter).await?);
+            match self.rel_of(oid, &schema, &name, columns, filter).await {
+                Ok(rel) => out.push(rel),
+                Err(error) if table_fault(&error) => failed.push(Failed { oid, table: table_name(&schema, &name), shown: format!("{}.{}", wire::ident(&schema), wire::ident(&name)), error }),
+                Err(e) => return Err(e),
+            }
         }
-        Ok(out)
+        Ok((out, failed))
     }
 
     /// Makes `rel`'s Strata table, or adds the columns it lacks; answers
@@ -987,14 +1152,14 @@ impl Follower {
             return Ok(());
         }
         let mut rel = rel.clone();
-        if let Some(p) = self.publication().await?.into_iter().find(|p| p.oid == rel.oid) {
+        if let Some(p) = self.publication().await?.0.into_iter().find(|p| p.oid == rel.oid) {
             rel.filter = p.filter;
         }
         let schema = self.schema(&rel.table)?;
         self.shared.copying(Some(rel.shown.clone()));
         let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
         conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
-        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied).await?;
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied, None).await?;
         conn.query("COMMIT").await.map_err(pg)?;
         conn.close().await;
         self.shared.copying(None);
@@ -1013,7 +1178,7 @@ impl Follower {
         if ops.is_empty() {
             return Ok(json!({}));
         }
-        let body = json!({"ops": ops});
+        let mut body = json!({"ops": ops});
         let mut wait = Duration::from_millis(200);
         let j = loop {
             match self.dst.post("/v1/write", &body).await {
@@ -1023,7 +1188,14 @@ impl Follower {
                     tokio::time::sleep(wait).await;
                     wait = (wait * 2).min(Duration::from_secs(5));
                 }
-                Err(e) => return Err(ApiError { code: None, status: e.status, message: format!("writing to ChloeDB: {}", e.message) }),
+                Err(e) => {
+                    // A refusal (4xx) hands the operations back, for
+                    // [`Self::flush`] to tell which table it is the fault of.
+                    if (400..500).contains(&e.status) {
+                        self.rejected = body["ops"].take().as_array().cloned();
+                    }
+                    return Err(ApiError { code: None, status: e.status, message: format!("writing to ChloeDB: {}", e.message) });
+                }
             }
         };
         self.stats.writes += 1;
@@ -1056,12 +1228,27 @@ impl Follower {
         // The tables first, so that one Strata cannot key stops the copy
         // before a slot keeps WAL for it. (One that joins the publication
         // meanwhile is copied when the stream names it.)
-        let rels = self.publication().await?;
+        let (all, unreadable) = self.publication().await?;
+        // A table that cannot be made one here is held, and the others
+        // are copied (ROSA-404).
+        for f in unreadable {
+            self.hold(f.oid, &f.table, &f.shown, f.error.message, Retry::Later, Vec::new()).await?;
+        }
         let mut names: HashMap<String, u32> = HashMap::new();
-        for r in &rels {
+        let mut rels = Vec::new();
+        for r in all {
             if let Some(other) = names.insert(r.table.to_ascii_lowercase(), r.oid) {
-                return Err(ApiError::bad(format!("two Postgres tables become ChloeDB table {} (OIDs {other} and {})", r.table, r.oid)));
+                let why = format!("two Postgres tables become ChloeDB table {} (OIDs {other} and {}): rename one", r.table, r.oid);
+                self.hold(r.oid, &r.table, &r.shown, why, Retry::Later, Vec::new()).await?;
+                continue;
             }
+            rels.push(r);
+        }
+        // Not one table it can follow: nothing to follow until the tables
+        // are fixed, which a start says at once rather than holding them.
+        if rels.is_empty() && !self.held.is_empty() {
+            let why: Vec<String> = self.held.values().map(|h| format!("{}: {}", h.shown, h.error)).collect();
+            return Err(ApiError::bad(format!("none of the publication's tables can be followed: {}", why.join("; "))));
         }
         if slot_exists {
             tracing::info!(slot = %self.slot, "dropping the slot, to copy afresh");
@@ -1081,12 +1268,25 @@ impl Follower {
             tracing::warn!(publication = %self.o.publication, "the publication has no tables yet: following it, for those it gains");
         }
         self.followed.clear();
+        let mut ready = Vec::new();
         for r in &rels {
-            if self.ensure_table(r).await? {
-                self.sql(&format!("DELETE FROM {}", ident(&r.table))).await?;
+            let made: Result<(), ApiError> = async {
+                if self.ensure_table(r).await? {
+                    self.sql(&format!("DELETE FROM {}", ident(&r.table))).await?;
+                }
+                Ok(())
             }
-            self.followed.insert(r.oid, r.table.clone());
+            .await;
+            match made {
+                Ok(()) => {
+                    self.followed.insert(r.oid, r.table.clone());
+                    ready.push(r.clone());
+                }
+                Err(e) if table_fault(&e) => self.hold(r.oid, &r.table, &r.shown, e.message, Retry::Later, Vec::new()).await?,
+                Err(e) => return Err(e),
+            }
         }
+        let rels = ready;
         let t0 = Instant::now();
         let queue = Arc::new(tokio::sync::Mutex::new(rels.clone()));
         let mut workers = tokio::task::JoinSet::new();
@@ -1094,23 +1294,39 @@ impl Follower {
             let (cfg, dst, queue, snapshot, batch, shared) = (self.cfg.clone(), self.dst.clone(), queue.clone(), snapshot.clone(), self.o.batch, self.shared.clone());
             let tables = self.tables.clone();
             workers.spawn(async move {
-                let mut conn = Conn::connect(&cfg, false).await.map_err(pg)?;
-                conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
-                conn.query(&format!("SET TRANSACTION SNAPSHOT {}", literal(&snapshot))).await.map_err(pg)?;
-                let mut rows = 0;
+                let begin = || async {
+                    let mut conn = Conn::connect(&cfg, false).await.map_err(pg)?;
+                    conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
+                    conn.query(&format!("SET TRANSACTION SNAPSHOT {}", literal(&snapshot))).await.map_err(pg)?;
+                    Ok::<Conn, ApiError>(conn)
+                };
+                let mut conn = begin().await?;
+                let (mut rows, mut failed) = (0, Vec::new());
                 loop {
                     let Some(rel) = queue.lock().await.pop() else { break };
                     let schema = tables.get(&rel.table.to_ascii_lowercase()).cloned().ok_or_else(|| ApiError::internal(format!("table {} is not in ChloeDB", rel.table)))?;
-                    rows += copy_table(&mut conn, &dst, &rel, &schema, batch, &shared.rows_copied).await?;
+                    match copy_table(&mut conn, &dst, &rel, &schema, batch, &shared.rows_copied, None).await {
+                        Ok(n) => rows += n,
+                        // One table's fault: the others are copied, and
+                        // this one held (its connection is mid-COPY).
+                        Err(e) if table_fault(&e) => {
+                            failed.push((rel.oid, rel.table.clone(), rel.shown.clone(), e.message));
+                            conn = begin().await?;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 conn.query("COMMIT").await.map_err(pg)?;
                 conn.close().await;
-                Ok::<u64, ApiError>(rows)
+                Ok::<(u64, Vec<(u32, String, String, String)>), ApiError>((rows, failed))
             });
         }
         let mut rows = 0;
+        let mut failed = Vec::new();
         while let Some(r) = workers.join_next().await {
-            rows += r.map_err(|e| ApiError::internal(format!("a copy worker: {e}")))??;
+            let (n, f) = r.map_err(|e| ApiError::internal(format!("a copy worker: {e}")))??;
+            rows += n;
+            failed.extend(f);
         }
         self.stats.copied += rows;
         let now = crate::telemetry::now_ms() as i64;
@@ -1118,6 +1334,10 @@ impl Follower {
         marks.push(mark(self.names.copied(self.copy), at as i64));
         marks.push(mark(self.names.applied(self.copy), at as i64));
         self.write(marks).await?;
+        // Held after their marks: followed, with their copy owed.
+        for (oid, table, shown, why) in failed {
+            self.hold(oid, &table, &shown, why, Retry::Later, Vec::new()).await?;
+        }
         self.written = at;
         self.base = 0;
         self.mirror();
@@ -1134,7 +1354,7 @@ impl Follower {
         }
         // With its row filter, from the catalog.
         if rel.filter.is_none() {
-            if let Some(p) = self.publication().await?.into_iter().find(|p| p.oid == rel.oid) {
+            if let Some(p) = self.publication().await?.0.into_iter().find(|p| p.oid == rel.oid) {
                 rel.filter = p.filter;
             }
         }
@@ -1146,7 +1366,7 @@ impl Follower {
         self.shared.copying(Some(rel.shown.clone()));
         let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
         conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
-        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied).await?;
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied, None).await?;
         conn.query("COMMIT").await.map_err(pg)?;
         conn.close().await;
         self.shared.copying(None);
@@ -1157,25 +1377,194 @@ impl Follower {
         Ok(())
     }
 
-    /// Looks for tables that joined the publication, or left it.
+    /// No longer follows table `oid` (it left the publication): its rows
+    /// stay, and it takes writes again.
+    async fn leave(&mut self, oid: u32, table: &str) -> Result<(), ApiError> {
+        tracing::info!(table = %table, "a table left the publication: no longer following it (its rows stay)");
+        if self.followed.contains_key(&oid) {
+            self.write(vec![mark(self.names.table(self.copy, oid, table), crate::telemetry::now_ms() as i64 * 2)]).await?;
+        }
+        self.followed.remove(&oid);
+        self.rels.remove(&oid);
+        self.held.remove(&oid);
+        Ok(())
+    }
+
+    /// Looks for tables that joined the publication, or left it, and tries
+    /// the tables held again.
     async fn poll(&mut self) -> Result<(), ApiError> {
         self.polled = Instant::now();
-        let now: Vec<Rel> = self.publication().await?;
-        let ids: HashSet<u32> = now.iter().map(|r| r.oid).collect();
-        let left: Vec<(u32, String)> = self.followed.iter().filter(|(o, _)| !ids.contains(o)).map(|(o, t)| (*o, t.clone())).collect();
+        let (now, unreadable) = self.publication().await?;
+        let ids: HashSet<u32> = now.iter().map(|r| r.oid).chain(unreadable.iter().map(|f| f.oid)).collect();
+        let left: Vec<(u32, String)> = self.followed.iter().chain(self.held.iter().map(|(o, h)| (o, &h.table))).filter(|(o, _)| !ids.contains(o)).map(|(o, t)| (*o, t.clone())).collect();
         for (oid, table) in left {
-            tracing::info!(table = %table, "a table left the publication: no longer following it (its rows stay)");
-            self.write(vec![mark(self.names.table(self.copy, oid, &table), crate::telemetry::now_ms() as i64 * 2)]).await?;
-            self.followed.remove(&oid);
-            self.rels.remove(&oid);
+            self.leave(oid, &table).await?;
+        }
+        for f in unreadable {
+            if !self.held.contains_key(&f.oid) {
+                self.hold(f.oid, &f.table, &f.shown, f.error.message, Retry::Later, Vec::new()).await?;
+            }
         }
         for rel in now {
-            if !self.followed.contains_key(&rel.oid) {
-                self.copy_added(rel).await?;
+            if self.followed.contains_key(&rel.oid) || self.held.contains_key(&rel.oid) {
+                continue;
+            }
+            match self.copy_added(rel.clone()).await {
+                Err(e) if table_fault(&e) => self.hold(rel.oid, &rel.table, &rel.shown, e.message, Retry::Later, Vec::new()).await?,
+                r => r?,
+            }
+        }
+        self.mirror();
+        self.retry_held().await
+    }
+
+    /// Whether a table held is due to be tried again.
+    fn retry_due(&self) -> bool {
+        let now = Instant::now();
+        self.held.values().any(|h| h.retry_at <= now)
+    }
+
+    /// Tries the tables held that are due again: each is copied again (over
+    /// the rows ChloeDB holds, which stay readable meanwhile) and followed
+    /// again, or stays held with the error of this try.
+    async fn retry_held(&mut self) -> Result<(), ApiError> {
+        let now = Instant::now();
+        let due: Vec<u32> = self.held.iter().filter(|(_, h)| h.retry_at <= now).map(|(o, _)| *o).collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        let (rels, unreadable) = self.publication().await?;
+        for oid in due {
+            let Some(h) = self.held.get(&oid).cloned() else { continue };
+            if let Some(f) = unreadable.iter().find(|f| f.oid == oid) {
+                self.hold(oid, &h.table, &h.shown, f.error.message.clone(), Retry::Later, Vec::new()).await?;
+                continue;
+            }
+            let Some(rel) = rels.iter().find(|r| r.oid == oid).cloned() else {
+                self.leave(oid, &h.table).await?;
+                continue;
+            };
+            match self.recopy(rel, &h).await {
+                Ok(()) => {}
+                Err(e) if table_fault(&e) => self.hold(oid, &h.table, &h.shown, e.message, Retry::Later, Vec::new()).await?,
+                Err(e) => return Err(e),
             }
         }
         self.mirror();
         Ok(())
+    }
+
+    /// Copies a table held again, as of now: one that joined none yet as a
+    /// table that joins; a followed one over the rows ChloeDB holds, which
+    /// stay readable until the new copy is in, and then the rows Postgres
+    /// no longer has deleted. The stream's changes since bring it on, as
+    /// for a table that joins; then it is followed again.
+    async fn recopy(&mut self, mut rel: Rel, h: &Held) -> Result<(), ApiError> {
+        if !self.followed.contains_key(&rel.oid) {
+            self.copy_added(rel.clone()).await?;
+            self.held.remove(&rel.oid);
+            self.rels.insert(rel.oid, Arc::new(rel));
+            return Ok(());
+        }
+        tracing::info!(table = %rel.shown, into = %rel.table, "copying the table again: {}", h.error);
+        // Columns whose type Postgres changed are made anew, which ChloeDB
+        // cannot change in place: they read NULL until the copy writes them.
+        for c in &h.retype {
+            let schema = self.schema(&rel.table)?;
+            if rel.key.iter().any(|&k| rel.columns[k].name.eq_ignore_ascii_case(c)) {
+                return Err(ApiError::bad(format!("the key column {c} of {} changed type, which ChloeDB cannot change in place: copy everything again (--copy), or take the table out of the publication and put it back", rel.shown)));
+            }
+            if schema.field_index(c).is_some() {
+                let sql = format!("ALTER TABLE {} DROP COLUMN {}", ident(&rel.table), ident(c));
+                tracing::info!(table = %rel.table, "Postgres changed the type of column {c}: {sql}, and it is added again");
+                if let Err(e) = self.sql(&sql).await {
+                    self.load_tables().await?;
+                    if self.schema(&rel.table)?.field_index(c).is_some() {
+                        return Err(e);
+                    }
+                }
+                self.load_tables().await?;
+            }
+        }
+        if let Some(p) = self.publication().await?.0.into_iter().find(|p| p.oid == rel.oid) {
+            rel.filter = p.filter;
+        }
+        self.ensure_table(&rel).await?;
+        let schema = self.schema(&rel.table)?;
+        self.shared.copying(Some(rel.shown.clone()));
+        let mut conn = Conn::connect(&self.cfg, false).await.map_err(pg)?;
+        conn.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").await.map_err(pg)?;
+        let mut track = Track::default();
+        let rows = copy_table(&mut conn, &self.dst, &rel, &schema, self.o.batch, &self.shared.rows_copied, Some(&mut track)).await?;
+        conn.query("COMMIT").await.map_err(pg)?;
+        conn.close().await;
+        let gone = self.sweep(&rel, &schema, &track, rows).await?;
+        self.shared.copying(None);
+        self.stats.copied += rows;
+        // Made: the owed mark after the owed one.
+        let made = crate::telemetry::now_ms().max(h.since_ms + 1) as i64 * 2;
+        self.write(vec![mark(self.names.again(self.copy, rel.oid), made), mark(self.names.table(self.copy, rel.oid, &rel.table), made.max(crate::telemetry::now_ms() as i64 * 2) + 1)]).await?;
+        self.held.remove(&rel.oid);
+        self.rels.insert(rel.oid, Arc::new(rel.clone()));
+        self.mirror();
+        tracing::info!(table = %rel.table, rows, deleted = gone, "copied the table again: following it");
+        Ok(())
+    }
+
+    /// Deletes the rows ChloeDB holds of `rel` whose keys Postgres's copy
+    /// did not name (`track`: those it wrote, `rows` of them): found by
+    /// counting first, which costs nothing when there are none.
+    async fn sweep(&mut self, rel: &Rel, schema: &Schema, track: &Track, rows: u64) -> Result<u64, ApiError> {
+        let Some(pk) = schema.primary_key.map(|p| schema.fields[p].name.clone()) else { return Ok(0) };
+        let dst = self.dst.clone();
+        let read = |sql: String| {
+            let mut body = json!({"sql": sql});
+            if !track.seen.is_empty() {
+                body["min_seq_nos"] = json!(track.seen);
+            }
+            let dst = dst.clone();
+            async move { retry("a read from ChloeDB", || dst.post("/v1/sql", &body)).await }
+        };
+        // Everything written is read: wait for the count to reach it.
+        let until = Instant::now() + Duration::from_secs(30);
+        let have = loop {
+            let j = read(format!("SELECT COUNT(*) FROM {}", ident(&rel.table))).await?;
+            let n = j["rows"][0][0].as_u64().unwrap_or(0);
+            if n >= rows || Instant::now() > until {
+                break n;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        if have <= rows {
+            return Ok(0);
+        }
+        let (mut last, mut deleted, mut scanned, mut first): (Option<Json>, u64, u64, bool) = (None, 0, 0, true);
+        loop {
+            let after = match &last {
+                None => String::new(),
+                Some(Json::String(k)) => format!(" WHERE {} > {}", ident(&pk), literal(k)),
+                Some(k) => format!(" WHERE {} > {k}", ident(&pk)),
+            };
+            let j = read(format!("SELECT {pk} FROM {t}{after} ORDER BY {pk} LIMIT 5000", pk = ident(&pk), t = ident(&rel.table))).await?;
+            let keys: Vec<Json> = j["rows"].as_array().into_iter().flatten().filter_map(|r| r.get(0).cloned()).collect();
+            if keys.is_empty() {
+                break;
+            }
+            scanned += keys.len() as u64;
+            last = keys.last().cloned();
+            let stale: Vec<Json> = keys.into_iter().filter(|k| !track.keys.contains(&key_hash(k))).map(|k| json!({"op": "delete", "table": rel.table, "key": k})).collect();
+            // The first keys all unknown: the keys read may not match the
+            // keys written (a type), and nothing is deleted on that.
+            if first && rows > 0 && stale.len() as u64 == scanned {
+                return Err(ApiError::bad(format!("copying {} again: none of the keys ChloeDB holds is one Postgres has, so none is deleted: copy again (--copy)", rel.shown)));
+            }
+            first = false;
+            deleted += stale.len() as u64;
+            for chunk in stale.chunks(self.o.batch.max(1)) {
+                self.write(chunk.to_vec()).await?;
+            }
+        }
+        Ok(deleted)
     }
 
     /// Follows the slot's stream, from `start` (a copy's connection and
@@ -1268,6 +1657,8 @@ impl Follower {
                     if open.is_none() && buf.ops.is_empty() {
                         if self.polled.elapsed() >= POLL_EVERY {
                             self.poll().await?;
+                        } else if self.retry_due() {
+                            self.retry_held().await?;
                         }
                         self.log();
                     }
@@ -1324,44 +1715,47 @@ impl Follower {
                     return Ok(());
                 }
                 self.flush(buf).await?;
-            }
-            Message::Relation(r) => self.relation(r, buf).await?,
-            Message::Type { .. } | Message::Other(_) => {}
-            Message::Insert { rel, new } => {
-                let r = self.rel(rel)?;
-                let schema = self.schema(&r.table)?;
-                let doc = document(&r, &schema, &new, |_| None).map_err(ApiError::bad)?;
-                self.push(buf, open, json!({"op": "upsert", "table": r.table, "doc": doc}), &schema, size(&new)).await?;
-            }
-            Message::Update { rel, old, new } => {
-                let r = self.rel(rel)?;
-                let schema = self.schema(&r.table)?;
-                let bytes = size(&new) + old.as_ref().map_or(0, |o| size(o.tuple()));
-                let key = key_of(&r, &schema, &new).map_err(ApiError::bad)?;
-                // The row's key before: changed, the old row is deleted.
-                let was = match &old {
-                    Some(o) => {
-                        let k = key_of(&r, &schema, o.tuple()).map_err(ApiError::bad)?;
-                        (k != key).then_some(k)
-                    }
-                    None => None,
-                };
-                let from_key = was.clone().unwrap_or_else(|| key.clone());
-                let filled = self.unchanged(&r, &schema, &old, &new, &from_key, buf).await?;
-                let doc = document(&r, &schema, &new, |c| filled.get(c).cloned()).map_err(ApiError::bad)?;
-                if let Some(k) = was {
-                    self.push(buf, open, json!({"op": "delete", "table": r.table, "key": k}), &schema, 0).await?;
+                // A table held and due is tried again between
+                // transactions, not only when the stream is quiet.
+                if open.is_none() && buf.ops.is_empty() && self.retry_due() {
+                    self.retry_held().await?;
                 }
-                self.push(buf, open, json!({"op": "upsert", "table": r.table, "doc": doc}), &schema, bytes).await?;
             }
-            Message::Delete { rel, old } => {
-                let r = self.rel(rel)?;
-                let schema = self.schema(&r.table)?;
-                let key = key_of(&r, &schema, old.tuple()).map_err(ApiError::bad)?;
-                self.push(buf, open, json!({"op": "delete", "table": r.table, "key": key}), &schema, size(old.tuple())).await?;
+            Message::Relation(r) => {
+                let oid = r.oid;
+                if self.held.contains_key(&oid) {
+                    // Described again when it is followed again.
+                    return Ok(());
+                }
+                let (table, shown) = (self.followed.get(&oid).cloned().unwrap_or_else(|| table_name(&r.namespace, &r.name)), format!("{}.{}", wire::ident(&r.namespace), wire::ident(&r.name)));
+                match self.relation(r, buf).await {
+                    Err(e) if table_fault(&e) => self.hold(oid, &table, &shown, e.message, Retry::Later, Vec::new()).await?,
+                    r => r?,
+                }
+            }
+            Message::Type { .. } | Message::Other(_) => {}
+            Message::Insert { rel, .. } | Message::Update { rel, .. } | Message::Delete { rel, .. } => {
+                if self.held.contains_key(&rel) {
+                    self.stats.skipped_held += 1;
+                    return Ok(());
+                }
+                match self.change(m, buf).await {
+                    Ok(ops) => {
+                        for (op, schema, bytes) in ops {
+                            self.push(buf, open, op, &schema, bytes).await?;
+                        }
+                    }
+                    // A value or a key this table cannot take holds the
+                    // table, not the follower (ROSA-404).
+                    Err(e) if table_fault(&e) => {
+                        let (table, shown) = self.rels.get(&rel).map_or_else(|| (self.followed.get(&rel).cloned().unwrap_or_default(), format!("relation {rel}")), |r| (r.table.clone(), r.shown.clone()));
+                        self.hold(rel, &table, &shown, e.message, Retry::Later, Vec::new()).await?;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Message::Truncate { rels } => {
-                let tables: Vec<String> = rels.iter().filter_map(|o| self.rels.get(o).map(|r| r.table.clone())).collect();
+                let tables: Vec<String> = rels.iter().filter(|o| !self.held.contains_key(o)).filter_map(|o| self.rels.get(o).map(|r| r.table.clone())).collect();
                 if tables.is_empty() {
                     return Ok(());
                 }
@@ -1391,6 +1785,49 @@ impl Follower {
             }
         }
         Ok(())
+    }
+
+    /// The operations of a row's change, with the schema each is written by
+    /// and its bytes: what a failure of is the table's.
+    async fn change(&mut self, m: Message, buf: &Buffer) -> Result<Vec<(Json, Arc<Schema>, usize)>, ApiError> {
+        let mut out = Vec::new();
+        match m {
+            Message::Insert { rel, new } => {
+                let r = self.rel(rel)?;
+                let schema = self.schema(&r.table)?;
+                let doc = document(&r, &schema, &new, |_| None).map_err(ApiError::bad)?;
+                out.push((json!({"op": "upsert", "table": r.table, "doc": doc}), schema, size(&new)));
+            }
+            Message::Update { rel, old, new } => {
+                let r = self.rel(rel)?;
+                let schema = self.schema(&r.table)?;
+                let bytes = size(&new) + old.as_ref().map_or(0, |o| size(o.tuple()));
+                let key = key_of(&r, &schema, &new).map_err(ApiError::bad)?;
+                // The row's key before: changed, the old row is deleted.
+                let was = match &old {
+                    Some(o) => {
+                        let k = key_of(&r, &schema, o.tuple()).map_err(ApiError::bad)?;
+                        (k != key).then_some(k)
+                    }
+                    None => None,
+                };
+                let from_key = was.clone().unwrap_or_else(|| key.clone());
+                let filled = self.unchanged(&r, &schema, &old, &new, &from_key, buf).await?;
+                let doc = document(&r, &schema, &new, |c| filled.get(c).cloned()).map_err(ApiError::bad)?;
+                if let Some(k) = was {
+                    out.push((json!({"op": "delete", "table": r.table, "key": k}), schema.clone(), 0));
+                }
+                out.push((json!({"op": "upsert", "table": r.table, "doc": doc}), schema, bytes));
+            }
+            Message::Delete { rel, old } => {
+                let r = self.rel(rel)?;
+                let schema = self.schema(&r.table)?;
+                let key = key_of(&r, &schema, old.tuple()).map_err(ApiError::bad)?;
+                out.push((json!({"op": "delete", "table": r.table, "key": key}), schema, size(old.tuple())));
+            }
+            _ => {}
+        }
+        Ok(out)
     }
 
     /// The relation a change names, as this session's stream described it.
@@ -1438,6 +1875,66 @@ impl Follower {
         self.flush(buf).await
     }
 
+    /// Writes `ops`; if ChloeDB refuses them for a table's sake (it is
+    /// gone, or the error names it), holds that table and writes the rest
+    /// (ROSA-404), so that one table cannot stop the others.
+    async fn write_isolating(&mut self, ops: Vec<Json>) -> Result<(), ApiError> {
+        let mut ops = ops;
+        loop {
+            let e = match self.write(ops).await {
+                Ok(_) => return Ok(()),
+                Err(e) => e,
+            };
+            let Some(back) = self.rejected.take().filter(|_| table_fault(&e)) else { return Err(e) };
+            self.load_tables().await?;
+            let message = e.message.to_ascii_lowercase();
+            let mut culprits: Vec<(u32, String)> = Vec::new();
+            for (oid, t) in &self.followed {
+                let used = back.iter().any(|op| op["table"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(t)));
+                let gone = !self.tables.contains_key(&t.to_ascii_lowercase());
+                if used && !self.held.contains_key(oid) && (gone || mentions(&message, &t.to_ascii_lowercase())) {
+                    culprits.push((*oid, t.clone()));
+                }
+            }
+            if culprits.is_empty() {
+                // The error names no table (a value ChloeDB refused, say):
+                // the write without each table's operations in turn tells
+                // which. A write refused applied nothing, so each try is
+                // whole or nothing, and the one that goes through writes
+                // the rest.
+                let mut used: Vec<(u32, String)> = self.followed.iter().filter(|(o, t)| !self.held.contains_key(o) && back.iter().any(|op| op["table"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(t)))).map(|(o, t)| (*o, t.clone())).collect();
+                if used.len() == 1 {
+                    culprits = used;
+                } else {
+                    let mut found = None;
+                    for (oid, t) in used.drain(..) {
+                        let rest: Vec<Json> = back.iter().filter(|op| !op["table"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(&t))).cloned().collect();
+                        match self.write(rest).await {
+                            Ok(_) => {
+                                found = Some((oid, t));
+                                break;
+                            }
+                            Err(e2) if table_fault(&e2) => self.rejected = None,
+                            Err(e2) => return Err(e2),
+                        }
+                    }
+                    let Some((oid, t)) = found else { return Err(e) };
+                    let shown = self.rels.get(&oid).map_or_else(|| t.clone(), |r| r.shown.clone());
+                    self.hold(oid, &t, &shown, e.message.clone(), Retry::Later, Vec::new()).await?;
+                    return Ok(());
+                }
+            }
+            for (oid, t) in &culprits {
+                let shown = self.rels.get(oid).map_or_else(|| t.clone(), |r| r.shown.clone());
+                self.hold(*oid, t, &shown, e.message.clone(), Retry::Later, Vec::new()).await?;
+            }
+            ops = back.into_iter().filter(|op| !op["table"].as_str().is_some_and(|x| culprits.iter().any(|(_, t)| t.eq_ignore_ascii_case(x)))).collect();
+            if ops.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
     /// Writes what the buffer holds of whole transactions (and of steps).
     async fn flush(&mut self, buf: &mut Buffer) -> Result<(), ApiError> {
         if buf.from == 0 {
@@ -1455,7 +1952,7 @@ impl Follower {
             *i -= from;
             true
         });
-        self.write(ops).await?;
+        self.write_isolating(ops).await?;
         if let Some(b) = buf.base.take() {
             self.base = b;
         }
@@ -1569,10 +2066,31 @@ impl Follower {
                     }
                 }
             }
+            // A column whose type Postgres changed, in a ChloeDB column of
+            // the type the follower made for the old one: ChloeDB cannot
+            // change a column's type in place, so the table is copied
+            // again with the column made anew (ROSA-403).
+            let schema = self.schema(&rel.table)?;
+            let base = |d: &str| d.split(['(', '[']).next().unwrap_or_default().to_string();
+            let mut retype = Vec::new();
+            let mut changes = Vec::new();
             for (i, c) in rel.columns.iter().enumerate() {
-                if w.columns.iter().any(|o| o.name == c.name && o.type_oid != c.type_oid) {
-                    tracing::warn!(table = %rel.table, column = %c.name, to = %rel.types[i].name, "Postgres changed a column's type: its values are written as the ChloeDB column's type reads them");
+                let Some(j) = w.columns.iter().position(|o| o.name == c.name && o.type_oid != c.type_oid) else { continue };
+                let old = strata_type(&w.types[j], w.columns[j].typmod, w.key.contains(&j));
+                let new = strata_type(&rel.types[i], c.typmod, rel.key.contains(&i));
+                let ours = schema.field_index(&c.name).map(|f| schema.fields[f].type_name().to_string());
+                match (&old, &new, &ours) {
+                    (Some(o), Some(n), Some(f)) if base(o) != base(n) && *f == base(o) => {
+                        changes.push(format!("{} ({} to {})", c.name, w.types[j].name, rel.types[i].name));
+                        retype.push(c.name.clone());
+                    }
+                    _ => tracing::warn!(table = %rel.table, column = %c.name, to = %rel.types[i].name, "Postgres changed a column's type: its values are written as the ChloeDB column's type reads them"),
                 }
+            }
+            if !retype.is_empty() {
+                let why = format!("Postgres changed the type of column {}, and ChloeDB cannot change a column's type in place: the table is copied again with the column made anew (it reads NULL until its rows are written)", changes.join(", "));
+                self.hold(rel.oid, &rel.table, &rel.shown, why, Retry::Now, retype).await?;
+                return Ok(());
             }
         }
         self.ensure_table(&rel).await?;
@@ -1602,6 +2120,8 @@ impl Follower {
             writes = s.writes,
             copied = s.copied,
             skipped = s.skipped,
+            held_tables = self.held.len(),
+            skipped_held = s.skipped_held,
             "following {}", self.cfg.shown()
         );
     }
@@ -1619,14 +2139,102 @@ impl Drop for Aborted {
     }
 }
 
+/// Whether `message` (lower case) names `name` as a word.
+fn mentions(message: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    message.match_indices(name).any(|(i, _)| {
+        !message[..i].chars().next_back().is_some_and(word) && !message[i + name.len()..].chars().next().is_some_and(word)
+    })
+}
+
+/// The key an empty key of a Postgres `jsonb` value is written as, at any
+/// depth (ROSA-402): ChloeDB's JSON refuses an empty key. Where the object
+/// holds this key too, underscores are added until the name is free.
+pub const EMPTY_KEY: &str = "_empty";
+
+/// Renames each empty key in `v` to [`EMPTY_KEY`].
+fn rename_empty_keys(v: &mut Json) {
+    match v {
+        Json::Object(m) => {
+            if let Some(x) = m.remove("") {
+                let mut k = EMPTY_KEY.to_string();
+                while m.contains_key(&k) {
+                    k.push('_');
+                }
+                m.insert(k, x);
+            }
+            m.values_mut().for_each(rename_empty_keys);
+        }
+        Json::Array(xs) => xs.iter_mut().for_each(rename_empty_keys),
+        _ => {}
+    }
+}
+
+/// A row's key as Postgres has it, for an error: its key columns' values.
+fn row_key(rel: &Rel, tuple: &[Datum]) -> String {
+    let parts: Vec<String> = rel
+        .key
+        .iter()
+        .map(|&k| {
+            let v = match tuple.get(k) {
+                Some(Datum::Text(t)) => t.chars().take(80).collect::<String>(),
+                _ => "?".into(),
+            };
+            format!("{} = {v}", rel.columns[k].name)
+        })
+        .collect();
+    parts.join(", ")
+}
+
 /// A tuple's values' bytes.
 fn size(t: &[Datum]) -> usize {
     t.iter().map(|d| if let Datum::Text(s) = d { s.len() } else { 0 }).sum()
 }
 
+/// What a copy over rows ChloeDB holds keeps, to tell the rows Postgres
+/// no longer has: a hash of each key it wrote, and the shards' write
+/// numbers a read waits for.
+#[derive(Default)]
+struct Track {
+    keys: HashSet<u64>,
+    seen: Vec<u64>,
+}
+
+impl Track {
+    fn saw(&mut self, answer: &Json) {
+        if let Some(s) = answer["seq_nos"].as_array() {
+            let s: Vec<u64> = s.iter().map(|v| v.as_u64().unwrap_or(0)).collect();
+            if s.len() != self.seen.len() {
+                self.seen = s;
+            } else {
+                for (a, b) in self.seen.iter_mut().zip(s) {
+                    *a = (*a).max(b);
+                }
+            }
+        } else if let Some(n) = answer["seq_no"].as_u64() {
+            self.seen = vec![self.seen.first().copied().unwrap_or(0).max(n)];
+        }
+    }
+}
+
+/// A key's hash, the same for the value as a write names it and as a
+/// query reads it back.
+fn key_hash(k: &Json) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let text = match k {
+        Json::String(s) => s.clone(),
+        Json::Number(n) => n.as_i64().map_or_else(|| n.to_string(), |i| i.to_string()),
+        other => other.to_string(),
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
 /// Copies `rel`'s rows over `conn` (in the transaction it is in) into
 /// Strata, answering how many.
-async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, batch: usize, progress: &AtomicU64) -> Result<u64, ApiError> {
+async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, batch: usize, progress: &AtomicU64, mut track: Option<&mut Track>) -> Result<u64, ApiError> {
+    let pk = schema.primary_key.map(|p| schema.fields[p].name.clone()).unwrap_or_default();
     let cols: Vec<String> = rel.columns.iter().map(|c| wire::ident(&c.name)).collect();
     let from = format!("{}.{}", wire::ident(&rel.schema_name), wire::ident(&rel.rel_name));
     let sql = match &rel.filter {
@@ -1641,7 +2249,7 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
     let t0 = Instant::now();
     let send = |ops: Vec<Json>| async move {
         let body = json!({"ops": ops});
-        retry("writing a copy to ChloeDB", || dst.post("/v1/write", &body)).await.map(|_| ())
+        retry("writing a copy to ChloeDB", || dst.post("/v1/write", &body)).await
     };
     loop {
         let chunk = conn.copy_data().await.map_err(pg)?;
@@ -1655,11 +2263,17 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
             let tuple: Vec<Datum> = fields.into_iter().map(|f| f.map_or(Datum::Null, Datum::Text)).collect();
             bytes += size(&tuple);
             let doc = document(rel, schema, &tuple, |_| None).map_err(ApiError::bad)?;
+            if let Some(t) = track.as_deref_mut() {
+                t.keys.insert(key_hash(&doc[pk.as_str()]));
+            }
             ops.push(json!({"op": "upsert", "table": rel.table, "doc": doc}));
             rows += 1;
             if ops.len() >= batch || bytes >= COPY_BYTES {
                 let n = ops.len() as u64;
-                send(std::mem::take(&mut ops)).await?;
+                let j = send(std::mem::take(&mut ops)).await?;
+                if let Some(t) = track.as_deref_mut() {
+                    t.saw(&j);
+                }
                 progress.fetch_add(n, Ordering::Relaxed);
                 bytes = 0;
             }
@@ -1669,7 +2283,10 @@ async fn copy_table(conn: &mut Conn, dst: &Http, rel: &Rel, schema: &Schema, bat
         }
     }
     let n = ops.len() as u64;
-    send(ops).await?;
+    let j = send(ops).await?;
+    if let Some(t) = track.as_deref_mut() {
+        t.saw(&j);
+    }
     progress.fetch_add(n, Ordering::Relaxed);
     tracing::info!(table = %rel.table, rows, took_s = t0.elapsed().as_secs_f64(), "copied {}", rel.shown);
     Ok(rows)

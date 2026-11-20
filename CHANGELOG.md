@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A Postgres follower one table cannot stop.** A table `follow-postgres`
+  cannot write (a value ChloeDB refuses, a table without a primary key
+  joining the publication, two tables that become one) is held with its
+  error, which names the table, column and row's key, while the others
+  keep following and the process stays up; it is copied again over its
+  rows, which stay readable, at its next try. Data > Connectors and
+  `GET /v1/admin/connectors` show each held table; `/metrics` has
+  `chloedb_follow_table_up`, `chloedb_follow_table_lag_seconds`,
+  `chloedb_follow_table_error_info`, `chloedb_follow_tables_held` and
+  `chloedb_follow_last_error_timestamp_seconds`, and the built-in alert
+  `follow-table-held` fires on a table held for a minute.
+  `--copy-table orders` copies one table again the same way, and a column
+  whose type Postgres changed to one of another ChloeDB type has its table
+  copied again alone with the column made anew. A `jsonb` value with an
+  empty key is followed, the key written as `_empty`. **Changed:**
+  `DROP TABLE` of a followed table, and `ALTER TABLE ... DROP COLUMN` or
+  `RENAME COLUMN` of a column the follower writes, are refused (409,
+  `followed_table`), as writes already were; adding a column stays
+  allowed. The Postgres page has a systemd unit and a container restart
+  policy to run the follower under.
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000
@@ -77,6 +97,24 @@ changes collect under "Unreleased".
   clearest places near a town (for the stars, a picnic or a picture),
   each place's sky on its page, and a fire watch that says when the night
   over it is clear.
+
+- **The command center does a support lead's Monday numbers without SQL
+  (GRACE-401 to 407, 417).** A table's search says how many rows match,
+  how many of them have the words as typed, pages 20 at a time and opens a
+  row with every field; by words and meaning, rows with every word come
+  first. The Data tab's CSV and JSON Lines hold every row its condition
+  keeps, not the page on screen, and Import and export downloads a table
+  as CSV or JSON Lines. The query builder groups a time by day, week or
+  month, measures the median and the hours between two times, and each
+  group's share of all rows or of its week; *is none of* is `NOT IN`, and
+  turning *is one of* with several picks into *is not* keeps them all. A
+  chart splits its series by a column (a line per priority), and fits a
+  phone. Import finds a column that lists tags in one value and splits it
+  into a `KEYWORD[]`, the separator shown and changeable. **Team views**
+  keep a builder's or the workbench's query, its chart and the builder's
+  state on the server, as rows of `cc_views` (the first save makes the
+  table, with an admin key), opened by anyone whose key reads them, by a
+  link, on a phone too.
 
 ## 0.3.9
 

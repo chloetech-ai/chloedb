@@ -1026,6 +1026,13 @@ enum Command {
         /// How many tables are copied at once.
         #[arg(long, default_value_t = 4)]
         copy_workers: usize,
+        /// Copy this table again (its Postgres name, `orders` or
+        /// `sales.orders`, or its ChloeDB name; repeat it or separate names
+        /// by commas) once the follower is following, over the rows
+        /// ChloeDB holds, which stay readable until the new copy is in;
+        /// the other tables keep following meanwhile.
+        #[arg(long, value_delimiter = ',')]
+        copy_table: Vec<String>,
         /// Drop the replication slot and exit: stop following for good, so
         /// that Postgres no longer keeps WAL for the follower.
         #[arg(long)]
@@ -1493,7 +1500,7 @@ async fn run() {
             }
             return;
         }
-        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, copy_table, drop_slot }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = chloedb_server::postgres::Options {
                 source: source.clone(),
@@ -1507,6 +1514,7 @@ async fn run() {
                 batch: (*batch).max(1),
                 copy: *copy,
                 copy_workers: *copy_workers,
+                copy_tables: copy_table.clone(),
                 crash_after: None,
             };
             if *drop_slot {
