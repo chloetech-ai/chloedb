@@ -124,7 +124,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Store a decision, preference, fact, todo or note.
+    /// Store a decision, preference, fact, todo or note in this project's memory
+    ///
+    /// Memory is per project: what you store here is not recalled in another
+    /// repository. A preference you want in every project (a test runner, a
+    /// commit style) belongs in ~/.claude/CLAUDE.md, which Claude Code loads
+    /// in every session.
     #[command(display_order = 8)]
     Remember { kind: String, text: String },
     /// Delete records from memory for good: this project's by id or by
@@ -601,6 +606,12 @@ fn redact_store(dir: &std::path::Path, project: &str, dry_run: bool) -> Result<S
     Ok(out)
 }
 
+/// What `chloectx remember` says after a preference: memory is per project, and
+/// a preference for every project lives in `~/.claude/CLAUDE.md`.
+fn remember_hint(kind: &str) -> Option<&'static str> {
+    (kind == "preference").then_some("note: this is kept for this project only; to have a preference in every project, put it in ~/.claude/CLAUDE.md")
+}
+
 fn text(r: &Json) {
     println!("{}", r.get("text").and_then(|t| t.as_str()).unwrap_or(""));
 }
@@ -703,7 +714,12 @@ fn main() {
         }
         // A person ran it, or Workbench on one's behalf (an answer, a rule):
         // the user's.
-        Cmd::Remember { kind, text: t } => text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user", "caller": daemon::caller("cli")}), 30)),
+        Cmd::Remember { kind, text: t } => {
+            text(&send(&project, json!({"op": "remember", "kind": kind, "text": t, "by": "user", "caller": daemon::caller("cli")}), 30));
+            if let Some(h) = remember_hint(&kind) {
+                eprintln!("{h}");
+            }
+        }
         Cmd::Repeats { days, json: as_json, store, judge, model } => {
             let r = match (store, judge) {
                 (store, Some(file)) => {
@@ -1056,6 +1072,16 @@ fn main() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// A preference is project-wide only; the hint and the help name the user-wide file.
+    #[test]
+    fn remember_points_to_the_user_wide_file() {
+        assert!(remember_hint("preference").unwrap().contains("~/.claude/CLAUDE.md"));
+        assert!(remember_hint("decision").is_none());
+        let mut c = Cli::command();
+        let help = c.find_subcommand_mut("remember").unwrap().render_long_help().to_string();
+        assert!(help.contains("~/.claude/CLAUDE.md"), "{help}");
+    }
 
     /// Every command is either in `--help` or named in [`MORE`].
     #[test]

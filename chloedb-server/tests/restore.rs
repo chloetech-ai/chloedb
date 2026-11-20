@@ -261,12 +261,15 @@ impl Cluster {
     }
 
     /// Every copy of shard `i` answers, holds the same last transaction,
-    /// and holds the cluster map of epoch `epoch`.
+    /// holds the cluster map of epoch `epoch`, and serves reads: a replica
+    /// that installed a copy of its primary serves none until the next call
+    /// of its primary finds it caught up, which comes late on a busy host
+    /// (a primary's health has no `serves_reads`).
     async fn shard_whole(&self, i: usize, epoch: u64) -> bool {
         let mut seqs = BTreeSet::new();
         for c in &self.shards[i] {
             let Some(h) = c.health().await else { return false };
-            if h["slots"]["epoch"].as_u64() != Some(epoch) {
+            if h["slots"]["epoch"].as_u64() != Some(epoch) || h["replication"]["serves_reads"] == false {
                 return false;
             }
             seqs.insert(h["replication"]["seq_no"].as_u64().unwrap_or(0));

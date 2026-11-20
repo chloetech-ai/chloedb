@@ -1614,9 +1614,15 @@ async fn wait_job(c: &Arc<Coordinator>, k: usize) -> Result<String, Halt> {
 }
 
 /// Waits until `url`, a new copy of shard `i`, is in sync with the shard's
-/// primary. Fails when it stops answering for a minute.
+/// primary and counts itself among the shard's copies (its health's
+/// `member`): it does so only on the primary's next call after the one that
+/// found it caught up, and until then it serves no reads and refuses to
+/// campaign, so a handover to it right away fails (409). A copy that stays
+/// uncounted for a minute once in sync is taken as it is, as before this
+/// wait. Fails when it stops answering for a minute.
 async fn wait_sync(c: &Arc<Coordinator>, k: usize, i: usize, url: &str) -> Result<(), Halt> {
     let mut down_since: Option<Instant> = None;
+    let mut synced_since: Option<Instant> = None;
     loop {
         if c.plans.stop.load(Ordering::Relaxed) {
             return Err(Halt::Stopped("it goes on being sent the shard's rows; the plan stops here".into()));
@@ -1636,9 +1642,22 @@ async fn wait_sync(c: &Arc<Coordinator>, k: usize, i: usize, url: &str) -> Resul
                 }
                 note(c, k, "it does not answer".into());
             }
-            (Some(_), Some(f)) if f["in_sync"] == true && f["copying"] != true => return Ok(()),
+            (Some(r), Some(f)) if f["in_sync"] == true && f["copying"] != true => {
+                down_since = None;
+                // The copy's own word; a server that does not say counts.
+                if r["detail"]["health"]["replication"]["member"] != false {
+                    return Ok(());
+                }
+                let since = *synced_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > Duration::from_secs(60) {
+                    tracing::warn!(replica = %url, shard = i, "a new copy in sync for a minute does not count itself among its shard's copies yet; the plan goes on");
+                    return Ok(());
+                }
+                note(c, k, "caught up; waiting to be counted among the copies".into());
+            }
             (Some(_), Some(f)) => {
                 down_since = None;
+                synced_since = None;
                 note(c, k, if f["copying"] == true { "being sent the shard's rows".into() } else { format!("{} transactions behind its primary", thousands(f["behind"].as_f64().unwrap_or(0.0))) });
             }
             (Some(_), None) => {

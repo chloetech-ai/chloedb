@@ -783,7 +783,8 @@ enum Command {
         /// A known name (potion-retrieval-32M, potion-base-8M, their int8
         /// copies potion-retrieval-32M-int8 and potion-base-8M-int8, bge-small-en-v1.5,
         /// snowflake-arctic-embed-m-v1.5, siglip-base-patch16-224,
-        /// blip-image-captioning-base, whisper-small, clap-htsat-unfused) or a
+        /// siglip-so400m-patch14-384, blip-image-captioning-base,
+        /// whisper-small, clap-htsat-unfused) or a
         /// repository, owner/name.
         name: String,
         /// Where to put it (default: --models, $CHLOEDB_MODELS, or

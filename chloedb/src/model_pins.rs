@@ -80,6 +80,15 @@ pub const PINS: &[Pin] = &[
         ],
     },
     Pin {
+        repo: "google/siglip-so400m-patch14-384",
+        revision: "9fdffc58afc957d1a03a25b10dba0329ab15c2a3",
+        files: &[
+            ("config.json", "adc04928d8fd19a61822584fe0cf2e813e5ebac17f3e49fb1ea096860ae6457b"),
+            ("tokenizer.json", "c6e405cb7c670d56636a9402c81023a55bc6c3c53d89cf02b92f5c5005bfe920"),
+            ("model.safetensors", "ea2abad2b7f8a9c1aa5e49a244d5d57ffa71c56f720c94bc5d240ef4d6e1d94a"),
+        ],
+    },
+    Pin {
         repo: "laion/clap-htsat-unfused",
         revision: "8fa0f1c6d0433df6e97c127f64b2a1d6c0dcda8a",
         files: &[
