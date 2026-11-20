@@ -33,6 +33,11 @@ pub enum Pred {
     /// (`PREFIX(f, 'p', fuzzy => 1)`): the runs a walk of the dictionary
     /// finds.
     Prefix { field: usize, prefix: String, edits: u8 },
+    /// A single-valued KEYWORD's values between the bounds, in byte order
+    /// (`id > 'k'`, `id BETWEEN 'a' AND 'm'`), each bound with whether it
+    /// is included; a missing bound is open: one run of the field's
+    /// sorted dictionary, as a prefix is (finding KENJI-404).
+    KeyRange { field: usize, lo: Option<(String, bool)>, hi: Option<(String, bool)> },
     /// Rows with a value of the field (`IS NOT NULL`; a multi-valued field
     /// needs at least one).
     Present { field: usize },
@@ -355,7 +360,7 @@ impl Pred {
                     test => negate(test),
                 }
             }
-            p @ (Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Prefix { field, .. }) if !multi(field) => {
+            p @ (Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Prefix { field, .. } | Pred::KeyRange { field, .. }) if !multi(field) => {
                 Pred::And(vec![Pred::Present { field }, Pred::Not(Box::new(p))])
             }
             p => Pred::Not(Box::new(p)),
