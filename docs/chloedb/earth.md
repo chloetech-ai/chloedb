@@ -17,6 +17,7 @@ Three things on it are ChloeDB's own:
 | A replay | a night of the archive played back on the map, a scan at a time, over GOES's picture of the sky at that moment (with `--frames`): Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024 | `ea_detections`, `ea_scans`, `ea_fires` |
 | Fire watch | places a browser keeps an eye on (a home, a parent's house, a farm: found by name, by "lat, lon", with "use my location", or many at once as lines of a name and coordinates), each with where the nearest fire is now; a place's page with the heat near it, how far the nearest fire was scan by scan over 12 hours, the alerts sent, what to be told about (a fire within 5 to 50 km, 2 km closer in an hour, past 1,000 MW, a clear night over it), the official sources, the ground and the fires that started near it; the browser's notifications while a tab is open and an Atom feed of its alerts; and an example that plays the Park Fire's first 12 hours (24 July 2024) over three made-up places | `ea_watches`, `ea_watch_alerts`, `ea_detections`, `ea_scans`, `ea_fires` |
 | Clear sky | the region's map of every place's sky now (clear, partly cloudy, cloudy or smoke, from GOES's last scan), or of its clear nights or days over 30 days; a finder for the clearest places near a town, a point or "use my location", within 5 to 400 km, by the sky now, the most clear nights (for the stars) or days, and what they look like in words ("dark hills", "a lake"); and each place's sky on its page | `ea_sky`, `ea_places` |
+| Land finder | places to build a solar farm on: limits on the slope, the distance to a substation and its voltage, the distance to a main road, protected land and towns, near a town or anywhere in the region, ranked by how much each place's picture looks like the solar farms already built there, by how near the grid is, or by words ("flat dry grassland"); the solar farms built and the places found on the map, a shortlist kept in the browser (as CSV, and a fire watch a click away), and what is around each place for building on it on its page | `ea_places` |
 | Future climate | each place's climate in 2071-2100 if emissions keep rising (SSP3-7.0) against 1981-2010, on a map (hotter summers, milder winters, rain, and how far away its future climate is today, with the places whose future no place has today edged in red); a place's hottest month, coldest nights, rain and climate class now and later, with the five models' range, the places whose climate today is nearest its future one (in California and Chile, or only its own region) and those whose future is nearest its climate today; and the same on each place's page | `ea_climate` |
 | A fire | its pixels on the map, its first hours drawn, the fires that began like it with the outlook they give, its alerts, and how well the outlook has done before | `ea_fires`, `ea_detections`, `ea_backtest` |
 | Past fires | a region's fires by size, year or name | `ea_fires` |
@@ -75,6 +76,21 @@ python3 tools/climate.py places --out DATA    # the places' centres, from the se
 python3 tools/climate.py fetch --out DATA     # 42 files of 12 to 490 MB, each cut to the regions and deleted
 python3 tools/climate.py rows --out DATA      # ea_climate_<region>.jsonl
 chloedb-earth load --dir DATA --only ea_climate
+```
+
+## Land finder
+
+`tools/land.py` writes what is around each place for building on it into thirteen columns of `ea_places`: the nearest substation (how far, its voltage, its name) and power line (how far, its voltage) of OpenStreetMap, the nearest motorway, trunk, primary or secondary road, the share of the place covered by solar farms (OpenStreetMap's `power=plant` with `plant:source=solar`, or a generator area with `generator:source=solar`, of a hectare or more) and the nearest one, and the share protected: PAD-US 4.1's fee areas in California (USGS, public domain), strictly when of GAP status 1 or 2, and OpenStreetMap's protected areas in Chile, strictly when a national park, a nature reserve or of IUCN class I to IV. Distances are from the place's centre. In California the median place is 9.9 km from a substation, 1,230 places have a solar farm and 19,840 are mostly protected; in Chile, 30.9 km and 874.
+
+The finder is one statement: the limits as its `WHERE` (and never a place that has a solar farm already, nor one mostly water or snow), ranked by `ORDER BY similarity(look, :v) DESC`, where `:v` is the mean of the looks of the region's places at least a third covered by solar farms, or by `sub_km`, or by the words' vector. Near a town it keeps the places within a box and then within the circle.
+
+```bash
+python3 -I tools/land.py places --out DATA                                   # the places' centres (CHLOEDB_URL, CHLOEDB_KEY)
+python3 -I tools/land.py osm --region california --pbf california-latest.osm.pbf --out DATA   # from download.openstreetmap.fr or Geofabrik
+python3 -I tools/land.py padus --out DATA                                    # California's PAD-US fee areas
+python3 -I tools/land.py rows --region california --out DATA                 # set ops into DATA/land/patch_land_california.jsonl
+chloedb-earth load --dir DATA --only ea_places                               # adds the columns to a table made before them
+python3 -I tools/land.py write --region california --out DATA
 ```
 
 ## Running it
