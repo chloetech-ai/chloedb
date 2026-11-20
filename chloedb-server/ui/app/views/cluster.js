@@ -2872,6 +2872,20 @@ function renderNotCoordinator(page) {
     clear(box, card({ title: "This server's part", body: h("dl", { class: "kv" }, [["shard", `${hl.slots.shard} of ${hl.slots.of}`], ["cluster map", "epoch " + (hl.slots.epoch ?? "–")], ["role", rep.role || "standalone"], ["term", rep.term ?? "–"], ["last transaction", fmt.n(rep.seq_no ?? hl.txn)]].flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, String(v))])) }));
     return () => {};
   }
+  // On this machine: `chloedb-server grow` serves this database as the
+  // first shard, at this address, with new shards beside it.
+  const db = state.system?.db?.path || "chloedb.chloedb";
+  const q = (x) => (/^[\w@%+=:,./-]+$/.test(x) ? x : `'${x.replace(/'/g, `'\\''`)}'`);
+  const here = location.host || "127.0.0.1:7700";
+  const growN = h("input", { class: "input", type: "number", value: 3, min: 2, max: 16, style: { width: "80px" } });
+  const growPre = h("pre", { class: "code" });
+  const growOut = () => { growPre.textContent = `chloedb-server grow --db ${q(db)} --shards ${Math.max(2, +growN.value || 3)} --listen ${here}`; };
+  growN.oninput = growOut; growOut();
+  const growCard = card({ title: "Grow into a cluster on this machine", sub: "the same data at the same address, spread over shards",
+    body: h("div", { class: "stack" },
+      h("div", { class: "row", style: { gap: "14px", alignItems: "flex-end" } }, h("label", { class: "f" }, "Shards", growN)),
+      h("div", { class: "row between" }, h("span", {}, "Stop this server (Ctrl+C where it runs), then run:"), h("button", { class: "btn sm", onclick: () => copy(growPre.textContent, "Copied the command") }, icon("copy"), "Copy")), growPre,
+      h("div", { class: "small dim" }, `Every table and row comes along, and this page answers at http://${here} again once the cluster is up; the new shards take their share of the rows while queries answer. Ctrl+C stops the cluster and the same command starts it again. For machines in a cloud, `, h("a", { href: "#/cloud" }, "Cloud setup"), " plans and makes one.")) });
   const name = h("input", { class: "input", value: "chloedb", style: { width: "140px" } });
   const shards = h("input", { class: "input", type: "number", value: 2, min: 1, style: { width: "80px" } });
   const copiesN = h("input", { class: "input", type: "number", value: 3, min: 1, max: 9, style: { width: "80px" } });
@@ -2883,7 +2897,7 @@ function renderNotCoordinator(page) {
   };
   for (const e of [name, shards, copiesN]) e.oninput = out;
   out();
-  clear(box, card({ title: "Make a cluster", sub: "a cluster spreads tables over shards of a few copies each, behind coordinators",
+  clear(box, growCard, card({ title: "Make a cluster on Kubernetes", sub: "a cluster spreads tables over shards of a few copies each, behind coordinators",
     body: h("div", { class: "stack" },
       h("div", { class: "row", style: { gap: "14px", alignItems: "flex-end" } }, h("label", { class: "f" }, "Name", name), h("label", { class: "f" }, "Shards", shards), h("label", { class: "f" }, "Copies per shard", copiesN)),
       h("div", { class: "row between" }, h("b", {}, "On Kubernetes"), h("button", { class: "btn sm", onclick: () => copy(pre.textContent, "Copied the StrataCluster") }, icon("copy"), "Copy")), pre,

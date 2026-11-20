@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Build with an AI agent · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="An agent such as Claude Code can do most of what this documentation describes for you. It can load a file, make it searchable by words and by meaning, answer questions from your rows with citations, write the search…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/guide/agents.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="agents.html" aria-current="page">Build with an AI agent</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Start</span>
+      <h1>Build with an AI agent</h1>
+      <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#connect-your-agent">Connect your agent</a></li><li><a href="#prompts-that-work">Prompts that work</a></li><li><a href="#what-every-agent-should-know">What every agent should know</a></li><li><a href="#tell-your-coding-agent-about-chloedb">Tell your coding agent about ChloeDB</a></li></ol></details>
+    <div class="doc-body">
+
+<p>An agent such as Claude Code can do most of what this documentation describes for you. It can load a file, make it searchable by words and by meaning, answer questions from your rows with citations, write the search page or the code of your app, find out why a query is slow, and look after a server. This page shows how to connect one, the prompts that work, and what a good agent does with each, so you can tell when it goes wrong. The server gives your agent the same prompts as slash commands, and the documentation it needs as a tool.</p>
+<h2 id="connect-your-agent">Connect your agent<a class="anchor" href="#connect-your-agent" aria-label="Link to this section">#</a></h2>
+<p>Start a server, if one is not running yet. With no flags it serves <code>chloedb.chloedb</code> in the current directory, at <code>http://127.0.0.1:7700</code>:</p>
+<pre data-lang="sh">chloedb-server &gt; server.log 2&gt;&amp;1 &amp;
+until curl -sf http://127.0.0.1:7700/livez &gt; /dev/null; do sleep 0.2; done</pre>
+<p>Then add it to your agent as an MCP server. For Claude Code:</p>
+<pre data-lang="sh">claude mcp add --transport http chloedb http://127.0.0.1:7700/v1/mcp</pre>
+<p>A server with a token needs a key in the header: <code>--header "Authorization: Bearer $CHLOEDB_KEY"</code>. A client that starts its MCP servers as commands (Claude Desktop, Cursor and most others) runs <code>chloedb-server mcp</code>, which passes each message on to the server:</p>
+<pre data-lang="json">{
+  &quot;mcpServers&quot;: {
+    &quot;chloedb&quot;: {
+      &quot;command&quot;: &quot;chloedb-server&quot;,
+      &quot;args&quot;: [&quot;mcp&quot;, &quot;--url&quot;, &quot;http://127.0.0.1:7700&quot;],
+      &quot;env&quot;: {&quot;CHLOEDB_KEY&quot;: &quot;your key, or leave it out for a server without a token&quot;}
+    }
+  }
+}</pre>
+<p>What the agent can change is decided by the key it connects with, not by what you ask it: a read key explores, a write key loads rows, and an admin key also makes tables (<a href="server.html#agents-over-mcp">agents over MCP</a>). Even with an admin key, an agent cannot drop a table or delete every row on its own. The server refuses, and the agent files the change for you to approve (<a href="server.html#agents-and-administration">agents and administration</a>).</p>
+<p>The server tells a connected agent the prompts below. In Claude Code they are slash commands, such as <code>/mcp__chloedb__load-a-file data/movies.csv</code>, each with the steps listed under it. You can also list them yourself:</p>
+<pre data-lang="sh">curl -s http://127.0.0.1:7700/v1/mcp -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 1, &quot;method&quot;: &quot;prompts/list&quot;}&#x27; \
+  | python3 -c &#x27;import json, sys; print(&quot;\n&quot;.join(p[&quot;name&quot;] for p in json.load(sys.stdin)[&quot;result&quot;][&quot;prompts&quot;]))&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">explore
+load-a-file
+search
+answer-with-citations
+search-page
+app-code
+change-a-table
+slow-query
+check-the-server</pre>
+<h2 id="prompts-that-work">Prompts that work<a class="anchor" href="#prompts-that-work" aria-label="Link to this section">#</a></h2>
+<p>Each prompt below is written as you would type it. Under it is what a good agent does, and the server sends those steps along when you use the slash command. Words in braces, such as <code>{path}</code>, are yours to fill in.</p>
+<h3 id="explore-what-is-there">Explore what is there<a class="anchor" href="#explore-what-is-there" aria-label="Link to this section">#</a></h3>
+<!-- prompt: explore -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__explore">Look at what is in my ChloeDB and tell me what I could search for, with an example query for each table.</pre>
+<ol>
+<li><code>whoami</code> says what the key may do, and <code>list_tables</code> gives each table's <code>CREATE TABLE</code> statement, its key, its vector fields and their models.</li>
+<li>A few rows of each table (<code>SELECT * FROM t LIMIT 3</code>), and the values of its <code>KEYWORD</code> fields (<code>SELECT genre, COUNT(*) FROM t GROUP BY genre</code>).</li>
+<li>For each table, a search by its words (<code>MATCH</code> and <code>bm25</code> over its <code>TEXT</code> fields) and, when it has an embedded <code>VECTOR</code> field, one by meaning (<code>similarity</code>), each run once so the example is known to work.</li>
+<li>ChloeDB's SQL is its own dialect, not Postgres. Before writing anything unusual, the agent looks up the syntax with <code>search_docs</code> and checks the statement with <code>check_sql</code>.</li>
+</ol>
+<h3 id="load-a-file-and-search-it-by-meaning">Load a file and search it by meaning<a class="anchor" href="#load-a-file-and-search-it-by-meaning" aria-label="Link to this section">#</a></h3>
+<!-- prompt: load-a-file; path = the file to load: CSV, TSV, JSON or JSON Lines -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__load-a-file">Load {path} into ChloeDB as a table I can search by words and by meaning.</pre>
+<ol>
+<li>It looks at the file's first lines and its size, and names the table after the file unless you said otherwise.</li>
+<li>A file of up to a few megabytes goes through the <code>import</code> tool, its text as <code>data</code>, with <code>create: true</code>. The table is made from the file's columns: numbers become <code>INT</code> or <code>FLOAT</code>, short labels <code>KEYWORD</code>, and prose <code>TEXT</code>. A cell that says it has no value (<code>N/A</code>, <code>null</code>, <code>-</code>) in a column of numbers or dates is <code>NULL</code>, so nothing needs cleaning first. A table with prose also gets <code>emb</code>, a vector of that prose by <code>potion-retrieval-32M</code>, which the server downloads once (about 130 MB) and fills in. The answer's <code>create_table</code> is the statement it made.</li>
+<li>A larger file is sent from the shell instead, which needs an admin key on a server with a token: <code>curl -s --data-binary @{path} -H 'content-type: text/csv' 'http://127.0.0.1:7700/v1/import?table=NAME'</code>. The content type is <code>text/tab-separated-values</code> for TSV and <code>application/x-ndjson</code> for JSON Lines. With the server stopped, <code>chloedb-server import {path} --db chloedb.chloedb</code> does the same (<a href="server.html#loading-rows">loading rows</a>).</li>
+<li>Search by meaning works once the model has arrived. Until then such a query answers 503 <code>unavailable</code>, saying how far the download is, or, when it failed, when the server tries again by itself. The agent waits, and <code>list_models</code> shows the download, rather than fetching the model itself. Search by words works at once.</li>
+<li>It ends with one search by words and one by meaning, so you see the table work.</li>
+</ol>
+<h3 id="search-and-say-why-each-row-matched">Search, and say why each row matched<a class="anchor" href="#search-and-say-why-each-row-matched" aria-label="Link to this section">#</a></h3>
+<!-- prompt: search; table = the table to search; question = what to look for -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__search">Search the {table} table for &quot;{question}&quot;, by meaning and by words together, and tell me why each result matched.</pre>
+<ol>
+<li>Words and meaning fused: <code>SELECT ... FROM {table} ORDER BY rrf(bm25(body, :q, fuzzy =&gt; 'auto'), similarity(emb, :q)) DESC LIMIT 10</code>, with <code>:q</code> the text itself, which the server embeds with the field's own model. <code>body</code> stands for the table's <code>TEXT</code> fields, and <code>emb</code> for its vector field (<code>list_tables</code> names both).</li>
+<li><code>fuzzy =&gt; 'auto'</code> takes typos: a word in no row is read as the words near it.</li>
+<li>A condition on structured fields goes in <code>WHERE</code> (<code>genre = 'scifi' AND year &gt; 2000</code>), not in the text.</li>
+<li>To say why a row matched, the agent runs <code>explain</code> with <code>hits</code>, which gives each top row's scores, or compares the row's words with the question's (<a href="sql.html#rrfs1-s2--reciprocal-rank-fusion">ranking</a>).</li>
+<li><code>MATCH(field, 'a b c')</code> keeps only rows with every word. When it finds nothing, the answer's <code>hint</code> suggests <code>OR</code> or <code>min =&gt; 2</code>.</li>
+</ol>
+<h3 id="answer-a-question-from-my-rows-with-citations">Answer a question from my rows, with citations<a class="anchor" href="#answer-a-question-from-my-rows-with-citations" aria-label="Link to this section">#</a></h3>
+<!-- prompt: answer-with-citations; question = the question to answer -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__answer-with-citations">Answer this from the rows in my ChloeDB, citing the rows each claim comes from: {question}</pre>
+<ol>
+<li>It finds the rows as in the search above, eight or so, with their keys.</li>
+<li>It answers from those rows only, marking each claim with its row as <code>[1]</code>, <code>[2]</code>, and lists the rows cited with their keys. When the rows do not answer the question, it says so rather than answering from what it knows.</li>
+<li>In your own code, Python's <code>db.ask(question, table=...)</code> does the same in one call. It returns the answer with its <code>sources</code>, written by a language model through the query's <code>llm()</code>, with <code>ANTHROPIC_API_KEY</code> (<a href="python.html#querying">Python</a>). A whole pipeline, with documents split into chunks and grounded claims, is in <a href="rag.html">Retrieval for RAG</a>.</li>
+</ol>
+<h3 id="build-a-search-page">Build a search page<a class="anchor" href="#build-a-search-page" aria-label="Link to this section">#</a></h3>
+<!-- prompt: search-page; table = the table the page searches -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__search-page">Build me a search page for the {table} table: a search box that forgives typos and finds things by meaning, with filters, that I open in my browser.</pre>
+<ol>
+<li><strong>The page cannot call chloedb-server from the browser.</strong> The server refuses requests from a page on another origin, a page opened from a file included, and sends no CORS headers. A page written to <code>fetch</code> the server's <code>/v1/query</code> therefore fails with a CORS error. The page calls a small app instead, and the app calls the server (<a href="javascript.html#why-a-page-cannot-call-chloedb-server">why</a>).</li>
+<li>The app can be Python's standard library and <code>chloedb</code> (<code>pip install chloedb</code>): <code>chloedb.connect("http://127.0.0.1:7700")</code> and an <code>http.server</code> handler that serves the page and answers <code>/search?q=</code> with <code>db.search(q, table="{table}", where=..., limit=20)</code>. <code>db.search</code> fuses words and meaning and forgives typos. <a href="search-page.html">Build a search page</a> is that app in full, with highlights, "did you mean", filters with counts, and "more like this".</li>
+<li>In a JavaScript app, the route does the same with the <code>chloedb</code> package's client (<a href="javascript.html#a-search-box-in-a-web-app">a search box in a web app</a>).</li>
+<li>Filters come from the table's <code>KEYWORD</code> fields, with their counts (<code>SELECT genre, COUNT(*) FROM {table} WHERE MATCH(...) GROUP BY genre</code>).</li>
+<li>It starts the app, opens the page (or fetches it with <code>curl</code>), runs a search with a typo in it, and gives you the address.</li>
+</ol>
+<h3 id="write-the-code-of-my-app">Write the code of my app<a class="anchor" href="#write-the-code-of-my-app" aria-label="Link to this section">#</a></h3>
+<!-- prompt: app-code; language = Python, JavaScript, Rust or Java; task = what the code should do -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__app-code">Write {language} code that uses ChloeDB to {task}.</pre>
+<ol>
+<li>It chooses between the database in the app's own process (<code>chloedb.open(path)</code> in Python, <code>open()</code> in JavaScript, <code>Db</code> in Rust) and a client of a running server (<code>chloedb.connect(url)</code>). It uses the server when more than one process uses the data, or when the command center should show it.</li>
+<li>It looks up the client's methods in that language's page, and does not guess them from other databases: <a href="python.html">Python</a>, <a href="javascript.html">JavaScript</a>, <a href="rust.html">Rust</a>, <a href="java.html">Java</a>.</li>
+<li>Queries take named parameters (<code>:q</code>) bound in a mapping, never values pasted into the SQL.</li>
+<li>It runs the code once against a real database and shows what it printed.</li>
+</ol>
+<h3 id="change-a-table">Change a table<a class="anchor" href="#change-a-table" aria-label="Link to this section">#</a></h3>
+<!-- prompt: change-a-table; table = the table; change = what to change -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__change-a-table">In ChloeDB, change the {table} table: {change}.</pre>
+<ol>
+<li>It reads the table's statement (<code>describe_table</code>) and finds the syntax with <code>search_docs</code> (<code>ALTER TABLE ... ADD</code>, a field's options, an embedded field).</li>
+<li>It checks the statement with <code>check_sql</code> before running it with <code>execute</code>. An added field fills in for the rows already there, and an embedded vector field computes its vectors in the background.</li>
+<li>It does not drop a table or a field, or delete or update every row, on its own: the server refuses an agent that tries (<code>change_request_required</code>). It asks you, or files the change for an admin to approve with <code>propose_change</code>.</li>
+</ol>
+<h3 id="find-out-why-a-query-is-slow">Find out why a query is slow<a class="anchor" href="#find-out-why-a-query-is-slow" aria-label="Link to this section">#</a></h3>
+<!-- prompt: slow-query; sql = the query -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__slow-query">This ChloeDB query is slow. Find out why and make it faster: {sql}</pre>
+<ol>
+<li><code>explain</code> shows how the query runs: the plan of each segment, the rows a filter kept, and whether ranking stopped early (<code>MaxScore</code>). <code>queries</code> shows the latest and slowest statements, with their times.</li>
+<li>The usual cause is a condition the indexes cannot answer, which tests every row the other conditions keep: a function or arithmetic of a column (<code>lower(brand) = 'acme'</code>), a <code>LIKE '%tent%'</code> or an <code>ILIKE</code> on a field without a substring index, or a comparison of a <code>TEXT</code> field's stored text (<a href="sql.html#statement-shape">statement shape</a>). Others are a ranking by an expression that every row must compute, and a <code>LIMIT</code> much larger than the page shows.</li>
+<li>It changes one thing at a time, and times the query before and after with the same parameters.</li>
+</ol>
+<h3 id="check-the-server">Check the server<a class="anchor" href="#check-the-server" aria-label="Link to this section">#</a></h3>
+<!-- prompt: check-the-server -->
+
+<pre data-lang="text" data-title="Prompt: /mcp__chloedb__check-the-server">Check my ChloeDB server&#x27;s health and tell me what needs attention, and what to do about each thing.</pre>
+<ol>
+<li><code>health</code>, <code>alerts</code> and <code>events</code> (with an admin, <code>ops</code> or <code>propose</code> key) say how the server is and what has changed.</li>
+<li>For each problem, <code>runbook</code> finds what to do.</li>
+<li>It acts only within what its key allows alone: a contain rule, a cancelled query, an alert silenced for a while, each with a reason. Anything bigger it files with <code>propose_change</code> for a person to approve (<a href="server.html#agents-and-administration">agents and administration</a>).</li>
+</ol>
+<h2 id="what-every-agent-should-know">What every agent should know<a class="anchor" href="#what-every-agent-should-know" aria-label="Link to this section">#</a></h2>
+<p>The server tells a connected agent these at the start. They are written here for an agent that reads this page instead.</p>
+<ul>
+<li><strong>The SQL is ChloeDB's own.</strong> <code>MATCH(field, 'words')</code> filters by text, <code>ORDER BY bm25(field, 'words') DESC</code> ranks by it, <code>similarity(emb, :q)</code> ranks by meaning, and <code>rrf(...)</code> fuses rankings. <code>search_docs</code> finds the syntax of anything else in the <a href="sql.html">SQL reference</a>, and <code>check_sql</code> checks a statement without running it.</li>
+<li><strong>Errors say what to do.</strong> Every error has a stable <code>error_code</code>, whether trying again can work (<code>retryable</code>), a <code>hint</code>, and the documentation section that explains it (<code>docs</code>). A retryable error is waited out, not worked around (<a href="server.html#agents-and-administration">error codes</a>).</li>
+<li><strong>Meaning comes by itself.</strong> A table made from a file with prose gets a vector of it, which the server fills in once its model has downloaded. Nothing needs to be fetched or configured by hand.</li>
+<li><strong>Pages call an app, not the server.</strong> See <a href="#build-a-search-page">Build a search page</a> above.</li>
+<li><strong>Writes are safe to send again with a key.</strong> A write through a coordinator that answers <code>write_in_doubt</code> is sent again with the answer's <code>idempotency_key</code> (<a href="server.html#failover">failover</a>).</li>
+<li><strong>Ask before anything that loses data.</strong> The server holds such a change for a person anyway.</li>
+</ul>
+<h2 id="tell-your-coding-agent-about-chloedb">Tell your coding agent about ChloeDB<a class="anchor" href="#tell-your-coding-agent-about-chloedb" aria-label="Link to this section">#</a></h2>
+<p>A coding agent working on your app, with no MCP server, reads the documentation as text:</p>
+<ul>
+<li><a href="https://chloetech-ai.github.io/chloedb/llms.txt">llms.txt</a> lists every page with a line on what it covers.</li>
+<li><a href="https://chloetech-ai.github.io/chloedb/llms-full.txt">llms-full.txt</a> is the whole documentation in one file.</li>
+</ul>
+<p>For a project that uses ChloeDB, a few lines in its <code>CLAUDE.md</code> or <code>AGENTS.md</code> keep the agent on the right path:</p>
+<pre data-lang="text" data-title="Output">This project uses ChloeDB (https://chloetech-ai.github.io/chloedb/llms.txt), a search database
+with its own SQL dialect, not Postgres: MATCH and bm25 for words, similarity for meaning, rrf to
+fuse them. Look up syntax in its SQL reference rather than guessing. The server runs at
+http://127.0.0.1:7700 (MCP: /v1/mcp). Browser pages call our app&#x27;s routes, never the server.</pre>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/guide/agents.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="quickstart.html">← Quickstart</a><a href="concepts.html">Concepts →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

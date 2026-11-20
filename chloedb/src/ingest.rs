@@ -222,11 +222,26 @@ fn start(schema: &Schema, now: i64) -> Result<Document> {
     }
 }
 
+/// Whether a cell says it has no value, as spreadsheets and exports write
+/// it (`N/A`, `null`, `-`): a number, a time or a yes/no column that holds
+/// one is still that column, and the cell is `NULL`.
+pub fn says_no_value(s: &str) -> bool {
+    const MARKS: &[&str] = &["n/a", "na", "#n/a", "null", "none", "nan", "nil", "-", "--", "\u{2014}", "?", "missing", "unknown"];
+    let t = s.trim();
+    MARKS.iter().any(|m| t.eq_ignore_ascii_case(m))
+}
+
 /// The value of field `f` from a CSV cell.
 pub fn cell(schema: &Schema, f: usize, s: &str) -> Result<Value> {
     let field = &schema.fields[f];
     let t = s.trim();
     if t.is_empty() {
+        return Ok(Value::Null);
+    }
+    // `N/A` in a column of numbers, times or yes/no is no value; in a
+    // column of words it is a word.
+    let typed = matches!(field.ty, FieldType::Int | FieldType::Float) || field.logical.is_some();
+    if typed && says_no_value(t) {
         return Ok(Value::Null);
     }
     let bad = || Error::Schema(format!("bad value for {}: {:?}", field.name, short_str(s)));
@@ -766,11 +781,15 @@ fn sample_columns(data: &[u8], format: Format) -> Result<(Vec<(String, Vec<Json>
 fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Option<&str>, meaning: Option<&str>) -> Result<String> {
     let present = |vs: &[Json]| vs.iter().filter(|v| !v.is_null()).cloned().collect::<Vec<_>>();
     let type_of = |vs: &[Json]| -> &'static str {
-        let vs = present(vs);
+        let all = present(vs);
         let text = |v: &Json| v.as_str().map(str::to_string);
-        if vs.is_empty() {
+        if all.is_empty() {
             return "KEYWORD";
         }
+        // The cells that say they have no value (`N/A`, `-`) do not make a
+        // column of numbers or times one of words: they load as NULL.
+        let vs: Vec<Json> = all.iter().filter(|v| !text(v).is_some_and(|s| says_no_value(&s))).cloned().collect();
+        let vs = if vs.is_empty() { all.clone() } else { vs };
         if vs.iter().all(|v| v.is_boolean() || text(v).is_some_and(|s| s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("false"))) {
             return "BOOL";
         }
@@ -786,9 +805,9 @@ fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Op
         if vs.iter().any(|v| v.is_object() || v.is_array()) {
             return "JSON";
         }
-        let words: usize = vs.iter().map(|v| text(v).unwrap_or_default().split_whitespace().count()).sum();
-        let long = vs.iter().any(|v| text(v).is_some_and(|s| s.len() > 64));
-        if long || words as f64 / vs.len() as f64 >= 2.5 { "TEXT" } else { "KEYWORD" }
+        let words: usize = all.iter().map(|v| text(v).unwrap_or_default().split_whitespace().count()).sum();
+        let long = all.iter().any(|v| text(v).is_some_and(|s| s.len() > 64));
+        if long || words as f64 / all.len() as f64 >= 2.5 { "TEXT" } else { "KEYWORD" }
     };
     let key = match key {
         Some("") => None,
@@ -848,6 +867,27 @@ mod create_for_tests {
         let sql = create_for("t", br#"[{"id": 1, "tags": ["a"], "my col": "x"}, {"id": 1}]"#, Format::Json, None).unwrap();
         assert_eq!(sql, r#"CREATE TABLE IF NOT EXISTS t (id INT, "my col" KEYWORD, tags JSON)"#);
         assert!(create_for("t", b"a,,b\n1,2,3\n", Format::Csv, None).is_err());
+    }
+
+    // A spreadsheet's export writes `N/A` or `-` where a number is missing:
+    // the column stays a column of numbers, and those cells load as NULL,
+    // rather than the column becoming words that sort and filter as text.
+    #[test]
+    fn cells_that_say_they_have_no_value_keep_their_columns_type() {
+        let csv = b"id,name,price,stock,added\n1,Tent,120,N/A,2026-01-02\n2,Stove,n/a,3,-\n3,Lamp,15.5,null,2026-03-04\n4,NA,-,4,\n";
+        let sql = create_for("gear", csv, Format::Csv, None).unwrap();
+        assert_eq!(sql, "CREATE TABLE IF NOT EXISTS gear (id INT PRIMARY KEY, name KEYWORD, price FLOAT, stock INT, added TIMESTAMP)");
+        let schema = schema_for("gear", csv, Format::Csv, None, None).unwrap();
+        let f = |n: &str| schema.fields.iter().position(|x| x.name == n).unwrap();
+        assert_eq!(cell(&schema, f("price"), "N/A").unwrap(), Value::Null);
+        assert_eq!(cell(&schema, f("stock"), " null ").unwrap(), Value::Null);
+        assert_eq!(cell(&schema, f("added"), "-").unwrap(), Value::Null);
+        assert_eq!(cell(&schema, f("price"), "15.5").unwrap(), Value::Float(15.5));
+        // In a column of words, NA is a word (a country, an element).
+        assert_eq!(cell(&schema, f("name"), "NA").unwrap(), Value::Str("NA".into()));
+        assert!(cell(&schema, f("price"), "cheap").is_err(), "a word that is not a mark of no value is still refused");
+        // A column of nothing but marks is words, as before.
+        assert_eq!(create_for("t", b"a,b\n1,N/A\n2,-\n", Format::Csv, None).unwrap(), "CREATE TABLE IF NOT EXISTS t (a INT, b KEYWORD)");
     }
 
     #[test]

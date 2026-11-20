@@ -52,6 +52,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="h">Start</span>
       <a href="index.html">Overview</a>
       <a href="quickstart.html">Quickstart</a>
+      <a href="agents.html">Build with an AI agent</a>
       <a href="concepts.html">Concepts</a>
       <a href="build-an-app.html">Build an app on the HTTP API</a>
       <a href="troubleshooting.html" aria-current="page">Troubleshooting</a>
@@ -228,6 +229,7 @@ parameter :v: no table has a field this server can embed text for; pass a vector
 <pre data-lang="text" data-title="Output">ERROR chloedb_server: listen on 127.0.0.1:7700: the address is in use, by another chloedb-server or another program (lsof -i :7700 names it): stop it, or give --listen another port
 ERROR chloedb_server: listen on 127.0.0.1:7701: the address is in use, by another chloedb-server or another program (lsof -i :7701 names it): stop it, or give --grpc another port</pre>
 <p>Another program has the port: often a chloedb-server started earlier and still running. <code>lsof -i :7700</code> names it. A server listens on two ports, HTTP on 7700 and gRPC on 7701, so a second server on the same machine needs both moved: <code>--listen 127.0.0.1:7710 --grpc 127.0.0.1:7711</code>, or <code>--grpc off</code> when nothing uses gRPC.</p>
+<p><span class="since unreleased">since 0.3.10 (unreleased)</span> A server started without <code>--listen</code> does that itself: when 7700 or 7701 is taken, it takes the first free pair ten above them (7710 and 7711, then 7720 and 7721, up to ten tries) and says so, naming the chloedb-server that has the default when it is one. The error above is for an address you gave, which it keeps to.</p>
 <h3 id="is-reachable-beyond-this-machine-set---token"><code>is reachable beyond this machine: set --token</code><a class="anchor" href="#is-reachable-beyond-this-machine-set---token" aria-label="Link to this section">#</a></h3>
 <pre data-lang="text" data-title="Output">ERROR chloedb_server: 0.0.0.0:7700 is reachable beyond this machine: set --token (or $CHLOEDB_TOKEN), make an API key, or pass --no-token to serve it open</pre>
 <p>A server that listens on an address other machines can reach (<code>0.0.0.0</code>, a LAN address, inside a container) must have a token or an API key, so that nobody else can change it. Give it <code>--token</code> (or <code>$CHLOEDB_TOKEN</code>) and send the token from every client, or listen on <code>127.0.0.1</code> (<a href="server.html#security">security</a>).</p>

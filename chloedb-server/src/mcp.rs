@@ -47,12 +47,39 @@ const MAX_BODY: usize = 64 << 20;
 /// documentation site has them.
 pub const QUERY_LANGUAGE: &str = include_str!("../../docs/chloedb/query-language.md");
 pub const BUILD_AN_APP: &str = include_str!("../../docs/chloedb/build-an-app.md");
+/// Build with an AI agent: the prompts that work, which are this server's
+/// MCP prompts too ([`prompts`]), and what an agent should know.
+pub const AGENTS_GUIDE: &str = include_str!("../../docs/guide/agents.md");
+pub const SEARCH_GUIDE: &str = include_str!("../../docs/guide/search.md");
+pub const SEARCH_PAGE: &str = include_str!("../../docs/guide/search-page.md");
+pub const PYTHON: &str = include_str!("../../docs/chloedb/python.md");
+pub const JAVASCRIPT: &str = include_str!("../../docs/chloedb/javascript.md");
+pub const TROUBLESHOOTING: &str = include_str!("../../docs/chloedb/troubleshooting.md");
+
+/// The documents `search_docs` searches, by the name its answers give
+/// them, with a weight: the server's reference is long, and a question of
+/// syntax is answered by the query language first.
+const DOCS: &[(&str, &str, f64)] = &[
+    ("query language", QUERY_LANGUAGE, 1.0),
+    ("build an app", BUILD_AN_APP, 1.0),
+    ("build with an agent", AGENTS_GUIDE, 1.0),
+    ("search guide", SEARCH_GUIDE, 0.9),
+    ("search page guide", SEARCH_PAGE, 0.9),
+    ("python", PYTHON, 0.9),
+    ("javascript", JAVASCRIPT, 0.9),
+    ("troubleshooting", TROUBLESHOOTING, 0.9),
+];
 
 const INSTRUCTIONS: &str = "ChloeDB is a search database with SQL: full text (BM25), vectors, graphs and structured fields, in tables. \
 Start with list_tables: it gives each table's CREATE TABLE statement. \
-ChloeDB SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words') DESC ranks by it, \
-similarity(vector_field, :p) ranks by meaning (bind :p in params as {\"embed\": \"some text\", \"field\": \"emb\"}), and search_docs finds the syntax of anything else. \
-query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON; import loads many rows at once (a CSV file's text, JSON lines or objects) into a table. \
+ChloeDB SQL is its own dialect, not Postgres: MATCH(field, 'words') filters by text, ORDER BY bm25(field, 'words', fuzzy => 'auto') DESC ranks by it and takes typos, \
+similarity(vector_field, :q) ranks by meaning (bind :q to the text itself, which the field's own model embeds), rrf(bm25(...), similarity(...)) fuses the two, \
+and search_docs finds the syntax of anything else, the Python and JavaScript clients' methods and how to build a search page; the server's reference is https://chloetech-ai.github.io/chloedb/site/docs/server.html. \
+query runs SELECT only; execute runs INSERT, UPDATE, DELETE, CREATE, ALTER and DROP; write sends rows as JSON; import loads many rows at once (a CSV file's text, JSON lines or objects) into a table, \
+and with create: true makes the table from them, adding a vector of its prose (emb) that the server fills in once it has downloaded the model: \
+until then a search by meaning answers 503 unavailable, which is a wait, not something to fix. A file larger than a few megabytes is sent with curl --data-binary to POST /v1/import?table=NAME instead. \
+A web page cannot call this server from the browser (it refuses other origins and sends no CORS headers, a page opened from a file included): the page calls a route of an app, and the app calls the server. \
+Every error has an error_code, retryable, a hint and the docs section that explains it. The prompts (prompts/list) are recipes for common tasks: loading a file, searching, cited answers, a search page, app code, a slow query. \
 check_sql parses and binds a statement against the tables without running it, and explain shows how a SELECT runs. \
 list_feedback and get_feedback read what people asked of the command center, with screenshots; update_feedback takes an item and marks it done. \
 The key you connect with decides what you may change (whoami): read, write, or admin for tables. \
@@ -335,7 +362,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "search_docs",
         title: "Search the docs",
-        description: "Sections of ChloeDB's query language reference and its Build an app guide that match the words given: the syntax of a function, an option, a type or a statement.",
+        description: "Sections of ChloeDB's documentation that match the words given: the SQL reference (the syntax of a function, an option, a type or a statement), the Python and JavaScript clients, the search guides, how to build a search page or an app, Build with an agent and Troubleshooting.",
         schema: || json!({"type": "object", "properties": {
             "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 8, "default": 3}
         }, "required": ["query"]}),
@@ -558,17 +585,96 @@ fn saved_call(set: &chloedb::query::function::FunctionSet, tool: &str, args: &Js
     Some(Ok(route(Method::POST, "/v1/query", Some(json!({"sql": sql, "params": params})), Shape::Rows(50))))
 }
 
-struct Resource {
+pub struct Resource {
     uri: &'static str,
     name: &'static str,
     description: &'static str,
     text: &'static str,
 }
 
-const RESOURCES: &[Resource] = &[
+pub const RESOURCES: &[Resource] = &[
     Resource { uri: "strata://docs/query-language", name: "ChloeDB query language", description: "The whole SQL reference: types, table options, search functions, ranking, joins, writes.", text: QUERY_LANGUAGE },
     Resource { uri: "strata://docs/build-an-app", name: "Build an app on chloedb-server", description: "A shop in one page: tables, writes, search, stock that never oversells, holds that expire, events counted once.", text: BUILD_AN_APP },
+    Resource { uri: "strata://docs/agents", name: "Build with an AI agent", description: "The prompts that work and what an agent does with each: loading a file, searching, cited answers, a search page, app code, a slow query, the server's health.", text: AGENTS_GUIDE },
+    Resource { uri: "strata://docs/search", name: "Search guide", description: "Search by words, by meaning and both, with filters, typos, highlights and facets.", text: SEARCH_GUIDE },
+    Resource { uri: "strata://docs/search-page", name: "Build a search page", description: "A search page in Python: typos, highlights, did you mean, filters with counts, more like this; why the page calls an app and not the server.", text: SEARCH_PAGE },
+    Resource { uri: "strata://docs/python", name: "ChloeDB from Python", description: "The Python package: a database in the process, a client of a server (chloedb.connect), search, ask, writes, errors.", text: PYTHON },
+    Resource { uri: "strata://docs/javascript", name: "ChloeDB from JavaScript", description: "The JavaScript package: a database in the process, a client of a server, a search box in a web app.", text: JAVASCRIPT },
+    Resource { uri: "strata://docs/troubleshooting", name: "Troubleshooting", description: "What the common errors mean and what to do about them.", text: TROUBLESHOOTING },
 ];
+
+// ----- prompts: the recipes of Build with an agent
+
+/// A prompt of [`AGENTS_GUIDE`]: a recipe's section, marked
+/// `<!-- prompt: NAME; arg = what it is; ... -->`, whose ask is its
+/// ```` ```text prompt=NAME ```` block and whose steps are the rest of the
+/// section, which the server sends with the ask.
+#[derive(Clone, Debug)]
+pub struct Prompt {
+    pub name: String,
+    pub title: String,
+    pub ask: String,
+    pub steps: String,
+    /// Its arguments, `{name}` in the ask, and what each is.
+    pub args: Vec<(String, String)>,
+}
+
+/// The prompts, in the guide's order.
+pub fn prompts() -> &'static [Prompt] {
+    static P: OnceLock<Vec<Prompt>> = OnceLock::new();
+    P.get_or_init(|| parse_prompts(AGENTS_GUIDE))
+}
+
+fn parse_prompts(text: &str) -> Vec<Prompt> {
+    let mut out = Vec::new();
+    // Each recipe is a `### ` section of the guide.
+    for section in text.split("\n### ").skip(1) {
+        let section = section.split("\n## ").next().unwrap_or(section);
+        let title = section.lines().next().unwrap_or("").trim().to_string();
+        let Some(mark) = section.find("<!-- prompt:") else { continue };
+        let Some(end) = section[mark..].find("-->") else { continue };
+        let mut parts = section[mark + "<!-- prompt:".len()..mark + end].split(';');
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let args: Vec<(String, String)> = parts.filter_map(|p| p.split_once('=')).map(|(a, d)| (a.trim().to_string(), d.trim().to_string())).collect();
+        let fence = format!("```text prompt={name}\n");
+        let Some(at) = section.find(&fence) else { continue };
+        let body = &section[at + fence.len()..];
+        let Some(close) = body.find("\n```") else { continue };
+        let ask = body[..close].trim().to_string();
+        let steps = body[close + 4..].trim().to_string();
+        out.push(Prompt { name, title, ask, steps, args });
+    }
+    out
+}
+
+fn prompts_json() -> Json {
+    let list: Vec<Json> = prompts()
+        .iter()
+        .map(|p| {
+            let args: Vec<Json> = p.args.iter().map(|(n, d)| json!({"name": n, "description": d, "required": true})).collect();
+            json!({"name": p.name, "title": p.title, "description": p.ask, "arguments": args})
+        })
+        .collect();
+    json!({"prompts": list})
+}
+
+/// A prompt's messages, its arguments put in: the ask, then how to do it
+/// in ChloeDB.
+fn prompt_get(name: &str, args: &Json) -> Result<Json, String> {
+    let p = prompts().iter().find(|p| p.name == name).ok_or_else(|| {
+        let names: Vec<&str> = prompts().iter().map(|p| p.name.as_str()).collect();
+        format!("no prompt {name:?}: the prompts are {}", names.join(", "))
+    })?;
+    let mut ask = p.ask.clone();
+    let mut steps = p.steps.clone();
+    for (a, what) in &p.args {
+        let v = args.get(a).and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty()).ok_or_else(|| format!("prompt {name} needs {a}: {what}"))?;
+        ask = ask.replace(&format!("{{{a}}}"), v);
+        steps = steps.replace(&format!("{{{a}}}"), v);
+    }
+    let text = format!("{ask}\n\nHow to do it in ChloeDB, from its guide Build with an AI agent (search_docs finds more):\n\n{steps}");
+    Ok(json!({"description": p.title, "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}))
+}
 
 fn resources_json() -> Json {
     let list: Vec<Json> = RESOURCES.iter().map(|r| json!({"uri": r.uri, "name": r.name, "description": r.description, "mimeType": "text/markdown", "size": r.text.len()})).collect();
@@ -582,17 +688,20 @@ struct Section {
     doc: &'static str,
     heading: String,
     text: &'static str,
+    weight: f64,
 }
 
 fn sections() -> &'static [Section] {
     static S: OnceLock<Vec<Section>> = OnceLock::new();
     S.get_or_init(|| {
         let mut out = Vec::new();
-        for (doc, text) in [("query language", QUERY_LANGUAGE), ("build an app", BUILD_AN_APP)] {
+        for &(doc, text, weight) in DOCS {
             let mut fence = false;
             let mut start = 0;
             let mut h2 = String::new();
-            let mut heading = String::new();
+            // What comes before the first section is the document's
+            // introduction, named by its title.
+            let mut heading = text.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or("").trim().to_string();
             let mut at = 0;
             for line in text.split_inclusive('\n') {
                 let t = line.trim_end();
@@ -602,7 +711,7 @@ fn sections() -> &'static [Section] {
                 let level = if fence { 0 } else { t.bytes().take_while(|b| *b == b'#').count() };
                 if (level == 2 || level == 3) && t.as_bytes().get(level) == Some(&b' ') {
                     if at > start {
-                        out.push(Section { doc, heading: heading.clone(), text: &text[start..at] });
+                        out.push(Section { doc, heading: heading.clone(), text: &text[start..at], weight });
                     }
                     let title = t[level + 1..].trim().to_string();
                     if level == 2 {
@@ -616,7 +725,7 @@ fn sections() -> &'static [Section] {
                 at += line.len();
             }
             if text.len() > start {
-                out.push(Section { doc, heading: heading.clone(), text: &text[start..] });
+                out.push(Section { doc, heading: heading.clone(), text: &text[start..], weight });
             }
         }
         out
@@ -689,7 +798,7 @@ pub fn search_docs(query: &str, limit: usize) -> Json {
                 let both = q.iter().zip(&idf).filter(|(w, _)| *w == a || *w == b).map(|(_, f)| f).sum::<f64>();
                 k * both
             }).sum();
-            (score + side_by_side, i)
+            ((score + side_by_side) * all[i].weight, i)
         })
         .filter(|(s, _)| *s > 0.0)
         .collect();
@@ -930,7 +1039,7 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
             let version = VERSIONS.iter().find(|v| **v == asked).copied().unwrap_or(VERSIONS[0]);
             ok(&id, json!({
                 "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}},
+                "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}, "prompts": {"listChanged": false}},
                 "serverInfo": {"name": "chloedb", "title": "ChloeDB", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": INSTRUCTIONS,
             }))
@@ -946,7 +1055,14 @@ pub async fn handle(svc: &std::sync::Arc<Service>, router: Option<&Router>, call
         }
         "resources/list" => ok(&id, resources_json()),
         "resources/templates/list" => ok(&id, json!({"resourceTemplates": []})),
-        "prompts/list" => ok(&id, json!({"prompts": []})),
+        "prompts/list" => ok(&id, prompts_json()),
+        "prompts/get" => {
+            let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            match prompt_get(name, params.get("arguments").unwrap_or(&Json::Null)) {
+                Ok(r) => ok(&id, r),
+                Err(e) => error(&id, -32602, e),
+            }
+        }
         "resources/read" => {
             let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
             match RESOURCES.iter().find(|r| r.uri == uri) {
@@ -1149,7 +1265,12 @@ async fn forward_body(router: &Router, caller: &Caller<'_>, method: Method, path
             Some(c) => format!(" [code {c}{}]", j.get("hint").and_then(|h| h.as_str()).map(|h| format!(": {h}")).unwrap_or_default()),
             None => String::new(),
         };
-        return Err(format!("{}: {why}{code}", status.as_u16()));
+        // fixes: the statement with a misspelt name corrected, to run as it is.
+        let fix = match j.get("fixes").and_then(|f| f.get(0)).and_then(|f| f.get("sql")).and_then(|s| s.as_str()) {
+            Some(sql) => format!(" Corrected statement: {sql}"),
+            None => String::new(),
+        };
+        return Err(format!("{}: {why}{code}{fix}", status.as_u16()));
     }
     Ok(j)
 }
@@ -1234,7 +1355,10 @@ mod tests {
     #[test]
     fn docs_split_into_sections_and_search_finds_them() {
         assert!(sections().len() > 20, "{}", sections().len());
-        assert!(sections().iter().all(|s| !s.heading.is_empty() || s.doc == "query language" || s.doc == "build an app"));
+        assert!(sections().iter().all(|s| !s.heading.is_empty()), "every section has a heading, the introductions their document's title");
+        for (doc, ..) in DOCS {
+            assert!(sections().iter().filter(|s| s.doc == *doc).count() > 3, "{doc} is searched");
+        }
         let j = search_docs("bm25 fuzzy typos", 3);
         let hits = j["sections"].as_array().unwrap();
         assert!(!hits.is_empty(), "{j}");
@@ -1242,6 +1366,33 @@ mod tests {
         let j = search_docs("expire_by holds", 2);
         assert!(j["sections"].as_array().unwrap().iter().any(|h| h["text"].as_str().unwrap().contains("expire_by")), "{j}");
         assert_eq!(search_docs("zzqqxx", 3)["sections"], json!([]));
+    }
+
+    // An agent given the prompts of Build with an agent gets each recipe's
+    // steps with its ask, its arguments put in, and the guide's list of
+    // them is the server's.
+    #[test]
+    fn the_guides_recipes_are_prompts() {
+        let names: Vec<&str> = prompts().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["explore", "load-a-file", "search", "answer-with-citations", "search-page", "app-code", "change-a-table", "slow-query", "check-the-server"]);
+        for p in prompts() {
+            assert!(!p.title.is_empty() && !p.ask.is_empty() && p.steps.starts_with("1. "), "{p:?}");
+            for (a, what) in &p.args {
+                assert!(p.ask.contains(&format!("{{{a}}}")) && !what.is_empty(), "{}: {a}", p.name);
+            }
+            let braces = p.ask.matches('{').count();
+            assert_eq!(braces, p.args.len(), "{}: every {{word}} of the ask is an argument", p.name);
+        }
+        let j = prompts_json();
+        assert_eq!(j["prompts"][1]["arguments"][0]["name"], "path");
+        let r = prompt_get("load-a-file", &json!({"path": "data/movies.csv"})).unwrap();
+        let text = r["messages"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.starts_with("Load data/movies.csv into ChloeDB"), "{text}");
+        assert!(text.contains("curl -s --data-binary @data/movies.csv") && text.contains("503 `unavailable`"), "{text}");
+        assert!(prompt_get("load-a-file", &json!({})).unwrap_err().contains("needs path"));
+        assert!(prompt_get("nope", &json!({})).unwrap_err().contains("explore"));
+        let r = prompt_get("search-page", &json!({"table": "movies"})).unwrap();
+        assert!(r["messages"][0]["content"]["text"].as_str().unwrap().contains("cannot call chloedb-server from the browser"));
     }
 
     #[test]

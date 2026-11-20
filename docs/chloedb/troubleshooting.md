@@ -149,6 +149,8 @@ ERROR chloedb_server: listen on 127.0.0.1:7701: the address is in use, by anothe
 
 Another program has the port: often a chloedb-server started earlier and still running. `lsof -i :7700` names it. A server listens on two ports, HTTP on 7700 and gRPC on 7701, so a second server on the same machine needs both moved: `--listen 127.0.0.1:7710 --grpc 127.0.0.1:7711`, or `--grpc off` when nothing uses gRPC.
 
+<!-- since 0.3.10 --> A server started without `--listen` does that itself: when 7700 or 7701 is taken, it takes the first free pair ten above them (7710 and 7711, then 7720 and 7721, up to ten tries) and says so, naming the chloedb-server that has the default when it is one. The error above is for an address you gave, which it keeps to.
+
 ### `is reachable beyond this machine: set --token`
 
 ```text
