@@ -20,6 +20,15 @@ pub const SHAPE2_DIM: usize = crate::fires::SHAPE2_DIM;
 pub const SHAPE1_DIM: usize = crate::fires::SHAPE1_DIM;
 
 /// (table, CREATE TABLE statement, what it holds).
+/// The Land finder's columns of ea_places (tools/land.py): the nearest
+/// substation, power line and main road, the solar farms on and near it,
+/// and how much of it is protected.
+pub const LAND_COLUMNS: [(&str, &str); 13] = [
+    ("sub_km", "FLOAT"), ("sub_kv", "FLOAT"), ("sub_name", "KEYWORD"), ("line_km", "FLOAT"), ("line_kv", "FLOAT"),
+    ("road_km", "FLOAT"), ("road_name", "KEYWORD"), ("solar", "FLOAT"), ("solar_km", "FLOAT"), ("solar_name", "KEYWORD"),
+    ("protected", "FLOAT"), ("protected_strict", "FLOAT"), ("protected_name", "KEYWORD"),
+];
+
 pub fn tables() -> Vec<(&'static str, String, &'static str)> {
     vec![
         ("ea_places", format!("CREATE TABLE IF NOT EXISTS ea_places (
@@ -32,8 +41,9 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   climate KEYWORD, climate_group KEYWORD, mine FLOAT, crop KEYWORD, crop_pct FLOAT,
   fire_years INT[], fire_px INT, last_fire INT,
   words TEXT OPTIONS(analyzer = 'english'), about TEXT OPTIONS(analyzer = 'english'),
-  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM})
-) OPTIONS(cluster_by = 'region')"), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL) and fire years (FIRMS)"),
+  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM}),
+  {LAND}
+) OPTIONS(cluster_by = 'region')", LAND = LAND_COLUMNS.iter().map(|(c, t)| format!("{c} {t}")).collect::<Vec<_>>().join(", ")), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL), fire years (FIRMS), and for the Land finder the grid, roads and solar farms around it (OpenStreetMap) and its protected land (PAD-US, OpenStreetMap)"),
         ("ea_words", format!("CREATE TABLE IF NOT EXISTS ea_words (
   id KEYWORD PRIMARY KEY, text TEXT, kind KEYWORD,
   emb VECTOR({LOOK_DIM}) OPTIONS(embed = 'text', model = '{LOOK_MODEL}')
@@ -94,6 +104,15 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   clear FLOAT, smoke FLOAT, sun FLOAT, day_end INT, days INT[], nights INT[],
   dsum FLOAT, dn INT, nsum FLOAT, nn INT, clear_days FLOAT, clear_nights FLOAT, good_days INT, good_nights INT
 ) OPTIONS(cluster_by = 'region')".to_string(), "Clear sky: each place's sky in GOES's last scan (the share of its pixels clear, and with smoke), and its last 30 days and nights, each the share of its daylight or dark scans that were clear"),
+        ("ea_climate", "CREATE TABLE IF NOT EXISTS ea_climate (
+  id KEYWORD PRIMARY KEY, region KEYWORD, lat FLOAT, lon FLOAT, town KEYWORD,
+  t_mean FLOAT, t_mean_70 FLOAT, t_hot FLOAT, t_hot_70 FLOAT, t_hot_70_lo FLOAT, t_hot_70_hi FLOAT,
+  t_cold FLOAT, t_cold_70 FLOAT, t_cold_70_lo FLOAT, t_cold_70_hi FLOAT,
+  rain FLOAT, rain_70 FLOAT, rain_70_lo FLOAT, rain_70_hi FLOAT, rain_cv FLOAT, rain_cv_70 FLOAT, rain_summer FLOAT, rain_summer_70 FLOAT,
+  kg KEYWORD, kg_70 KEYWORD, kg_70_agree INT,
+  analog KEYWORD, analog_region KEYWORD, analog_town KEYWORD, analog_km FLOAT, analog_d FLOAT, novel BOOL, moved FLOAT,
+  clim VECTOR(6), clim70 VECTOR(6)
+) OPTIONS(cluster_by = 'region')".to_string(), "In 2070: each place's climate for 1981-2010 and, from five CMIP6 models under SSP3-7.0, for 2071-2100 (CHELSA 2.1), each also a vector of six standardised numbers, and the place whose climate today is nearest its future one"),
         ("ea_watches", "CREATE TABLE IF NOT EXISTS ea_watches (
   id KEYWORD PRIMARY KEY, watcher KEYWORD, name KEYWORD OPTIONS(indexed = false), lat FLOAT, lon FLOAT, km FLOAT,
   region KEYWORD, closer BOOL, power BOOL, sky BOOL, place KEYWORD, created TIMESTAMP
