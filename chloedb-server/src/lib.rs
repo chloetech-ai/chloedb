@@ -62,6 +62,7 @@ pub mod errors;
 pub mod events;
 pub mod feedback;
 pub mod export;
+pub mod fixes;
 pub mod fleet;
 pub mod funnel;
 pub mod follow;

@@ -585,14 +585,14 @@ fn saved_call(set: &chloedb::query::function::FunctionSet, tool: &str, args: &Js
     Some(Ok(route(Method::POST, "/v1/query", Some(json!({"sql": sql, "params": params})), Shape::Rows(50))))
 }
 
-struct Resource {
+pub struct Resource {
     uri: &'static str,
     name: &'static str,
     description: &'static str,
     text: &'static str,
 }
 
-const RESOURCES: &[Resource] = &[
+pub const RESOURCES: &[Resource] = &[
     Resource { uri: "strata://docs/query-language", name: "ChloeDB query language", description: "The whole SQL reference: types, table options, search functions, ranking, joins, writes.", text: QUERY_LANGUAGE },
     Resource { uri: "strata://docs/build-an-app", name: "Build an app on chloedb-server", description: "A shop in one page: tables, writes, search, stock that never oversells, holds that expire, events counted once.", text: BUILD_AN_APP },
     Resource { uri: "strata://docs/agents", name: "Build with an AI agent", description: "The prompts that work and what an agent does with each: loading a file, searching, cited answers, a search page, app code, a slow query, the server's health.", text: AGENTS_GUIDE },
@@ -1265,7 +1265,12 @@ async fn forward_body(router: &Router, caller: &Caller<'_>, method: Method, path
             Some(c) => format!(" [code {c}{}]", j.get("hint").and_then(|h| h.as_str()).map(|h| format!(": {h}")).unwrap_or_default()),
             None => String::new(),
         };
-        return Err(format!("{}: {why}{code}", status.as_u16()));
+        // fixes: the statement with a misspelt name corrected, to run as it is.
+        let fix = match j.get("fixes").and_then(|f| f.get(0)).and_then(|f| f.get("sql")).and_then(|s| s.as_str()) {
+            Some(sql) => format!(" Corrected statement: {sql}"),
+            None => String::new(),
+        };
+        return Err(format!("{}: {why}{code}{fix}", status.as_u16()));
     }
     Ok(j)
 }

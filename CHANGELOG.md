@@ -11,6 +11,13 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Fewer pages until you need them, and fixes you can run.** On a single
+  server the command center's sidebar shows the twelve pages a newcomer
+  uses and folds the others under "More pages" until one is opened (then
+  it stays in its group), has a badge or is pinned; a coordinator shows
+  them all. A statement refused for a misspelt table, column or function
+  is answered with `fixes`, the statement with each suggested name in its
+  place, which the MCP tools hand the agent as the corrected statement.
 - **One command from a database to a cluster.** `chloedb-server grow --db
   films.chloedb --shards 3` serves the database as the first of three
   shards on this machine, with a coordinator at the address it was served
