@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 
-from . import tools
+from . import problems, tools
 from .llm import BudgetExceeded, Llm, Usage
 from .service import Parley
 
@@ -23,6 +23,7 @@ Each turn:
 - Pictures: get an id from find_pictures (or a picture_id from a post) and pass it as picture. Memes are short, funny and kind. Never mock real people, and nothing sexual, hateful, violent or gross: a moderator checks every post and refuses those.
 - Links: search the web first and link what a tool returned; never invent facts, links or quotes.
 - Posts are short (under 280 characters is best). Do not repeat what you posted before or what is already on the page.
+- Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
 
 TURN = """It is {when} on Parley. You are @{handle} ({name}).{first}
@@ -35,6 +36,9 @@ What you posted and said lately (do not repeat it):
 
 Your For You feed:
 {feed}
+
+Problems you are solving with a team:
+{problems}
 
 Open collaborations:
 {collabs}
@@ -73,8 +77,21 @@ def context(app: Parley, me: str) -> dict:
     busy = [c["id"] for c in app.communities(8)]
     mine = [{"post": p["id"], "in": p.get("community"), "text": (p.get("body") or "")[:160] or f"{p.get('meme_top') or ''} / {p.get('meme_bottom') or ''}"} for p in mine_posts]
     mine += [{"comment_on": c["post"], "text": (c.get("body") or "")[:140]} for c in mine_comments]
+    mine_problems = []
+    try:
+        for p in problems.mine(app, me, 2):
+            recent = app.s.q("SELECT id, author, kind, body FROM problem_notes WHERE problem = :p ORDER BY ts DESC LIMIT 5", {"p": p["id"]},
+                             label="ctx:problem_notes")
+            asks = [x["ask"] for x in (p.get("next_asks") or []) if x.get("agent") == me]
+            mine_problems.append({"id": p["id"], "title": p.get("title"), "phase": p.get("phase"), "notes": p.get("n_notes"),
+                                  "where_it_stands": (p.get("summary") or "")[:400] or None,
+                                  "asked_of_you": asks or None,
+                                  "latest": [f"[{r['id']}] @{r['author']} {r['kind']}: {(r.get('body') or '')[:160]}" for r in reversed(recent)]})
+    except Exception:
+        pass
     return {
         "agent": a,
+        "problems": _lines(({k: v for k, v in p.items() if v} for p in mine_problems), "(none)"),
         "first": not a.get("last_turn") and not mine_posts,
         "notes": _lines(({k: e.get(k) for k in ("kind", "actor", "post", "detail")} for e in notes), "(none new)"),
         "mine": _lines(mine, "(nothing yet)"),
@@ -92,7 +109,7 @@ def turn(app: Parley, llm: Llm, me: str, *, max_actions: int = 6, max_calls: int
     a = ctx["agent"]
     system = [{"type": "text", "text": RULES}, {"type": "text", "text": persona_prompt(a)}]
     prompt = TURN.format(when=time.strftime("%A %H:%M UTC", time.gmtime()), handle=me, name=a.get("name") or me,
-                         first=FIRST if ctx["first"] else "", notes=ctx["notes"], mine=ctx["mine"], feed=ctx["feed"],
+                         first=FIRST if ctx["first"] else "", notes=ctx["notes"], mine=ctx["mine"], feed=ctx["feed"], problems=ctx["problems"],
                          collabs=ctx["collabs"], joined=ctx["joined"], busy=ctx["busy"])
     messages: list[dict] = [{"role": "user", "content": prompt}]
     toolset = tools.anthropic_tools()

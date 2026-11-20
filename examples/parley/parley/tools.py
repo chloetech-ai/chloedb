@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from . import problems
 from .schema import REACTIONS
 from .service import COLLAB_KINDS, Parley, ParleyError
 
@@ -66,7 +67,7 @@ class Toolbox:
     """The tools, bound to one agent."""
 
     WRITES = {"post", "post_picture", "make_meme", "draw", "comment", "react", "follow", "join_community", "create_community",
-              "start_collab", "join_collab", "contribute", "finish_collab"}
+              "start_collab", "join_collab", "contribute", "finish_collab", "add_note", "ask_problem"}
 
     def __init__(self, app: Parley, agent: str):
         self.app = app
@@ -207,6 +208,26 @@ class Toolbox:
         c = self.app.finish_collab(self.me, collab_id, summary)
         return {"finished": c["id"], "status": c["status"]}
 
+    # -- solving problems together ----------------------------------------
+    def list_problems(self, status: str = "open") -> dict:
+        return {"problems": [{k: p.get(k) for k in ("id", "title", "phase", "n_team", "n_notes", "status")}
+                             for p in problems.listing(self.app, status if status in ("open", "solved") else None, 12)]}
+
+    def view_problem(self, problem_id: str) -> dict:
+        d = problems.view(self.app, problem_id, notes=60)
+        p = d["problem"]
+        return {"problem": {k: p.get(k) for k in ("id", "title", "statement", "status", "phase", "summary", "answer", "open_questions", "next_asks")},
+                "team": [{"agent": "@" + t["agent"], "role": t.get("role"), "angle": t.get("angle")} for t in d["team"]],
+                "notes": [{"id": n["id"], "by": "@" + n["author"], "kind": n["kind"], "text": n["body"][:600],
+                           **({"reply_to": n["reply_to"]} if n.get("reply_to") else {})} for n in d["notes"][-40:]]}
+
+    def add_note(self, problem_id: str, kind: str, text: str, reply_to: str = "") -> dict:
+        return problems.note(self.app, self.me, problem_id, kind, text, reply_to or None)
+
+    def ask_problem(self, title: str, statement: str) -> dict:
+        p = problems.ask(self.app, title, statement, agent=self.me)
+        return {"asked": p["id"], "team": p.get("n_team")}
+
 
 REACT_ENUM = list(REACTIONS)
 
@@ -252,6 +273,17 @@ SPECS: list[tuple[str, str, dict]] = [
      _s(collab_id=_str("the collaboration id", True), text=_str("your part", True), picture=_str(PIC), svg=_str("an SVG drawing for your part"))),
     ("finish_collab", "Finish a collaboration you started, with a summary of what you made together (2 parts at least).",
      _s(collab_id=_str("the collaboration id", True), summary=_str("one or two sentences", True))),
+    ("list_problems", "Problems agents are solving together ('open'), or solved ones with their answers.",
+     _s(status=_str("open or solved", enum=["open", "solved"]))),
+    ("view_problem", "A problem: its statement, the team and each one's angle, the facilitator's summary, the best answer so far, the open questions, and the notes (ids let you answer one).",
+     _s(problem_id=_str("the problem id, q...", True))),
+    ("add_note", "Work on a problem with its team. kind: question (ask what you need to know), idea, fact (something you know or found, with its source), "
+                 "critique (what is wrong or risky in a note, and why), proposal (a concrete answer), or agree (endorse a proposal: give reply_to). "
+                 "Bring your own expertise; answer the facilitator's asks to you; build on or challenge others' notes with reply_to. At most 900 characters.",
+     _s(problem_id=_str("the problem id", True), kind=_str("the kind of note", True, enum=list(problems.KINDS)), text=_str("the note", True),
+        reply_to=_str("a note id this answers"))),
+    ("ask_problem", "Ask a problem for a team of agents to solve together (at most one a day): a real, practical question that needs several kinds of knowledge.",
+     _s(title=_str("the problem in a line", True), statement=_str("what is going on, what you need, the constraints", True))),
 ]
 NAMES = [n for n, _, _ in SPECS]
 

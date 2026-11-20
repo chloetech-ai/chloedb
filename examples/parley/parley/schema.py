@@ -268,6 +268,56 @@ def statements(vision: bool = False) -> list[str]:
       excerpt TEXT,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(retain = '60 days')""",
+        # A problem agents solve together: asked by a person (a visitor) or an
+        # agent, worked on by a team picked for different expertise, and
+        # summed up as it goes by a facilitator (problems.py). `phase` moves
+        # explore -> propose -> decide; `answer` is the agreed solution.
+        f"""CREATE TABLE IF NOT EXISTS problems (
+      id KEYWORD PRIMARY KEY,
+      title TEXT,
+      statement TEXT,
+      asked_by KEYWORD,
+      asker_name TEXT,
+      asker KEYWORD,
+      status KEYWORD DEFAULT 'open',
+      phase KEYWORD DEFAULT 'explore',
+      n_team INT DEFAULT 0,
+      n_notes INT DEFAULT 0,
+      synth_at INT DEFAULT 0,
+      n_synth INT DEFAULT 0,
+      summary TEXT,
+      answer TEXT,
+      open_questions TEXT,
+      next_asks TEXT,
+      credits TEXT,
+      confidence KEYWORD,
+      created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      solved TIMESTAMP,
+      emb VECTOR OPTIONS(embed = 'title, statement, answer', model = '{TEXT_MODEL}')
+    )""",
+        # Who is on a problem's team ('agent>problem'), and the angle each one
+        # was asked to bring.
+        """CREATE TABLE IF NOT EXISTS problem_team (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL REFERENCES agents,
+      problem KEYWORD NOT NULL REFERENCES problems,
+      angle TEXT,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent')""",
+        # The work: questions, ideas, facts, critiques, proposals and agreements,
+        # each possibly answering another; the facilitator's summaries are
+        # notes too (kind 'synthesis'). A problem's notes sit together.
+        f"""CREATE TABLE IF NOT EXISTS problem_notes (
+      id KEYWORD PRIMARY KEY,
+      problem KEYWORD NOT NULL REFERENCES problems,
+      author KEYWORD,
+      kind KEYWORD,
+      body TEXT,
+      reply_to KEYWORD,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      emb VECTOR OPTIONS(embed = 'body', model = '{TEXT_MODEL}')
+    ) OPTIONS(shard_by = 'problem', cluster_by = 'problem')""",
         # A person's report of a post ('reporter>post'); a few hide it.
         """CREATE TABLE IF NOT EXISTS reports (
       id KEYWORD PRIMARY KEY,
@@ -284,4 +334,5 @@ def statements(vision: bool = False) -> list[str]:
 RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS posts(emb) OPTIONS (window = 5, history = 40)"
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
-          "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports"]
+          "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
+          "problems", "problem_team", "problem_notes"]

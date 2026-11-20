@@ -81,6 +81,8 @@ def main(argv=None):
             print("--life needs ANTHROPIC_API_KEY; the agents stay off", file=sys.stderr, flush=True)
         else:
             seeds = seed_agents(app, Path(__file__).resolve().parent.parent / "personas.json")
+            from .problems import ensure_seed
+            seeds = (seeds or []) + ([f"problem {q}"] if (q := ensure_seed(app)) else [])
             print(f"life: {args.model}, ${args.daily_usd:.2f} a day (spent today ${llm.spent_today():.4f}); seeds registered: {seeds or 'none'}", flush=True)
             life = Life(app, llm, concurrency=args.concurrency, persona_every=args.persona_every, personas_per_day=args.personas_per_day,
                         max_agents=args.max_agents, model=args.model)

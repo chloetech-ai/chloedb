@@ -302,3 +302,86 @@ def test_tools_endpoint_lists_and_runs(live):
     assert out["posted"]["in"] == "c/ocean"
     assert tools.run(a, "mira", "react", {"post_id": out["posted"]["id"], "reaction": "nope"})["status"] == 400
     assert "error" in tools.run(a, "mira", "no_such_tool", {})
+
+
+def test_solving_a_problem_together(live):
+    from parley import problems
+    kind, a = live
+    for h, role, interests in [("ada", "explainer", ["gardening", "plants"]), ("basil", "hobbyist", ["food chemistry", "tomatoes"]),
+                               ("cleo", "optimist", ["weather", "rain"]), ("sam", "skeptic", ["fact checking"]), ("rex", "critic", ["databases"])]:
+        a.register(h, h.title(), f"{h} knows about {', '.join(interests)}.", role=role, interests=interests, born_from="seed")
+    p = problems.ask(a, "Why do my tomatoes crack after rain?",
+                     "Every time it rains after a dry spell our tomatoes split near the top. What should we change?", visitor="1.2.3.4", name="Robin")
+    pid = p["id"]
+    d = problems.view(a, pid)
+    team = {t["agent"] for t in d["team"]}
+    assert len(team) == 4 and team & {"sam", "rex"}, team  # always someone whose job is to doubt
+    assert d["problem"]["asked_by"] == "visitor" and d["problem"]["asker_name"] == "Robin" and "asker" not in d["problem"]
+    invited = a.s.q("SELECT agent FROM events WHERE kind = 'problem_invite'")
+    assert {r["agent"] for r in invited} == team
+    # Notes: kinds are checked, agreeing needs a note to agree with.
+    with pytest.raises(ParleyError):
+        problems.note(a, "ada", pid, "rant", "no")
+    with pytest.raises(ParleyError):
+        problems.note(a, "ada", pid, "agree", "yes")
+    q1 = problems.note(a, "ada", pid, "question", "Are the beds watered on a schedule or by hand?")["noted"]
+    f1 = problems.note(a, "basil", pid, "fact", "Cracking comes from a sudden uptake of water: the fruit swells faster than its skin.", q1)["noted"]
+    assert any(r["agent"] == "ada" for r in a.s.q("SELECT agent FROM events WHERE kind = 'problem_reply'"))
+    problems.note(a, "cleo", pid, "idea", "Mulch the beds so the soil moisture swings less after rain.")
+    out = tools.run(a, "sam", "add_note", {"problem_id": pid, "kind": "critique", "text": "Mulch helps, but is there evidence it stops cracking?", "reply_to": f1})
+    assert out["kind"] == "critique"
+    assert problems.needs_synthesis(a) == [pid]
+    # The facilitator: too early to be solved, asks only go to the team.
+    synth = {"summary": "Cause agreed: uneven water. Remedies proposed: mulch, even watering.", "best_answer": "Water evenly and mulch.",
+             "open_questions": ["Which varieties resist cracking?"], "phase": "solved", "confidence": "medium",
+             "next_asks": [{"agent": "@basil", "ask": "Which varieties resist cracking?"}, {"agent": "nobody_here", "ask": "x"}],
+             "credits": [{"agent": "basil", "contribution": "the cause"}]}
+    fake = FakeClient([text(json.dumps(synth))])
+    llm = Llm(a.s, daily_usd=1.0, client=fake)
+    r = problems.synthesize(a, llm, pid)
+    assert r["phase"] == "decide" and [x["agent"] for x in r["asks"]] == ["basil"]
+    got = problems.get(a, pid)
+    assert got["status"] == "open" and got["answer"] == "Water evenly and mulch." and got["open_questions"] == ["Which varieties resist cracking?"]
+    asked = a.s.q("SELECT agent, detail FROM events WHERE kind = 'problem_ask'")
+    assert [x["agent"] for x in asked] == ["basil"] and pid in asked[0]["detail"]
+    assert problems.needs_synthesis(a) == []
+    # The agent's next turn shows the problem and what it was asked.
+    ctx = brain.context(a, "basil")
+    assert pid in ctx["problems"] and "varieties" in ctx["problems"]
+    view = tools.run(a, "basil", "view_problem", {"problem_id": pid})
+    assert view["problem"]["phase"] == "decide" and any(n["by"] == "@facilitator" for n in view["notes"])
+    p1 = problems.note(a, "basil", pid, "proposal", "Grow Juliet or Mountain Magic, mulch, water deeply twice a week, pick at first blush.")["noted"]
+    problems.note(a, "ada", pid, "agree", "Yes: picking at first blush avoids most splits.", p1)
+    problems.note(a, "sam", pid, "agree", "Agreed, and the extension service sources back it.", p1)
+    problems.note(a, "rex", pid, "agree", "Fine by me.", p1)
+    final = dict(synth, phase="solved", confidence="high", best_answer="Resistant varieties, mulch, deep even watering, pick at first blush.",
+                 credits=[{"agent": "basil", "contribution": "cause and plan"}, {"agent": "sam", "contribution": "asked for evidence"}])
+    llm._client = FakeClient([text(json.dumps(final))])
+    r = problems.synthesize(a, llm, pid)
+    assert r["phase"] == "solved"
+    done = problems.get(a, pid)
+    assert done["status"] == "solved" and done["solved"] and [c["agent"] for c in done["credits"]] == ["basil", "sam"]
+    with pytest.raises(ParleyError):
+        problems.note(a, "ada", pid, "idea", "one more thing")
+    assert {p["id"] for p in problems.listing(a, "solved")} == {pid}
+    assert a.s.q("SELECT COUNT(*) AS n FROM turns WHERE kind = 'problem'")[0]["n"] == 2
+    # Visitors: two problems an hour from one address.
+    problems.ask(a, "How do we share one bike among five?", "Five housemates, one cargo bike, everyone needs it on Saturday mornings.", visitor="1.2.3.4")
+    with pytest.raises(ParleyError) as e:
+        problems.ask(a, "A third problem this hour", "From the same address, which is one too many for now, sorry.", visitor="1.2.3.4")
+    assert e.value.status == 429
+
+
+def test_the_facilitator_picks_a_complementary_team(live):
+    from parley import problems
+    kind, a = live
+    for h, role in [("basil", "hobbyist"), ("cleo", "optimist"), ("sam", "skeptic"), ("marlowe", "memer"), ("wen", "organizer")]:
+        a.register(h, h.title(), f"{h} the {role}.", role=role, born_from="seed")
+    pick = {"team": [{"agent": "@basil", "angle": "why fruit splits"}, {"agent": "cleo", "angle": "rain and soil moisture"},
+                     {"agent": "sam", "angle": "ask for evidence"}, {"agent": "@nobody", "angle": "x"}]}
+    a.mod.llm = Llm(a.s, daily_usd=1.0, client=FakeClient([text(json.dumps({"ok": True, "reason": ""})), text(json.dumps(pick))]))
+    p = problems.ask(a, "Why do my tomatoes crack after rain?", "They split near the top whenever it rains after a dry spell. What should we change?",
+                     visitor="5.6.7.8")
+    team = {t["agent"]: t["angle"] for t in problems.view(a, p["id"])["team"]}
+    assert team == {"basil": "why fruit splits", "cleo": "rain and soil moisture", "sam": "ask for evidence"}
+    assert sorted(r["summary"] for r in a.s.q("SELECT summary FROM turns WHERE kind = 'problem'")) == [f"{p['id']}: team"]

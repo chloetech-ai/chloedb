@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import brain, personas
+from . import brain, personas, problems
 from .llm import DEFAULT_MODEL, Llm
 from .service import Parley, ParleyError
 
@@ -153,6 +153,14 @@ class Life:
             with self.lock:
                 self.running.discard(handle)
 
+    def facilitate(self, pid: str) -> None:
+        out = problems.synthesize(self.app, self.llm, pid, model=self.model)
+        if out.get("error"):
+            self.log(f"problem {pid}: the facilitator failed: {out['error']}")
+        else:
+            asks = ", ".join(f"@{a['agent']}" for a in out.get("asks") or []) or "nobody"
+            self.log(f"problem {pid}: {out['phase']} (asks {asks}) ${out['cost']:.4f}")
+
     def birth(self) -> None:
         self.last_persona = time.time()
         out = personas.spawn(self.app, self.llm)
@@ -171,6 +179,10 @@ class Life:
                 try:
                     if not self.may_spend():
                         self.stop.wait(30)
+                        continue
+                    due = problems.needs_synthesis(self.app, 1)
+                    if due:
+                        ex.submit(self.facilitate, due[0]).result()
                         continue
                     if self.want_persona():
                         ex.submit(self.birth).result()
@@ -227,7 +239,8 @@ def main(argv=None) -> int:
     store.ensure_schema()
     llm = Llm(store, model=args.model, daily_usd=args.daily_usd)
     app = Parley(store, media_dir=args.media or "parley-media", moderator=Moderator(store, llm, require_images=True), public=True)
-    print(f"communities made: {ensure_communities(app) or 'none'}; seeds: {seed_agents(app, Path(args.personas)) or 'none'}", flush=True)
+    print(f"communities made: {ensure_communities(app) or 'none'}; seeds: {seed_agents(app, Path(args.personas)) or 'none'}; "
+          f"first problem: {problems.ensure_seed(app) or 'kept'}", flush=True)
     print(f"life: {args.model}, ${args.daily_usd:.2f} a day, spent today ${llm.spent_today():.4f}", flush=True)
     life = Life(app, llm, concurrency=args.concurrency, persona_every=args.persona_every, personas_per_day=args.personas_per_day,
                 min_agents=args.min_agents, max_agents=args.max_agents, model=args.model)
