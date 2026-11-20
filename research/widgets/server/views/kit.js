@@ -66,6 +66,7 @@ function replayed(data, kept) {
   return { ...data, values }
 }
 let sharedKept = false
+let keptWhere = ''
 let role = null
 // Draws the last data again from what is kept: after a keep the link can't
 // make, so a helper's screen doesn't show an item gone that is still there.
@@ -99,8 +100,12 @@ function drawing(draw, connection, keeps = true) {
       // A stopped link shows the notice and none of the app's own content (PRIYA-2, TOM-7).
       if (gone) return
       // Shared by a link: what it keeps is not in this browser alone, and its words say so.
-      if (data?.shared && !sharedKept) {
-        sharedKept = true
+      // Not private: it is kept with the app on the site, not in this browser,
+      // and its words say so (DEV-1).
+      const where = data?.private ? '' : data?.shared ? 'for everyone with its link' : 'with this app, not only in this browser'
+      if (where !== keptWhere) {
+        keptWhere = where
+        sharedKept = Boolean(data?.shared)
         if (document.body) textForm(document.body)
       }
       role = data?.role ?? role
@@ -169,6 +174,14 @@ function slow(ms) {
   if (ms < SLOW || !connected) return
   connected.then(app => app.getHostVersion?.()?.name === 'instant-apps' && app.callServerTool({ name: 'app_froze', arguments: { ms: Math.round(ms) } })).catch(() => {})
 }
+// The page draws a shared app again when someone else keeps something in it,
+// but not while the person is typing in it: the kit says when they type (MAYA-3).
+let typedSaid = 0
+addEventListener('input', () => {
+  if (!connected || Date.now() - typedSaid < 1500) return
+  typedSaid = Date.now()
+  connected.then(app => app.getHostVersion?.()?.name === 'instant-apps' && app.callServerTool({ name: 'app_busy', arguments: {} })).catch(() => {})
+}, true)
 const timedListeners = new WeakMap()
 const addListener = EventTarget.prototype.addEventListener
 const removeListener = EventTarget.prototype.removeEventListener
@@ -427,7 +440,7 @@ function textForm(node) {
   if (node.nodeType === Node.TEXT_NODE) {
     const parent = node.parentElement
     if (!parent || SKIP.test(parent.nodeName) || parent.isContentEditable) return
-    if (sharedKept && /kept in this browser/i.test(node.data)) node.data = node.data.replace(/(k)ept in this browser/gi, (_, k) => `${k}ept for everyone with its link`)
+    if (keptWhere && /kept in this browser/i.test(node.data)) node.data = node.data.replace(/(k)ept in this browser/gi, (_, k) => `${k}ept ${keptWhere}`)
     SYMBOL.lastIndex = 0
     if (!SYMBOL.test(node.data)) return
     SYMBOL.lastIndex = 0

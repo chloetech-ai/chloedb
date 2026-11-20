@@ -109,7 +109,8 @@ export function withPart(before, after, { by, only } = {}) {
   const unseen = new Set(only?.field && parted(before, only) ? before.filter(e => e?.id != null && !inPart(e, only)).map(e => e.id) : [])
   const added = after
     .filter(e => !(e && typeof e === 'object' && e.id != null && unseen.has(e.id)))
-    .map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && blank(e.by) ? { by } : {}), ...(only?.field && blank(e[only.field]) ? { [only.field]: only.value } : {}) } : e))
+    .map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && blank(e.by) ? { by } : {}), ...(only?.field ? { [only.field]: only.value } : {}) } : e))
+  // What it adds is in its part, whatever the app put there (MARCUS-3).
   if (!only?.field || !parted(before, only)) return added
   const theirs = new Map(added.filter(e => e?.id != null).map(e => [e.id, e]))
   const out = []
@@ -145,7 +146,17 @@ export function madeBy(before, after, path = '', out = [], depth = 0) {
         if (!old) out.push(`${path}[${e.id}]`)
         else madeBy(old, e, `${path}[${e.id}]`, out, depth + 1)
       }
-    } else for (let i = before.length; i < after.length; i++) out.push(`${path}#${i}`)
+    } else {
+      // A list without ids: what it added is known by what it says, never by
+      // where it stands, since the owner's next entry can take that place (MAYA-1).
+      const left = before.map(e => JSON.stringify(e))
+      for (const e of after) {
+        const t = JSON.stringify(e)
+        const at = left.indexOf(t)
+        if (at >= 0) left.splice(at, 1)
+        else out.push(`${path}#=${t}`)
+      }
+    }
     return out
   }
   if (typeof before === 'object' && !Array.isArray(before) && after && typeof after === 'object' && !Array.isArray(after)) {
@@ -155,12 +166,79 @@ export function madeBy(before, after, path = '', out = [], depth = 0) {
 }
 // What is there without what the link made itself: the helper rule is
 // checked against this, so what it made it may change.
+// One keep put on top of what is there now, from what the page saw when it
+// kept (base): what this side changed goes in, and what the other side
+// changed meanwhile stays (INES-1, MAYA-2). Entries are matched by id, or by
+// what they say in a list without ids. The same field changed on both sides
+// keeps the one kept first, and each is said in said[]; an entry added on
+// both sides with the same words goes in once (LENA-1, TOM-3, DEV-2).
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+const leaf = v => v == null || typeof v !== 'object'
+const IGNORED = /^(id|by|at|added|addedAt|created|createdAt|updated|updatedAt|time|ts)$/i
+const alike = (a, b) => a && b && typeof a === 'object' && typeof b === 'object' && same(Object.fromEntries(Object.entries(a).filter(([k]) => !IGNORED.test(k)).sort()), Object.fromEntries(Object.entries(b).filter(([k]) => !IGNORED.test(k)).sort()))
+const nameOf = e => (e && typeof e === 'object' ? Object.entries(e).find(([k, v]) => !IGNORED.test(k) && typeof v === 'string' && v.trim())?.[1] ?? '' : String(e ?? ''))
+export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
+  if (same(mine, base) || depth > 8) return depth > 8 ? mine : theirs
+  if (same(theirs, base) || same(theirs, mine)) return mine
+  if (theirs === undefined) return mine
+  const listed = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && e.id != null)
+  if (Array.isArray(mine) && Array.isArray(theirs) && listed(mine) && listed(theirs) && listed(base ?? [])) {
+    const was = new Map((base ?? []).map(e => [String(e.id), e]))
+    const now = new Set(mine.map(e => String(e.id)))
+    const out = theirs.filter(e => !(was.has(String(e.id)) && !now.has(String(e.id))))
+    for (const e of mine) {
+      const at = out.findIndex(x => String(x.id) === String(e.id))
+      const old = was.get(String(e.id))
+      if (!old) {
+        if (at >= 0) continue
+        const twin = out.find(x => !was.has(String(x.id)) && alike(x, e))
+        if (twin) said.push({ field: `${path}`.replace(/^\//, '') || 'list', twice: nameOf(e) })
+        else out.push(e)
+      } else if (!same(e, old)) at < 0 ? out.push(e) : (out[at] = mergeKeep(old, e, out[at], said, `${path}/${nameOf(e) || e.id}`, depth + 1))
+    }
+    return out
+  }
+  if (Array.isArray(mine) && Array.isArray(theirs) && Array.isArray(base ?? [])) {
+    // Without ids: what this side took out goes, what it added comes in, the rest is theirs.
+    const b = (base ?? []).map(e => JSON.stringify(e))
+    const m = mine.map(e => JSON.stringify(e))
+    const gone = [...b]
+    for (const t of m) { const i = gone.indexOf(t); if (i >= 0) gone.splice(i, 1) }
+    const added = [...m]
+    for (const t of b) { const i = added.indexOf(t); if (i >= 0) added.splice(i, 1) }
+    const out = [...theirs]
+    for (const t of gone) { const i = out.findIndex(e => JSON.stringify(e) === t); if (i >= 0) out.splice(i, 1) }
+    const theirsNew = theirs.filter(e => !b.includes(JSON.stringify(e)))
+    for (const t of added) {
+      const e = JSON.parse(t)
+      if (theirsNew.some(x => JSON.stringify(x) === t)) continue
+      if (theirsNew.some(x => alike(x, e))) { said.push({ field: path.replace(/^\//, '') || 'list', twice: nameOf(e) }); continue }
+      out.push(e)
+    }
+    return out
+  }
+  const plain = v => v && typeof v === 'object' && !Array.isArray(v)
+  if (plain(mine) && plain(theirs) && (plain(base) || base == null)) {
+    const b = base ?? {}
+    const out = { ...theirs }
+    for (const k of new Set([...Object.keys(mine), ...Object.keys(b)])) {
+      if (same(mine[k], b[k])) continue
+      if (!(k in mine)) { if (same(theirs[k], b[k])) delete out[k]; continue }
+      out[k] = mergeKeep(b[k], mine[k], theirs[k], said, `${path}/${k}`, depth + 1)
+    }
+    return out
+  }
+  // One value changed on both sides: the one kept first stays, and both are said.
+  if (leaf(mine) && leaf(theirs)) said.push({ field: path.replace(/^\//, '') || 'value', mine, theirs })
+  else said.push({ field: path.replace(/^\//, '') || 'value', mine: nameOf(mine) || '(changed)', theirs: nameOf(theirs) || '(changed)' })
+  return theirs
+}
 export function withoutMade(value, made, path = '', depth = 0) {
   if (!made?.size || depth > 6) return value
   if (made.has(path)) return Array.isArray(value) ? [] : value && typeof value === 'object' ? {} : ''
   if (Array.isArray(value)) {
     if (ided(value)) return value.filter(e => !made.has(`${path}[${e.id}]`)).map(e => withoutMade(e, made, `${path}[${e.id}]`, depth + 1))
-    return value.filter((e, i) => !made.has(`${path}#${i}`))
+    return value.filter(e => !made.has(`${path}#=${JSON.stringify(e)}`))
   }
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutMade(v, made, `${path}/${k}`, depth + 1)]))
   return value

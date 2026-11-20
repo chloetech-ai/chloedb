@@ -678,3 +678,58 @@ test('a page watching a shared app hears when another phone keeps something (MAR
   await reader.cancel()
   assert.ok(got && /"app":"/.test(new TextDecoder().decode(got.value)), 'told of the keep')
 })
+
+test('two phones keeping at once: each keep goes on top of what the other kept, and a clash is said (K: INES-1, MAYA-2, TOM-3, LENA-1)', { skip }, async () => {
+  const me = 'e'.repeat(32)
+  const app = await chat.apps.put({ name: 'Two phones', about: 'A list.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('two'), args: { request: 'two' }, saved: true }, 'made by hand')
+  const base = [{ id: 'a', item: 'milk', done: false }, { id: 'b', item: 'garlic', done: false }]
+  await post('/api/call', { app: app.id, me, name: 'app_keep', arguments: { key: 'items', value: base } })
+  const share = await post('/api/share', { app: app.id, me })
+  const joana = (await post('/api/share', { app: app.id, me: `s-${share.token}`, person: { name: 'Joana', role: 'helper' } })).people.at(-1)
+  const keep = (who, value, from, key = 'items') => post('/api/call', { app: app.id, me: who, name: 'app_keep', arguments: { key, value }, base: from })
+  const read = async (key = 'items') => (await post('/api/call', { app: app.id, me: `s-${share.token}`, name: 'app_kept', arguments: { key } })).structuredContent.value
+  // He ticks garlic; she, from the same list, adds paper: both stay.
+  assert.equal((await keep(`s-${joana.token}`, [base[0], { ...base[1], done: true }], base)).isError, undefined)
+  const out = await keep(`s-${share.token}`, [...base, { id: 'c', item: 'paper', done: false }], base)
+  assert.equal(out.structuredContent.merged, true)
+  assert.deepEqual((await read()).map(e => [e.item, e.done]), [['milk', false], ['garlic', true], ['paper', false]])
+  // The same hotel box typed on both: the first stays, and the other is said.
+  await keep(`s-${share.token}`, { hotel: '' }, undefined, 'stay')
+  await keep(`s-${share.token}`, { hotel: 'Umbrella' }, { hotel: '' }, 'stay')
+  const clash = await keep(`s-${share.token}`, { hotel: 'Ribeira' }, { hotel: '' }, 'stay')
+  assert.deepEqual(clash.structuredContent.said, [{ field: 'stay/hotel', mine: 'Ribeira', theirs: 'Umbrella' }])
+  assert.deepEqual(await read('stay'), { hotel: 'Umbrella' })
+  // The same invoice added on both phones goes in once.
+  const now = await read()
+  await keep(`s-${share.token}`, [...now, { id: 'x1', item: 'flour', amount: 1150 }], now)
+  const twice = await keep(`s-${joana.token}`, [...now, { id: 'y1', item: 'flour', amount: 1150 }], now)
+  assert.equal((await read()).filter(e => e.item === 'flour').length, 1)
+  assert.equal(twice.structuredContent.said[0].twice, 'flour')
+  // A keep with no base (an app from before) replaces, as it always did.
+  assert.equal((await keep(`s-${share.token}`, [base[0]])).structuredContent.merged, undefined)
+})
+
+test('a helper can never take out what the owner added, a part keeps its crew, and earlier versions say what changed (L, M: MAYA-1, MARCUS-3, LENA-3)', { skip }, async () => {
+  const me = 'f'.repeat(32)
+  const app = await chat.apps.put({ name: 'Extras', about: 'A list.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('extras'), args: { request: 'extras' }, saved: true }, 'made by hand')
+  const call = (who, value) => post('/api/call', { app: app.id, me: who, name: 'app_keep', arguments: { key: 'extras', value } })
+  await call(me, ['milk'])
+  const share = await post('/api/share', { app: app.id, me })
+  const chidi = (await post('/api/share', { app: app.id, me: `s-${share.token}`, person: { name: 'Chidi', role: 'helper' } })).people.at(-1)
+  assert.equal((await call(`s-${chidi.token}`, ['milk', 'cheerios'])).isError, undefined)
+  // Maya puts bread where his cheerios were.
+  assert.equal((await call(`s-${share.token}`, ['milk', 'bread', 'cheerios'])).isError, undefined)
+  assert.equal((await call(`s-${chidi.token}`, ['milk', 'cheerios'])).isError, true, 'his link can’t take her bread out')
+  assert.equal((await call(`s-${chidi.token}`, ['milk', 'bread'])).isError, undefined, 'but can take out his own')
+  // Earlier versions: the copy just before a change, and what changed then.
+  const hist = await post('/api/history', { app: app.id, me: `s-${share.token}` })
+  assert.ok(hist.moments.some(m => /cheerios taken out of extras/.test(m.then)), JSON.stringify(hist.moments))
+  // MARCUS-3: a crew B lead adds a job marked crew A; it lands in crew B.
+  const week = await chat.apps.put({ name: 'Crews', about: 'Jobs.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('crews'), args: { request: 'crews' }, saved: true }, 'made by hand')
+  await post('/api/call', { app: week.id, me, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 1, crew: 'A' }, { id: 2, crew: 'B' }] } })
+  const s2 = await post('/api/share', { app: week.id, me })
+  const darnell = (await post('/api/share', { app: week.id, me: `s-${s2.token}`, person: { name: 'Darnell', role: 'helper', only: { field: 'crew', value: 'B' } } })).people.at(-1)
+  await post('/api/call', { app: week.id, me: `s-${darnell.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 2, crew: 'B' }, { id: 3, crew: 'A', client: 'Okafor' }] } })
+  const jobs = (await post('/api/call', { app: week.id, me: `s-${s2.token}`, name: 'app_kept', arguments: { key: 'jobs' } })).structuredContent.value
+  assert.equal(jobs.find(j => j.id === 3).crew, 'B')
+})

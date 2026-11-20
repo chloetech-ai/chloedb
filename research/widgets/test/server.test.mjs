@@ -5,6 +5,7 @@
 //   cd server && npm install && npm test
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
+import { readFileSync } from 'node:fs'
 
 import { Client } from '../server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js'
 import { StdioClientTransport } from '../server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js'
@@ -262,4 +263,21 @@ test('what a link made is its own to change, and hidden fields are put back (PRI
   const jobs = [{ id: 1, price: 5, c: 'a' }]
   assert.deepEqual(hideIn(jobs, ['price']), [{ id: 1, c: 'a' }])
   assert.deepEqual(withHidden(jobs, [{ id: 1, c: 'b' }], ['price']), [{ id: 1, c: 'b', price: 5 }])
+})
+
+test('a keep goes on top of what is there: ids, lists without ids, clashes and twins (K)', async () => {
+  const { mergeKeep } = await import('../server/apps.mjs')
+  const said = []
+  assert.deepEqual(mergeKeep(['milk', 'eggs'], ['milk', 'eggs', 'bread'], ['eggs', 'tp'], said), ['eggs', 'tp', 'bread'])
+  assert.equal(mergeKeep('a+', 'b+', 'c+', said), 'c+')
+  assert.deepEqual(said, [{ field: 'value', mine: 'b+', theirs: 'c+' }])
+  assert.deepEqual(mergeKeep({ n: 1, m: 1 }, { n: 2, m: 1 }, { n: 1, m: 3 }), { n: 2, m: 3 })
+  assert.equal(mergeKeep(5, 5, 7), 7, 'nothing changed here: theirs')
+})
+
+test('asking for an app to stay in the browser makes it private (DEV-1)', () => {
+  const page = readFileSync(new URL('../chat/index.html', import.meta.url), 'utf8')
+  const PRIVATE = new Function(`return ${page.match(/const PRIVATE = (\/.*\/i)/)[1]}`)()
+  for (const t of ['a JWT decoder that must run only in my browser', 'keep it private', 'it never leaves my laptop', 'runs locally']) assert.ok(PRIVATE.test(t), t)
+  assert.ok(!PRIVATE.test('a JWT decoder'))
 })

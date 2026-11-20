@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden } from '../server/apps.mjs'
+import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -140,8 +140,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // Pages that have a shared app open hear when someone else keeps
   // something in it, and draw it again (MARCUS-4, LENA-5).
   const watchers = new Map()
-  const told = (appId, owner, self) => {
-    for (const w of watchers.get(`${appId}|${owner}`) ?? []) w({ app: appId, self })
+  const told = (appId, owner, self, said = []) => {
+    for (const w of watchers.get(`${appId}|${owner}`) ?? []) w({ app: appId, self, ...(said.length ? { said } : {}) })
   }
   // Each app sent to a page with a conversation is recorded as shown in it,
   // with what it was filled with, so it opens again as it was.
@@ -190,6 +190,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       shows: String(w.shows ?? '').slice(0, i < 3 ? 900 : 300),
       did: (Array.isArray(w.did) ? w.did : []).slice(-3).map(d => String(d).slice(0, 300)),
       told: String(w.told ?? '').slice(0, i === 0 ? 6000 : i < 3 ? 2500 : 400),
+      ...(w.unshareable ? { unshareable: true } : {}),
     }))
 
   // An entry the person asked the chat to put into an app (values.add):
@@ -511,7 +512,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       }
       // A tool an app calls from its view: only the tools it was made with.
       if (req.method === 'POST' && url.pathname === '/api/call') {
-        const { app: appId, name, arguments: args, me, self } = await body(req)
+        const input = await body(req)
+        const { app: appId, name, me, self } = input
+        let args = input.arguments
         const app = await apps.get(appId)
         if (app && KEEPING.includes(name)) {
           const who = await owning(app.id, me)
@@ -519,6 +522,19 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
           const key = String(args?.key ?? '')
           const work = async () => {
+            // What the page saw when it kept (base): the keep goes on top of
+            // what the others kept since, instead of over it (INES-1, MAYA-2).
+            const said = []
+            let mergedIn = false
+            if (name === 'app_keep' && 'base' in input && !isView(key)) {
+              const stored = await apps.kept(app.id, key, who?.owner ?? '').catch(() => null)
+              const seen = who ? hideIn(partOf(stored, who.only), who.hide) : stored
+              if (JSON.stringify(seen ?? null) !== JSON.stringify(input.base ?? null)) {
+                const value = mergeKeep(input.base ?? null, args?.value ?? null, seen ?? null, said, `/${key}`)
+                mergedIn = JSON.stringify(value) !== JSON.stringify(args?.value ?? null)
+                args = { ...args, value }
+              }
+            }
             const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
             if (refused) return { content: [{ type: 'text', text: refused }], isError: true }
             // A person's link: what it adds says who added it, it sees and
@@ -534,8 +550,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                 const now = new Set([...(made[key] ?? []), ...madeBy(hideIn(partOf(before, who.only), who.hide), args?.value)])
                 if (now.size !== (made[key] ?? []).length) await apps.keep(app.id, `made:${who.token}`, { ...made, [key]: [...now].slice(-2000) }, LINKS)
               }
-              told(app.id, who.owner, String(self ?? ''))
+              told(app.id, who.owner, String(self ?? ''), said)
             }
+            if (name === 'app_keep' && !out.isError && (mergedIn || said.length)) out.structuredContent = { ...out.structuredContent, merged: true, value: args.value, ...(said.length ? { said } : {}) }
             if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {
               const sc = out.structuredContent
               const seen = v => hideIn(partOf(v, who.only), who.hide)
@@ -670,10 +687,35 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           return out
         }
         if (url.pathname === '/api/history') {
-          const times = [...new Set(rows.map(r => Math.floor(r.at / 60_000) * 60_000))].slice(0, 30)
+          // Every copy kept is a moment, the one just before a change that took
+          // something out too, and each says what changed after it (MAYA-1, LENA-3, INES-9).
+          const times = [...new Set(rows.map(r => r.at))].slice(0, 40)
           const now = await apps.keptAll(app.id, who.owner)
-          const says = values => Object.entries(values).filter(([k]) => !/^(-|view:)/.test(k)).map(([k, v]) => (Array.isArray(v) ? `${v.length} in ${k}` : v && typeof v === 'object' ? Object.entries(v).filter(([, x]) => Array.isArray(x)).map(([n, x]) => `${x.length} in ${n}`).join(', ') || k : `${k} ${String(v).slice(0, 20)}`)).filter(Boolean).join(', ').slice(0, 120)
-          return json(res, { now: says(now), moments: times.map(t => ({ at: t, says: says({ ...now, ...at(t) }) })) })
+          const mine = values => Object.fromEntries(Object.entries(values).filter(([k]) => !/^(-|view:|made:|link:)/.test(k)))
+          const says = values => Object.entries(mine(values)).map(([k, v]) => (Array.isArray(v) ? `${v.length} in ${k}` : v && typeof v === 'object' ? Object.entries(v).filter(([, x]) => Array.isArray(x)).map(([n, x]) => `${x.length} in ${n}`).join(', ') || k : `${k} ${String(v).slice(0, 20)}`)).filter(Boolean).join(', ').slice(0, 120)
+          const label = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at|done|checked|ticked)$/i.test(k) && typeof v === 'string' && v.trim())?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 30)
+          const lists = (v, path = '') => (Array.isArray(v) ? [[path, v]] : v && typeof v === 'object' ? Object.entries(v).flatMap(([k, x]) => lists(x, path ? `${path} ${k}` : k)) : [])
+          const changed = (before, after) => {
+            const out = []
+            for (const k of new Set([...Object.keys(mine(before)), ...Object.keys(mine(after))])) {
+              if (JSON.stringify(before[k]) === JSON.stringify(after[k])) continue
+              const a = new Map(lists(before[k], k)), b = new Map(lists(after[k], k))
+              let said = false
+              for (const [path, list] of a) {
+                const names = new Set((b.get(path) ?? []).map(label))
+                const gone = list.map(label).filter(n => n && !names.has(n))
+                const was = new Set(list.map(label))
+                const added = (b.get(path) ?? []).map(label).filter(n => n && !was.has(n))
+                if (gone.length) out.push(`${gone.slice(0, 3).join(', ')} taken out of ${path}`)
+                if (added.length) out.push(`${added.slice(0, 3).join(', ')} added to ${path}`)
+                if (gone.length || added.length) said = true
+              }
+              if (!said) out.push(`${k} changed`)
+            }
+            return out.join('; ').slice(0, 160)
+          }
+          const states = times.map(t => ({ ...now, ...at(t) }))
+          return json(res, { now: says(now), moments: times.map((t, i) => ({ at: t, says: says(states[i]), then: changed(states[i], i ? states[i - 1] : now) })) })
         }
         const t = Number(input.at)
         if (!Number.isFinite(t)) return json(res, { error: 'when?' }, 400)
