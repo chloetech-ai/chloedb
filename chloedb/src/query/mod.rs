@@ -34,6 +34,7 @@ pub mod embed_sql;
 #[cfg(feature = "datafusion")]
 pub mod df;
 pub mod exec;
+pub mod from_select;
 pub mod function;
 pub mod funnel;
 pub mod fusion;

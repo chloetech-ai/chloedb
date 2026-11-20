@@ -139,6 +139,23 @@ changes collect under "Unreleased".
   (KENJI-402); the cluster guide says what a frozen primary costs and not to
   restart the copy just elected while it waits out the old lease (OLU-401,
   OLU-205).
+- **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
+  SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
+  database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)
+  SELECT ...` takes `ON CONFLICT`, `OR REPLACE` and `OR IGNORE` as
+  `VALUES` does; `CREATE TABLE t [(PRIMARY KEY (id))] AS SELECT ...` makes
+  the table first, its columns typed by the columns they read (a `TEXT`
+  keeps its analyzer), a `CAST`, their values or their expression, and
+  drops it again if the rows fail. Through a coordinator the `SELECT` runs
+  over every shard and the rows go as `INSERT`s of 500 rows each, not one
+  transaction (cluster-limits.md). `POST /v1/sql/check` says both. A
+  `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
+  refused rather than written in part. Before, both were refused.
+- **A join on a `TEXT` column says why it is refused and what to do**
+  (SAM-402): the column is `TEXT` (as a Postgres follower makes `varchar`),
+  joins compare `KEYWORD`, `INT` or `FLOAT`, and the message names
+  postgres.md's table made first and a `CREATE TABLE ... AS SELECT` copy
+  with a `KEYWORD` column.
 - **`chloectx remember preference` says it is kept for this project only.**
   Memory is per project, so a preference stored there is not recalled in
   another repository; the command now prints a note naming

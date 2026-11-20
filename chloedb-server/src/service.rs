@@ -4877,6 +4877,11 @@ impl Service {
             }
             return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
+        // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` (SAM-8): the
+        // SELECT as a query, then its rows' write.
+        if let Some(st) = chloedb::query::from_select::parse_statement(sql, params)? {
+            return self.from_select(who, st, sql, params, after, timeout_ms, key, budget).await;
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -4995,6 +5000,104 @@ impl Service {
             (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
             (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
+        let w = self.wrote(r, t0, Some(sql))?;
+        Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// `INSERT ... SELECT` or `CREATE TABLE ... AS SELECT` `st` (of text
+    /// `sql`, [`chloedb::query::from_select`]) as `who`: its SELECT as a
+    /// query of this server or cluster with no row window (`own_read`);
+    /// for `CREATE TABLE`, the table its rows make, made as a `CREATE TABLE`
+    /// statement is; then the rows. On one server they are one write, one
+    /// transaction; through a coordinator they go as `INSERT`s of
+    /// [`chloedb::query::from_select::BATCH`] rows, each a write of its own.
+    /// A table made for rows that could not be written is dropped.
+    #[allow(clippy::too_many_arguments)]
+    async fn from_select(self: &Arc<Self>, who: &Principal, st: chloedb::query::from_select::Statement, sql: &str, params: &Params, after: After, timeout_ms: u64, key: Option<String>, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let table = st.table().to_string();
+        match st.creates() {
+            true => {
+                who.may(Scope::Admin, "CREATE TABLE ... AS SELECT")?;
+                if who.limited() {
+                    who.may_table(Scope::Admin, &table, "CREATE TABLE")?;
+                }
+            }
+            false => {
+                who.may(Scope::Write, "a write statement")?;
+                if who.limited() {
+                    who.may_table(Scope::Write, &table, "a write")?;
+                }
+            }
+        }
+        if who.limited() {
+            crate::scoped::check_statement(who, &st.query_sql(), &Command::Query, &self.table_names(), &self.functions())?;
+        }
+        crate::connectors::may_change(&table, "a statement")?;
+        crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, &table, "a statement")?;
+        if after != After::Any {
+            return Err(ApiError::bad(FOR_READS));
+        }
+        let mut exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        if !exists && !st.creates() && self.learn_tables(false).await {
+            exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        }
+        match (st.creates(), exists) {
+            (true, true) if st.if_not_exists() => return Ok(SqlAnswer::Written { w: Written::default(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }),
+            (true, true) => return Err(ApiError::bad(format!("query error: table {table} already exists: DROP TABLE {table} first, or CREATE TABLE IF NOT EXISTS"))),
+            (false, false) => {
+                let names = self.table_names();
+                return Err(ApiError::bad(format!("query error: {}", chloedb::query::hint::no_table(&table, names.iter().map(String::as_str)))));
+            }
+            (false, true) => self.may_write_followed([table.as_str()]).await?,
+            (true, false) => keys::note(obs::truncate(sql, 500).into_owned()),
+        }
+        // Every shard's rows, or none: a write of some of them would be wrong.
+        let read = self.query(QueryReq { sql: st.query_sql(), params: params.clone(), timeout_ms, own_read: true, partial: Some(false), who: Some(who.clone()), budget, ..Default::default() }).await?;
+        let rs = read.rs;
+        if st.creates() {
+            let catalog = self.catalog();
+            let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+            let schema = st.table_for(&rs, &tables)?;
+            self.ddl(&chloedb::query::ddl::create_sql(&schema), &Params::new(), timeout_ms, &who.name).await?;
+            self.learn_tables(true).await;
+        }
+        let r = match &self.backend {
+            // No rows: nothing to write.
+            _ if rs.rows.is_empty() => Ok(Written::default()),
+            Backend::Local(db) => {
+                let key = key.map(|k| (k, statement_hash(sql, params, None)));
+                let (st, p) = (st.clone(), params.clone());
+                self.write_local(db, move |db: &Db| db.prepare_selected(&st, &p, rs), timeout_ms, key).await
+            }
+            Backend::Cluster(_) => {
+                let mut total = Written::default();
+                let mut r = Ok(());
+                for (statement, p) in st.inserts(&rs)? {
+                    match Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await {
+                        Ok(SqlAnswer::Written { w, .. }) => {
+                            total.rows += w.rows;
+                            total.skipped += w.skipped;
+                            if w.seq_no.is_some() {
+                                (total.seq_no, total.seq_term) = (w.seq_no, w.seq_term);
+                            }
+                            total.seq_nos.extend(w.seq_nos);
+                            total.seq_terms.extend(w.seq_terms);
+                        }
+                        Ok(SqlAnswer::Rows(_)) => {}
+                        Err(e) => {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                }
+                r.map(|()| total)
+            }
+        };
+        if r.is_err() && st.creates() {
+            let _ = self.ddl(&format!("DROP TABLE IF EXISTS {}", ident(&table)), &Params::new(), timeout_ms, &who.name).await;
+            self.learn_tables(true).await;
+        }
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
     }
