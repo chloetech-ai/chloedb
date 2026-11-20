@@ -471,6 +471,55 @@ async fn every_page_against_a_real_server() {
     let s = http.post(format!("{open}/v1/mix")).send().await.unwrap().status().as_u16();
     assert!(s == 401 || s == 405, "{s}");
 
+    // Fire watch, as the public page uses it: a browser's key, a watch
+    // 5 km north of the last fire, judged on the scans of its day.
+    let key = "test-watcher-0123456789abcdef";
+    let post = |url: String, body: Value| {
+        let http = http.clone();
+        async move {
+            let r = http.post(url).json(&body).send().await.unwrap();
+            let s = r.status().as_u16();
+            (s, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let (s, made) = post(format!("{open}/v1/watches?w={key}"), json!({"name": "the <house>", "lat": 34.17, "lon": -118.305, "km": 12})).await;
+    assert_eq!(s, 200, "{made}");
+    let wid = made["watch"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["watch"]["km"], 10.0, "snapped to a distance offered: {made}");
+    assert!(made["watch"].get("watcher").is_none(), "the key is not sent back: {made}");
+    let (s, _) = post(format!("{open}/v1/watches?w={key}"), json!({"lat": 48.85, "lon": 2.35})).await;
+    assert_eq!(s, 400, "Paris is not watched");
+    let (s, _) = post(format!("{open}/v1/watches?w=short"), json!({"lat": 34.17, "lon": -118.305})).await;
+    assert_eq!(s, 400, "a key too short to be safe");
+    let n = chloedb_earth::watch::judge(&db, "california", FIRES[6].2 - 3600, FIRES[6].2 + 12 * 3600).await.unwrap();
+    assert!(n >= 1, "the fire within 10 km raises an alert");
+    assert_eq!(chloedb_earth::watch::judge(&db, "california", FIRES[6].2 - 3600, FIRES[6].2 + 12 * 3600).await.unwrap(), 0, "and only once");
+    let (s, mine) = get(&http, &format!("{open}/v1/watches?w={key}"), None).await;
+    assert_eq!(s, 200, "{mine}");
+    assert_eq!(mine["watches"].as_array().unwrap().len(), 1, "{mine}");
+    let kinds: Vec<&str> = mine["alerts"].as_array().unwrap().iter().map(|a| a["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"in"), "{mine}");
+    let (s, one) = get(&http, &format!("{open}/v1/watch/{wid}?w={key}"), None).await;
+    assert_eq!(s, 200, "{one}");
+    assert!(!one["alerts"].as_array().unwrap().is_empty() && one["track"].is_array(), "{one}");
+    let (s, _) = get(&http, &format!("{open}/v1/watch/{wid}?w=someone-else-0123456789"), None).await;
+    assert_eq!(s, 404, "another browser's watch");
+    let feed = http.get(format!("{open}/v1/watches/feed/{key}")).send().await.unwrap();
+    assert!(feed.headers()["content-type"].to_str().unwrap().starts_with("application/atom+xml"));
+    let feed = feed.text().await.unwrap();
+    assert!(feed.contains("<entry>") && feed.contains("the &lt;house&gt;"), "{feed}");
+    let (s, ch) = post(format!("{open}/v1/watch/{wid}?w={key}"), json!({"km": 25, "closer": false})).await;
+    assert_eq!(s, 200, "{ch}");
+    assert_eq!((ch["watch"]["km"].as_f64(), ch["watch"]["closer"].as_bool()), (Some(25.0), Some(false)));
+    let (s, _) = post(format!("{open}/v1/watch/{wid}?w=someone-else-0123456789"), json!({"remove": true})).await;
+    assert_eq!(s, 404, "another browser cannot remove it");
+    let (s, _) = post(format!("{open}/v1/watch/{wid}?w={key}"), json!({"remove": true})).await;
+    assert_eq!(s, 200);
+    let (_, mine) = get(&http, &format!("{open}/v1/watches?w={key}"), None).await;
+    assert!(mine["watches"].as_array().unwrap().is_empty() && mine["alerts"].as_array().unwrap().is_empty(), "removed with its alerts: {mine}");
+    let ex = ok(&http, &base, "/v1/watches/example").await;
+    assert_eq!(ex["watches"].as_array().unwrap().len(), 3, "{ex}");
+
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;
     assert!(!rules["rules"].as_array().unwrap().is_empty(), "{rules}");

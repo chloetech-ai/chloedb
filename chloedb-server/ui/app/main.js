@@ -447,6 +447,10 @@ export function shareLink() {
   const r = parse();
   const p = new URLSearchParams(r.params);
   p.delete("range"); p.delete("from"); p.delete("to");
+  // A view that knows more than its address (the workbench's query, the
+  // builder's team view) puts it in the link (GRACE-407).
+  const extra = current?.mod?.shareParams?.();
+  if (extra) for (const [k, v] of Object.entries(extra)) if (v != null) p.set(k, v);
   if (!top.classList.contains("no-range")) { const { from, to } = rangeParams({ absolute: true }); p.set("from", from); p.set("to", to); }
   return `${location.origin}${location.pathname}#/${[r.id, ...r.rest].map(encodeURIComponent).join("/")}?${p}`;
 }

@@ -7,6 +7,9 @@
 //   (home)                 what it is, both regions now, the replays
 //   live/<region>          the fires GOES sees burning now, and its last hour
 //   replay/<id>            a past day played back, scan by scan
+//   watch[/<id>]           Fire watch: places a browser keeps an eye on,
+//                          each checked on every scan, and its alerts;
+//                          watch/example plays the Park Fire's first hours
 //   fire/<id>              a fire: its pixels, its first hours, the fires
 //                          that began like it and what they became
 //   fires/<region>         the past fires, the largest first
@@ -193,6 +196,35 @@ const CSS = `
 .ea code { font-family: var(--mono); font-size: 12px; }
 .ea-mix { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
 .ea-mix input { height: 32px; border: 1px solid var(--line-2); border-radius: var(--r-sm); padding: 0 10px; background: var(--surface); min-width: 0; }
+.ea-wcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.ea-wcard { display: block; border: 1px solid var(--line); border-left: 4px solid var(--good); border-radius: var(--r-sm); padding: 10px 12px; background: var(--surface); color: inherit; text-decoration: none; min-width: 0; }
+a.ea-wcard:hover { border-color: var(--accent); text-decoration: none; }
+div > .ea-wcard + .ea-wcard { margin-top: 10px; }
+.ea-wcards > .ea-wcard + .ea-wcard { margin-top: 0; }
+.ea-wcard.s-warn { border-left-color: var(--warn); }
+.ea-wcard.s-alert { border-left-color: var(--crit); background: var(--crit-soft); }
+.ea-wcard .nm { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.ea-wcard .nm b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ea-wcard .say { margin-top: 6px; font-size: 14px; font-weight: 550; }
+.ea-wcard .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.ea-wcard .meta .off { color: var(--crit-ink); }
+.ea-pill { font-size: 11.5px; font-weight: 600; padding: 1px 9px; border-radius: 999px; white-space: nowrap; }
+.ea-pill.good { background: var(--good-soft); color: var(--good-ink); }
+.ea-pill.warn { background: var(--warn-soft); color: var(--text); }
+.ea-pill.crit { background: var(--crit); color: #fff; }
+.ea-whead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
+.ea-whead h2 { margin: 0; font-size: 22px; letter-spacing: -.01em; }
+.ea-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.ea-row:first-child { border-top: 0; }
+.ea-sw { position: relative; display: inline-block; width: 36px; height: 20px; flex: none; }
+.ea-sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+.ea-sw span { position: absolute; inset: 0; background: var(--line-2); border-radius: 999px; cursor: pointer; transition: background .15s; }
+.ea-sw span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.ea-sw input:checked + span { background: var(--accent); }
+.ea-sw input:checked + span::after { transform: translateX(16px); }
+.ea-sw input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ea-banner { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--warn-soft); margin-bottom: 12px; }
+.ea-banner .tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--fire-ink); }
 @media (max-width: 600px) { .ea-head .sub { display: none; } .ea-map { height: 56vh; } }
 `;
 
@@ -406,7 +438,7 @@ function render(root, ctx) {
   const body = h("div");
   root.append(head, tabs, body);
 
-  const TABS = [["", "Home"], ["live", "Live"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
+  const TABS = [["", "Home"], ["live", "Live"], ["watch", "Fire watch"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
   const drawTabs = (p) => {
     tabs.replaceChildren(...TABS.map(([k, t]) => {
       const on = (p[0] || "") === k || (k === "explore" && p[0] === "map") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
@@ -427,6 +459,7 @@ function render(root, ctx) {
         "": () => home(app, page),
         live: () => live(app, page, a || "california"),
         replay: () => replay(app, page, a),
+        watch: () => (a ? watchOne(app, page, a) : watchHome(app, page)),
         fire: () => fire(app, page, a),
         fires: () => pastFires(app, page, a || "california"),
         explore: () => explore(app, page, a || "california", null),
@@ -449,7 +482,9 @@ function render(root, ctx) {
   };
   ctx.onPath((p) => show(p));
   show(ctx.path());
-  return () => { token++; for (const s of app.stops.splice(0)) { try { s(); } catch { /* gone */ } } };
+  // Fire watch's notifications, on whichever page is open.
+  app.notifier = watchNotifier(app);
+  return () => { token++; app.notifier?.(); for (const s of app.stops.splice(0)) { try { s(); } catch { /* gone */ } } };
 }
 
 function showSql(app) {
@@ -1032,6 +1067,353 @@ function placePanel(app, j) {
     j.fires?.length ? card("Fires GOES saw near it", "", h("div", { class: "ea-list" }, j.fires.slice(0, 10).map((f) => fireRow(app, f)))) : null,
     j.years?.length ? card("Its years", j.change ? `${j.change.arc || ""}, moved most in ${j.change.step_year}` : "a clear scene of each dry season", h("div", { class: "ea-grid small" }, j.years.map((y) => chip(app, p.id, y.year, y.label)))) : null,
   ];
+}
+
+// -------------------------------------------------------------- fire watch
+
+/// The browser's own key: a watch belongs to the key that made it, and the
+/// key is in the address of the browser's feed. Kept in this browser only.
+let memKey = null;
+function watcherKey() {
+  try {
+    let k = localStorage.getItem("ea-watcher");
+    if (!k) { k = crypto.randomUUID(); localStorage.setItem("ea-watcher", k); }
+    return k;
+  } catch {
+    memKey ||= crypto.randomUUID();
+    return memKey;
+  }
+}
+const store = {
+  get: (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private window */ } },
+};
+const wq = () => `w=${encodeURIComponent(watcherKey())}`;
+const embedded = () => location.hash.startsWith("#/app/");
+const SEV = { clear: "good", warn: "warn", alert: "crit" };
+const pill = (s) => h("span", { class: `ea-pill ${SEV[s?.sev] || "good"}` }, s?.pill || "Clear");
+
+const SOURCES = {
+  california: [
+    ["https://www.fire.ca.gov/incidents", "CAL FIRE incidents", "The fire's name, size and containment, once it is reported."],
+    ["https://protect.genasys.com/", "Genasys Protect", "Evacuation zones and orders of most counties."],
+    ["https://app.watchduty.org/", "Watch Duty", "Reports from people following radio and cameras."],
+  ],
+  chile: [
+    ["https://www.conaf.cl/", "CONAF", "Chile's forest service: the fires it is fighting."],
+    ["https://senapred.cl/", "SENAPRED", "Alerts and evacuations of Chile's disaster service."],
+  ],
+};
+
+/// While Earth is open in a tab, its alerts as the browser's own
+/// notifications: checked every minute, each told once.
+function watchNotifier(app) {
+  const tick = async () => {
+    if (!store.get("ea-watch-notify", false) || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const j = await app.api(`/v1/watches?${wq()}`, { fresh: true });
+    const since = store.get("ea-watch-since", "");
+    const seen = new Set(store.get("ea-watch-seen", []));
+    for (const a of (j.alerts || []).slice().reverse()) {
+      if (seen.has(a.id) || (a.sent || a.t) < since) continue;
+      seen.add(a.id);
+      try { new Notification(a.title, { body: a.body, tag: a.id }); } catch { /* blocked */ }
+    }
+    store.set("ea-watch-seen", [...seen].slice(-300));
+  };
+  const t = setInterval(() => tick().catch(() => {}), 60000);
+  tick().catch(() => {});
+  return () => clearInterval(t);
+}
+
+function circle(lat, lon, km, n = 72) {
+  const c = [];
+  for (let i = 0; i <= n; i++) {
+    const a = (i / n) * 2 * Math.PI;
+    c.push([lon + (km / (111.32 * Math.cos((lat * Math.PI) / 180))) * Math.sin(a), lat + (km / 110.57) * Math.cos(a)]);
+  }
+  return c;
+}
+/// A watch's colour where several are drawn: never the fire's own.
+const WATCH_COLORS = ["#2f6fe0", "#14a37a", "#8a5cf0", "#d4479a"];
+function ringsFc(ws) {
+  return { type: "FeatureCollection", features: ws.flatMap((w, i) => [
+    { type: "Feature", properties: { kind: "ring" }, geometry: { type: "LineString", coordinates: circle(w.lat, w.lon, w.km) } },
+    { type: "Feature", properties: { kind: "me", name: w.name, c: ws.length > 1 ? WATCH_COLORS[i % WATCH_COLORS.length] : WATCH_COLORS[0] }, geometry: { type: "Point", coordinates: [w.lon, w.lat] } }]) };
+}
+function ringsBounds(ws) {
+  const b = new window.maplibregl.LngLatBounds();
+  for (const w of ws) for (const c of circle(w.lat, w.lon, w.km, 16)) b.extend(c);
+  return b;
+}
+const RING_LAYERS = [
+  { id: "ring", type: "line", filter: ["==", ["get", "kind"], "ring"], paint: { "line-color": "#fff", "line-width": 1.6, "line-dasharray": [3, 2], "line-opacity": 0.9 } },
+  { id: "me", type: "circle", filter: ["==", ["get", "kind"], "me"], paint: { "circle-radius": 7, "circle-color": ["get", "c"], "circle-stroke-color": "#fff", "circle-stroke-width": 2.5 } },
+];
+
+/// The nearest fire, scan by scan: a line per watch, the alert distance
+/// dashed, and a cursor at `at` (seconds, the same clock as the track).
+function distChart(tracks, o = {}) {
+  const W = 560, H = 170, L = 30, B = 18, T = 8;
+  const all = tracks.flatMap((t) => t.points);
+  if (!all.length) return h("p", { class: "ea-empty" }, "No scans in these hours.");
+  const x0 = o.from ?? Math.min(...all.map((p) => p[0])), x1 = o.to ?? Math.max(...all.map((p) => p[0]));
+  const top = Math.max(10, Math.min(50, Math.ceil(Math.max(...tracks.map((t) => t.km * 1.5), ...all.map((p) => p[1] ?? 0)) / 5) * 5));
+  const X = (t) => L + ((t - x0) / Math.max(1, x1 - x0)) * (W - L - 6);
+  // Near at the bottom, the place itself on the axis.
+  const Y = (k) => H - B - (Math.min(k, top) / top) * (H - B - T);
+  const kids = [];
+  for (let k = 0; k <= top; k += top > 25 ? 10 : 5) kids.push(svg("line", { x1: L, x2: W - 6, y1: Y(k), y2: Y(k), stroke: "var(--grid)" }), svg("text", { x: L - 4, y: Y(k) + 3, "text-anchor": "end" }, `${k}`));
+  kids.push(svg("text", { x: L - 4, y: H - 4, "text-anchor": "end" }, "km"));
+  tracks.forEach((t, i) => {
+    const col = tracks.length > 1 ? WATCH_COLORS[i % WATCH_COLORS.length] : "var(--fire)";
+    kids.push(svg("line", { x1: L, x2: W - 6, y1: Y(t.km), y2: Y(t.km), stroke: col, "stroke-dasharray": "4 3", opacity: 0.8 }));
+    // A line where a fire was within 50 km, broken where none was.
+    let d = "", pen = false;
+    for (const [s, k] of t.points) {
+      if (o.upto != null && s > o.upto) break;
+      if (k == null) { pen = false; continue; }
+      d += `${pen ? "L" : "M"}${X(s).toFixed(1)},${Y(k).toFixed(1)}`;
+      pen = true;
+    }
+    kids.push(svg("path", { d, fill: "none", stroke: col, "stroke-width": 2, "stroke-linejoin": "round" }));
+  });
+  if (o.upto != null) kids.push(svg("line", { x1: X(o.upto), x2: X(o.upto), y1: T, y2: H - B, stroke: "var(--text-2)", "stroke-width": 1 }));
+  if (o.label) kids.push(svg("text", { x: L, y: H - 4 }, o.label(x0)), svg("text", { x: W - 6, y: H - 4, "text-anchor": "end" }, o.label(x1)));
+  const none = tracks.every((t) => t.points.every((p) => p[1] == null));
+  return h("div", {}, svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "ea-svg", role: "img", "aria-label": "How far the nearest fire was, scan by scan" }, kids),
+    none && o.upto == null ? h("p", { class: "ea-note" }, "No fire within 50 km in these hours.") : null);
+}
+
+function yearsBar(fy) {
+  const years = [];
+  for (let y = 2001; y <= 2025; y++) years.push(y);
+  const s = new Set((fy || []).map(Number));
+  return [h("div", { class: "ea-years", title: "2001 to 2025" }, years.map((y) => h("i", { class: s.has(y) ? "on" : null, title: String(y) }))),
+    h("div", { class: "ea-note" }, s.size ? `Fire seen on this square (NASA FIRMS, three detections or more) in ${[...s].sort().join(", ")}.` : "No year with fire seen on this square since 2001 (NASA FIRMS).")];
+}
+
+function placeCard(pl) {
+  if (!pl) return card("This place", "", h("p", { class: "ea-note" }, "Outside the squares Earth has pictures of."));
+  return card("This place", [pl.town, pl.adm1].filter(Boolean).join(", "),
+    h("dl", { class: "ea-kv" },
+      h("dt", {}, "Ground"), h("dd", {}, `${cap(pl.kind)}: trees ${pct(pl.trees)}, shrubs ${pct(pl.shrubs)}, grass ${pct(pl.grass)}, built ${pct(pl.built)}`),
+      h("dt", {}, "Slope"), h("dd", {}, `${fmt(pl.slope, 1)}°, ${fmt(pl.elev)} m up`),
+      h("dt", {}, "People"), h("dd", {}, `${fmt(pl.people)} on the square`),
+      h("dt", {}, "Climate"), h("dd", {}, pl.climate ? `${pl.climate}, ${KOPPEN_WORDS[pl.climate] || ""}` : "–")),
+    h("div", { style: { marginTop: "8px" } }, yearsBar(pl.fire_years)));
+}
+
+function sourcesCard(region) {
+  return card("What the official sources say", "",
+    h("div", { class: "ea-list" }, (SOURCES[region] || SOURCES.california).map(([u, t, m]) => h("div", { class: "info", onclick: () => window.open(u, "_blank", "noopener") }, h("span", { class: "t" }, h("a", { href: u, target: "_blank", rel: "noopener" }, t)), h("span", { class: "v" }, "↗"), h("span", { class: "m" }, m)))),
+    h("p", { class: "ea-note" }, "Earth sees fires from orbit, often minutes after they start, but a pixel is 2 to 3 km wide and can be a hot roof. Evacuation orders come from the county: follow them first."));
+}
+
+function alertLog(alerts, region, empty) {
+  return alerts.length ? h("div", { class: "ea-list" }, alerts.map((a) => h("div", { class: a.kind === "here" || a.kind === "near" ? "bad" : "warn" },
+    h("span", { class: "t" }, a.title), h("span", { class: "v" }, when(a.t, region)), h("span", { class: "m" }, a.body)))) : h("p", { class: "ea-empty" }, empty);
+}
+
+async function watchHome(app, page) {
+  const j = await app.api(`/v1/watches?${wq()}`, { fresh: true });
+  const found = h("div", { class: "ea-list" });
+  const msg = h("div");
+  const add = async (body) => {
+    msg.replaceChildren(h("p", { class: "ea-note" }, "Adding…"));
+    try {
+      const r = await app.api(`/v1/watches?${wq()}`, { body });
+      app.go("watch", r.watch.id);
+    } catch (e) { msg.replaceChildren(h("div", { class: "ea-err" }, String(e.message || e))); }
+  };
+  let t = 0;
+  const input = h("input", { type: "search", name: "q", autocomplete: "off", placeholder: "A town, a county, or 39.76, -121.62", "aria-label": "A place to watch", oninput: async (e) => {
+    const q = e.target.value.trim(), mine = ++t;
+    if (q.length < 2) return swap(found);
+    const r = await app.api(`/v1/find?q=${encodeURIComponent(q)}`, { keep: 60000 });
+    if (mine === t) swap(found, r.found.length ? r.found.map((x) => h("div", { class: "info", "data-i": "1", onclick: () => add({ name: x.label.split(",")[0], lat: x.lat, lon: x.lon }) }, h("span", { class: "t" }, x.label), h("span", { class: "v" }, "Watch"))) : h("p", { class: "ea-note" }, "No town or county of California or Chile starts with that."));
+  } });
+  const finder = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); found.querySelector("[data-i]")?.click(); } },
+    input, h("button", { class: "btn primary" }, "Watch this place"),
+    h("button", { type: "button", class: "btn", onclick: () => {
+      if (!navigator.geolocation) return msg.replaceChildren(h("div", { class: "ea-err" }, "This browser does not share its location."));
+      msg.replaceChildren(h("p", { class: "ea-note" }, "Asking the browser where you are…"));
+      navigator.geolocation.getCurrentPosition((pos) => add({ name: "My location", lat: +pos.coords.latitude.toFixed(4), lon: +pos.coords.longitude.toFixed(4) }), (err) => msg.replaceChildren(h("div", { class: "ea-err" }, `No location: ${err.message}`)));
+    } }, "Use my location"));
+  put(page, h("div", { class: "ea-hero" },
+    h("h2", {}, "Is there a fire near ", h("em", {}, "a place you care about?")),
+    h("p", {}, "Add a home, a parent's house or a farm. Earth checks every GOES scan, every 5 minutes over California and every 10 over Chile, and tells you when a fire is within the distance you pick, within 5 km, over the place, or coming closer."),
+    finder, found, msg));
+  const R = (r) => j.regions?.[r];
+  const cards = j.watches.length
+    ? h("div", { class: "ea-wcards" }, j.watches.map((w) => h("a", { class: `ea-wcard s-${w.status.sev}`, href: app.href("watch", w.id) },
+      h("div", { class: "nm" }, h("b", {}, w.name), pill(w.status)),
+      h("div", { class: "ea-note" }, w.where),
+      h("div", { class: "say" }, w.status.say),
+      w.status.sub ? h("div", { class: "ea-note" }, w.status.sub) : null,
+      h("div", { class: "meta" }, h("span", {}, `Alerts within ${fmt(w.km)} km`), w.alerts ? h("span", {}, `${fmt(w.alerts)} sent`) : null, R(w.region)?.live === false ? h("span", { class: "off" }, "feed not live") : null, h("span", {}, "Open →")))))
+    : h("p", { class: "ea-empty" }, "No places yet. Find one above, or see how it works on a real fire below.");
+  put(page, h("div", { class: "ea-split wide" },
+    h("div", {}, card("Your places", `${fmt(j.watches.length)} of ${fmt(j.max)}, kept in this browser`, cards),
+      card("How it works, on a real fire", "", h("div", { class: "ea-list" }, h("div", { class: "warn", onclick: () => app.go("watch", "example") },
+        h("span", { class: "t" }, "The Park Fire's first 12 hours"), h("span", { class: "v" }, "Play"),
+        h("span", { class: "m" }, "24 July 2024, near Chico: three made-up places and the alerts they would have had, from GOES-18's real fire pixels."))))),
+    h("div", {}, notifyCard(app), card("Alerts sent", "the newest first", alertLog(j.alerts.slice(0, 12), j.watches[0]?.region || "california", "None yet.")), manyCard(app, add))));
+}
+
+function notifyCard(app) {
+  const box = h("div");
+  const draw = () => {
+    const on = store.get("ea-watch-notify", false) && typeof Notification !== "undefined" && Notification.permission === "granted";
+    const feed = `${location.origin}/v1/watches/feed/${watcherKey()}`;
+    swap(box,
+      h("div", { class: "ea-row" }, h("span", {}, "Notify this browser"), h("label", { class: "ea-sw" }, h("input", { type: "checkbox", checked: on || null, "aria-label": "Notify this browser", onchange: async (e) => {
+        if (!e.target.checked) { store.set("ea-watch-notify", false); return draw(); }
+        if (typeof Notification === "undefined") { e.target.checked = false; return swap(box, h("div", { class: "ea-err" }, "This browser has no notifications.")); }
+        const p = await Notification.requestPermission();
+        if (p === "granted") { store.set("ea-watch-notify", true); store.set("ea-watch-since", new Date().toISOString().replace(/\.\d+Z$/, "Z")); app.notifier?.(); app.notifier = watchNotifier(app); }
+        draw();
+      } }), h("span", {}))),
+      h("p", { class: "ea-note" }, typeof Notification !== "undefined" && Notification.permission === "denied" ? "This browser blocks Earth's notifications: allow them in its site settings." : "While Earth is open in a tab, each alert shows as a notification. Pushes to a closed phone come later."),
+      embedded() ? h("p", { class: "ea-note" }, "The feed of your alerts is on Earth's public page.") : h("div", { class: "ea-row" }, h("span", {}, "Or follow them in a feed reader:"), h("a", { href: feed, target: "_blank", rel: "noopener" }, "Atom feed")));
+  };
+  draw();
+  return card("Tell me", "", box);
+}
+
+function manyCard(app, add) {
+  const ta = h("textarea", { rows: 4, placeholder: "Pump station 3, 39.81, -121.70\nWell 12, 39.74, -121.58", style: { width: "100%", border: "1px solid var(--line-2)", borderRadius: "var(--r-sm)", padding: "8px", background: "var(--surface)" } });
+  const out = h("div");
+  const go = async () => {
+    const lines = ta.value.split(/\n/).map((l) => l.trim()).filter(Boolean);
+    let ok = 0;
+    for (const l of lines) {
+      const m = l.match(/^(.*?)[,;\t]\s*(-?\d+(?:\.\d+)?)\s*[,;\t]\s*(-?\d+(?:\.\d+)?)\s*$/);
+      if (!m) { out.append(h("div", { class: "ea-err" }, `Not "name, lat, lon": ${l}`)); continue; }
+      try { await app.api(`/v1/watches?${wq()}`, { body: { name: m[1], lat: +m[2], lon: +m[3] } }); ok++; } catch (e) { out.append(h("div", { class: "ea-err" }, `${m[1]}: ${e.message || e}`)); }
+    }
+    if (ok) app.go("watch");
+  };
+  return h("details", { class: "ea-card", style: { padding: "12px 14px" } }, h("summary", {}, h("b", {}, "Watch many places"), h("span", { class: "ea-note" }, " a list of names and coordinates")),
+    h("p", { class: "ea-note" }, "One a line: a name, a latitude and a longitude, as a spreadsheet's CSV has them."), ta,
+    h("div", { style: { marginTop: "8px" } }, h("button", { class: "btn sm", onclick: go }, "Watch them")), out);
+}
+
+async function watchOne(app, page, id) {
+  if (id === "example") return watchExample(app, page);
+  app.markTab("watch");
+  const j = await app.api(`/v1/watch/${encodeURIComponent(id)}?${wq()}`, { fresh: true });
+  const w = j.watch, R = REGION[w.region];
+  const live = j.regions?.[w.region]?.live;
+  const box = h("div", { class: "ea-map short" });
+  const now = Date.parse(j.now) || Date.now();
+  const st = j.status;
+  put(page, h("div", { class: "ea-whead" }, h("a", { href: app.href("watch") }, "← Your places"), h("h2", {}, w.name), pill(st), h("span", { class: "ea-note" }, j.where)));
+  const chart = distChart([{ km: w.km, points: j.track.map(([s, k]) => [s * 1000, k]) }], { from: now - 12 * 3600e3, to: now, label: (t) => when(new Date(t).toISOString(), w.region) });
+  const reload = () => { page.replaceChildren(); for (const s of app.stops.splice(0)) { try { s(); } catch { /* gone */ } } return watchOne(app, page, id); };
+  const settings = settingsCard(app, w, j.kms, reload);
+  put(page, h("div", { class: "ea-split wide" },
+    h("div", {}, box, card("How far the fire is, the last 12 hours", "the nearest fire pixel of the hour, scan by scan; dashed: your alert distance", chart)),
+    h("div", {},
+      card(st.say, st.sub || "", h("dl", { class: "ea-kv" },
+        h("dt", {}, "Nearest fire"), h("dd", {}, st.km == null ? "none within 50 km" : `${fmt(st.km, 1)} km ${st.dir}`),
+        st.seen ? [h("dt", {}, "Seen"), h("dd", {}, `${when(st.seen, w.region)}, ${ago((Date.now() - Date.parse(st.seen)) / 1000)}`)] : null,
+        h("dt", {}, "Last scan"), h("dd", {}, j.now ? `${when(j.now, w.region)}${live ? "" : " (the feed is not live)"}` : "none read"),
+        st.fire ? [h("dt", {}, "The fire"), h("dd", {}, h("a", { href: app.href("fire", st.fire) }, "Its page →"))] : null)),
+      card("Alerts sent", "", alertLog(j.alerts, w.region, "None yet: a fire within the distance you picked raises one.")),
+      settings)));
+  put(page, h("div", { class: "ea-three", style: { marginTop: "14px" } }, sourcesCard(w.region), placeCard(j.place),
+    card("Fires that started near here", "GOES since June 2023, within 25 km",
+      j.fires.length ? h("div", { class: "ea-list" }, j.fires.map((f) => h("div", { class: f.state === "burning" ? "bad" : "info", onclick: () => app.go("fire", f.id) }, h("span", { class: "t" }, f.name || "A fire"), h("span", { class: "v" }, km2(f.area_km2)), h("span", { class: "m" }, `${when(f.start, w.region, { year: true, date: true })} · ${fmt(f.km, 1)} km ${f.dir} · ${fmt(f.hours, 1)} h`)))) : h("p", { class: "ea-empty" }, "None."),
+      j.place?.id ? h("a", { href: app.href("place", j.place.id) }, "What happened here, since 1878 →") : null)));
+  const map = await makeMap(box, { center: [w.lon, w.lat], zoom: w.km > 20 ? 8.4 : 9.6 });
+  app.stops.push(() => map.remove());
+  pixelButton(map);
+  const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (now - Date.parse(p.ts)) / (3 * 3600e3)) }));
+  setData(map, "px", glowFeatures(rows), glowLayers(map));
+  setData(map, "rings", ringsFc([w]), RING_LAYERS);
+  map.fitBounds(ringsBounds([w]), { padding: 40, duration: 0, maxZoom: 11 });
+  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, w.name), ` · ${R.sat} fire pixels, the last 3 hours; dashed: ${fmt(w.km)} km`), onAir(live, live ? `a scan every ${w.region === "chile" ? 10 : 5} min` : "the feed is not live")));
+  const again = setInterval(async () => {
+    try {
+      const n = await app.api(`/v1/watch/${encodeURIComponent(id)}?${wq()}`, { fresh: true });
+      if (n.now !== j.now) reload();
+    } catch { /* the next minute */ }
+  }, 60000);
+  app.stops.push(() => clearInterval(again));
+}
+
+function settingsCard(app, w, kms, reload) {
+  const out = h("div");
+  const save = async (body) => {
+    try { await app.api(`/v1/watch/${encodeURIComponent(w.id)}?${wq()}`, { body }); await reload(); }
+    catch (e) { out.replaceChildren(h("div", { class: "ea-err" }, String(e.message || e))); }
+  };
+  const remove = h("button", { class: "btn sm", onclick: async () => {
+    if (!remove.dataset.armed) { remove.dataset.armed = "1"; remove.textContent = "Remove it and its alerts? Click again"; return; }
+    try { await app.api(`/v1/watch/${encodeURIComponent(w.id)}?${wq()}`, { body: { remove: true } }); app.go("watch"); }
+    catch (e) { out.replaceChildren(h("div", { class: "ea-err" }, String(e.message || e))); }
+  } }, "Remove this place");
+  const sw = (label, key) => h("div", { class: "ea-row" }, h("span", {}, label), h("label", { class: "ea-sw" }, h("input", { type: "checkbox", checked: w[key] || null, "aria-label": label, onchange: (e) => save({ [key]: e.target.checked }) }), h("span", {})));
+  const name = h("input", { type: "text", value: w.name, maxlength: 60, "aria-label": "Its name" });
+  return card("Tell me when", "",
+    h("div", { class: "ea-row" }, h("span", {}, "A fire is within"), h("span", { class: "ea-chips", style: { margin: 0 } }, kms.map((k) => h("button", { class: `ea-chip${k === w.km ? " on" : ""}`, onclick: () => save({ km: k }) }, `${k} km`)))),
+    sw("It comes 2 km closer in an hour", "closer"),
+    sw("It passes 1,000 MW (large and intense)", "power"),
+    h("div", { class: "ea-row" }, h("span", {}, "Within 5 km, and over the place"), h("span", { class: "ea-note" }, "always")),
+    h("form", { class: "ea-search", style: { marginTop: "10px" }, onsubmit: (e) => { e.preventDefault(); save({ name: name.value }); } }, name, h("button", { class: "btn sm" }, "Rename")),
+    h("div", { style: { marginTop: "10px" } }, remove),
+    out);
+}
+
+async function watchExample(app, page) {
+  app.markTab("watch");
+  const j = await app.api("/v1/watches/example", { keep: 3600000 });
+  const t0 = Date.parse(j.t0);
+  const box = h("div", { class: "ea-map short" });
+  const cards = h("div");
+  const log = h("div");
+  const chartBox = h("div");
+  const clock = h("b", { class: "ea-num" });
+  const range = h("input", { type: "range", min: 0, max: 720, step: 5, value: 30, "aria-label": "Minutes since the fire was first seen" });
+  const playBtn = h("button", { class: "btn sm" }, "Play");
+  put(page, h("div", { class: "ea-banner" }, h("span", { class: "tag" }, "Example"),
+    h("span", {}, "Replaying ", h("b", {}, "the Park Fire's first 12 hours"), ", Wednesday 24 July 2024, with GOES-18's real fire pixels and the alerts Earth's rules raise on them. The three places are made up."),
+    h("div", { class: "ea-play", style: { margin: 0, flex: "1 1 320px" } }, playBtn, range, clock)));
+  put(page, h("div", { class: "ea-split wide" },
+    h("div", {}, box, card("How far the fire was", "the nearest fire pixel of the hour, scan by scan; dashed: each place's alert distance", chartBox, h("div", { class: "ea-coverkey" }, j.watches.map((w, i) => h("span", {}, h("i", { style: { background: WATCH_COLORS[i] } }), w.name))))),
+    h("div", {}, cards, card("What the phones showed", "each alert once, as it was raised, the newest first", h("div", { style: { maxHeight: "560px", overflow: "auto" } }, log)))));
+  put(page, h("div", { class: "ea-three", style: { marginTop: "14px" } }, sourcesCard("california"), placeCard(j.watches[0].place),
+    card("The fire", "", h("p", { class: "ea-sentence" }, "The Park Fire was started near Chico on the afternoon of 24 July 2024 and grew to 429,603 acres, California's fourth largest."), h("a", { href: app.href("fire", j.fire) }, "Its page →"))));
+  const map = await makeMap(box, { center: [-121.71, 39.83], zoom: 9.6 });
+  app.stops.push(() => map.remove());
+  pixelButton(map);
+  setData(map, "rings", ringsFc(j.watches), RING_LAYERS);
+  map.fitBounds(ringsBounds(j.watches), { padding: 16, duration: 0 });
+  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, "Park Fire"), " · GOES-18 fire pixels; dashed: each place's distance")));
+  const s = { m: 30, playing: false };
+  const scans = j.scans; // seconds from t0
+  const paint = () => {
+    const sec = s.m * 60;
+    let i = 0;
+    while (i + 1 < scans.length && scans[i + 1] <= sec) i++;
+    range.value = s.m;
+    playBtn.textContent = s.playing ? "Pause" : "Play";
+    clock.textContent = `${when(new Date(t0 + sec * 1000).toISOString(), "california")} · ${Math.floor(s.m / 60)} h ${String(s.m % 60).padStart(2, "0")} min in`;
+    const px = j.pixels.filter((p) => p[0] <= sec).map((p) => ({ lat: p[1], lon: p[2], mw: p[3], age: Math.min(1, (sec - p[0]) / 10800) }));
+    setData(map, "px", glowFeatures(px), glowLayers(map));
+    swap(cards, j.watches.map((w) => {
+      const f = w.frames[i] || { sev: "clear", pill: "Clear", say: "No fire within 50 km." };
+      return h("div", { class: `ea-wcard s-${f.sev}` }, h("div", { class: "nm" }, h("b", {}, w.name), pill(f)), h("div", { class: "ea-note" }, `${w.where} · alerts within ${fmt(w.km)} km`), h("div", { class: "say" }, f.say), f.sub ? h("div", { class: "ea-note" }, f.sub) : null);
+    }));
+    const sent = j.watches.flatMap((w) => w.alerts).filter((a) => Date.parse(a.t) - t0 <= sec * 1000).sort((a, b) => Date.parse(b.t) - Date.parse(a.t));
+    swap(log, alertLog(sent, "california", "Nothing yet: the fire is not near enough."));
+    swap(chartBox, distChart(j.watches.map((w) => ({ km: w.km, points: w.track.map(([t, k]) => [t * 1000 - t0, k]) })), { from: -1800e3, to: 720 * 60e3, upto: sec * 1000, label: (x) => when(new Date(t0 + x).toISOString(), "california") }));
+  };
+  range.oninput = () => { s.m = +range.value; s.playing = false; paint(); };
+  playBtn.onclick = () => { s.playing = !s.playing; if (s.playing && s.m >= 720) s.m = 0; paint(); };
+  const tick = setInterval(() => { if (!s.playing) return; s.m = Math.min(720, s.m + 5); if (s.m >= 720) s.playing = false; paint(); }, 400);
+  app.stops.push(() => clearInterval(tick));
+  paint();
 }
 
 // ------------------------------------------------------------------ search
