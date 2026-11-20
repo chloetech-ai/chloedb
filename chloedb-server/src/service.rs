@@ -2645,6 +2645,52 @@ impl Service {
         Some(((table, out.to_string()), r))
     }
 
+    /// `req`'s query with the stored functions it calls, and then the rank
+    /// profile it ranks by, written out ([`chloedb::query::function::expand`],
+    /// [`profile::expand`]), when the text written out holds a step the
+    /// server takes before the engine plans and the query's own text does
+    /// not: understood words ([`chloedb::query::understand`]), an expanded
+    /// ranking ([`chloedb::query::prf`]), a blend ([`chloedb::query::blend`])
+    /// or, in a function's body, text where a vector goes
+    /// ([`chloedb::query::embed_sql`]; a profile's own texts are embedded
+    /// where it is planned, [`Self::bound_read`]). The engine writes the
+    /// calls out as it plans, past those steps; `None` for any other query.
+    fn written_calls(&self, req: &QueryReq) -> Option<String> {
+        use chloedb::query::{blend, embed_sql, prf, understand};
+        let rewritten = |s: &str| understand::may_understand(s) || prf::may_expand(s);
+        let taken = |s: &str| rewritten(s) || blend::may_blend(s) || embed_sql::may_embed_with(s, &req.params);
+        let functions = self.functions();
+        let profiled = contains_word(&req.sql, "rank_profile");
+        if functions.is_empty() && !profiled {
+            return None;
+        }
+        let statements = chloedb::query::parse::parse(&req.sql).ok()?;
+        let [sqlparser::ast::Statement::Query(q)] = statements.as_slice() else { return None };
+        let mut out = (**q).clone();
+        let mut written = None;
+        let mut called = false;
+        if let Ok(Some((x, _))) = chloedb::query::function::expand(&out, &functions) {
+            let x = blend_selected(x);
+            let text = x.to_string();
+            if taken(&text) && !taken(&req.sql) {
+                written = Some(text);
+            }
+            (out, called) = (x, true);
+        }
+        // A profile a function's body ranks by is written out for its texts
+        // too, which a query's own profile has embedded where it is planned.
+        if profiled || (called && contains_word(&out.to_string(), "rank_profile")) {
+            if let Ok(Some((x, _))) = profile::expand(&out, &|t, n| self.rank_profile(t, n)) {
+                let text = x.to_string();
+                let needs = |s: &str| if called { taken(s) } else { rewritten(s) };
+                if needs(&text) && !needs(&req.sql) {
+                    written = Some(text);
+                }
+            }
+        }
+        written
+    }
+
     /// Query `sql` with the texts it gives where vectors go embedded
     /// ([`chloedb::query::embed_sql`]: `similarity(emb, 'some words')` by
     /// the field's model, `embed('model', text)` by a model named), on the
@@ -3419,8 +3465,9 @@ impl Service {
                     let step: Result<Option<Answer>, ApiError> = async {
                         let Some(next) = p.next_query()? else { return Ok(None) };
                         let mut sub = req.clone();
-                        // As text that reads back as the very query.
-                        sub.sql = next.sql()?;
+                        // As text that reads back as the very query, kept
+                        // out of the answer cache: its key is the PACK's.
+                        (sub.sql, sub.cache_key) = (next.sql()?, None);
                         sub.params = next.params;
                         (sub.snapshot, sub.hold, sub.release) = (lease, local && lease == 0, false);
                         // What is left of the statement's time, not a
@@ -3487,6 +3534,17 @@ impl Service {
                     a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
                     return Ok(a);
                 }
+            }
+        }
+        // A stored function or rank profile whose body holds a step taken
+        // here, before the engine plans (understood words, an expanded
+        // ranking, a blend, text where a vector goes): written out first,
+        // so that the steps below see it, as they see a query's own.
+        if req.plan.is_none() && !req.shard {
+            if let Some(sql) = self.written_calls(&req) {
+                let mut second = req.clone();
+                second.sql = sql;
+                return Box::pin(self.dispatch(second)).await;
             }
         }
         // Understood words (`bm25(.., understand => 'boost')`,
@@ -3629,7 +3687,9 @@ impl Service {
             let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
             for f in x.feedback(&schemas)? {
                 let mut fr = req.clone();
-                (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                // Not the query's answer: kept out of the answer cache,
+                // whose key is the query's text, not this one's.
+                (fr.sql, fr.scroll, fr.hold, fr.cache_key) = (f.to_string(), None, false, None);
                 rows.push(Box::pin(self.dispatch(fr)).await?.rs);
             }
             let analyzers = x
@@ -4883,6 +4943,11 @@ impl Service {
             }
             return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
+        // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` (SAM-8): the
+        // SELECT as a query, then its rows' write.
+        if let Some(st) = chloedb::query::from_select::parse_statement(sql, params)? {
+            return self.from_select(who, st, sql, params, after, timeout_ms, key, budget).await;
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -5001,6 +5066,109 @@ impl Service {
             (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
             (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
+        let w = self.wrote(r, t0, Some(sql))?;
+        Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// `INSERT ... SELECT` or `CREATE TABLE ... AS SELECT` `st` (of text
+    /// `sql`, [`chloedb::query::from_select`]) as `who`: its SELECT as a
+    /// query of this server or cluster with no row window (`own_read`);
+    /// for `CREATE TABLE`, the table its rows make, made as a `CREATE TABLE`
+    /// statement is; then the rows. On one server they are one write, one
+    /// transaction; through a coordinator they go as `INSERT`s of
+    /// [`chloedb::query::from_select::BATCH`] rows, each a write of its own.
+    /// A table made for rows that could not be written is dropped.
+    #[allow(clippy::too_many_arguments)]
+    async fn from_select(self: &Arc<Self>, who: &Principal, st: chloedb::query::from_select::Statement, sql: &str, params: &Params, after: After, timeout_ms: u64, key: Option<String>, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let table = st.table().to_string();
+        match st.creates() {
+            true => {
+                who.may(Scope::Admin, "CREATE TABLE ... AS SELECT")?;
+                if who.limited() {
+                    who.may_table(Scope::Admin, &table, "CREATE TABLE")?;
+                }
+            }
+            false => {
+                who.may(Scope::Write, "a write statement")?;
+                if who.limited() {
+                    who.may_table(Scope::Write, &table, "a write")?;
+                }
+            }
+        }
+        if who.limited() {
+            crate::scoped::check_statement(who, &st.query_sql(), &Command::Query, &self.table_names(), &self.functions())?;
+        }
+        crate::connectors::may_change(&table, "a statement")?;
+        crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, &table, "a statement")?;
+        if after != After::Any {
+            return Err(ApiError::bad(FOR_READS));
+        }
+        let mut exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        if !exists && !st.creates() && self.learn_tables(false).await {
+            exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        }
+        match (st.creates(), exists) {
+            (true, true) if st.if_not_exists() => return Ok(SqlAnswer::Written { w: Written::default(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }),
+            (true, true) => return Err(ApiError::bad(format!("query error: table {table} already exists: DROP TABLE {table} first, or CREATE TABLE IF NOT EXISTS"))),
+            (false, false) => {
+                let names = self.table_names();
+                return Err(ApiError::bad(format!("query error: {}", chloedb::query::hint::no_table(&table, names.iter().map(String::as_str)))));
+            }
+            (false, true) => self.may_write_followed([table.as_str()]).await?,
+            (true, false) => keys::note(obs::truncate(sql, 500).into_owned()),
+        }
+        // A coordinator places rows by the table's key: a table without
+        // one could be made, but none of its rows written.
+        if matches!(self.backend, Backend::Cluster(_)) && !st.places_rows() {
+            return Err(ApiError::bad(format!("query error: {}", st.unplaced())));
+        }
+        // Every shard's rows, or none: a write of some of them would be wrong.
+        let read = self.query(QueryReq { sql: st.query_sql(), params: params.clone(), timeout_ms, own_read: true, partial: Some(false), who: Some(who.clone()), budget, ..Default::default() }).await?;
+        let rs = read.rs;
+        if st.creates() {
+            let catalog = self.catalog();
+            let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+            let schema = st.table_for(&rs, &tables)?;
+            self.ddl(&chloedb::query::ddl::create_sql(&schema), &Params::new(), timeout_ms, &who.name).await?;
+            self.learn_tables(true).await;
+        }
+        let r = match &self.backend {
+            // No rows: nothing to write.
+            _ if rs.rows.is_empty() => Ok(Written::default()),
+            Backend::Local(db) => {
+                let key = key.map(|k| (k, statement_hash(sql, params, None)));
+                let (st, p) = (st.clone(), params.clone());
+                self.write_local(db, move |db: &Db| db.prepare_selected(&st, &p, rs), timeout_ms, key).await
+            }
+            Backend::Cluster(_) => {
+                let mut total = Written::default();
+                let mut r = Ok(());
+                for (statement, p) in st.inserts(&rs)? {
+                    match Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await {
+                        Ok(SqlAnswer::Written { w, .. }) => {
+                            total.rows += w.rows;
+                            total.skipped += w.skipped;
+                            if w.seq_no.is_some() {
+                                (total.seq_no, total.seq_term) = (w.seq_no, w.seq_term);
+                            }
+                            total.seq_nos.extend(w.seq_nos);
+                            total.seq_terms.extend(w.seq_terms);
+                        }
+                        Ok(SqlAnswer::Rows(_)) => {}
+                        Err(e) => {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                }
+                r.map(|()| total)
+            }
+        };
+        if r.is_err() && st.creates() {
+            let _ = self.ddl(&format!("DROP TABLE IF EXISTS {}", ident(&table)), &Params::new(), timeout_ms, &who.name).await;
+            self.learn_tables(true).await;
+        }
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
     }
@@ -8786,6 +8954,34 @@ fn param_table(given: Option<&str>, named: &[String], order: &[String], who: &Pr
 }
 
 /// Whether `text` holds `word`, in any case.
+/// `SELECT cols FROM (SELECT * FROM blend(..) [LIMIT k]) [AS x] [LIMIT n]`,
+/// a function whose body reads a blend called for some of its columns, as
+/// the one query `SELECT cols FROM blend(..) LIMIT n` (or k) that reads
+/// the blend itself ([`chloedb::query::blend`], whose call is the whole
+/// query); any other query as it is.
+fn blend_selected(q: sqlparser::ast::Query) -> sqlparser::ast::Query {
+    use sqlparser::ast::{SetExpr, TableFactor};
+    let SetExpr::Select(outer) = q.body.as_ref() else { return q };
+    let plain = q.with.is_none() && q.order_by.is_none() && outer.selection.is_none() && outer.having.is_none() && outer.distinct.is_none()
+        && matches!(&outer.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty());
+    let [from] = outer.from.as_slice() else { return q };
+    let (true, true, TableFactor::Derived { subquery, lateral: false, .. }) = (plain, from.joins.is_empty(), &from.relation) else { return q };
+    let SetExpr::Select(inner) = subquery.body.as_ref() else { return q };
+    let all = matches!(inner.projection.as_slice(), [sqlparser::ast::SelectItem::Wildcard(_)]);
+    let reads_blend = matches!(inner.from.as_slice(), [f] if f.joins.is_empty() && matches!(&f.relation, TableFactor::Table { name, args: Some(_), .. } if name.to_string().eq_ignore_ascii_case("blend")));
+    if !all || !reads_blend || inner.selection.is_some() || subquery.order_by.is_some() {
+        return q;
+    }
+    let mut out = (**subquery).clone();
+    if let SetExpr::Select(s) = out.body.as_mut() {
+        s.projection = outer.projection.clone();
+    }
+    if q.limit_clause.is_some() {
+        out.limit_clause = q.limit_clause.clone();
+    }
+    out
+}
+
 fn contains_word(text: &str, word: &str) -> bool {
     text.as_bytes().windows(word.len()).any(|w| w.eq_ignore_ascii_case(word.as_bytes()))
 }

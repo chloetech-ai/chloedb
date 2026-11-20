@@ -20,6 +20,15 @@ pub const SHAPE2_DIM: usize = crate::fires::SHAPE2_DIM;
 pub const SHAPE1_DIM: usize = crate::fires::SHAPE1_DIM;
 
 /// (table, CREATE TABLE statement, what it holds).
+/// The Land finder's columns of ea_places (tools/land.py): the nearest
+/// substation, power line and main road, the solar farms on and near it,
+/// and how much of it is protected.
+pub const LAND_COLUMNS: [(&str, &str); 13] = [
+    ("sub_km", "FLOAT"), ("sub_kv", "FLOAT"), ("sub_name", "KEYWORD"), ("line_km", "FLOAT"), ("line_kv", "FLOAT"),
+    ("road_km", "FLOAT"), ("road_name", "KEYWORD"), ("solar", "FLOAT"), ("solar_km", "FLOAT"), ("solar_name", "KEYWORD"),
+    ("protected", "FLOAT"), ("protected_strict", "FLOAT"), ("protected_name", "KEYWORD"),
+];
+
 pub fn tables() -> Vec<(&'static str, String, &'static str)> {
     vec![
         ("ea_places", format!("CREATE TABLE IF NOT EXISTS ea_places (
@@ -32,8 +41,9 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   climate KEYWORD, climate_group KEYWORD, mine FLOAT, crop KEYWORD, crop_pct FLOAT,
   fire_years INT[], fire_px INT, last_fire INT,
   words TEXT OPTIONS(analyzer = 'english'), about TEXT OPTIONS(analyzer = 'english'),
-  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM})
-) OPTIONS(cluster_by = 'region')"), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL) and fire years (FIRMS)"),
+  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM}),
+  {LAND}
+) OPTIONS(cluster_by = 'region')", LAND = LAND_COLUMNS.iter().map(|(c, t)| format!("{c} {t}")).collect::<Vec<_>>().join(", ")), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL), fire years (FIRMS), and for the Land finder the grid, roads and solar farms around it (OpenStreetMap) and its protected land (PAD-US, OpenStreetMap)"),
         ("ea_words", format!("CREATE TABLE IF NOT EXISTS ea_words (
   id KEYWORD PRIMARY KEY, text TEXT, kind KEYWORD,
   emb VECTOR({LOOK_DIM}) OPTIONS(embed = 'text', model = '{LOOK_MODEL}')
@@ -105,7 +115,7 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
 ) OPTIONS(cluster_by = 'region')".to_string(), "In 2070: each place's climate for 1981-2010 and, from five CMIP6 models under SSP3-7.0, for 2071-2100 (CHELSA 2.1), each also a vector of six standardised numbers, and the place whose climate today is nearest its future one"),
         ("ea_watches", "CREATE TABLE IF NOT EXISTS ea_watches (
   id KEYWORD PRIMARY KEY, watcher KEYWORD, name KEYWORD OPTIONS(indexed = false), lat FLOAT, lon FLOAT, km FLOAT,
-  region KEYWORD, closer BOOL, power BOOL, sky BOOL, place KEYWORD, created TIMESTAMP
+  region KEYWORD, closer BOOL, power BOOL, sky BOOL, change BOOL, place KEYWORD, created TIMESTAMP
 ) OPTIONS(cluster_by = 'watcher')".to_string(), "Fire watch: places people keep an eye on, each a point, a name and the distance it asks about, owned by a browser's random key"),
         ("ea_watch_alerts", "CREATE TABLE IF NOT EXISTS ea_watch_alerts (
   id KEYWORD PRIMARY KEY, watch KEYWORD, watcher KEYWORD, region KEYWORD, kind KEYWORD, t TIMESTAMP, sent TIMESTAMP,

@@ -126,7 +126,7 @@ pub(crate) fn create_table(ct: &sql::CreateTable, tables: &[&Schema]) -> Result<
         // the form there is.
         let name = &ct.name;
         let what = if ct.query.is_some() {
-            format!("CREATE TABLE ... AS SELECT is not supported: make the table with its columns (CREATE TABLE {name} (column TYPE, ...)), then write the rows the SELECT returns with INSERT ... VALUES; a stored function (CREATE FUNCTION {name}() RETURNS TABLE AS SELECT ...) is read like a view of the SELECT")
+            format!("CREATE TABLE {name} AS SELECT runs as a statement of its own (Db::sql, POST /v1/sql), not as a prepared one: its SELECT runs first, then the table is made and its rows written")
         } else if ct.temporary || ct.global.is_some() {
             "temporary tables (CREATE TEMP TABLE) are not supported: WITH name AS (SELECT ...) holds rows for one statement, or make a table and DROP TABLE it when done".to_string()
         } else if ct.or_replace {
@@ -219,6 +219,41 @@ pub(crate) fn create_table(ct: &sql::CreateTable, tables: &[&Schema]) -> Result<
         }
     }
     Ok((schema, ct.if_not_exists))
+}
+
+/// The table `CREATE TABLE ... AS SELECT` `ct` makes: a column for each
+/// of the SELECT's (`selected`, fields of the short JSON form, each with
+/// its name), but those `ct` defines, which take its definition, then the
+/// columns `ct` defines that the SELECT does not give. Its key,
+/// constraints and options are `ct`'s, read as [`create_table`] reads them.
+pub(crate) fn create_table_as(ct: &sql::CreateTable, selected: &[J], tables: &[&Schema]) -> Result<Schema> {
+    let name_of = |f: &J| f["name"].as_str().unwrap_or_default().to_string();
+    let mut columns = Vec::with_capacity(selected.len() + ct.columns.len());
+    for f in selected {
+        let name = name_of(f);
+        match ct.columns.iter().find(|c| c.name.value.eq_ignore_ascii_case(&name)) {
+            Some(c) => columns.push(c.clone()),
+            None => {
+                let text = format!("CREATE TABLE t ({})", column_sql(f, None));
+                match crate::query::parse::parse(&text)?.as_mut_slice() {
+                    [sql::Statement::CreateTable(made)] if made.columns.len() == 1 => columns.push(made.columns.remove(0)),
+                    _ => return Err(err(format!("column {name} of the SELECT: {text} is not a column"))),
+                }
+            }
+        }
+    }
+    for c in &ct.columns {
+        if !selected.iter().any(|f| name_of(f).eq_ignore_ascii_case(&c.name.value)) {
+            columns.push(c.clone());
+        }
+    }
+    if columns.is_empty() {
+        return Err(err("CREATE TABLE ... AS SELECT needs a SELECT of one column or more"));
+    }
+    let mut plain = ct.clone();
+    plain.query = None;
+    plain.columns = columns;
+    create_table(&plain, tables).map(|(s, _)| s)
 }
 
 /// A column definition, read as [`create_table`] reads one.

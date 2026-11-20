@@ -543,9 +543,13 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
-    /// Keep only the types of queries' parameters (not their values) in
-    /// the running and finished queries, statements and the log store.
-    #[arg(long, env = "CHLOEDB_REDACT_PARAMS")]
+    /// Keep the values of queries' parameters (up to 1 KB each query) in the
+    /// running and finished queries, statements and the log store. Without
+    /// it only their types are kept; the statement's text is kept either way.
+    #[arg(long, env = "CHLOEDB_KEEP_PARAMS")]
+    keep_params: bool,
+    /// The default now (kept so that a script that passes it still starts).
+    #[arg(long, env = "CHLOEDB_REDACT_PARAMS", hide = true)]
     redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,chloedb=debug"). debug logs every request.
@@ -1293,7 +1297,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
         "node_name", "environment", "public_url", "image_repository"
     ]),
     ("Security", &[
-        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params",
+        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "keep_params", "redact_params",
         "google_client_id", "google_allow"
     ]),
     ("Limits and timeouts", &[
@@ -1646,7 +1650,12 @@ async fn run() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
-    chloedb_server::telemetry::set_redact_params(a.redact_params);
+    // Values are kept only when asked for; --redact-params (the old way to ask for
+    // the default) wins if both are given.
+    chloedb_server::telemetry::set_redact_params(a.redact_params || !a.keep_params);
+    if a.keep_params && !a.redact_params {
+        tracing::info!("keeps the values of queries' parameters (--keep-params): they are in the running and finished queries and the log store");
+    }
     // The apps it starts itself (crate::app_procs).
     let started_apps = {
         let taken: Vec<String> = chloedb_server::apps::parse(&a.apps).unwrap_or_default().into_iter().map(|x| x.name).collect();
