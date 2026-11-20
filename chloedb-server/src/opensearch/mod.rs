@@ -35,11 +35,89 @@ use chloedb::query::Params;
 use chloedb::value::Value;
 
 use crate::auth::{Access, Secret};
-use crate::keys::{Principal, Scope};
+use crate::keys::{Principal, Scope, Tenant};
 use crate::service::{After, QueryReq, Service, SqlAnswer, Written};
 use crate::ApiError;
 use dsl::{Compiled, Ctx, Score, Target};
 use mapping::{ident, lit, Index, Kind, ALIASES, ALIASES_KEY, HASH, ID, META, VERSION};
+
+tokio::task_local! {
+    /// The tenant the key of the request being answered is bound to
+    /// ([`Tenant`], KENJI-402), `None` for any other credential: set for
+    /// every request [`dispatch`] answers, so that [`Os::resolve`], which
+    /// every read and write of an index goes through, binds each index it
+    /// gives to the tenant. Read outside a request (a task spawned off
+    /// one), it is refused rather than taken as no tenant ([`bound`]).
+    static BOUND: Option<Arc<Tenant>>;
+}
+
+/// The tenant the request's key is bound to, if any ([`BOUND`]).
+fn bound() -> Result<Option<Arc<Tenant>>, OsError> {
+    BOUND.try_with(|b| b.clone()).map_err(|_| OsError::internal("an index read outside a request, whose key's tenant is not known: refused"))
+}
+
+/// Refuses (403) what a key bound to a tenant may not reach.
+fn not_for_tenant(t: &Tenant, what: &str) -> OsError {
+    OsError::new(403, "security_exception", format!("no permissions for [{what}]: the key is bound to a tenant ({}) and reaches its documents alone, naming its index by name", t.text()))
+}
+
+/// Whether a key bound to a tenant may call `method` on `segs` at all:
+/// the routes that read and write documents, each of which binds the
+/// indexes it reaches ([`Os::resolve`]), whether the server is up, and an
+/// index's mapping. Not the listings of indexes and aliases (`_cat`,
+/// `_stats`, `_alias`, `GET <index>`), settings, nodes, nor any change
+/// of an index, mapping or alias.
+fn tenant_route(method: &Method, segs: &[&str]) -> bool {
+    use Method as M;
+    let read = matches!(*method, M::GET | M::POST);
+    match segs {
+        [] => matches!(*method, M::GET | M::HEAD),
+        ["_cluster", "health", ..] => *method == M::GET,
+        ["_bulk"] | [_, "_bulk"] => matches!(*method, M::POST | M::PUT),
+        ["_search"] | [_, "_search"] | ["_msearch"] | [_, "_msearch"] | ["_count"] | [_, "_count"] | ["_mget"] | [_, "_mget"] => read,
+        ["_search", "scroll", ..] => read || *method == M::DELETE,
+        ["_refresh" | "_flush" | "_forcemerge"] | [_, "_refresh" | "_flush" | "_forcemerge"] => read,
+        [ix, "_delete_by_query" | "_update_by_query"] => !ix.starts_with('_') && *method == M::POST,
+        [ix, "_doc" | "_create", _] => !ix.starts_with('_') && matches!(*method, M::PUT | M::POST | M::GET | M::HEAD | M::DELETE),
+        [ix, "_doc"] => !ix.starts_with('_') && *method == M::POST,
+        [ix, "_update", _] => !ix.starts_with('_') && *method == M::POST,
+        [ix, "_source", _] => !ix.starts_with('_') && matches!(*method, M::GET | M::HEAD),
+        [ix, "_mapping"] => !ix.starts_with('_') && *method == M::GET,
+        [ix] => !ix.starts_with('_') && *method == M::HEAD,
+        _ => false,
+    }
+}
+
+/// Index `ix` as a key bound to tenant `t` reaches it: every read filtered
+/// by the tenant's field ([`Index::alias_filter`], which every search,
+/// count, aggregation, get by id and delete by query applies), which must
+/// be a keyword field of the index, so that the filter is a plain
+/// equality.
+fn bind(ix: Arc<Index>, t: &Tenant) -> Result<Arc<Index>, OsError> {
+    if !matches!(Ctx::new(&ix).target(&t.field), Target::Json(_, Some(Kind::Keyword))) {
+        return Err(OsError::new(403, "security_exception", format!("the key's tenant field [{}] is not a keyword field of index [{}]: map it as keyword before the key reads or writes the index", t.field, ix.name)).index(&ix.name));
+    }
+    let mut b = (*ix).clone();
+    b.alias_filter = Some(json!({"term": {t.field.as_str(): t.value.as_str()}}));
+    b.is_write_index = None;
+    Ok(Arc::new(b))
+}
+
+/// The value document `doc` holds at dotted path `path`.
+fn at_path<'a>(doc: &'a Json, path: &str) -> Option<&'a Json> {
+    path.split('.').try_fold(doc, |d, k| d.get(k))
+}
+
+/// Whether document `doc` is tenant `t`'s: its field (the path a keyword
+/// sub-field reads, for `x.keyword`) holds exactly the tenant's value, as
+/// text (not in a list).
+fn tenant_of(ix: &Index, t: &Tenant, doc: &Json) -> bool {
+    let path = match Ctx::new(ix).target(&t.field) {
+        Target::Json(p, _) => p,
+        _ => return false,
+    };
+    at_path(doc, &path).and_then(Json::as_str) == Some(t.value.as_str())
+}
 
 /// The version the root answers by default: OpenSearch 2's API.
 pub const VERSION_NUMBER: &str = "2.11.0";
@@ -246,13 +324,16 @@ async fn dispatch(State(os): State<Arc<Os>>, peer: Option<ConnectInfo<std::net::
             None => (Err(OsError::new(401, "security_exception", "missing or wrong credentials: send a key or the token as a Bearer token, or as the password of Basic authentication")), None, crate::keys::Change::default()),
             // A key limited to tables calls the main listener's routes,
             // which check its tables ([`crate::scoped`]); this one's do not.
-            Some(who) if who.limited() => (Err(OsError::new(403, "security_exception", format!("the key {:?} is limited to tables: it calls the HTTP API, not the OpenSearch one", who.name))), None, crate::keys::Change::default()),
+            // A key bound to a tenant (KENJI-402) is limited to no table,
+            // and called here, where its filter is enforced ([`BOUND`]).
+            Some(who) if who.limited() && who.tenant().is_none() => (Err(OsError::new(403, "security_exception", format!("the key {:?} is limited to tables: it calls the HTTP API, not the OpenSearch one", who.name))), None, crate::keys::Change::default()),
             Some(who) => {
                 let tc = Arc::new(crate::telemetry::Caller::of(&who, Some(caller.clone())));
                 match unzip(&headers, body, os.svc.max_body) {
                     Err(e) => (Err(e), None, crate::keys::Change::default()),
                     Ok(body) => {
-                        let fut = os.route(&method, &segs, &q, &headers, body, who);
+                        let tenant = who.tenant().cloned().map(Arc::new);
+                        let fut = BOUND.scope(tenant, os.route(&method, &segs, &q, &headers, body, who));
                         let fut = crate::telemetry::calling(tc, crate::keys::calling(caller.clone(), crate::keys::noting_change(fut)));
                         crate::service::DEADLINE.scope(Default::default(), fut).await
                     }
@@ -709,6 +790,11 @@ impl Os {
         if !up {
             need(Scope::Read, "the OpenSearch API")?;
         }
+        if let Some(t) = who.tenant() {
+            if !tenant_route(method, &s) {
+                return Err(not_for_tenant(t, &format!("{method} /{}", segs.join("/"))));
+            }
+        }
         let m = method.clone();
         match (m, s.as_slice()) {
             (M::GET | M::HEAD, []) => ok(self.info().await),
@@ -843,7 +929,12 @@ impl Os {
     }
 
     async fn health(&self) -> Json {
-        let n = self.all().await.map(|v| v.len()).unwrap_or(0);
+        // A key bound to a tenant counts its own indexes, not the server's.
+        let n = match bound() {
+            Ok(Some(t)) => t.indices.len(),
+            Ok(None) => self.all().await.map(|v| v.len()).unwrap_or(0),
+            Err(_) => 0,
+        };
         let status = if self.svc.failing().is_some() { "red" } else { "green" };
         json!({
             "cluster_name": self.cluster_name(), "status": status, "timed_out": false,
@@ -905,6 +996,11 @@ impl Os {
     /// keeps, or, before it is written, those each index's row lists.
     /// Each index's `aliases` are the map's.
     async fn catalog(&self) -> Result<(Vec<Arc<Index>>, Aliases), OsError> {
+        // Every index, unfiltered: never a tenant's ([`tenant_route`] keeps
+        // such keys off the routes that list them).
+        if let Some(t) = bound()? {
+            return Err(not_for_tenant(&t, "the list of indexes"));
+        }
         if !self.meta_exists().await {
             return Ok((Vec::new(), Aliases::default()));
         }
@@ -1000,6 +1096,28 @@ impl Os {
     /// any of their filters matches, as in OpenSearch.
     async fn resolve(&self, expr: &str) -> Result<Vec<Arc<Index>>, OsError> {
         let parts: Vec<&str> = expr.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+        // A key bound to a tenant (KENJI-402) names its indexes by name, and
+        // reaches each bound to its tenant ([`bind`]); any other name, a
+        // pattern, `_all` or an alias is refused before it is looked up, so
+        // that the refusal says nothing of what else there is.
+        if let Some(t) = bound()? {
+            if parts.is_empty() {
+                return Err(not_for_tenant(&t, expr));
+            }
+            let mut out: Vec<Arc<Index>> = Vec::new();
+            for p in parts {
+                if !t.indices.iter().any(|i| i == p) {
+                    return Err(not_for_tenant(&t, p));
+                }
+                if out.iter().any(|ix| ix.name == p) {
+                    continue;
+                }
+                if let Some(ix) = self.index(p).await? {
+                    out.push(bind(ix, &t)?);
+                }
+            }
+            return Ok(out);
+        }
         let simple = parts.len() == 1 && !parts[0].contains('*') && parts[0] != "_all" && !parts[0].starts_with('-');
         if simple {
             if let Some(ix) = self.index(parts[0]).await? {
@@ -1540,6 +1658,13 @@ impl Os {
     /// they replace read, and every write sent in one request.
     async fn apply(&self, who: &Principal, default_index: Option<&str>, items: Vec<Item>) -> Vec<Outcome> {
         let n = items.len();
+        // A key bound to a tenant (KENJI-402): its indexes, by name, bound
+        // to it ([`Os::resolve`]); no index made, no field mapped, and each
+        // document its tenant's ([`tenant_of`]).
+        let tenant = match bound() {
+            Ok(t) => t,
+            Err(e) => return items.iter().map(|it| Outcome::failed(it.action, it.index.as_deref().unwrap_or_default(), it.id.as_deref().unwrap_or_default(), e.clone())).collect(),
+        };
         let mut out: Vec<Option<Outcome>> = (0..n).map(|_| None).collect();
         // Each item's index.
         let mut ixs: BTreeMap<String, Arc<Index>> = BTreeMap::new();
@@ -1572,7 +1697,7 @@ impl Os {
             };
             let ix = match found {
                 Ok(Some(ix)) => Ok(ix),
-                Ok(None) if it.action == Action::Delete => Err(OsError::not_found(&name)),
+                Ok(None) if it.action == Action::Delete || tenant.is_some() => Err(OsError::not_found(&name)),
                 // Made at the first write, as OpenSearch makes it.
                 Ok(None) => self.make_index(who, &name, &json!({})).await,
                 Err(e) => Err(e),
@@ -1637,6 +1762,13 @@ impl Os {
                 }
                 for d in [docs[i].as_ref(), patches[i].as_ref().and_then(Json::as_object)].into_iter().flatten() {
                     if let Some(m) = mapping::new_fields(&cur, d) {
+                        if let Some(t) = &tenant {
+                            // The mapping is every tenant's: an admin maps
+                            // a field, not one tenant's document.
+                            let why = format!("the key is bound to a tenant ({}): it adds no field to the mapping of [{name}]; an admin maps new fields first", t.text());
+                            out[i] = Some(Outcome::failed(items[i].action, &name, items[i].id.as_deref().unwrap_or_default(), OsError::new(400, "strict_dynamic_mapping_exception", why)));
+                            continue;
+                        }
                         match cur.dynamic() {
                             "strict" => {
                                 out[i] = Some(Outcome::failed(items[i].action, &name, items[i].id.as_deref().unwrap_or_default(), OsError::new(400, "strict_dynamic_mapping_exception", "mapping set to strict, dynamic introduction of a field within the document is not allowed")));
@@ -1711,8 +1843,25 @@ impl Os {
             let ix = ixs[&name].clone();
             let id = it.id.clone().unwrap_or_else(new_id);
             let key = (name.clone(), id.clone());
-            let now = current.get(&key).cloned().flatten();
+            let mut now = current.get(&key).cloned().flatten();
             let fail = |e: OsError| Some(Outcome::failed(it.action, &name, &id, e));
+            // Another tenant's document, to a key bound to a tenant: not
+            // there, for what reads or removes it (as a get by id does not
+            // find it); refused, for what would replace it, before its
+            // version is told.
+            if let Some(t) = &tenant {
+                if now.as_ref().is_some_and(|(_, d)| !tenant_of(&ix, t, d)) {
+                    let upsert = it.body.as_ref().is_some_and(|b| b.get("upsert").is_some() || b.get("doc_as_upsert").and_then(Json::as_bool) == Some(true));
+                    match it.action {
+                        Action::Delete => now = None,
+                        Action::Update if !upsert => now = None,
+                        _ => {
+                            out[i] = fail(OsError::new(403, "security_exception", format!("[{id}]: the key is bound to a tenant ({}) and this id is another document's: ids are one namespace over the index", t.text())));
+                            continue;
+                        }
+                    }
+                }
+            }
             let version = now.as_ref().map_or(0, |(v, _)| *v);
             if let Some(s) = it.if_seq_no {
                 if now.is_none() || s != version - 1 {
@@ -1769,9 +1918,17 @@ impl Os {
                         }
                         _ => docs[i].clone().unwrap_or_default(),
                     };
+                    if let Some(t) = tenant.as_ref().filter(|t| !tenant_of(&ix, t, &Json::Object(doc.clone()))) {
+                        out[i] = fail(OsError::new(403, "security_exception", format!("[{id}]: the key is bound to a tenant ({}): a document it writes has [{}] = {:?}", t.text(), t.field, t.value)));
+                        continue;
+                    }
                     match mapping::row_of(&ix, &id, next_version, &doc) {
                         Ok(row) => {
-                            ops.push(json!({"op": "upsert", "table": ix.table, "doc": row}));
+                            // A tenant's new document is inserted, which fails
+                            // rather than replace one another key made since
+                            // it was read.
+                            let op = if tenant.is_some() && now.is_none() { "insert" } else { "upsert" };
+                            ops.push(json!({"op": op, "table": ix.table, "doc": row}));
                             current.insert(key, Some((next_version, Json::Object(doc))));
                             let (status, result) = if now.is_some() { (200, "updated") } else { (201, "created") };
                             out[i] = Some(Outcome { action: it.action, index: name.clone(), id: id.clone(), status, result, version: next_version, error: None });
@@ -2619,7 +2776,20 @@ impl Os {
                 return Err(OsError::parsing("ChloeDB's _delete_by_query does not take a knn query"));
             }
             let sql = format!("DELETE FROM {}{}", ix.table, c.pred.map(|p| format!(" WHERE {p}")).unwrap_or_default());
-            if let SqlAnswer::Written { w, .. } = self.statement(who, &sql).await? {
+            // A key bound to a tenant is limited to no table: its delete,
+            // whose condition holds its tenant's filter, runs as a key of
+            // this index's table alone.
+            let runner = match who.tenant() {
+                Some(_) => {
+                    let mut p = who.clone();
+                    p.tables = Some(vec![crate::keys::Grant::new(&ix.table, Scope::Write)?].into());
+                    p.allow = None;
+                    p.scope = who.scope.min(Scope::Write);
+                    p
+                }
+                None => who.clone(),
+            };
+            if let SqlAnswer::Written { w, .. } = self.statement(&runner, &sql).await? {
                 deleted += w.rows;
             }
         }
