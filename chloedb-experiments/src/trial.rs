@@ -319,16 +319,18 @@ pub struct Trial {
     pub created: i64,
     pub doc: Mutex<Value>,
     stop: std::sync::atomic::AtomicBool,
+    /// Deleted: nothing more is kept of it.
+    pub gone: std::sync::atomic::AtomicBool,
 }
 
 impl Trial {
     pub fn new(id: &str, created: i64, spec: &TrialSpec) -> Trial {
         let doc = json!({"id": id, "created": created, "spec": spec, "steps": {}, "decision": null});
-        Trial { id: id.to_string(), created, doc: Mutex::new(doc), stop: Default::default() }
+        Trial { id: id.to_string(), created, doc: Mutex::new(doc), stop: Default::default(), gone: Default::default() }
     }
 
     pub fn of(doc: Value) -> Trial {
-        Trial { id: doc["id"].as_str().unwrap_or("").to_string(), created: doc["created"].as_i64().unwrap_or(0), doc: Mutex::new(doc), stop: Default::default() }
+        Trial { id: doc["id"].as_str().unwrap_or("").to_string(), created: doc["created"].as_i64().unwrap_or(0), doc: Mutex::new(doc), stop: Default::default(), gone: Default::default() }
     }
 
     pub fn spec(&self) -> TrialSpec {

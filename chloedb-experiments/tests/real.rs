@@ -368,9 +368,16 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
     c.post(&format!("/v1/trials/{xid}/online/stop"), json!({})).await;
     let d = c.post(&format!("/v1/trials/{xid}/decide"), json!({"call": "dont_ship", "note": "worse everywhere"})).await;
     assert_eq!(d["override"], false, "{d}");
+    let (st, v) = c.call(reqwest::Method::DELETE, &format!("/v1/trials/{xid}"), None, Some("t")).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(c.call(reqwest::Method::GET, &format!("/v1/trials/{xid}"), None, Some("t")).await.0, 404);
+    let x2 = c.post("/v1/trials", json!({"name": "again", "source": "made-up", "treatment_name": "Worst first on", "treatment": {"broken": true}, "personas": id})).await;
+    let x2 = x2["id"].as_str().unwrap().to_string();
+    c.post(&format!("/v1/trials/{x2}/decide"), json!({"call": "ship"})).await;
     let list = c.get("/v1/trials").await;
-    assert_eq!(list["trials"][0]["decision"]["call"], "dont_ship", "{list}");
-    assert!(list["trials"][0]["steps"]["judged"]["units"].is_null(), "the list leaves out the units");
+    assert_eq!(list["trials"].as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list["trials"][0]["decision"]["override"], true, "shipped without the rule's word: {list}");
+    assert!(list["trials"][0]["steps"]["side"]["rows"].is_null(), "the list leaves out the units");
 
     // The same, by Claude: the people written, played and judged.
     let w = c.post("/v1/personas", json!({"source": "made-up", "brain": "claude"})).await;

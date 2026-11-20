@@ -7,7 +7,10 @@
 // a peek gives, each cohort, and what an exploring log says of each arm
 // without running it. Its paths:
 //
-//   (home)          the experiments, newest first
+//   (home)          experiments on real sites, by what they need
+//   x/new           a new one: question, control, treatment, the rule
+//   x/<id>          one: its design, its steps, the decision, the report
+//   lab             the Practice lab: simulated users whose truth is known
 //   new[/<id>]      the builder (from an experiment's setup, to run again)
 //   e/<id>[/<tab>]  one experiment: scorecard, metric, cohorts, what-if, setup
 //   new/live        the builder, for a live run
@@ -231,7 +234,10 @@ function render(el, ctx) {
     root.replaceChildren();
     try {
       await loadMeta();
-      if (!path.length) await home(ctx, root, go, (f) => stops.push(f));
+      if (!path.length) await xHome(ctx, root, go, (f) => stops.push(f));
+      else if (path[0] === "lab") await home(ctx, root, go, (f) => stops.push(f));
+      else if (path[0] === "x" && path[1] === "new") await xBuilder(ctx, root, go);
+      else if (path[0] === "x" && path[1]) await xPage(ctx, root, go, path[1], path[2] || "", (f) => stops.push(f));
       else if (path[0] === "new") await builder(ctx, root, go, meta, path[1]);
       else if (path[0] === "live" && path[1]) await livePage(ctx, root, go, meta, path[1], (f) => stops.push(f));
       else if (path[0] === "e" && path[1]) await report(ctx, root, go, meta, path[1], path[2] || "scorecard", (f) => stops.push(f));
@@ -323,12 +329,12 @@ function domain(vals) {
 }
 
 /** A line chart: series [{points: [[x, y]], color, dash, band: [[x, lo, hi]]}], with axes. */
-function lineChart(core, { series, width = 560, height = 220, xLabel, yFmt = (v) => String(v), xFmt = (v) => core.fmt.si(v), yLog = false, yMin, yMax, hlines = [], vlines = [] }) {
+function lineChart(core, { series, width = 560, height = 220, xFrom0 = true, xLabel, yFmt = (v) => String(v), xFmt = (v) => core.fmt.si(v), yLog = false, yMin, yMax, hlines = [], vlines = [] }) {
   const { s } = core;
   const L = 54, R = 10, T = 10, B = 28;
   const xs = series.flatMap((sr) => [...(sr.points || []).map((p) => p[0]), ...(sr.band || []).map((p) => p[0])]);
   const ys = series.flatMap((sr) => [...(sr.points || []).map((p) => p[1]), ...(sr.band || []).flatMap((p) => [p[1], p[2]])]).concat(hlines.map((l) => l.y)).filter(Number.isFinite);
-  const x0 = Math.min(...xs, 0);
+  const x0 = xFrom0 ? Math.min(...xs, 0) : Math.min(...xs);
   let x1 = Math.max(...xs);
   if (!(x1 > x0)) x1 = x0 + 1;
   const tf = yLog ? (v) => Math.log10(Math.max(v, 1e-12)) : (v) => v;
@@ -392,9 +398,10 @@ async function home(ctx, root, go, onStop) {
   const { core } = ctx;
   const { h } = core;
   const head = h("div", { class: "ex-head" },
-    h("h1", {}, "Experiments"),
-    h("span", { class: "sub" }, "A/B tests of rankings on simulated users, whose truth is known"),
-    h("div", { class: "tools" }, h("a", { class: "btn", href: ctx.href("real"), title: "AI agents with personas written from a real site's rows, on its real search" }, core.icon("cloud"), "Real sites"), h("a", { class: "btn", href: ctx.href("new", "live"), title: "Simulated users and AI agents on the site, every metric as it moves" }, core.icon("bolt"), "Watch one live"), h("a", { class: "btn primary", href: ctx.href("new") }, core.icon("plus"), "New experiment")));
+    h("a", { class: "btn sm", href: ctx.href() }, core.icon("left"), "Experiments"),
+    h("h1", {}, "Practice lab"),
+    h("span", { class: "sub" }, "A/B tests and interleaving on simulated users whose truth is known: where the methods are checked"),
+    h("div", { class: "tools" }, h("a", { class: "btn", href: ctx.href("new", "live"), title: "Starts a run of simulated users, with AI agents if you add them, every metric as it moves" }, core.icon("bolt"), "Start a live run"), h("a", { class: "btn primary", href: ctx.href("new") }, core.icon("plus"), "New practice run")));
   const body = h("div");
   root.append(head, body);
   let first = true;
@@ -496,7 +503,7 @@ async function builder(ctx, root, go, meta, from) {
   if (!spec.arms?.length) seedArms();
   if (!spec.name) spec.name = `${spec.arms[1]?.name} against ${spec.arms[0]?.name}`;
 
-  root.append(h("div", { class: "ex-head" }, h("h1", {}, "New experiment"), h("span", { class: "sub" }, "Arms, users and traffic; a look at what each arm shows"), h("div", { class: "tools" }, h("a", { class: "btn", href: ctx.href() }, "Cancel"))));
+  root.append(h("div", { class: "ex-head" }, h("h1", {}, "New experiment"), h("span", { class: "sub" }, "Arms, users and traffic; a look at what each arm shows"), h("div", { class: "tools" }, h("a", { class: "btn", href: ctx.href("lab") }, "Cancel"))));
   if (!sites.length) {
     root.append(core.empty("box", "No sites yet", Object.keys(loading).length ? `Loading: ${Object.entries(loading).map(([k, v]) => `${k} (${v})`).join(", ")}` : "Start the app with --beir DIR to load BEIR collections, or add a site of your own tables (POST /v1/sites)."));
     return;
@@ -741,12 +748,12 @@ async function report(ctx, root, go, meta, id, tab, onStop) {
   const drawHead = () => {
     const spec = r.spec || {};
     head.replaceChildren(
-      h("a", { class: "btn ghost sm", href: ctx.href(), title: "All experiments" }, "←"),
+      h("a", { class: "btn ghost sm", href: ctx.href("lab"), title: "Practice lab" }, "←"),
       h("h1", {}, r.name || id), statusPill(core, r),
       h("span", { class: "sub" }, `${r.site} · ${(spec.arms || []).map((a) => a.name).join(" vs ")} · ${core.fmt.datetime(r.created)}`),
       h("div", { class: "tools" },
         h("a", { class: "btn sm", href: ctx.href("new", id) }, "Run again"),
-        r.status === "done" || r.status === "failed" ? h("button", { class: "btn sm danger", onclick: async () => { if (!(await core.confirm({ title: "Delete this experiment?", body: "Its report goes with it.", ok: "Delete", danger: true }))) return; await ctx.api(`/v1/experiments/${encodeURIComponent(id)}`, { method: "DELETE" }); go(); } }, "Delete") : null));
+        r.status === "done" || r.status === "failed" ? h("button", { class: "btn sm danger", onclick: async () => { if (!(await core.confirm({ title: "Delete this experiment?", body: "Its report goes with it.", ok: "Delete", danger: true }))) return; await ctx.api(`/v1/experiments/${encodeURIComponent(id)}`, { method: "DELETE" }); go("lab"); } }, "Delete") : null));
   };
   drawHead();
   if (r.status === "queued" || r.status === "running") {
@@ -1436,7 +1443,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
   const stopBtn = h("button", { class: "btn sm danger" }, core.icon("stop"), "Stop");
   stopBtn.onclick = async () => { stopBtn.disabled = true; try { await ctx.api(`${path}/stop`, { method: "POST", body: {} }); } catch (e) { core.toast(e.message, "error"); stopBtn.disabled = false; } };
   const head = h("div", { class: "ex-head" },
-    h("a", { class: "btn ghost sm", href: ctx.href(), title: "All experiments" }, "←"),
+    h("a", { class: "btn ghost sm", href: ctx.href("lab"), title: "Practice lab" }, "←"),
     h("h1", {}, v.name || id), state,
     h("span", { class: "sub" }, `${v.site} · ${arms.map((a) => a.name).join(" vs ")} · started ${core.fmt.datetime(v.created)}`),
     h("div", { class: "tools" }, rateBox, stopBtn));
@@ -1816,9 +1823,9 @@ async function realHome(ctx, root, go, meta, onStop) {
   const { h } = core;
   root.append(h("div", { class: "ex-head" },
     h("a", { class: "btn sm", href: ctx.href() }, core.icon("left"), "Experiments"),
-    h("h1", {}, "Real sites"),
-    h("span", { class: "sub" }, "AI agents with personas written from a site's own rows, on its real search; nothing is written to it"),
-    h("div", { class: "tools" }, h("a", { class: "btn primary", href: ctx.href("real", "new") }, core.icon("plus"), "New study"))));
+    h("h1", {}, "Sites"),
+    h("span", { class: "sub" }, "each site's knobs, the personas (simulated users) written from its rows, their studies and tunes"),
+    h("div", { class: "tools" }, h("a", { class: "btn", href: ctx.href("real", "new") }, core.icon("plus"), "New study"), h("a", { class: "btn primary", href: ctx.href("x", "new") }, core.icon("plus"), "New experiment"))));
   const sitesBox = h("div", { class: "ex-sites ex-real-sites" }, h("div", { class: "small dim" }, "Asking the sites what they allow…"));
   const setsBox = h("div", { class: "ex-list" });
   const studiesBox = h("div", { class: "ex-list" });
@@ -1919,7 +1926,7 @@ async function realSite(ctx, root, go, name) {
   const { core } = ctx;
   const { h } = core;
   const d = ((await ctx.api("/v1/real")).sources || []).find((x) => x.source === name);
-  if (!d) { root.append(core.empty("cloud", `No site ${name}`, "", h("a", { class: "btn sm", href: ctx.href("real") }, "Real sites"))); return; }
+  if (!d) { root.append(core.empty("cloud", `No site ${name}`, "", h("a", { class: "btn sm", href: ctx.href("real") }, "Sites"))); return; }
   const knobs = {};
   const words = h("span", { class: "small dim" }, "as it is");
   const q = h("input", { type: "search", placeholder: d.rows === "papers" ? "a search, as a person would type it: retrieval augmented generation survey" : "a search, as a person would type it: rust in the linux kernel", style: { flex: 1, minWidth: "200px" } });
@@ -1940,6 +1947,8 @@ async function realSite(ctx, root, go, name) {
   let panelBox = h("div");
   const redraw = () => { panelBox.replaceChildren(knobPanel(core, d, knobs, () => { words.textContent = knobWords(d, knobs); })); words.textContent = knobWords(d, knobs); };
   const presets = h("div", { class: "ex-pick" }, (d.presets || []).map((p) => h("button", { title: knobWords(d, p.knobs), onclick: () => { for (const k of Object.keys(knobs)) delete knobs[k]; Object.assign(knobs, p.knobs); redraw(); run(); } }, p.name)));
+  const experiment = h("button", { class: "btn sm primary", title: "An experiment of these knobs against the site as it is" }, core.icon("plus"), "Experiment with these knobs");
+  experiment.onclick = () => { kept("ex-x-treatment", { source: name, knobs: { ...knobs } }); go("x", "new"); };
   const study = h("button", { class: "btn sm" }, core.icon("rocket"), "Study these knobs");
   study.onclick = () => {
     const p = (d.presets || []).find((x) => JSON.stringify(x.knobs || {}) === JSON.stringify(knobs));
@@ -1948,10 +1957,10 @@ async function realSite(ctx, root, go, name) {
   };
   redraw();
   root.append(h("div", { class: "ex-head" },
-    h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"),
+    h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Sites"),
     h("h1", {}, d.title || name), h("span", { class: "sub" }, `${d.kind === "app" ? "its own search, on its own cluster, with an arm's knobs" : "its public search"} · ${d.base}`)),
     h("div", { class: "ex-build" },
-      core.card({ title: "Knobs", sub: "what an arm may change of the search", tools: study, body: h("div", {}, h("div", { class: "small dim", style: { marginBottom: "4px" } }, "Presets"), presets, panelBox) }),
+      core.card({ title: "Knobs", sub: "what an arm may change of the search", tools: h("div", { class: "row", style: { gap: "6px" } }, study, experiment), body: h("div", {}, h("div", { class: "small dim", style: { marginBottom: "4px" } }, "Presets"), presets, panelBox) }),
       core.card({ title: "Compare a search", sub: words, body: h("div", { style: { display: "grid", gap: "10px" } }, h("div", { class: "row" }, q, h("button", { class: "btn primary", onclick: run }, core.icon("search"), "Compare")), out) })));
 }
 
@@ -1959,12 +1968,12 @@ async function realPersonas(ctx, root, go, id) {
   const { core } = ctx;
   const { h } = core;
   const set = await ctx.api(`/v1/personas/${encodeURIComponent(id)}`);
-  if (set.status !== "ready") { root.append(core.empty("user", set.status === "failed" ? "They could not be written" : "Still writing them", set.error || set.stage || "", h("a", { class: "btn sm", href: ctx.href("real") }, "Real sites"))); return; }
+  if (set.status !== "ready") { root.append(core.empty("user", set.status === "failed" ? "They could not be written" : "Still writing them", set.error || set.stage || "", h("a", { class: "btn sm", href: ctx.href("real") }, "Sites"))); return; }
   const study = h("button", { class: "btn primary" }, core.icon("rocket"), "Study these people");
   study.onclick = () => { kept("ex-real-set", id); go("real", "new"); };
   const n = set.personas.reduce((a, p) => a + p.needs.length, 0), k = set.personas.reduce((a, p) => a + p.needs.filter((x) => x.kind === "known").length, 0);
   root.append(h("div", { class: "ex-head" },
-    h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"),
+    h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Sites"),
     h("h1", {}, `${set.personas.length} people of ${set.title || set.source}`),
     h("span", { class: "sub" }, `${n} needs, ${k} of them a row they remember · written by ${set.model} from ${set.rows} of its rows${set.cost ? ` for $${set.cost.toFixed(2)}` : ""}`),
     h("div", { class: "tools" }, study)),
@@ -1982,9 +1991,9 @@ async function realBuilder(ctx, root, go, meta) {
   const [real, ps] = await Promise.all([ctx.api("/v1/real"), ctx.api("/v1/personas")]);
   const sources = (real.sources || []).filter((d) => d.allowed);
   const sets = ps.sets || [];
-  root.append(h("div", { class: "ex-head" }, h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"), h("h1", {}, "New study"), h("span", { class: "sub" }, "every need of the people on every arm, by the same person in a fresh session")));
+  root.append(h("div", { class: "ex-head" }, h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Sites"), h("h1", {}, "New study"), h("span", { class: "sub" }, "every need of the people on every arm, by the same person in a fresh session")));
   if (!sources.length || !sets.length) {
-    root.append(core.empty("user", !sources.length ? "No site takes experiments" : "No personas yet", !sources.length ? "Start the app with --source." : "Write people for a site first: Real sites → Write personas.", h("a", { class: "btn sm", href: ctx.href("real") }, "Real sites")));
+    root.append(core.empty("user", !sources.length ? "No site takes experiments" : "No personas yet", !sources.length ? "Start the app with --source." : "Write people for a site first: Sites → Write personas.", h("a", { class: "btn sm", href: ctx.href("real") }, "Sites")));
     return;
   }
   const L = meta.real?.limits || {};
@@ -2126,7 +2135,7 @@ async function realStudy(ctx, root, go, id, onStop) {
   let appSources = null;
   const tuneBtn = (v) => {
     if (v.status === "running") return null;
-    const b = h("button", { class: "btn sm primary", title: "The relevance autopilot: search a site's numbers on this study's needs and grades, and prove the best on needs held out" }, core.icon("sliders"), "Tune its knobs");
+    const b = h("button", { class: "btn sm", title: "The relevance autopilot: search a site's numbers on this study's needs and grades, and prove the best on needs held out" }, core.icon("sliders"), "Tune its knobs");
     b.onclick = async () => {
       const all = appSources || ((await ctx.api("/v1/real")).sources || []);
       appSources = all;
@@ -2165,7 +2174,7 @@ async function realStudy(ctx, root, go, id, onStop) {
     const v = await ctx.api(path);
     const running = v.status === "running";
     const stop = h("button", { class: "btn sm", onclick: async () => { await ctx.api(`${path}/stop`, { method: "POST" }); core.toast("Stopping after the sessions under way", "info"); } }, core.icon("stop"), "Stop");
-    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"), h("h1", {}, v.name), studyPill(core, v.status),
+    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Sites"), h("h1", {}, v.name), studyPill(core, v.status),
       h("span", { class: "sub" }, `${v.personas?.personas} people of ${v.personas?.title || v.personas?.source} · ${v.spec.arms.map((a) => a.name).join(" vs ")} · ${v.spec.brain === "claude" ? `${v.spec.agent_model.replace("claude-", "")} agents, ${v.spec.judge_model.replace("claude-", "")} judge` : "scripted"}`),
       h("div", { class: "tools" }, running ? stop : tuneBtn(v)));
     clock.replaceChildren(h("div", { class: "ex-bar" }, h("div", { style: { width: Math.round((v.done / (v.total || 1)) * 100) + "%" } })), h("span", { class: "txt" }, `${v.done} of ${v.total} sessions · $${(v.spent || 0).toFixed(2)} of $${v.spec.budget}${v.judge_spent ? ` (judge $${v.judge_spent.toFixed(2)})` : ""}${v.report?.cut ? ` · ${v.report.cut} not counted` : ""}`));
@@ -2252,7 +2261,9 @@ async function realTune(ctx, root, go, id, onStop) {
     const running = v.status === "running";
     const rep = v.report || {};
     const stop = h("button", { class: "btn sm", onclick: async () => { await ctx.api(`${path}/stop`, { method: "POST" }); core.toast("Stopping: the proof runs on what it found so far", "info"); } }, core.icon("stop"), "Stop");
-    const prove = h("button", { class: "btn sm primary", title: "A study of Proposed against the site as it is, by agents on people the tune never saw" }, core.icon("play"), "Prove it with people");
+    const toX = h("button", { class: "btn sm primary", title: "An experiment of the proposal against the site as it is: judged queries, then real visitors" }, core.icon("plus"), "Make it an experiment");
+    toX.onclick = () => { kept("ex-x-treatment", { source: v.spec.source, knobs: rep.proposal || {} }); go("x", "new"); };
+    const prove = h("button", { class: "btn sm", title: "A study of the proposal against the site as it is, by AI agents playing personas the tune never saw" }, core.icon("play"), "Check on new simulated users");
     prove.onclick = async () => {
       const ps = (await ctx.api("/v1/personas")).sets || [];
       const fresh = ps.find((p) => p.id !== v.personas && p.status !== "writing" && p.status !== "failed");
@@ -2261,9 +2272,9 @@ async function realTune(ctx, root, go, id, onStop) {
       kept("ex-real-arm", { name: "Proposed", source: v.spec.source, knobs: rep.proposal || {} });
       go("real", "new");
     };
-    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"), h("h1", {}, v.name || "Tune"), studyPill(core, v.status),
+    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Sites"), h("h1", {}, v.name || "Tune"), studyPill(core, v.status),
       h("span", { class: "sub" }, `${v.spec?.source} · ${v.needs} needs from `, h("a", { href: ctx.href("real", "study", v.spec?.study) }, "the study"), `, ${v.held_out} held out · nDCG@${v.spec?.k}`),
-      h("div", { class: "tools" }, running ? stop : rep.changed?.length ? prove : null));
+      h("div", { class: "tools" }, running ? stop : rep.changed?.length ? [prove, toX] : null));
     clock.replaceChildren(h("span", { class: "txt" }, running ? `${v.phase || "…"} · ${v.searches} searches · judge $${(v.spent || 0).toFixed(2)}` : v.error ? `Failed: ${v.error}` : `${v.searches} searches · judge $${(v.spent || 0).toFixed(2)}${rep.holes ? ` · ${rep.holes.graded} of ${rep.holes.found} ungraded rows graded` : ""}`));
     const ho = rep.held_out;
     top.replaceChildren(...(ho ? [
@@ -2314,4 +2325,593 @@ async function realTune(ctx, root, go, id, onStop) {
     const t = core.every(1500, async () => { if (!(await draw())) t(); }, false);
     onStop(t);
   }
+}
+
+// ------------------------------------------------------------ experiments on real sites
+//
+// An experiment asks one question of a real site: a control and a
+// treatment (each a set of the site's knobs), and the evidence for it in
+// steps, each dearer than the last: side by side, judged queries,
+// simulated users, real visitors interleaved, then a decision by the rule
+// declared up front. Below the steps, the report: every metric with its
+// interval and p value, over days or over the units as they came, cut by
+// any attribute, filtered and grouped.
+
+const X_CSS = `
+.ex-ladder { display: grid; gap: 0; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+.ex-rung { display: grid; grid-template-columns: 28px minmax(140px, 190px) minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); }
+.ex-rung:first-child { border-top: 0; }
+.ex-rung .mark { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 12px; background: var(--surface-2, #f3f3f3); color: var(--muted); }
+.ex-rung.done .mark { background: var(--good-soft, #e3f4e3); color: var(--ex-good); }
+.ex-rung.running .mark { background: var(--accent-soft); color: var(--accent); }
+.ex-rung .t { font-weight: 600; }
+.ex-rung .t small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+.ex-rung .what { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.ex-rung .act { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 800px) { .ex-rung { grid-template-columns: 28px 1fr; } .ex-rung .what, .ex-rung .act { grid-column: 2; justify-content: flex-start; } }
+.ex-decide { border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: var(--r); background: var(--surface); padding: 14px 16px; display: grid; gap: 8px; }
+.ex-decide.ship { border-left-color: var(--good); } .ex-decide.dont_ship, .ex-decide.invalid { border-left-color: var(--crit); } .ex-decide.tradeoff, .ex-decide.not_yet { border-left-color: var(--warn, #c98a00); }
+.ex-decide h3 { margin: 0; font-size: 18px; }
+.ex-decide ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-2); }
+.ex-design { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+.ex-design dt { color: var(--muted); }
+.ex-design dd { margin: 0; }
+.ex-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 12.5px; margin-bottom: 10px; }
+.ex-filters .f { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.ex-filters .f > span { color: var(--muted); margin-right: 2px; }
+.ex-chipbtn { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 2px 9px; font-size: 12px; cursor: pointer; color: var(--text); }
+.ex-chipbtn[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+.ex-rep-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; font-size: 12.5px; }
+.ex-xitem { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.2fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); text-decoration: none; color: inherit; }
+.ex-xitem .n { font-weight: 600; } .ex-xitem .s { font-size: 12px; color: var(--muted); } .ex-xitem .e { font-size: 12.5px; color: var(--text-2); }
+.ex-sec { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 16px 0 8px; }
+.ex-sitesrow { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.ex-pages { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12.5px; }
+.ex-pages ol { margin: 0; padding-left: 18px; }
+.ex-pages li.new { color: var(--accent); font-weight: 600; }
+`;
+
+// ---- statistics, for the report's cuts (the same formulas as the app's)
+
+function normCdf(x) {
+  // Abramowitz and Stegun 7.1.26 on erf, |error| < 1.5e-7.
+  const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x / 2);
+  return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
+function lgamma(x) {
+  const c = [76.18009172947146, -86.50532032941677, 24.01409824083091, -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let y = x, tmp = x + 5.5, ser = 1.000000000190015;
+  tmp -= (x + 0.5) * Math.log(tmp);
+  for (const k of c) ser += k / ++y;
+  return -tmp + Math.log(2.5066282746310005 * ser / x);
+}
+function betacf(a, b, x) {
+  let qab = a + b, qap = a + 1, qam = a - 1, c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < 1e-30) d = 1e-30;
+  d = 1 / d;
+  let hh = d;
+  for (let m = 1; m <= 200; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < 1e-30) d = 1e-30; c = 1 + aa / c; if (Math.abs(c) < 1e-30) c = 1e-30; d = 1 / d; hh *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < 1e-30) d = 1e-30; c = 1 + aa / c; if (Math.abs(c) < 1e-30) c = 1e-30; d = 1 / d;
+    const del = d * c; hh *= del;
+    if (Math.abs(del - 1) < 3e-12) break;
+  }
+  return hh;
+}
+function ibeta(a, b, x) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+  return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b;
+}
+/** Two-sided p of Student's t with `df` degrees of freedom. */
+function pT(t, df) {
+  if (!Number.isFinite(t)) return t === 0 ? 1 : 0;
+  if (df > 200) return 2 * (1 - normCdf(Math.abs(t)));
+  return ibeta(df / 2, 0.5, df / (df + t * t));
+}
+/** The t quantile at 97.5% for `df`, near enough (Cornish-Fisher). */
+function t975(df) {
+  const z = 1.959964;
+  if (!(df >= 1)) return NaN;
+  const g1 = (z ** 3 + z) / 4, g2 = (5 * z ** 5 + 16 * z ** 3 + 3 * z) / 96, g3 = (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / 384;
+  return z + g1 / df + g2 / df ** 2 + g3 / df ** 3;
+}
+/** Upper tail of chi-square with k degrees of freedom. */
+function chi2Upper(x, k) {
+  if (!(x > 0)) return 1;
+  // Regularized upper gamma Q(k/2, x/2).
+  const a = k / 2, z = x / 2;
+  if (z < a + 1) {
+    let sum = 1 / a, del = sum, ap = a;
+    for (let n = 0; n < 300; n++) { ap += 1; del *= z / ap; sum += del; if (Math.abs(del) < Math.abs(sum) * 1e-12) break; }
+    return Math.max(0, 1 - sum * Math.exp(-z + a * Math.log(z) - lgamma(a)));
+  }
+  let b = z + 1 - a, c = 1e300, d = 1 / b, hh = d;
+  for (let i = 1; i < 300; i++) {
+    const an = -i * (i - a); b += 2;
+    d = an * d + b; if (Math.abs(d) < 1e-300) d = 1e-300; c = b + an / c; if (Math.abs(c) < 1e-300) c = 1e-300; d = 1 / d;
+    const del = d * c; hh *= del; if (Math.abs(del - 1) < 1e-12) break;
+  }
+  return Math.exp(-z + a * Math.log(z) - lgamma(a)) * hh;
+}
+/** Mean, standard error, interval and p of paired differences. */
+function paired(ds) {
+  const xs = ds.filter(Number.isFinite);
+  const n = xs.length;
+  if (!n) return { n: 0 };
+  const m = xs.reduce((a, b) => a + b, 0) / n;
+  const v = n > 1 ? xs.reduce((a, b) => a + (b - m) ** 2, 0) / (n - 1) : NaN;
+  const se = Math.sqrt(v / n);
+  const tq = t975(n - 1);
+  const p = n > 1 ? (se > 0 ? pT(m / se, n - 1) : (m === 0 ? 1 : 0)) : NaN;
+  return { n, mean: m, se, lo: m - tq * se, hi: m + tq * se, p };
+}
+const avg = (xs) => { const v = xs.filter(Number.isFinite); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN; };
+function bhQ(ps) {
+  const idx = ps.map((p, i) => [p, i]).filter(([p]) => Number.isFinite(p)).sort((a, b) => a[0] - b[0]);
+  const q = ps.map(() => NaN);
+  let run = 1;
+  for (let k = idx.length - 1; k >= 0; k--) { run = Math.min(run, idx[k][0] * idx.length / (k + 1)); q[idx[k][1]] = run; }
+  return q;
+}
+/** Cochran's Q over groups' estimates: do the groups' effects differ? */
+function heterogeneity(groups) {
+  const g = groups.filter((x) => x.n > 1 && x.se > 0 && Number.isFinite(x.mean));
+  if (g.length < 2) return null;
+  const w = g.map((x) => 1 / x.se ** 2);
+  const sw = w.reduce((a, b) => a + b, 0);
+  const pooled = g.reduce((a, x, i) => a + w[i] * x.mean, 0) / sw;
+  const Q = g.reduce((a, x, i) => a + w[i] * (x.mean - pooled) ** 2, 0);
+  return { Q, df: g.length - 1, p: chi2Upper(Q, g.length - 1) };
+}
+
+// ---- the report: every metric, over time, cut, filtered and grouped
+
+/**
+ * The report of a step's units. `metrics`: [{key, title, a(u), b(u), d(u)?,
+ * higher, fmt, dfmt, about}] (d defaults to b − a); `attrs`: [{key, title,
+ * of(u)}]; `xs`: [{key, title, of(u, i), fmt}] (the x axes offered).
+ */
+function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note }) {
+  const { h } = core;
+  const box = h("div");
+  if (!units?.length) {
+    box.append(h("div", { class: "small dim" }, "No units yet."));
+    return box;
+  }
+  const off = {}; // attr -> Set of values left out
+  const st = { metric: defaultMetric || metrics[0].key, x: xs[0].key, group: "", mode: "cum" };
+  const valuesOf = (a) => { const seen = new Map(); for (const u of units) { const v = a.of(u); seen.set(v, (seen.get(v) || 0) + 1); } return [...seen.entries()].sort((x, y) => (typeof x[0] === "number" && typeof y[0] === "number" ? x[0] - y[0] : String(x[0]).localeCompare(String(y[0])))); };
+  const kept = () => units.filter((u) => attrs.every((a) => !off[a.key]?.has(a.of(u))));
+  const dOf = (m) => m.d || ((u) => m.b(u) - m.a(u));
+  const tone = (m, r) => (!(r.p < 0.05) || m.higher == null ? "" : (r.mean > 0) === m.higher ? "ex-good" : "ex-bad");
+  const fmtD = (m, v) => (m.dfmt ? m.dfmt(v) : signed(v, 3));
+  const fmtV = (m, v) => (m.fmt ? m.fmt(v) : fixed(v, 3));
+  // Filters.
+  const filters = h("div", { class: "ex-filters" });
+  const drawFilters = () => filters.replaceChildren(...attrs.map((a) => h("div", { class: "f" }, h("span", {}, a.title), valuesOf(a).map(([v, n]) => {
+    const on = !off[a.key]?.has(v);
+    return h("button", { class: "ex-chipbtn", "aria-pressed": String(on), title: `${n} ${n === 1 ? "unit" : "units"}; click to ${on ? "leave out" : "put back"}`, onclick: () => { const s = (off[a.key] ||= new Set()); if (on) s.add(v); else s.delete(v); drawFilters(); draw(); } }, `${v} · ${n}`);
+  }))), h("button", { class: "btn sm ghost", onclick: () => { for (const k of Object.keys(off)) delete off[k]; drawFilters(); draw(); } }, "All"));
+  const sel = (opts, val, on) => { const s = h("select", { class: "select sm", onchange: () => on(s.value) }, opts.map(([v, t]) => h("option", { value: v, selected: v === val }, t))); return s; };
+  const tools = h("div", { class: "ex-rep-tools" },
+    "Metric", sel(metrics.map((m) => [m.key, m.title]), st.metric, (v) => { st.metric = v; draw(); }),
+    "over", sel(xs.map((x) => [x.key, x.title]), st.x, (v) => { st.x = v; draw(); }),
+    sel([["cum", "so far (cumulative)"], ["each", "each period on its own"]], st.mode, (v) => { st.mode = v; draw(); }),
+    "grouped by", sel([["", "nothing"], ...attrs.map((a) => [a.key, a.title])], st.group, (v) => { st.group = v; draw(); }));
+  const table = h("div");
+  const chart = h("div");
+  const segs = h("div");
+  const raw = h("div");
+  box.append(filters, h("div", { class: "ex-sec" }, "Every metric"), table, h("div", { class: "ex-sec" }, "Over time"), tools, chart, h("div", { class: "ex-sec" }, "By group"), segs, h("div", { class: "ex-sec" }, "Units"), raw);
+  if (note) box.prepend(h("div", { class: "small dim", style: { marginBottom: "8px" } }, note));
+  const draw = () => {
+    const us = kept();
+    // Every metric.
+    table.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Metric"), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"), h("th", { class: "num" }, "95% interval"), h("th", { class: "num" }, "p"), h("th", { class: "num" }, "n"))),
+      h("tbody", {}, metrics.map((m) => {
+        const d = dOf(m);
+        const pairs = us.filter((u) => Number.isFinite(d(u)));
+        const r = paired(pairs.map(d));
+        return h("tr", { title: m.about || "" }, h("td", {}, m.title, m.higher == null ? h("span", { class: "small dim" }, " · no better direction") : null),
+          h("td", { class: "num ex-num" }, fmtV(m, avg(pairs.map(m.a)))), h("td", { class: "num ex-num" }, fmtV(m, avg(pairs.map(m.b)))),
+          h("td", { class: "num ex-num " + tone(m, r) }, r.n ? fmtD(m, r.mean) : "–"),
+          h("td", { class: "num ex-num" }, r.n > 1 ? `${fmtD(m, r.lo)} to ${fmtD(m, r.hi)}` : "–"),
+          h("td", { class: "num ex-num" }, pText(r.p)), h("td", { class: "num ex-num" }, String(r.n)));
+      })))));
+    // Over time.
+    const m = metrics.find((x) => x.key === st.metric) || metrics[0];
+    const d = dOf(m);
+    const xa = xs.find((x) => x.key === st.x) || xs[0];
+    const ga = attrs.find((a) => a.key === st.group);
+    const groups = ga ? valuesOf(ga).map(([v]) => [v, us.filter((u) => ga.of(u) === v)]).filter(([, g]) => g.length) : [["All", us]];
+    const series = [];
+    groups.forEach(([gname, g], gi) => {
+      const color = ARM_COLORS[gi % ARM_COLORS.length];
+      const pts = g.map((u, i) => [xa.of(u, i), d(u)]).filter((p) => Number.isFinite(p[1]) && Number.isFinite(p[0])).sort((a, b) => a[0] - b[0]);
+      const buckets = new Map();
+      for (const [x, v] of pts) { const k = xa.bucket ? xa.bucket(x) : x; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(v); }
+      const keys = [...buckets.keys()].sort((a, b) => a - b);
+      // At most 60 points: units grouped evenly when there are more.
+      const step = Math.max(1, Math.ceil(keys.length / 60));
+      const line = [], band = [];
+      let acc = [];
+      keys.forEach((k, i) => {
+        const vs = buckets.get(k);
+        acc = st.mode === "cum" ? acc.concat(vs) : (i % step === 0 ? vs.slice() : acc.concat(vs));
+        if ((i + 1) % step !== 0 && i !== keys.length - 1) return;
+        const r = paired(acc);
+        if (r.n) line.push([k, r.mean]);
+        if (r.n > 1 && Number.isFinite(r.lo)) band.push([k, r.lo, r.hi]);
+        if (st.mode !== "cum") acc = [];
+      });
+      series.push({ points: line, band: groups.length <= 3 ? band : [], color, dots: line.length < 25, name: String(gname) });
+    });
+    chart.replaceChildren(
+      lineChart(core, { series, height: 240, xFrom0: false, xLabel: xa.title, xFmt: xa.fmt || ((v) => core.fmt.si(v)), yFmt: (v) => fmtD(m, v), hlines: [{ y: 0, label: "no difference" }] }),
+      groups.length > 1 ? legend(h, series.map((sr) => [sr.color, sr.name])) : "",
+      h("div", { class: "small dim" }, `${arms[1]} minus ${arms[0]}, ${m.title.toLowerCase()}; the band is the 95% interval${groups.length > 3 ? " (shown with three groups or fewer)" : ""}.`));
+    // By group.
+    const ga2 = ga || attrs[0];
+    const rows = valuesOf(ga2).map(([v]) => { const g = us.filter((u) => ga2.of(u) === v && Number.isFinite(d(u))); return { v, g, r: paired(g.map(d)) }; }).filter((x) => x.g.length);
+    const qs = bhQ(rows.map((x) => x.r.p));
+    const het = heterogeneity(rows.map((x) => x.r));
+    segs.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, h("th", {}, ga2.title), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"), h("th", { class: "num" }, "95% interval"), h("th", { class: "num" }, "p"), h("th", { class: "num", title: "Benjamini-Hochberg over the groups" }, "q"), h("th", { class: "num" }, "n"))),
+      h("tbody", {}, rows.map((x, i) => h("tr", {}, h("td", {}, String(x.v)), h("td", { class: "num ex-num" }, fmtV(m, avg(x.g.map(m.a)))), h("td", { class: "num ex-num" }, fmtV(m, avg(x.g.map(m.b)))),
+        h("td", { class: "num ex-num " + tone(m, x.r) }, fmtD(m, x.r.mean)), h("td", { class: "num ex-num" }, x.r.n > 1 ? `${fmtD(m, x.r.lo)} to ${fmtD(m, x.r.hi)}` : "–"),
+        h("td", { class: "num ex-num" }, pText(x.r.p)), h("td", { class: "num ex-num" }, pText(qs[i])), h("td", { class: "num ex-num" }, String(x.r.n))))))),
+      h("div", { class: "small", style: { marginTop: "6px" } }, het
+        ? [h("b", {}, het.p < 0.05 ? "The groups differ. " : "No sign the groups differ. "), `Cochran's Q = ${het.Q.toFixed(2)} on ${het.df} df, p = ${pText(het.p)}: this tests whether the effect differs between groups; a group's own p tests it against zero, and one group significant while another is not is not evidence that they differ.`]
+        : h("span", { class: "dim" }, "Too few units in the groups to test whether they differ.")));
+    // Units, the biggest differences first.
+    const all = us.filter((u) => Number.isFinite(d(u))).sort((x, y) => Math.abs(d(y)) - Math.abs(d(x)));
+    const top = all.slice(0, st.rows || 15);
+    const more = all.length > top.length ? h("button", { class: "btn sm", onclick: () => { st.rows = (st.rows || 15) + 50; draw(); } }, `Show ${Math.min(50, all.length - top.length)} more`) : "";
+    raw.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Unit"), attrs.map((a) => h("th", {}, a.title)), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"))),
+      h("tbody", {}, top.map((u) => h("tr", {}, h("td", { class: "small" }, u.label || ""), attrs.map((a) => h("td", { class: "small dim" }, String(a.of(u)))),
+        h("td", { class: "num ex-num" }, fmtV(m, m.a(u))), h("td", { class: "num ex-num" }, fmtV(m, m.b(u))), h("td", { class: "num ex-num " + (m.higher == null ? "" : (d(u) > 0) === m.higher ? "ex-good" : d(u) ? "ex-bad" : "") }, fmtD(m, d(u)))))))),
+      h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, h("span", { class: "small dim" }, `${top.length} of ${all.length}, the biggest differences of ${m.title.toLowerCase()} first.`), more));
+  };
+  drawFilters();
+  draw();
+  return box;
+}
+
+const DAY = 86400;
+const dayFmt = (t) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const wordsBucket = (n) => (n <= 1 ? "1 word" : n <= 3 ? "2–3 words" : "4+ words");
+
+/** The real visitors' report: one unit a search. */
+function onlineReport(core, on, arms) {
+  const units = (on.units || []).map((u) => ({ ...u, label: u.q }));
+  const ms = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} ms` : "–");
+  return reportView(core, {
+    units, arms,
+    defaultMetric: "pref",
+    note: "Each search showed both arms' stories drafted into one list; a story opened counts for the arm that picked it. A search the treatment won counts +1, one the control won −1.",
+    metrics: [
+      { key: "pref", title: "Preference (searches won)", a: (u) => (u.outcome < 0 ? 1 : 0), b: (u) => (u.outcome > 0 ? 1 : 0), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3), about: "the share of searches each arm won; the difference is (wins − losses) / searches" },
+      { key: "clicks", title: "Stories opened a search", a: (u) => u.ca, b: (u) => u.cb, higher: true, fmt: (v) => fixed(v, 3) },
+      { key: "first", title: "Opened the first story", a: (u) => (u.ca + u.cb > 0 && !u.b_first && u.ca > 0 ? 1 : 0), b: (u) => (u.ca + u.cb > 0 && u.b_first && u.cb > 0 ? 1 : 0), higher: null, fmt: pct0, dfmt: (v) => signed(v, 3), about: "diagnostic: whose story sat first and was opened" },
+      { key: "ms", title: "Search time", a: (u) => u.a_ms, b: (u) => u.b_ms, higher: false, fmt: ms, dfmt: (v) => `${signed(v, 1)} ms` },
+    ],
+    attrs: [
+      { key: "dev", title: "Screen", of: (u) => (u.dev === "m" ? "phone" : u.dev === "d" ? "computer" : "unknown") },
+      { key: "words", title: "Query", of: (u) => wordsBucket(u.words) },
+      { key: "wd", title: "Weekday (UTC)", of: (u) => { const d = new Date(u.ts * 1000).getUTCDay(); return `${(d + 6) % 7 + 1} ${WEEKDAYS[d]}`; } },
+      { key: "hr", title: "Hours (UTC)", of: (u) => { const x = new Date(u.ts * 1000).getUTCHours(); return x < 6 ? "00–06" : x < 12 ? "06–12" : x < 18 ? "12–18" : "18–24"; } },
+      { key: "clicked", title: "Opened", of: (u) => (u.ca + u.cb > 0 ? "something" : "nothing") },
+    ],
+    xs: [
+      { key: "day", title: "day", of: (u) => u.ts, bucket: (t) => Math.floor(t / DAY) * DAY, fmt: dayFmt },
+      { key: "i", title: "searches", of: (u, i) => i + 1 },
+    ],
+  });
+}
+
+/** The judged queries' report: one unit a need. */
+function judgedReport(core, j, arms) {
+  const units = (j.units || []).map((u, i) => ({ ...u, i, label: u.text }));
+  const found = (r) => (r == null ? 0 : 1);
+  return reportView(core, {
+    units, arms,
+    defaultMetric: "ndcg",
+    note: `Each need searched on both arms with the queries people typed for it (or its own words); every row graded once by the judge (${j.judge || "the judge"}).`,
+    metrics: [
+      { key: "ndcg", title: "nDCG@10", a: (u) => u.a, b: (u) => u.b, higher: true, fmt: (v) => fixed(v, 3) },
+      { key: "known", title: "Known item on the first page", a: (u) => (u.kind === "known" ? found(u.a_rank) : NaN), b: (u) => (u.kind === "known" ? found(u.b_rank) : NaN), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3) },
+      { key: "rr", title: "Reciprocal rank of the known item", a: (u) => (u.kind === "known" ? (u.a_rank ? 1 / u.a_rank : 0) : NaN), b: (u) => (u.kind === "known" ? (u.b_rank ? 1 / u.b_rank : 0) : NaN), higher: true, fmt: (v) => fixed(v, 3) },
+      { key: "ms", title: "Search time", a: (u) => u.a_ms, b: (u) => u.b_ms, higher: false, fmt: (v) => `${fixed(v, 1)} ms`, dfmt: (v) => `${signed(v, 1)} ms` },
+    ],
+    attrs: [
+      { key: "kind", title: "Need", of: (u) => (u.kind === "known" ? "known item" : "topical") },
+      { key: "persona", title: "Persona", of: (u) => String(u.persona || "").split(",")[0] },
+      { key: "queries", title: "Queries", of: (u) => (u.queries?.length > 1 ? "typed by agents" : "its own words") },
+    ],
+    xs: [{ key: "i", title: "needs, in order", of: (u) => u.i + 1 }],
+  });
+}
+
+function sideView(core, side, arms) {
+  const { h } = core;
+  const rows = side.rows || [];
+  if (!rows.length) return h("div", { class: "small dim" }, side.sentence || "No queries.");
+  return h("div", { style: { display: "grid", gap: "12px" } }, rows.map((r) => {
+    const a = (r.a || []).map((x) => x.id), b = (r.b || []).map((x) => x.id);
+    return h("details", {}, h("summary", {}, h("b", {}, r.q), h("span", { class: "small dim" }, ` · ${r.from === "log" ? "asked on the site" : "a need's words"} · ${r.moved ? `${r.moved} places differ, ${pct0(r.overlap)} of the control's rows kept` : "the same page"}`)),
+      h("div", { class: "ex-pages" },
+        h("div", {}, h("div", { class: "small dim" }, arms[0]), h("ol", {}, (r.a || []).map((x) => h("li", { class: b.includes(x.id) ? "" : "gone", style: b.includes(x.id) ? {} : { textDecoration: "line-through", color: "var(--muted)" } }, x.title)))),
+        h("div", {}, h("div", { class: "small dim" }, arms[1]), h("ol", {}, (r.b || []).map((x) => h("li", { class: a.includes(x.id) ? "" : "new" }, x.title))))));
+  }));
+}
+
+// ---- the home: the experiments, by what they need
+
+async function xHome(ctx, root, go, onStop) {
+  const { core } = ctx;
+  const { h } = core;
+  if (!document.getElementById("ex-xcss")) document.head.append(h("style", { id: "ex-xcss" }, X_CSS));
+  root.append(h("div", { class: "ex-head" },
+    h("h1", {}, "Experiments"),
+    h("span", { class: "sub" }, "a question about a site's search, answered step by step, then decided"),
+    h("div", { class: "tools" },
+      h("a", { class: "btn", href: ctx.href("real"), title: "Each site's knobs, personas, studies and tunes" }, core.icon("cloud"), "Sites"),
+      h("a", { class: "btn", href: ctx.href("lab"), title: "Simulated users whose truth is known: where the methods are checked" }, core.icon("labs"), "Practice lab"),
+      h("a", { class: "btn primary", href: ctx.href("x", "new") }, core.icon("plus"), "New experiment"))));
+  const body = h("div");
+  const sites = h("div", { class: "ex-sitesrow" });
+  root.append(body, h("div", { class: "ex-sec" }, "Sites"), sites);
+  const draw = async () => {
+    const [j, real] = await Promise.all([ctx.api("/v1/trials"), ctx.api("/v1/real").catch(() => ({ sources: [] }))]);
+    const list = j.trials || [];
+    const groups = { decide: [], running: [], open: [], decided: [] };
+    for (const t of list) {
+      const on = t.steps?.online || {};
+      if (t.decision) groups.decided.push(t);
+      else if (on.running || t.steps?.judged?.status === "running" || t.steps?.side?.status === "running") groups.running.push(t);
+      else if (["ship", "dont_ship", "tradeoff", "flat", "invalid"].includes(t.rule?.call)) groups.decide.push(t);
+      else groups.open.push(t);
+    }
+    const sec = (title, ts) => (ts.length ? [h("div", { class: "ex-sec" }, title), h("div", { class: "ex-list" }, ts.map((t) => xItem(ctx, t)))] : []);
+    body.replaceChildren(...(list.length ? [...sec("Needs a decision", groups.decide), ...sec("Running", groups.running), ...sec("Gathering evidence", groups.open), ...sec("Decided", groups.decided)] : [xIntro(ctx)]));
+    sites.replaceChildren(...(real.sources || []).filter((s) => s.allowed).map((s) => h("a", { class: "ex-site", href: ctx.href("real", "site", s.source), style: { textDecoration: "none", color: "inherit" } },
+      h("b", {}, s.title || s.source),
+      h("div", { class: "about" }, [s.kind === "app" ? "takes experiments" : "a public search: judged queries only",
+        s.interleave ? (s.interleave.test ? `real visitors: ${s.interleave.test.name || s.interleave.test.id} on ${pct0(s.interleave.test.share)} of searches` : "real visitors: no test running") : null,
+        s.log?.policy ? `exploring ${pct0(s.log.policy.epsilon)}` : null].filter(Boolean).join(" · ")))));
+  };
+  await draw();
+  onStop(core.every(15000, draw, false));
+}
+
+function xIntro(ctx) {
+  const { core } = ctx;
+  const { h } = core;
+  return core.card({ title: "Start with a question", body: h("div", { style: { display: "grid", gap: "10px" } },
+    h("ol", { class: "ex-steps" },
+      h("li", {}, "Name what you want to find out, and the change to test: the site's knobs as they are, against the treatment."),
+      h("li", {}, "Side by side: both first pages on the site's most asked queries, at once and free."),
+      h("li", {}, "Judged queries: each persona's needs searched on both arms and graded by the judge; the known items the treatment loses come first."),
+      h("li", {}, "Simulated users, if the change is about how people phrase things: AI agents playing the personas."),
+      h("li", {}, "Real visitors: the two interleaved on the site's own searches, the step that decides; readable every day."),
+      h("li", {}, "Decide: the rule you set up front says Ship, Don't ship or Not yet; you record the call.")),
+    h("div", { class: "row", style: { gap: "8px" } }, h("a", { class: "btn primary", href: ctx.href("x", "new") }, core.icon("plus"), "New experiment"), h("a", { class: "btn", href: ctx.href("lab") }, "Practice lab"))) });
+}
+
+const CALL_PILL = { ship: ["ok", "Ship"], dont_ship: ["bad", "Don't ship"], tradeoff: ["warn", "Trade-off"], not_yet: ["pending", "Not yet"], flat: ["pending", "No difference"], inconclusive: ["pending", "Not yet"], invalid: ["bad", "Don't read"], none: ["pending", "No evidence"] };
+const DECIDED = { ship: "Shipped", dont_ship: "Not shipped", iterate: "Iterate" };
+
+function xItem(ctx, t) {
+  const { core } = ctx;
+  const { h } = core;
+  const sp = t.spec || {};
+  const on = t.steps?.online || {};
+  const j = t.steps?.judged || {};
+  const ev = on.searches ? `Real visitors: preference ${signed(on.delta, 3)} (${signed(on.lo, 3)} to ${signed(on.hi, 3)}), ${core.fmt.n(on.searches)} searches${on.running ? " so far" : ""}`
+    : j.status === "done" ? `Judged queries: nDCG@10 ${signed(j.delta, 3)} on ${j.needs} needs${j.known_lost ? `, ${j.known_lost} known ${j.known_lost === 1 ? "item" : "items"} lost` : ""}`
+    : j.status === "running" ? `Judging: ${j.done || 0} of ${j.total || "?"} needs`
+    : t.steps?.side?.sentence || "Side by side: searching…";
+  const [k, label] = t.decision ? [t.decision.call === "ship" ? "ok" : "pending", DECIDED[t.decision.call] || t.decision.call] : CALL_PILL[t.rule?.call] || ["pending", "–"];
+  return h("a", { class: "ex-xitem", href: ctx.href("x", t.id) },
+    h("div", {}, h("div", { class: "n" }, sp.name), h("div", { class: "s" }, `${sp.source} · ${sp.control_name} vs ${sp.treatment_name} · ${core.fmt.ago(t.created)}`)),
+    h("div", { class: "e" }, ev),
+    core.pill(k, label));
+}
+
+// ---- the builder
+
+async function xBuilder(ctx, root, go) {
+  const { core } = ctx;
+  const { h } = core;
+  if (!document.getElementById("ex-xcss")) document.head.append(h("style", { id: "ex-xcss" }, X_CSS));
+  const [real, ps] = await Promise.all([ctx.api("/v1/real"), ctx.api("/v1/personas")]);
+  const sources = (real.sources || []).filter((d) => d.allowed && (d.knobs || []).length);
+  root.append(h("div", { class: "ex-head" }, h("a", { class: "btn sm", href: ctx.href() }, core.icon("left"), "Experiments"), h("h1", {}, "New experiment"), h("span", { class: "sub" }, "a question, a control, a treatment, and what would make you ship it")));
+  if (!sources.length) { root.append(core.empty("cloud", "No site takes experiments", "Start the app with --source NAME=app:URL.")); return; }
+  const from = kept("ex-x-treatment");
+  kept("ex-x-treatment", null);
+  const spec = { name: "", hypothesis: "", source: (from && sources.find((d) => d.source === from.source)?.source) || sources[0].source, control: {}, treatment: { ...(from?.knobs || {}) }, personas: "", guardrails: { latency_p95: 0.1, regressions: 0 }, smallest: 0.02 };
+  const desc = () => sources.find((d) => d.source === spec.source);
+  if (!from) { const p = (desc().presets || []).find((x) => Object.keys(x.knobs || {}).length); spec.treatment = { ...(p?.knobs || {}) }; }
+  const nameIn = h("input", { placeholder: "What do you want to find out? e.g. Does meaning counting more help people find stories?", style: { width: "100%" }, oninput: () => { spec.name = nameIn.value; } });
+  const hypIn = h("textarea", { rows: 2, placeholder: "Because… e.g. people describe stories in their own words, and the words alone miss them; known items must not suffer.", style: { width: "100%" }, oninput: () => { spec.hypothesis = hypIn.value; } });
+  const srcSel = h("select", { onchange: () => { spec.source = srcSel.value; spec.control = {}; spec.treatment = {}; drawArms(); drawPeople(); } }, sources.map((d) => h("option", { value: d.source, selected: d.source === spec.source }, `${d.title || d.source}${d.interleave ? " · real visitors" : ""}`)));
+  const armsBox = h("div", { style: { display: "grid", gap: "10px" } });
+  const warn = h("div", { class: "small ex-bad" });
+  let create;
+  const names = () => [armName(desc(), spec.control)[0], armName(desc(), spec.treatment)[0]];
+  const check = () => {
+    const same = JSON.stringify(effKnobs(desc(), spec.control)) === JSON.stringify(effKnobs(desc(), spec.treatment));
+    warn.textContent = same ? "The treatment searches like the control: change a knob." : "";
+    if (create) create.disabled = same;
+  };
+  const arm = (i, knobs) => {
+    const d = desc();
+    const label = h("b", {});
+    const all = h("div", { class: "small dim" });
+    const named = () => { const [n, every] = armName(d, knobs); label.textContent = n; all.textContent = every; check(); };
+    const presets = h("div", { class: "ex-pick" }, (d.presets || []).map((p) => h("button", { "aria-pressed": String(JSON.stringify(p.knobs || {}) === JSON.stringify(knobs)), onclick: () => { for (const k of Object.keys(knobs)) delete knobs[k]; Object.assign(knobs, p.knobs || {}); drawArms(); } }, p.name)));
+    const more = h("details", {}, h("summary", { class: "small" }, "Every knob"), knobPanel(core, d, knobs, named));
+    named();
+    return h("div", { class: "ex-arm", style: { "--arm": ARM_COLORS[i] } }, h("div", { class: "ex-arm-top" }, h("span", { class: "ex-chip", style: { background: ARM_COLORS[i], color: "#fff" } }, i ? "Treatment" : "Control"), label), presets, all, more);
+  };
+  const drawArms = () => armsBox.replaceChildren(arm(0, spec.control), arm(1, spec.treatment));
+  const sets = (ps.sets || []).filter((s) => s.status !== "writing" && s.status !== "failed");
+  const peopleBox = h("div");
+  const sens = h("div", { class: "small dim" });
+  const drawPeople = () => {
+    const mine = sets.filter((s) => s.source === spec.source);
+    spec.personas = mine[0]?.id || "";
+    const pick = h("select", { onchange: () => { spec.personas = pick.value; drawSens(); } }, mine.map((s) => h("option", { value: s.id }, `${s.personas} people, ${s.needs} needs (${s.known} known items) · ${core.fmt.ago(s.created)}`)));
+    peopleBox.replaceChildren(mine.length ? pick : h("div", { class: "small" }, "No personas for this site yet: the judged queries and simulated users need some. ", h("a", { href: ctx.href("real") }, "Write them on the Sites page"), ". The side by side and real visitors work without."));
+    drawSens();
+  };
+  const drawSens = () => {
+    const s = sets.find((x) => x.id === spec.personas);
+    const n = s?.needs || 0;
+    const nd = n ? 2.8 * 0.25 / Math.sqrt(n) : NaN;
+    const need = Math.ceil((2.8 * 0.6 / spec.smallest) ** 2);
+    sens.replaceChildren(
+      n ? h("div", {}, `Judged queries: ${n} needs can find a change in nDCG@10 of about ${nd.toFixed(2)} or more (80% power, if needs vary by 0.25).`) : null,
+      h("div", {}, `Real visitors: a preference of ${spec.smallest} takes about ${core.fmt.n(need)} interleaved searches (80% power); at a few hundred searches a day, that is ${Math.ceil(need / 300)} to ${Math.ceil(need / 200)} days.`));
+  };
+  const seg = (vals, cur, on, fmt) => core.seg(vals.map((v) => [String(v), fmt(v)]), String(cur), (v) => on(+v));
+  const guards = h("div", { class: "ex-knobs" },
+    h("div", { class: "ex-knob" }, h("label", {}, "p95 search time may grow by at most"), seg([0.05, 0.1, 0.2, 0.5], spec.guardrails.latency_p95, (v) => { spec.guardrails.latency_p95 = v; }, (v) => `${Math.round(v * 100)}%`)),
+    h("div", { class: "ex-knob" }, h("label", {}, "Known items it may lose from the first page"), seg([0, 1, 2], spec.guardrails.regressions, (v) => { spec.guardrails.regressions = v; }, String)),
+    h("div", { class: "ex-knob" }, h("label", {}, "Smallest preference worth shipping"), seg([0.01, 0.02, 0.05], spec.smallest, (v) => { spec.smallest = v; drawSens(); }, String), h("div", { class: "hint" }, "of real visitors: (searches the treatment wins − those it loses) / searches")));
+  create = h("button", { class: "btn primary" }, core.icon("play"), "Create, and compare side by side");
+  create.onclick = async () => {
+    const [cn, tn] = names();
+    if (!spec.name.trim()) { core.toast("Name what you want to find out first", "error"); nameIn.focus(); return; }
+    create.disabled = true;
+    try {
+      const j = await ctx.api("/v1/trials", { method: "POST", body: { ...spec, control_name: cn === tn ? `${cn} (control)` : cn, treatment_name: tn } });
+      go("x", j.id);
+    } catch (e) { core.toast(e.message, "error"); create.disabled = false; }
+  };
+  drawArms();
+  drawPeople();
+  root.append(h("div", { class: "ex-build" },
+    h("div", { style: { display: "grid", gap: "14px" } },
+      core.card({ title: "Question", body: h("div", { style: { display: "grid", gap: "8px" } }, nameIn, h("label", { class: "small dim" }, "Hypothesis"), hypIn, h("label", { class: "small dim" }, "Site"), srcSel) }),
+      core.card({ title: "Control and treatment", sub: "each named by what it changes", body: h("div", { style: { display: "grid", gap: "8px" } }, armsBox, warn) })),
+    h("div", { style: { display: "grid", gap: "14px" } },
+      core.card({ title: "Decided by", body: h("div", { style: { display: "grid", gap: "10px" } },
+        h("div", { class: "small" }, h("b", {}, "Primary metric: "), "real visitors' preference (interleaved clicks); before that, nDCG@10 on judged queries."),
+        guards) }),
+      core.card({ title: "Personas", sub: "whose needs are judged and played", body: h("div", { style: { display: "grid", gap: "8px" } }, peopleBox, sens), foot: h("div", { class: "row between" }, h("span", { class: "small dim" }, "the side by side starts at once, free"), create) }))));
+}
+
+// ---- one experiment: its design, its steps, the decision, the report
+
+async function xPage(ctx, root, go, id, tab, onStop) {
+  const { core } = ctx;
+  const { h } = core;
+  if (!document.getElementById("ex-xcss")) document.head.append(h("style", { id: "ex-xcss" }, X_CSS));
+  const path = `/v1/trials/${encodeURIComponent(id)}`;
+  const head = h("div", { class: "ex-head" });
+  const design = h("div");
+  const ladder = h("div", { class: "ex-ladder" });
+  const decide = h("div");
+  const repTabs = h("nav", { class: "ex-tabs" });
+  const rep = h("div");
+  root.append(head, h("div", { class: "ex-g2" }, design, decide), h("div", { class: "ex-sec" }, "Evidence"), ladder, h("div", { class: "ex-sec" }, "Report"), repTabs, rep);
+  const meta = await ctx.api("/v1/meta").catch(() => ({}));
+  const claude = !!meta.live?.claude;
+  let study = null;
+  let shownTab = null;
+  const call = async (p, body, ok) => { try { await ctx.api(path + p, { method: "POST", body: body || {} }); if (ok) core.toast(ok); await draw(); } catch (e) { core.toast(e.message, "error"); } };
+  const draw = async () => {
+    const t = await ctx.api(path);
+    const sp = t.spec, steps = t.steps || {}, arms = [sp.control_name, sp.treatment_name];
+    const d = (await ctx.api("/v1/real").catch(() => ({ sources: [] }))).sources?.find((s) => s.source === sp.source);
+    if (steps.study?.id && (!study || study.status === "running")) study = await ctx.api(`/v1/studies/${encodeURIComponent(steps.study.id)}`).catch(() => null);
+    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href() }, core.icon("left"), "Experiments"), h("h1", {}, sp.name),
+      t.decision ? core.pill(t.decision.call === "ship" ? "ok" : "pending", DECIDED[t.decision.call]) : "",
+      h("div", { class: "tools" }, h("button", { class: "btn sm danger", onclick: async () => { if (!(await core.confirm({ title: "Delete this experiment?", body: "Its evidence and decision go with it; studies stay.", ok: "Delete", danger: true }))) return; try { await ctx.api(path, { method: "DELETE" }); go(); } catch (e) { core.toast(e.message, "error"); } } }, "Delete")));
+    const [, every] = d ? armName(d, sp.treatment) : ["", ""];
+    design.replaceChildren(core.card({ title: "Design", body: h("dl", { class: "ex-design" },
+      sp.hypothesis ? [h("dt", {}, "Hypothesis"), h("dd", {}, sp.hypothesis)] : null,
+      h("dt", {}, "Site"), h("dd", {}, d?.title || sp.source),
+      h("dt", {}, "Control"), h("dd", {}, sp.control_name),
+      h("dt", {}, "Treatment"), h("dd", {}, h("b", {}, sp.treatment_name), every ? h("div", { class: "small dim" }, every) : null),
+      h("dt", {}, "Primary"), h("dd", {}, "real visitors' preference; offline, nDCG@10 on judged queries"),
+      h("dt", {}, "Guardrails"), h("dd", {}, `p95 search time at most +${Math.round(sp.guardrails.latency_p95 * 100)}% · known items lost at most ${sp.guardrails.regressions}`),
+      h("dt", {}, "Ship for"), h("dd", {}, `a preference of ${sp.smallest} or more`)) }));
+    // The steps.
+    const rung = (n, cls, title, sub, what, ...act) => h("div", { class: "ex-rung " + cls }, h("span", { class: "mark" }, cls === "done" ? "✓" : n), h("div", { class: "t" }, title, h("small", {}, sub)), h("div", { class: "what" }, what), h("div", { class: "act" }, act));
+    const view = (k) => h("button", { class: "btn sm", onclick: () => { shownTab = k; drawRep(t, arms); rep.scrollIntoView({ behavior: "smooth" }); } }, "View");
+    const side = steps.side || {};
+    const j = steps.judged || {};
+    const on = steps.online || {};
+    const budgets = [0.5, 1, 2, 5];
+    const jb = h("select", { class: "select sm", title: "the most the judge may spend" }, budgets.map((b) => h("option", { value: b, selected: b === 1 }, `at most $${b}`)));
+    const jm = h("select", { class: "select sm", title: "the judge: a different model than the agents that play people" }, (meta.live?.models || []).map((m) => h("option", { value: m.id, selected: m.id === "claude-opus-5-5" }, m.name.replace("Claude ", "judge: "))));
+    const share = h("select", { class: "select sm", title: "the share of the page's searches interleaved" }, [0.1, 0.25, 0.5, 1].map((x) => h("option", { value: x, selected: x === (on.share || 0.5) }, `${Math.round(x * 100)}% of searches`)));
+    const days = on.searches && on.started ? Math.max(1, Math.ceil((Date.now() / 1000 - on.started) / DAY)) : 0;
+    ladder.replaceChildren(
+      rung(1, side.status === "done" ? "done" : side.status === "running" ? "running" : "", "Side by side", "free, at once",
+        side.status === "running" ? "Searching both arms…" : side.sentence || "–", side.rows?.length ? view("side") : null),
+      rung(2, j.status === "done" ? "done" : j.status === "running" ? "running" : "", "Judged queries", "minutes, cents",
+        j.status === "running" ? `Searching and grading: ${j.done || 0} of ${j.total || "?"} needs, $${(j.spent || 0).toFixed(2)} spent` :
+        j.status === "done" ? h("span", {}, j.sentence, j.regressions?.length ? h("b", { class: "ex-bad" }, ` ${j.regressions.length} ${j.regressions.length === 1 ? "regression" : "regressions"}: ${j.regressions.slice(0, 2).map((r) => `“${String(r.text).slice(0, 60)}”`).join(", ")}${j.regressions.length > 2 ? "…" : ""}`) : " No regressions.") :
+        j.status === "failed" ? h("span", { class: "ex-bad" }, j.error || "failed") :
+        !sp.personas ? "Needs personas of the site: write them on the Sites page." : "Each persona's needs searched on both arms, every row graded by the judge; the known items the treatment loses come first.",
+        j.status === "done" ? view("judged") : null,
+        j.status === "running" ? h("button", { class: "btn sm", onclick: () => call("/stop") }, "Stop") :
+        sp.personas ? [claude ? jm : null, claude ? jb : null, h("button", { class: "btn sm" + (j.status ? "" : " primary"), onclick: () => call("/judged", { brain: claude ? "claude" : "scripted", judge_model: jm.value, budget: +jb.value }) }, j.status ? "Score again" : "Score on judged queries")] : null),
+      rung(3, study?.status === "done" ? "done" : study?.status === "running" ? "running" : "", "Simulated users", "optional; AI agents",
+        study ? h("span", {}, `${study.status === "running" ? `Running: ${study.done} of ${study.total} sessions. ` : ""}`, study.report?.comparisons?.[0]?.sentence || "") : "AI agents play the personas on both arms: worth it when the change is about how people phrase things. Not real people.",
+        study ? h("a", { class: "btn sm", href: ctx.href("real", "study", study.id) }, "Open the study") :
+        sp.personas && claude ? h("button", { class: "btn sm", onclick: () => call("/study", {}, "Study started") }, "Run with simulated users") : null),
+      rung(4, on.running ? "running" : on.searches ? "done" : "", "Real visitors", "decides; days to weeks",
+        on.error ? h("span", { class: "ex-bad" }, on.error) :
+        on.share != null ? h("span", {}, `${on.running ? `Day ${days}: ` : "Stopped: "}${core.fmt.n(on.searches || 0)} interleaved searches, ${on.wins || 0} won by the treatment, ${on.losses || 0} by the control. `,
+          on.searches ? `Preference ${signed(on.delta, 3)} (95% interval ${signed(on.lo, 3)} to ${signed(on.hi, 3)}), always-valid p = ${pText(on.p_always_valid)}. ` : "",
+          on.searches >= 20 ? `Can find ${on.detectable?.toFixed(3)} or more today${on.days_left != null ? `; about ${on.days_left} more days for ${sp.smallest}` : ""}. ` : "",
+          on.searches ? h("span", { class: on.coin?.ok === false ? "ex-bad" : "dim" }, `Coin: the treatment first in ${on.coin?.b_first} of ${on.searches}${on.coin?.ok === false ? " — broken" : ""}.`) : "") :
+        d?.interleave ? "Visitors' searches show the two arms' stories drafted into one list; what they open says which they prefer. Real people see the treatment's stories while it runs." : "This site cannot interleave its visitors' searches.",
+        on.searches ? view("online") : null,
+        on.running ? h("button", { class: "btn sm", onclick: () => call("/online/stop", {}, "Stopped on real visitors") }, "Stop") :
+        d?.interleave ? [share, h("button", { class: "btn sm" + (j.status === "done" && on.share == null ? " primary" : ""), onclick: async () => { if (!(await core.confirm({ title: "Start on real visitors?", body: `${share.selectedOptions[0].text} on ${d.title || sp.source} will show a list mixed from both arms. You can stop it any time.`, ok: "Start" }))) return; call("/online", { share: +share.value }, "Running on real visitors"); } }, on.share != null ? "Start again" : "Start on real visitors")] : null),
+      rung(5, t.decision ? "done" : "", "Decision", "by the rule set up front", t.decision ? `${DECIDED[t.decision.call]}${t.decision.override ? " (against the rule)" : ""}${t.decision.note ? `: ${t.decision.note}` : ""}` : "Below: the rule's call on the evidence so far.", null));
+    // The decision.
+    const r = t.rule || {};
+    const note = h("textarea", { rows: 2, placeholder: "Why (kept with the decision)", style: { width: "100%" } });
+    decide.replaceChildren(h("div", { class: "ex-decide " + (r.call || "") },
+      h("div", { class: "small dim" }, "The rule says"),
+      h("h3", {}, r.title || "–"),
+      h("div", { class: "small" }, r.sentence || ""),
+      r.guardrails?.length ? h("ul", {}, r.guardrails.map((g) => h("li", { class: g.ok === false ? "ex-bad" : "" }, `${g.ok === true ? "✓" : g.ok === false ? "✗" : "?"} ${g.text}`))) : null,
+      t.decision ? h("div", { class: "small" }, h("b", {}, `Recorded: ${DECIDED[t.decision.call]}`), t.decision.override ? " against the rule's call" : "", ` · ${core.fmt.datetime(t.decision.at * 1000)}`) : null,
+      note,
+      h("div", { class: "row", style: { gap: "6px", flexWrap: "wrap" } }, [["ship", "Ship"], ["dont_ship", "Don't ship"], ["iterate", "Iterate"]].map(([k, l]) => h("button", { class: "btn sm" + (k === r.call ? " primary" : ""), onclick: () => call("/decide", { call: k, note: note.value }, "Decision recorded") }, l)))));
+    drawRep(t, arms);
+    return [side.status, j.status].includes("running") || on.running || study?.status === "running";
+  };
+  const drawRep = (t, arms) => {
+    const steps = t.steps || {};
+    const tabs = [steps.online?.searches ? ["online", "Real visitors"] : null, steps.judged?.units?.length ? ["judged", "Judged queries"] : null, steps.side?.rows?.length ? ["side", "Side by side"] : null].filter(Boolean);
+    if (!tabs.length) { repTabs.replaceChildren(); rep.replaceChildren(h("div", { class: "small dim" }, "The report fills in as the steps finish.")); return; }
+    const cur = tabs.find(([k]) => k === (shownTab || tab)) ? (shownTab || tab) : tabs[0][0];
+    repTabs.replaceChildren(...tabs.map(([k, l]) => h("a", { href: "#", "aria-current": k === cur ? "page" : null, onclick: (e) => { e.preventDefault(); shownTab = k; drawRep(t, arms); } }, l)));
+    // Keep the report (its filters and choices) while its data has not moved.
+    const sig = `${cur}:${cur === "online" ? steps.online.searches : cur === "judged" ? steps.judged.units.length : steps.side.rows.length}`;
+    if (rep.dataset.sig === sig) return;
+    rep.dataset.sig = sig;
+    rep.replaceChildren(cur === "online" ? onlineReport(core, steps.online, arms) : cur === "judged" ? judgedReport(core, steps.judged, arms) : sideView(core, steps.side, arms));
+  };
+  const running = await draw();
+  const timer = core.every(running ? 3000 : 20000, async () => { await draw(); }, false);
+  onStop(timer);
 }

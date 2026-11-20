@@ -1278,6 +1278,9 @@ impl App {
         let server = self.server.clone();
         let turn = Arc::new(tokio::sync::Mutex::new(()));
         move |t: &Trial| {
+            if t.gone.load(Ordering::Relaxed) {
+                return;
+            }
             let (server, turn) = (server.clone(), turn.clone());
             let v = t.view();
             let (id, created) = (t.id.clone(), t.created);
@@ -1386,7 +1389,9 @@ async fn drop_trial(State(app): State<Shared>, Path(id): Path<String>) -> Answer
     if t.step("online")["stopped"].is_null() && !t.step("online").is_null() {
         return Err(bad("it is running on real visitors: stop that first"));
     }
-    app.server.write(vec![json!({"op": "delete", "table": TRIALS, "id": id})]).await.map_err(upstream)?;
+    t.gone.store(true, Ordering::Relaxed);
+    t.stop();
+    app.server.write(vec![json!({"op": "delete", "table": TRIALS, "key": id})]).await.map_err(upstream)?;
     app.trials.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
     Ok(Json(json!({"deleted": id})))
 }
