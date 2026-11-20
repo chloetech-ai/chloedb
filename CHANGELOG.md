@@ -9,6 +9,14 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+- **`chloectx remember preference` says it is kept for this project only.**
+  Memory is per project, so a preference stored there is not recalled in
+  another repository; the command now prints a note naming
+  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
+  `chloectx remember --help` and the ChloeCtx page say the same.
+
 ## 0.3.9
 
 What the persona study's third round found, and new ways to see and shape
