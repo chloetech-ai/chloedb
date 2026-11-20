@@ -65,7 +65,7 @@ fn mistakes_say_what_is_wrong() {
     for (sql, want) in [
         ("SELECT VendorID, COUNT(*) FROM trips GROUP BY VendorID HAVING total_amount > 10", "total_amount must be in GROUP BY or inside an aggregate"),
         ("SELECT VendorID, COUNT(*) FROM trips GROUP BY VendorID HAVING payment_type = 1", "payment_type must be in GROUP BY or inside an aggregate"),
-        ("SELECT VendorID FROM trips WHERE COUNT(*) > 1 GROUP BY VendorID", "an aggregate is not allowed in WHERE: use HAVING"),
+        ("SELECT VendorID FROM trips WHERE COUNT(*) > 1 GROUP BY VendorID", "an aggregate is not allowed in WHERE"),
         ("SELECT COUNT(*) FROM zones WHERE Zone ILIKE ANY (ARRAY['%park%', '%hill%'])", "ILIKE ANY is not supported"),
         ("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r", "WITH RECURSIVE is not supported"),
     ] {

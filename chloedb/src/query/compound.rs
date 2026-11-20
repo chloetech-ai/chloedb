@@ -1652,6 +1652,11 @@ pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Para
 /// [`plan_read_query`]; `may_rank_by_profile` false for a query whose text
 /// names no `rank_profile`.
 fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet, may_rank_by_profile: bool) -> Result<ir::Plan> {
+    // Before its tables are looked up: a recursive CTE names itself, which
+    // is no table (SAM-403).
+    if q.with.as_ref().is_some_and(|w| w.recursive) {
+        return Err(err("WITH RECURSIVE is not supported: REACHABLE and PATH traverse links"));
+    }
     // Stored functions are written out first: a table function's body may
     // rank by a rank profile.
     if let Some((q, _)) = super::function::expand(q, functions)? {
@@ -1678,6 +1683,13 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
     };
     if needs(q, schema) {
         return plan_query(q, catalog, params);
+    }
+    if let sql::SetExpr::Select(s) = q.body.as_ref() {
+        if let [sql::TableWithJoins { relation: sql::TableFactor::Table { alias, .. }, joins }] = s.from.as_slice() {
+            if joins.is_empty() {
+                check_qualifiers(q, s, schema, alias.as_ref().map(|a| a.name.value.as_str()))?;
+            }
+        }
     }
     Ok(ir::Plan::of_select(schema, &super::sql::bind_query_in(q, schema, catalog, params)?))
 }

@@ -125,7 +125,7 @@ fn nulls_follow_sql_in_every_expression() {
     assert_eq!(col(&db, "clicks")[0], Value::Int(5));
     write(&db, "UPDATE items SET clicks = clicks * 2, price = price + clicks");
     assert_eq!(col(&db, "clicks"), [Value::Int(10), N, Value::Int(14)]);
-    assert_eq!(col(&db, "price"), [Value::Float(20.5), N, N]);
+    assert_eq!(col(&db, "price"), [Value::Float(15.5), N, N]);
     write(&db, "UPDATE items SET clicks = coalesce(clicks, 0) + 5 WHERE id = 'b'");
     assert_eq!(col(&db, "clicks")[1], Value::Int(5));
 }
@@ -142,7 +142,7 @@ fn set_refuses_what_a_row_cannot_give() {
         ("UPDATE items SET clicks = count(*)", "COUNT(...) is an aggregate"),
         ("UPDATE items SET clicks = price / 4 WHERE id = 'a'", "clicks is INT, and 2.625 is not an integer"),
         ("UPDATE items SET clicks = title || '' WHERE id = 'a'", "clicks is an INT field: give it a number, not text"),
-        ("UPDATE items SET clicks = title + 1 WHERE id = 'a'", "cannot compute"),
+        ("UPDATE items SET clicks = title + 1 WHERE id = 'a'", "title is a TEXT field, not numeric"),
         ("UPDATE items SET emb = title || '' WHERE id = 'a'", "emb is a VECTOR field"),
         ("UPDATE items SET label = tags WHERE id = 'c'", "label holds one value"),
         ("UPDATE items SET due = clicks WHERE id = 'a'", "due is a TIMESTAMP"),

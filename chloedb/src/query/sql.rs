@@ -861,6 +861,10 @@ pub(crate) fn assigned(field: &Field, v: Value) -> Result<Value> {
         (FieldType::Int, Value::Float(x)) if field.logical.is_none() => {
             if x.fract() == 0.0 && x.abs() < 9.2e18 {
                 Ok(Value::Int(x as i64))
+            } else if x.fract() == 0.0 || !x.is_finite() {
+                // Integer arithmetic past i64 gives a FLOAT ([`ir::eval`]);
+                // stored in an INT it overflows, as in Postgres.
+                Err(err(format!("{} is INT, and {x} overflows it: an INT holds -9223372036854775808 to 9223372036854775807", field.name)))
             } else {
                 Err(err(format!("{} is INT, and {x} is not an integer it holds", field.name)))
             }
@@ -3563,6 +3567,32 @@ impl<'a> Binder<'a> {
     /// ([`crate::query::ir::Plan::to_write`]). `not_value` is the error of
     /// `e` as a value.
     fn set_expr(&self, e: &Expr, alias: Option<&str>, excluded: bool, not_value: Error) -> Result<Assign> {
+        // A number added to a column that holds no single number (`title +
+        // 1`, `1 + done`, `due - 1`) names that column, in either order,
+        // rather than failing on the first row's value.
+        let mut bad = None;
+        super::compound::walk(e, &mut |x| {
+            let Expr::BinaryOp { left, op, right } = x else { return };
+            if bad.is_some() || !matches!(op, BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo) {
+                return;
+            }
+            for (col, other) in [(left, right), (right, left)] {
+                if self.num_literal(other).is_err() {
+                    continue;
+                }
+                if let Some(Ok(ir::Expr::Field(g) | ir::Expr::Excluded(g))) = self.set_ref(col, alias, excluded) {
+                    let fld = &self.schema.fields[g as usize];
+                    if fld.multi {
+                        bad = Some(format!("{x}: {} holds a list, not a number: SET it to a list", fld.name));
+                    } else if !matches!(fld.ty, FieldType::Int | FieldType::Float) || fld.logical.is_some() {
+                        bad = Some(format!("{x}: {} is {} {} field, not numeric", fld.name, a_or_an(fld.type_name()), fld.type_name()));
+                    }
+                }
+            }
+        });
+        if let Some(m) = bad {
+            return Err(err(m));
+        }
         match super::compound::compile(e, self.params, &|x| self.set_ref(x, alias, excluded), &[]) {
             Ok(ir::Expr::Lit(_)) => Err(not_value),
             Ok(x) => Ok(Assign::Expr(x)),
