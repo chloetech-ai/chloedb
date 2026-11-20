@@ -656,6 +656,8 @@ async function replay(app, page, id) {
   const map = await makeMap(box, { center: [j.center[1], j.center[0]], zoom: j.zoom });
   app.stops.push(() => map.remove());
   const t0 = Date.parse(j.from), span = (Date.parse(j.to) - t0) / 1000;
+  // The satellite of the day, which need not be the region's now.
+  const sat = j.scans?.[0]?.sat ? j.scans[0].sat.replace("G", "GOES-") : R.sat;
   const px = j.pixels; // [t, lat, lon, mw, fire index]
   const speeds = [150, 300, 1200];
   const s = { t: 0, playing: true, speed: 1 };
@@ -726,7 +728,7 @@ async function replay(app, page, id) {
       setData(map, "px", glowFeatures(rows), GLOW_LAYERS);
     }
     showSky(t0 + s.t * 1000);
-    tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${R.sat} fire pixels`),
+    tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${sat} fire pixels`),
       h("div", { class: `ea-onair${s.playing ? "" : " off"}` }, h("span", { class: "light" }), h("b", {}, s.playing ? "REPLAY" : "PAUSED"), h("span", { class: "t" }, `real scans, ${speeds[s.speed]}× speed`)),
       skyNote);
     // Fires seen in two scans or more: one pixel once is often a field burnt
