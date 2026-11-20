@@ -11,6 +11,16 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Experiments tunes a real site's knobs as the relevance autopilot
+  does.** On a finished study's page, Tune its knobs takes the study's
+  needs, the searches its agents typed and the grades it kept, holds a
+  third of the needs out, searches the site's numbers by coordinate
+  ascent through its experiment search, has the judge grade the rows no
+  one graded, and proves the best on the held-out needs (nDCG before and
+  after, the sign test, a bootstrap interval, the site's time per
+  search). Prove it with people opens a study of the proposal against
+  the site as it is, on people the tune never saw. `GET/POST /v1/tunes`.
+
 - **chloedb-hn's experiment sample answers on the whole archive.**
   `GET /v1/experiment/sample`, which the Experiments app reads to write
   personas, sorted its matches with every column and ran past the

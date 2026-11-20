@@ -252,10 +252,48 @@ steps:
    arms, and each need opens the arms' sessions side by side, step by
    step.
 
+### Tune: the relevance autopilot on a site's knobs
+
+A finished study is also a workload: every need, the searches its agents
+typed for it on any arm, and the grades the study kept. **Tune its knobs**
+(on the study's page) runs the method of ChloeDB's
+[relevance autopilot](../docs/chloedb/query-language.md#the-relevance-autopilot)
+on a site that takes experiments, through its experiment search, so it
+works on an app whose ranking is made of knobs rather than a rank profile,
+and through a coordinator:
+
+1. **A split.** A third of the needs, picked by a seeded hash of each, is
+   held out of the search.
+2. **The search.** Coordinate ascent (Metzler and Croft, 2007) over the
+   site's numbers (every `number` and `int` knob, or `keys`): each is tried
+   at half and twice its value (a number at 0 at a tenth and a third of its
+   range, an integer one less and one more), and a value is kept when the
+   training needs' mean nDCG@k rises, for `rounds` rounds or until no step
+   helps. A need's score is the mean nDCG of its queries' pages over its
+   grades; every page is fetched once, two at a time.
+3. **Holes.** Rows the site as it is or the proposal shows on a held-out
+   topical need that no one graded go to the judge, within `budget`, and
+   are kept in `exp_judged` with the study's.
+4. **The proof**, on the held-out needs alone: nDCG@k before and after,
+   the needs made better and worse, the sign test, a bootstrap interval of
+   the gain and the site's 95th percentile per search. `better` when more
+   needs are better than worse, the sign test says so at 0.05 and the
+   interval is above 0; `worse` the other way; `too few` under 3 needs.
+5. **Prove it with people.** The proposal is a set of knobs, so it becomes
+   an arm: the page opens a study of Proposed against the site as it is on
+   a persona set the tune never saw (it asks for new people otherwise,
+   since proving on the needs it was fitted to would count the fit as a
+   gain).
+
+Nothing is written to the site. A tune is a row of `exp_tunes`, one at a
+time, at most 4,000 searches.
+
 Its API:
 
 | route | what |
 |---|---|
+| `GET /v1/tunes`, `POST /v1/tunes` | the tunes; a spec (`study`, `source`, `base`, `keys`, `k`, `rounds`, `seed`, `judge`, `brain`, `judge_model`, `budget`) starts one |
+| `GET /v1/tunes/<id>`, `POST /v1/tunes/<id>/stop` | a tune with its steps and report; stop it (the proof runs on what it found) |
 | `GET /v1/real` | the sources, each with its knobs and presets, or why it takes no experiments |
 | `POST /v1/real/<source>/search`, `GET /v1/real/<source>/item/<id>` | a search with knobs (`q`, `knobs`, `per`), as an arm sees it; one row's text |
 | `GET /v1/personas`, `POST /v1/personas` | the people written so far; write more from a source (`source`, `count`, `needs`, `brain`), in the background |

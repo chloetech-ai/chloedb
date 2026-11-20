@@ -66,22 +66,27 @@ async fn site() -> String {
         .route("/v1/experiment", get(|h: HeaderMap| async move {
             authed(&h)?;
             Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"protocol": 1, "site": "made-up", "title": "A made-up news site", "about": "Stories of a made-up news site.", "rows": "stories",
-                "knobs": [{"key": "broken", "group": "Ranking", "title": "Worst first", "kind": "bool", "default": false}],
+                "knobs": [{"key": "broken", "group": "Ranking", "title": "Worst first", "kind": "bool", "default": false}, {"key": "noise", "group": "Ranking", "title": "Noise", "kind": "number", "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.05}],
                 "presets": [{"name": "As it is", "knobs": {}}, {"name": "Broken", "knobs": {"broken": true}}]})))
         }))
         .route("/v1/experiment/search", post(|h: HeaderMap, Json(b): Json<Value>| async move {
             authed(&h)?;
-            if b["knobs"].as_object().is_some_and(|o| o.keys().any(|k| k != "broken")) {
+            if b["knobs"].as_object().is_some_and(|o| o.keys().any(|k| k != "broken" && k != "noise")) {
                 return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "not a knob of this site"}))));
             }
             let q = words(b["q"].as_str().unwrap_or(""));
             let mut scored: Vec<(usize, usize)> = (0..ROWS.len()).map(|i| (words(ROWS[i]).iter().filter(|w| q.contains(w)).count(), i)).collect();
             scored.sort_by_key(|&(s, i)| (std::cmp::Reverse(s), i));
+            // Noise: each row's matches less noise × a fixed jitter of it (0 to 2),
+            // and rows that match nothing are shown too.
+            let noise = b["knobs"]["noise"].as_f64().unwrap_or(0.0);
+            let jitter = |i: usize| ((i * 7919) % 13) as f64 / 13.0 * 2.0;
+            scored.sort_by(|a, b| (b.0 as f64 - noise * jitter(b.1)).total_cmp(&(a.0 as f64 - noise * jitter(a.1))).then(a.1.cmp(&b.1)));
             if b["knobs"]["broken"] == true {
                 scored.reverse();
             }
             let per = b["per"].as_u64().unwrap_or(10) as usize;
-            let rows: Vec<Value> = scored.iter().filter(|(s, _)| b["knobs"]["broken"] == true || *s > 0).take(per).map(|&(_, i)| row(i)).collect();
+            let rows: Vec<Value> = scored.iter().filter(|(s, _)| b["knobs"]["broken"] == true || noise > 0.0 || *s > 0).take(per).map(|&(_, i)| row(i)).collect();
             Ok(Json(json!({"q": b["q"], "rows": rows, "understood": []})))
         }))
         .route("/v1/experiment/item/:id", get(|h: HeaderMap, Path(id): Path<String>| async move {
@@ -245,6 +250,25 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
         assert!(t0.elapsed() < Duration::from_secs(10), "the study is kept: {a}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    // A tune: from a noisy base, the search lowers the noise on the study's
+    // needs and grades, and proves it on the needs held out.
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/tunes", Some(json!({"study": sid, "source": "closed", "brain": "scripted"})), Some("t")).await;
+    assert_eq!(st, 400, "a site that takes no experiments: {v}");
+    let t = c.post("/v1/tunes", json!({"study": sid, "source": "made-up", "base": {"noise": 2.0}, "brain": "scripted", "rounds": 3})).await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let v = until(&c, &format!("/v1/tunes/{tid}"), "the tune", |v| v["status"] != "running").await;
+    assert_eq!(v["status"], "done", "{v}");
+    let r = &v["report"];
+    assert_eq!(v["needs"], 6, "every need searched in the study: {v}");
+    assert!(v["held_out"].as_u64().unwrap() >= 1, "{v}");
+    let ch = r["changed"].as_array().unwrap();
+    assert!(ch.len() == 1 && ch[0]["key"] == "noise" && ch[0]["to"].as_f64().unwrap() < 2.0, "less noise: {r}");
+    assert!(r["train"]["after"].as_f64().unwrap() > r["train"]["before"].as_f64().unwrap(), "{r}");
+    assert_eq!(r["proposal"]["noise"], ch[0]["to"], "{r}");
+    assert!(r["held_out"]["verdict"].is_string() && r["held_out"]["sentence"].is_string(), "{r}");
+    assert!(v["searches"].as_u64().unwrap() > 0 && v["steps"].as_array().unwrap().len() > 2, "{v}");
+    assert_eq!(c.get("/v1/tunes").await["tunes"][0]["id"], json!(tid));
 
     // The same, by Claude: the people written, played and judged.
     let w = c.post("/v1/personas", json!({"source": "made-up", "brain": "claude"})).await;

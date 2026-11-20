@@ -32,6 +32,7 @@ use crate::judge::Judge;
 use crate::personas::{self, PersonaSet};
 use crate::source::Source;
 use crate::study::{self, Study, StudySpec};
+use crate::tune::{Tune, TuneSpec};
 use crate::users::{AGES, ATTRIBUTES, COUNTRIES, DEVICES, GENDERS, TENURES};
 
 pub const VIEW: &str = include_str!("../ui/view.js");
@@ -43,6 +44,7 @@ const SITES: &str = "exp_sites";
 const EXPERIMENTS: &str = "exp_experiments";
 const PERSONAS: &str = "exp_personas";
 const STUDIES: &str = "exp_studies";
+const TUNES: &str = "exp_tunes";
 /// Runs kept in memory for cuts by two attributes.
 const KEPT: usize = 3;
 
@@ -78,6 +80,8 @@ pub struct App {
     writing: Mutex<HashMap<String, Value>>,
     /// Studies in memory, newest first: the one running, and a few that ended.
     studies: Mutex<VecDeque<Arc<Study>>>,
+    /// Tunes in memory, newest first ([`crate::tune`]).
+    tunes: Mutex<VecDeque<Arc<Tune>>>,
 }
 
 type Shared = Arc<App>;
@@ -188,6 +192,7 @@ pub async fn serve(server: Server, listener: tokio::net::TcpListener, o: Opts) -
         sources: o.sources.into_iter().map(Arc::new).collect(),
         writing: Mutex::new(HashMap::new()),
         studies: Mutex::new(VecDeque::new()),
+        tunes: Mutex::new(VecDeque::new()),
     });
     {
         let app = app.clone();
@@ -217,6 +222,7 @@ async fn start(app: Shared, beir: Vec<(PathBuf, String)>) {
         format!("CREATE TABLE IF NOT EXISTS {EXPERIMENTS} (id KEYWORD PRIMARY KEY, name TEXT, site KEYWORD, created INT, status KEYWORD, spec TEXT OPTIONS(indexed = false), summary TEXT OPTIONS(indexed = false), report TEXT OPTIONS(indexed = false), error TEXT OPTIONS(indexed = false), seconds FLOAT)"),
         format!("CREATE TABLE IF NOT EXISTS {PERSONAS} (id KEYWORD PRIMARY KEY, source KEYWORD, created INT, doc TEXT OPTIONS(indexed = false))"),
         format!("CREATE TABLE IF NOT EXISTS {STUDIES} (id KEYWORD PRIMARY KEY, name TEXT, created INT, status KEYWORD, state TEXT OPTIONS(indexed = false), sessions TEXT OPTIONS(indexed = false))"),
+        format!("CREATE TABLE IF NOT EXISTS {TUNES} (id KEYWORD PRIMARY KEY, name TEXT, created INT, status KEYWORD, state TEXT OPTIONS(indexed = false))"),
     ];
     for t in &tables {
         if let Err(e) = s.sql(t, json!({})).await {
@@ -305,6 +311,9 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/studies/:id", get(one_study))
         .route("/v1/studies/:id/sessions", get(study_sessions))
         .route("/v1/studies/:id/stop", post(stop_study))
+        .route("/v1/tunes", get(tunes).post(create_tune))
+        .route("/v1/tunes/:id", get(one_tune))
+        .route("/v1/tunes/:id/stop", post(stop_tune))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -873,6 +882,22 @@ impl App {
         serde_json::from_str(doc).map_err(|e| upstream(format!("personas {id}: {e}")))
     }
 
+    fn tune(&self, id: &str) -> Option<Arc<Tune>> {
+        self.tunes.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id).cloned()
+    }
+
+    /// A study's view and sessions, from memory or its row.
+    async fn study_kept(&self, id: &str) -> Result<(Value, Vec<study::Session>), ApiError> {
+        if let Some(s) = self.study(id) {
+            return Ok(s.kept());
+        }
+        let a = self.server.query(&format!("SELECT state, sessions FROM {STUDIES} WHERE id = {}", lit(id)), json!({}), None).await.map_err(upstream)?;
+        let r = &a["rows"][0];
+        let view = r[0].as_str().and_then(|v| serde_json::from_str::<Value>(v).ok()).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no study {id}")))?;
+        let sessions = r[1].as_str().and_then(|v| serde_json::from_str(v).ok()).unwrap_or_default();
+        Ok((view, sessions))
+    }
+
     fn study(&self, id: &str) -> Option<Arc<Study>> {
         self.studies.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id).cloned()
     }
@@ -1106,5 +1131,85 @@ async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) ->
     };
     save(s.clone());
     tokio::spawn(s.clone().run(save));
+    Ok(Json(json!({"id": id})))
+}
+
+async fn tunes(State(app): State<Shared>) -> Answer {
+    let a = app.server.query(&format!("SELECT id, state FROM {TUNES} ORDER BY created DESC LIMIT 200"), json!({}), None).await.map_err(upstream)?;
+    let mut out = Vec::new();
+    for r in a["rows"].as_array().into_iter().flatten() {
+        let id = r[0].as_str().unwrap_or("");
+        let v = match app.tune(id) {
+            Some(t) => t.view(),
+            None => r[1].as_str().and_then(|v| serde_json::from_str(v).ok()).unwrap_or(Value::Null),
+        };
+        out.push(json!({"id": id, "name": v["name"], "status": v["status"], "created": v["created"], "spec": v["spec"], "needs": v["needs"], "held_out": v["held_out"], "searches": v["searches"], "spent": v["spent"], "changed": v["report"]["changed"], "verdict": v["report"]["held_out"]["verdict"], "sentence": v["report"]["held_out"]["sentence"]}));
+    }
+    Ok(Json(json!({"tunes": out})))
+}
+
+async fn one_tune(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    if let Some(t) = app.tune(&id) {
+        return Ok(Json(t.view()));
+    }
+    let a = app.server.query(&format!("SELECT state FROM {TUNES} WHERE id = {}", lit(&id)), json!({}), None).await.map_err(upstream)?;
+    let v = a["rows"][0][0].as_str().and_then(|v| serde_json::from_str::<Value>(v).ok()).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no tune {id}")))?;
+    Ok(Json(v))
+}
+
+async fn stop_tune(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t = app.tune(&id).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no running tune {id}")))?;
+    t.stop();
+    Ok(Json(json!({"stopping": id})))
+}
+
+/// A tune, started: the relevance autopilot's search over a site's knobs,
+/// on a finished study's needs and grades.
+async fn create_tune(State(app): State<Shared>, Json(mut spec): Json<TuneSpec>) -> Answer {
+    spec.check().map_err(bad)?;
+    let (view, sessions) = app.study_kept(&spec.study).await?;
+    if view["status"] == "running" {
+        return Err(bad("the study is still running: tune on it when it ends"));
+    }
+    let set = app.persona_set_of(view["spec"]["personas"].as_str().unwrap_or("")).await?;
+    if app.tunes.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|t| t.running()) {
+        return Err(ApiError(StatusCode::CONFLICT, "a tune is running: stop it first".into()));
+    }
+    let source = app.source(&spec.source)?;
+    let described = source.describe().await;
+    if described["allowed"] != json!(true) {
+        return Err(bad(format!("{} takes no experiments ({}): a tune needs an app's knobs", source.name, described["error"].as_str().unwrap_or(""))));
+    }
+    if crate::tune::numeric(&described).is_empty() {
+        return Err(bad(format!("{} offers no numbers to tune", source.name)));
+    }
+    source.search("test", &spec.base, 3).await.map_err(|e| bad(format!("the base knobs: {e}")))?;
+    if spec.name.trim().is_empty() {
+        spec.name = format!("Tune {} on {}", source.name, view["name"].as_str().unwrap_or(&spec.study));
+    }
+    let judge = Arc::new(Judge::new(app.brain(&spec.brain, &spec.judge_model)?, app.server.clone()));
+    let created = now_ms();
+    let id = format!("tu{created}");
+    let t = Arc::new(Tune::new(&id, spec, &set, &sessions, source, judge, created));
+    {
+        let mut ls = app.tunes.lock().unwrap_or_else(|e| e.into_inner());
+        ls.push_front(t.clone());
+        ls.truncate(3);
+    }
+    let save_server = app.server.clone();
+    let turn = Arc::new(tokio::sync::Mutex::new(()));
+    let save = move |t: Arc<Tune>| {
+        let (server, turn) = (save_server.clone(), turn.clone());
+        tokio::spawn(async move {
+            let _t = turn.lock().await;
+            let view = t.view();
+            let doc = json!({"id": t.id, "name": t.spec.name, "created": t.created, "status": view["status"], "state": view.to_string()});
+            if let Err(e) = server.write(vec![json!({"op": "upsert", "table": TUNES, "doc": doc})]).await {
+                eprintln!("chloedb-experiments: keeping tune {}: {e}", t.id);
+            }
+        });
+    };
+    save(t.clone());
+    tokio::spawn(t.clone().run(described, save));
     Ok(Json(json!({"id": id})))
 }

@@ -75,6 +75,9 @@ const CSS = `
 .ex-verdicts { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin-bottom: 14px; }
 .ex-verdict { border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; background: var(--surface); display: grid; gap: 8px; }
 .ex-verdict .big { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.ex-tune-steps { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 12.5px; }
+.ex-tune-steps li { display: grid; grid-template-columns: 1fr auto 52px; gap: 8px; align-items: center; color: var(--text-2); }
+.ex-tune-steps li.kept { color: var(--text); font-weight: 600; }
 .ex-verdict .line { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
 .ex-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .ex-kpi { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 12px; background: var(--surface); }
@@ -237,6 +240,7 @@ function render(el, ctx) {
       else if (path[0] === "real" && path[1] === "personas" && path[2]) await realPersonas(ctx, root, go, path[2]);
       else if (path[0] === "real" && path[1] === "new") await realBuilder(ctx, root, go, meta);
       else if (path[0] === "real" && path[1] === "study" && path[2]) await realStudy(ctx, root, go, path[2], (f) => stops.push(f));
+      else if (path[0] === "real" && path[1] === "tune" && path[2]) await realTune(ctx, root, go, path[2], (f) => stops.push(f));
       else root.append(core.empty("box", "No such page", "", h("a", { class: "btn sm", href: ctx.href() }, "All experiments")));
     } catch (e) {
       root.append(core.failure(e, "Experiments"));
@@ -1774,11 +1778,13 @@ async function realHome(ctx, root, go, meta, onStop) {
   const sitesBox = h("div", { class: "ex-sites ex-real-sites" }, h("div", { class: "small dim" }, "Asking the sites what they allow…"));
   const setsBox = h("div", { class: "ex-list" });
   const studiesBox = h("div", { class: "ex-list" });
+  const tunesBox = h("div", { class: "ex-list" });
   root.append(
     core.card({ title: "Sites", sub: "each says what an arm may change of its search", body: sitesBox }),
     h("div", { class: "ex-g2", style: { marginTop: "14px" } },
       core.card({ title: "Studies", sub: "every need on every arm, compared need by need", body: studiesBox }),
-      core.card({ title: "Personas", sub: "people who would use each site, written from its rows", body: setsBox })));
+      core.card({ title: "Personas", sub: "people who would use each site, written from its rows", body: setsBox })),
+    h("div", { style: { marginTop: "14px" } }, core.card({ title: "Tunes", sub: "the relevance autopilot on a site's knobs: searched on a study's grades, proved on needs it never saw", body: tunesBox })));
   const real = await ctx.api("/v1/real");
   const sources = real.sources || [];
   if (!sources.length) {
@@ -1817,7 +1823,12 @@ async function realHome(ctx, root, go, meta, onStop) {
     }));
   }
   const refresh = async () => {
-    const [ps, ss] = await Promise.all([ctx.api("/v1/personas"), ctx.api("/v1/studies")]);
+    const [ps, ss, ts] = await Promise.all([ctx.api("/v1/personas"), ctx.api("/v1/studies"), ctx.api("/v1/tunes").catch(() => ({ tunes: [] }))]);
+    const tl = ts.tunes || [];
+    tunesBox.replaceChildren(...(tl.length ? tl.map((t) => h("a", { class: "ex-item", href: ctx.href("real", "tune", t.id) },
+      h("div", {}, h("div", { class: "nm" }, t.name), h("div", { class: "meta" }, `${t.spec?.source} · ${t.needs} needs, ${t.held_out} held out · ${t.searches} searches · ${core.fmt.ago(t.created)}`)),
+      h("div", { class: "small", style: { maxWidth: "380px" } }, t.status === "running" ? h("span", { class: "dim" }, "searching…") : (t.changed || []).map((c) => `${c.title} ${fmtKnob(c.from)} → ${fmtKnob(c.to)}`).join(" · ") || h("span", { class: "dim" }, "no change kept")),
+      t.verdict ? h("span", { class: "ex-call " + tuneCall(t.verdict) }, t.verdict) : studyPill(core, t.status))) : [h("div", { class: "small dim" }, "None yet: open a finished study and press Tune its knobs.")]));
     const sets = (ps.writing || []).concat(ps.sets || []);
     setsBox.replaceChildren(...(sets.length ? sets.map((p) => p.status === "writing" || p.status === "failed"
       ? h("div", { class: "ex-item" }, h("div", {}, h("div", { class: "nm" }, `People of ${p.title || p.source}`), h("div", { class: "meta" }, p.status === "failed" ? p.error : p.stage)), h("span"), studyPill(core, p.status))
@@ -2048,6 +2059,26 @@ async function realStudy(ctx, root, go, id, onStop) {
   const detail = h("div");
   root.append(head, clock, verdicts, h("div", { id: "ex-workers" }, workers), core.card({ title: "Each arm", sub: "of the needs tried so far; a bar is the 95% interval", body: arms }), h("div", { class: "ex-g3", style: { marginTop: "14px" } }, core.card({ title: "Need by need", sub: "each need on each arm; open one to read the sessions", body: grid }), core.card({ title: "By person", body: people })), detail);
   let openNeed = null;
+  let appSources = null;
+  const tuneBtn = (v) => {
+    if (v.status === "running") return null;
+    const b = h("button", { class: "btn sm primary", title: "The relevance autopilot: search a site's numbers on this study's needs and grades, and prove the best on needs held out" }, core.icon("sliders"), "Tune its knobs");
+    b.onclick = async () => {
+      const all = appSources || ((await ctx.api("/v1/real")).sources || []);
+      appSources = all;
+      const apps = all.filter((d) => d.allowed && d.kind === "app");
+      if (!apps.length) { core.toast("No site here takes experiments: tuning needs an app's knobs (--source NAME=app:URL)", "error"); return; }
+      const want = v.spec.arms.map((a) => a.source).find((x) => apps.some((d) => d.source === x));
+      const site = all.find((d) => d.source === v.personas?.source)?.site;
+      const src = want || (apps.find((d) => d.site === site) || apps[0]).source;
+      b.disabled = true;
+      try {
+        const j = await ctx.api("/v1/tunes", { method: "POST", body: { study: id, source: src, brain: v.spec.brain, judge_model: v.spec.judge_model } });
+        go("real", "tune", j.id);
+      } catch (e) { core.toast(e.message, "error"); b.disabled = false; }
+    };
+    return b;
+  };
   const showNeed = async (v, n) => {
     openNeed = n.id;
     const ss = (await ctx.api(`${path}/sessions?need=${encodeURIComponent(n.id)}`)).sessions || [];
@@ -2072,7 +2103,7 @@ async function realStudy(ctx, root, go, id, onStop) {
     const stop = h("button", { class: "btn sm", onclick: async () => { await ctx.api(`${path}/stop`, { method: "POST" }); core.toast("Stopping after the sessions under way", "info"); } }, core.icon("stop"), "Stop");
     head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"), h("h1", {}, v.name), studyPill(core, v.status),
       h("span", { class: "sub" }, `${v.personas?.personas} people of ${v.personas?.title || v.personas?.source} · ${v.spec.arms.map((a) => a.name).join(" vs ")} · ${v.spec.brain === "claude" ? `${v.spec.agent_model.replace("claude-", "")} agents, ${v.spec.judge_model.replace("claude-", "")} judge` : "scripted"}`),
-      h("div", { class: "tools" }, running ? stop : null));
+      h("div", { class: "tools" }, running ? stop : tuneBtn(v)));
     clock.replaceChildren(h("div", { class: "ex-bar" }, h("div", { style: { width: Math.round((v.done / (v.total || 1)) * 100) + "%" } })), h("span", { class: "txt" }, `${v.done} of ${v.total} sessions · $${(v.spent || 0).toFixed(2)} of $${v.spec.budget}${v.judge_spent ? ` (judge $${v.judge_spent.toFixed(2)})` : ""}${v.report?.cut ? ` · ${v.report.cut} not counted` : ""}`));
     workers.parentElement.hidden = !running;
     if (running) workers.replaceChildren(...(v.workers || []).filter((w) => w.status !== "done").map((w) => studyWorker(core, w, v.spec.arms)));
@@ -2120,5 +2151,92 @@ async function realStudy(ctx, root, go, id, onStop) {
   if (running) {
     const stopTimer = core.every(1500, async () => { if (!(await draw())) stopTimer(); }, false);
     onStop(stopTimer);
+  }
+}
+
+
+function fmtKnob(v) {
+  if (v == null) return "–";
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(+v.toFixed(3));
+  return String(v);
+}
+
+function tuneCall(v) {
+  return v === "better" ? "good" : v === "worse" ? "bad" : "flat";
+}
+
+/** A tune: the search's steps, the knobs it moved, and the proof on held-out needs. */
+async function realTune(ctx, root, go, id, onStop) {
+  const { core } = ctx;
+  const { h } = core;
+  const path = `/v1/tunes/${encodeURIComponent(id)}`;
+  const head = h("div", { class: "ex-head" });
+  const clock = h("div", { class: "ex-clock" });
+  const top = h("div", { class: "ex-verdicts" });
+  const steps = h("div");
+  const moved = h("div");
+  const needs = h("div");
+  root.append(head, clock, top,
+    h("div", { class: "ex-g2", style: { marginTop: "14px" } },
+      core.card({ title: "The search", sub: "nDCG of the training needs for each value tried; the line is the best kept", body: steps }),
+      core.card({ title: "What it moved", sub: "the knobs it kept changed, from the site as it is", body: moved })),
+    h("div", { style: { marginTop: "14px" } }, core.card({ title: "Held-out needs", sub: "needs the search never saw: their nDCG before and after", body: needs })));
+  const draw = async () => {
+    const v = await ctx.api(path);
+    const running = v.status === "running";
+    const rep = v.report || {};
+    const stop = h("button", { class: "btn sm", onclick: async () => { await ctx.api(`${path}/stop`, { method: "POST" }); core.toast("Stopping: the proof runs on what it found so far", "info"); } }, core.icon("stop"), "Stop");
+    const prove = h("button", { class: "btn sm primary", title: "A study of Proposed against the site as it is, by agents on people the tune never saw" }, core.icon("play"), "Prove it with people");
+    prove.onclick = async () => {
+      const ps = (await ctx.api("/v1/personas")).sets || [];
+      const fresh = ps.find((p) => p.id !== v.personas && p.status !== "writing" && p.status !== "failed");
+      if (!fresh) { core.toast("Write new people for the site first (Real sites → Write personas): proving on the needs it was tuned on would count the fit as a gain", "error"); return; }
+      kept("ex-real-set", fresh.id);
+      kept("ex-real-arm", { name: "Proposed", source: v.spec.source, knobs: rep.proposal || {} });
+      go("real", "new");
+    };
+    head.replaceChildren(h("a", { class: "btn sm", href: ctx.href("real") }, core.icon("left"), "Real sites"), h("h1", {}, v.name || "Tune"), studyPill(core, v.status),
+      h("span", { class: "sub" }, `${v.spec?.source} · ${v.needs} needs from `, h("a", { href: ctx.href("real", "study", v.spec?.study) }, "the study"), `, ${v.held_out} held out · nDCG@${v.spec?.k}`),
+      h("div", { class: "tools" }, running ? stop : rep.changed?.length ? prove : null));
+    clock.replaceChildren(h("span", { class: "txt" }, running ? `${v.phase || "…"} · ${v.searches} searches · judge $${(v.spent || 0).toFixed(2)}` : v.error ? `Failed: ${v.error}` : `${v.searches} searches · judge $${(v.spent || 0).toFixed(2)}${rep.holes ? ` · ${rep.holes.graded} of ${rep.holes.found} ungraded rows graded` : ""}`));
+    const ho = rep.held_out;
+    top.replaceChildren(...(ho ? [
+      h("div", { class: "ex-verdict" },
+        h("div", { class: "row between" }, h("b", {}, "On needs it never saw"), h("span", { class: "ex-call " + tuneCall(ho.verdict) }, ho.verdict)),
+        h("div", { class: "big " + (ho.verdict === "better" ? "ex-good" : ho.verdict === "worse" ? "ex-bad" : "") }, `${ho.before.toFixed(2)} → ${ho.after.toFixed(2)}`),
+        h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small dim" }, "gain"), forest(core, { lo: ho.interval[0], hi: ho.interval[1], mid: ho.gain, min: Math.min(-0.3, ho.interval[0]), max: Math.max(0.3, ho.interval[1]), color: "var(--s1)", width: 180 }), h("span", { class: "small ex-num" }, `${signed(ho.gain, 3)} (${signed(ho.interval[0], 3)} to ${signed(ho.interval[1], 3)})`)),
+        h("div", { class: "line" }, ho.sentence)),
+      h("div", { class: "ex-verdict" },
+        h("div", { class: "row between" }, h("b", {}, "Training needs"), h("span", { class: "small dim" }, "what the search fitted")),
+        h("div", { class: "big" }, `${(rep.train?.before ?? 0).toFixed(2)} → ${(rep.train?.after ?? 0).toFixed(2)}`),
+        h("div", { class: "line" }, `${ho.better} held-out needs better, ${ho.worse} worse, ${ho.same} the same · sign test p = ${ho.p.toFixed(3)} · the site's p95 per search ${Math.round(rep.ms_p95?.before || 0)} → ${Math.round(rep.ms_p95?.after || 0)} ms`)),
+    ] : running ? [h("div", { class: "small dim" }, "Searching the knobs: the proof comes at the end.")] : []));
+    const st = v.steps || [];
+    if (st.length) {
+      let best = -1;
+      const kept_ = st.map((x, i) => { if (x.kept) best = x.score; return [i, best]; });
+      steps.replaceChildren(lineChart(core, {
+        series: [{ points: kept_, color: "var(--s1)" }, { points: st.map((x, i) => [i, x.score]), color: "var(--s3)", dots: true }],
+        xLabel: "values tried", xFmt: (x) => String(Math.round(x)), yFmt: (y) => y.toFixed(2), height: 200,
+      }), h("ol", { class: "ex-tune-steps" }, st.slice().reverse().slice(0, 12).map((x) => h("li", { class: x.kept ? "kept" : "" }, x.key ? `${x.title} = ${fmtKnob(x.value)}` : x.title, h("span", { class: "ex-num" }, x.score.toFixed(3)), x.kept ? core.pill("ok", "kept") : h("span")))));
+    } else steps.replaceChildren(h("div", { class: "small dim" }, "Reading the study's grades…"));
+    moved.replaceChildren(rep.changed ? (rep.changed.length ? h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Knob"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"))),
+      h("tbody", {}, rep.changed.map((c) => h("tr", {}, h("td", {}, c.title), h("td", { class: "num ex-num" }, fmtKnob(c.from)), h("td", { class: "num ex-num" }, h("b", {}, fmtKnob(c.to))))))) : h("div", { class: "small dim" }, "No value it tried did better than the site as it is on the training needs.")) : h("div", { class: "small dim" }, running ? "…" : ""));
+    const pn = rep.per_need || [];
+    needs.replaceChildren(pn.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Need"), h("th", {}, "Searched"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"), h("th", {}, ""))),
+      h("tbody", {}, pn.map((n) => {
+        const d = n.after - n.before;
+        return h("tr", {}, h("td", {}, h("span", { class: "ex-chip" + (n.kind === "known" ? " known" : "") }, n.kind === "known" ? "remembers" : "topic"), ` ${n.text}`),
+          h("td", { class: "small dim" }, (n.queries || []).map((q) => `“${q}”`).join(", ")),
+          h("td", { class: "num ex-num" }, n.before.toFixed(2)), h("td", { class: "num ex-num" }, n.after.toFixed(2)),
+          h("td", {}, Math.abs(d) < 1e-9 ? h("span", { class: "dim" }, "=") : h("span", { class: d > 0 ? "ex-good" : "ex-bad" }, signed(d, 2))));
+      })))) : h("div", { class: "small dim" }, running ? "…" : "No held-out needs."));
+    return running;
+  };
+  const running = await draw();
+  if (running) {
+    const t = core.every(1500, async () => { if (!(await draw())) t(); }, false);
+    onStop(t);
   }
 }
