@@ -509,8 +509,13 @@ pub struct Mem {
 }
 
 pub async fn read(db: &Strata, places: &Places, region: &str) -> crate::strata::Result<Mem> {
-    let rows = db.scroll("SELECT * FROM ea_sky WHERE region = :r", json!({"r": region}), 10_000).await?;
-    let by_id: HashMap<String, Lite> = rows.iter().map(|r| (r.s("id"), Lite::from_row(r))).collect();
+    // Each row becomes its Lite as its page arrives: the 100,000 rows held
+    // as JSON, with their 30 days and nights, took the app past 1 GB.
+    let by_id: HashMap<String, Lite> = db
+        .scroll_map("SELECT * FROM ea_sky WHERE region = :r", json!({"r": region}), 2_000, |r| Some((r.s("id"), Lite::from_row(&r))))
+        .await?
+        .into_iter()
+        .collect();
     let t = by_id.values().map(|l| l.t).max().unwrap_or(0);
     let (mut lat, mut lon, mut c, mut sm, mut n, mut d) = (vec![], vec![], vec![], vec![], vec![], vec![]);
     let tenth = |x: f64| if x < 0.0 { Value::Null } else { json!((x * 10.0).round() as i64) };

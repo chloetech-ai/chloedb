@@ -141,6 +141,6 @@ spec:
         - {name: RUST_LOG, value: chloedb_earth=info}
         ports: [{containerPort: 7790}]
         readinessProbe: {httpGet: {path: /healthz, port: 7790}, periodSeconds: 5}
-        resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 1Gi}}
+        resources: {requests: {cpu: 250m, memory: 256Mi}, limits: {memory: 2Gi}}
         volumeMounts: [{name: work, mountPath: /work, readOnly: true}]
       volumes: [{name: work, hostPath: {path: /mnt/chloedb/earth, type: Directory}}]
