@@ -103,6 +103,16 @@ fn places() -> Vec<Value> {
                     "twin": twin, "twin_sim": if region == "california" { json!(0.8) } else { Value::Null },
                     "twin_score": if region == "california" { json!(0.3 + 0.001 * i as f64) } else { Value::Null },
                     "look": vector(axis, 10 + i % 50, 0.15),
+                    // The Land finder's: a substation nearer to the west, a
+                    // road nearer to the south, the first row protected
+                    // (strictly its western half), and solar farms on
+                    // California's farms of the northern half.
+                    "sub_km": 1.0 + c as f64, "sub_kv": if c % 2 == 0 { json!(115.0) } else { Value::Null }, "sub_name": "Test substation",
+                    "line_km": 0.5, "line_kv": 230.0, "road_km": 0.5 + r as f64 * 0.5, "road_name": "Test highway",
+                    "solar": if region == "california" && kind == "crops" && r >= 4 { 0.5 } else { 0.0 },
+                    "solar_km": 2.0, "solar_name": "Test solar farm",
+                    "protected": if r == 0 { 0.5 } else { 0.0 }, "protected_strict": if r == 0 && c < 6 { 0.5 } else { 0.0 },
+                    "protected_name": if r == 0 { "Test park" } else { "" },
                 }));
             }
         }
@@ -597,6 +607,49 @@ async fn every_page_against_a_real_server() {
     assert_eq!(mine["like_later"][0]["id"], "cl0003", "or nearest it within Chile: {mine}");
     let (s, _) = get(&http, &format!("{open}/v1/future/place/nowhere"), None).await;
     assert_eq!(s, 404);
+
+    // The Land finder: the limits kept, ranked by the look of the solar
+    // farms (California's farms of the northern half), the grid or words.
+    assert_eq!(place["place"]["sub_km"], 1.0, "the place's card: {place}");
+    assert_eq!(place["place"]["protected_name"], "Test park", "{place}");
+    let land = |q: &str| {
+        let (http, open) = (http.clone(), open.clone());
+        let q = q.to_string();
+        async move {
+            let (s, j) = get(&http, &format!("{open}/v1/land?{q}"), None).await;
+            assert_eq!(s, 200, "{q}: {j}");
+            j
+        }
+    };
+    let j = land("region=california&slope=10&sub=3&built=10").await;
+    assert_eq!(j["rank"], "solar", "{j}");
+    assert_eq!(j["solar_look"], true, "{j}");
+    let found = j["places"].as_array().unwrap();
+    assert!(!found.is_empty(), "{j}");
+    assert_eq!(j["within"], found.len(), "{j}");
+    for p in found {
+        assert!(p["sub_km"].as_f64().unwrap() <= 3.0 && p["solar"] == 0.0 && p["protected"] == 0.0 && p["kind"] != "built", "within the limits: {p}");
+    }
+    assert_eq!(found[0]["kind"], "crops", "like the solar farms: {j}");
+    let farms = j["farms"].as_array().unwrap();
+    assert!(farms.len() >= 5 && farms.iter().all(|f| f["solar"] == 0.5), "{j}");
+    let grid = land("region=california&slope=10&sub=3&built=10&rank=grid").await;
+    let subs: Vec<f64> = grid["places"].as_array().unwrap().iter().map(|p| p["sub_km"].as_f64().unwrap()).collect();
+    assert!(subs.windows(2).all(|w| w[0] <= w[1]), "nearest the grid first: {grid}");
+    assert_eq!(grid["within"], j["within"], "{grid}");
+    let kv = land("region=california&slope=10&sub=3&built=10&kv=100&rank=grid").await;
+    assert!(kv["places"].as_array().unwrap().iter().all(|p| p["sub_kv"] == 115.0), "{kv}");
+    let strict = land("region=california&slope=10&sub=12&built=10&protected=strict&rank=grid").await;
+    let any = land("region=california&slope=10&sub=12&built=10&protected=any&rank=grid").await;
+    let none = land("region=california&slope=10&sub=12&built=10&rank=grid").await;
+    let n = |j: &Value| j["within"].as_i64().unwrap();
+    assert!(n(&none) < n(&strict) && n(&strict) < n(&any), "{} {} {}", n(&none), n(&strict), n(&any));
+    let near = land("region=california&slope=10&built=10&protected=any&rank=grid&lat=33.95&lon=-118.55&km=5").await;
+    assert!(!near["places"].as_array().unwrap().is_empty(), "{near}");
+    assert!(near["places"].as_array().unwrap().iter().all(|p| p["km"].as_f64().unwrap() <= 5.0), "within the circle: {near}");
+    assert_eq!(near["within"], near["places"].as_array().unwrap().len(), "{near}");
+    let (s, _) = get(&http, &format!("{open}/v1/land?region=mars"), None).await;
+    assert_eq!(s, 400);
 
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;

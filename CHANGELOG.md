@@ -190,6 +190,12 @@ changes collect under "Unreleased".
   by CHELSA 2.1): its hottest month, coldest nights, rain and climate
   class now and later, a map of the change, and where its future climate
   can be visited today, found by the distance between climate vectors.
+- **Earth explorer: Land finder.** Places of California and Chile to
+  build a solar farm on, kept within limits on the slope, the grid, the
+  roads, protected land and towns, and ranked by how much they look like
+  the solar farms already built there (or by the grid, or by words), with
+  a shortlist and what is around each place on its page (OpenStreetMap's
+  grid, roads and solar farms; PAD-US in California).
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,
