@@ -60,6 +60,7 @@ export const VIEWS = [
   { id: "start", title: "Start here", icon: "rocket", group: "Build", range: false, keywords: "start getting started first steps onboarding sample data tutorial quickstart sandbox connect code agent mcp", load: () => import("./start.js") },
   { id: "table", title: "Tables", icon: "table", group: "Build", range: false, keywords: "tables table home search find rows data quality filled empty used by keys storage index meaning vectors semantic", load: () => import("./table.js") },
   { id: "saved", title: "Saved searches", icon: "bookmark", group: "Build", range: false, keywords: "saved searches stored functions function endpoint api mcp tool reuse version rollback create function returns table", load: () => import("./saved.js") },
+  { id: "views", title: "Team views", icon: "eye", group: "Build", range: false, keywords: "team views saved view dashboard report monday numbers chart share link phone builder workbench kept on the server everyone", load: () => import("./views.js") },
   { id: "connectors", title: "Connectors", icon: "streams", group: "Data", keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health kafka redpanda topics stream consumer broker", load: () => import("./connectors.js") },
 ];
 
@@ -78,6 +79,7 @@ export const NAV = [
     { id: "start", title: "Start here", icon: "rocket", key: "g" },
     { id: "table", title: "Tables", icon: "table", key: "e" },
     { id: "saved", title: "Saved searches", icon: "bookmark", key: "v" },
+    { id: "views", title: "Team views", icon: "eye", key: "y" },
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },

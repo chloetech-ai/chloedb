@@ -389,10 +389,32 @@ impl Checker {
         Some(b)
     }
 
+    /// The label of a decision the user stated (ANA-403): what it says
+    /// holds whatever branch it was made on, and only what it says of
+    /// files is in question, so the label says that and the record is
+    /// shown with the others, whole.
+    pub fn claims_label(&mut self, r: &crate::record::Record) -> String {
+        let fresh = self.check_record(r);
+        match (&fresh, self.elsewhere(r)) {
+            (Freshness::Stale(why) | Freshness::Drifted(why), _) => format!(" [the user's decision stands; what it says of files may not hold here: {why}]"),
+            (_, Some(b)) => format!(" [the user's decision, made on branch {b}, not merged here; what it says of that branch's files may not hold here]"),
+            _ => fresh.label(),
+        }
+    }
+
+    /// Whether `r` is a decision of the user's (or of nobody named, as a
+    /// decision kept from a prompt is): labelled by [`Checker::claims_label`].
+    pub fn users_decision(r: &crate::record::Record) -> bool {
+        r.kind == crate::record::Kind::Decision && matches!(r.source(), None | Some(crate::record::Source::User))
+    }
+
     /// The label shown after a record: how its code stands now, and, when
     /// it came from another branch whose work is not here, which. A record
     /// whose files are the same here as when it was written needs neither.
     pub fn label_record(&mut self, r: &crate::record::Record) -> String {
+        if Self::users_decision(r) {
+            return self.claims_label(r);
+        }
         let fresh = self.check_record(r);
         let same_code = Anchor::parse(&r.ctx).is_some_and(|a| !a.files.is_empty()) && fresh == Freshness::Current;
         match self.elsewhere(r) {
@@ -400,6 +422,7 @@ impl Checker {
                 let what = match &fresh {
                     Freshness::Current => String::new(),
                     Freshness::Changed(f) => format!("; {} differ{} here", f.join(", "), if f.len() == 1 { "s" } else { "" }),
+                    Freshness::Stale(why) | Freshness::Drifted(why) if why.contains("this worktree") => format!("; {why}"),
                     Freshness::Stale(why) | Freshness::Drifted(why) => format!("; {why} here"),
                 };
                 format!(" [from branch {b}, not merged here{what}: not a description of this worktree's code]")
@@ -457,6 +480,13 @@ impl Checker {
             }
         }
         if !gone.is_empty() && gone.len() == a.files.len() {
+            // A note written on another branch (a sibling worktree, often
+            // with the file uncommitted) names a file this tree never had:
+            // "not in this worktree", not "no longer exists" (ANA-403).
+            let here = self.branch();
+            if !a.branch.is_empty() && !here.is_empty() && a.branch != here {
+                return Freshness::Stale(format!("{} {} not in this worktree", gone.join(", "), if gone.len() == 1 { "is" } else { "are" }));
+            }
             return Freshness::Stale(format!("{} no longer exist{}", gone.join(", "), if gone.len() == 1 { "s" } else { "" }));
         }
         if changed.is_empty() && gone.is_empty() {
@@ -522,6 +552,12 @@ mod tests {
         // A deletion.
         std::fs::remove_file(p.join("src/client.py")).unwrap();
         assert!(Checker::new(p).check(&a).label().contains("no longer exists"));
+        // The same file, from a note written on another branch: never here.
+        let sibling = Anchor { branch: "feature".into(), ..a.clone() };
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        std::fs::write(p.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let label = Checker::new(p).check(&sibling).label();
+        assert!(label.contains("src/client.py is not in this worktree") && !label.contains("no longer exist"), "{label}");
     }
 
     #[test]

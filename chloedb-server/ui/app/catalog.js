@@ -62,7 +62,7 @@ export function typeBadge(f) {
 /** Field types a filter can test, and its operators. */
 export function operators(f) {
   if (f.type === "text") return [["matches", "has the words"]];
-  if (f.type === "keyword" || f.type === "media") return f.multi ? [["=", "has"], ["!=", "has not"], ["in", "has one of"], ["prefix", "starts with"], ["null", "is empty"], ["notnull", "is set"]] : [["=", "is"], ["!=", "is not"], ["in", "is one of"], ["prefix", "starts with"], ["null", "is empty"], ["notnull", "is set"]];
+  if (f.type === "keyword" || f.type === "media") return f.multi ? [["=", "has"], ["!=", "has not"], ["in", "has one of"], ["notin", "has none of"], ["prefix", "starts with"], ["null", "is empty"], ["notnull", "is set"]] : [["=", "is"], ["!=", "is not"], ["in", "is one of"], ["notin", "is none of"], ["prefix", "starts with"], ["null", "is empty"], ["notnull", "is set"]];
   if (f.type === "int" || f.type === "float" || f.type === "timestamp") return [[">=", "≥"], ["<=", "≤"], [">", ">"], ["<", "<"], ["=", "="], ["!=", "≠"], ["between", "between"], ["null", "is empty"], ["notnull", "is set"]];
   if (f.type === "bool") return [["true", "is true"], ["false", "is false"], ["null", "is empty"]];
   return [];
