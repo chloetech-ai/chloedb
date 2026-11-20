@@ -124,6 +124,38 @@ mod tests {
         }
     }
 
+    /// The Prometheus rules in `deploy/monitoring` mirror the built-in
+    /// alerts (OLU-313): every built-in rule but those that judge what
+    /// `/metrics` does not carry has an alert there, which links the
+    /// runbook the server links for it.
+    #[test]
+    fn the_prometheus_rules_mirror_the_built_in_alerts() {
+        let text = include_str!("../deploy/monitoring/chloedb-rules.yml");
+        let doc: serde_yaml::Value = serde_yaml::from_str(text).expect("chloedb-rules.yml is YAML");
+        let mut seen = std::collections::HashMap::new();
+        for group in doc["groups"].as_sequence().expect("groups") {
+            for rule in group["rules"].as_sequence().expect("rules") {
+                let alert = rule["alert"].as_str().expect("alert");
+                assert!(rule["expr"].as_str().is_some_and(|e| !e.is_empty()), "{alert}: no expr");
+                assert!(rule["labels"]["severity"].as_str().is_some(), "{alert}: no severity");
+                let Some(id) = rule["labels"]["chloedb_rule"].as_str() else { continue };
+                let url = rule["annotations"]["runbook_url"].as_str().unwrap_or_else(|| panic!("{alert}: no runbook_url"));
+                let rb = for_id(id).unwrap_or_else(|| panic!("{alert}: no runbook for {id}"));
+                assert_eq!(url, format!("{PAGE}#{}", rb.anchor), "{alert}");
+                seen.insert(id.to_string(), alert.to_string());
+            }
+        }
+        // Per API key (no series per key), and a copy's own numbers' age (the coordinator's alone).
+        let not_in_metrics = ["key-failing", "key-flood", "copy-silent"];
+        for rule in crate::alerts::defaults().into_iter().chain(crate::alerts::builtins()) {
+            if not_in_metrics.contains(&rule.id.as_str()) {
+                assert!(text.contains(&rule.id), "chloedb-rules.yml should say why {} is not there", rule.id);
+                continue;
+            }
+            assert!(seen.contains_key(&rule.id), "chloedb-rules.yml has no alert for the built-in rule {}", rule.id);
+        }
+    }
+
     /// Every route a runbook names is a route of the server.
     #[test]
     fn the_routes_they_name_exist() {

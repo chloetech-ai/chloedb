@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html" aria-current="page">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -121,7 +123,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#before-a-server-leaves-your-machine">Before a server leaves your machine</a></li><li><a href="#listeners">Listeners</a></li><li><a href="#credentials">Credentials</a></li><li><a href="#api-keys-and-scopes">API keys and scopes</a></li><li><a href="#browsers">Browsers</a></li><li><a href="#tls">TLS</a></li><li><a href="#apps">Apps</a></li><li><a href="#requests-the-server-makes">Requests the server makes</a></li><li><a href="#data-at-rest">Data at rest</a></li><li><a href="#logs">Logs</a></li><li><a href="#chloectx">ChloeCtx</a></li><li><a href="#what-it-does-not-do">What it does not do</a></li></ol></details>
     <div class="doc-body">
 
-<p>This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in <a href="server.html#security">the server's security section</a>. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+<p>This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in <a href="server.html#security">the server's security section</a>. For a review before a team runs it (the threat model, how the controls map to SOC 2, and the notices each package ships), see the <a href="security-review.html">security review pack</a>. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 <h2 id="before-a-server-leaves-your-machine">Before a server leaves your machine<a class="anchor" href="#before-a-server-leaves-your-machine" aria-label="Link to this section">#</a></h2>
 <p>A server on one machine for one person needs nothing: it listens on loopback only. Before it listens anywhere else:</p>
 <ol>
@@ -299,7 +301,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/security.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="runbooks.html">← Runbooks</a><a href="sqlite.html">SQLite in and out →</a></span>
+      <span class="pager"><a href="runbooks.html">← Runbooks</a><a href="security-review.html">Security review pack →</a></span>
     </footer>
   </article>
 </div></main>

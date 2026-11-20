@@ -4,3 +4,4 @@ __pycache__/
 *.pyd
 .venv/
 *.egg-info/
+/python/chloedb/THIRD-PARTY-NOTICES.md

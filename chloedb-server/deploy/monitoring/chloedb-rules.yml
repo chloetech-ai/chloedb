@@ -1,0 +1,292 @@
+# Prometheus alerting rules for ChloeDB, mirroring the alert rules a server
+# and a coordinator have built in (GET /v1/alerts), so that a team that pages
+# from Prometheus pages on the same conditions. Each rule names the built-in
+# rule it mirrors (label chloedb_rule) and links its runbook. Three built-in
+# rules have no rule here: key-failing and key-flood judge each API key, and
+# /metrics has no series per key; copy-silent judges how old a copy's own
+# numbers are, which only the coordinator sees (ChloeDBAlertsFiring and
+# ChloeDBTargetDown cover them). chloedb-server's tests check that every
+# other built-in rule is here, with its runbook. Thresholds are the servers'
+# defaults: change them here if you changed --slo-error-ratio or --slo-p99-ms.
+#
+# The disk rules read node_exporter's series of the disk that holds --db,
+# /var/lib/chloedb here: change the mount point to yours, or drop that group. Jobs: chloedb-coordinator and chloedb-copies, as in
+# prometheus.yml beside this file.
+groups:
+  - name: chloedb-cluster
+    rules:
+      - alert: ChloeDBShardNoMajority
+        expr: 'chloedb_cluster_shard_majority == 0'
+        for: 10s
+        labels:
+          severity: critical
+          chloedb_rule: shard-no-majority
+        annotations:
+          summary: 'Shard {{ $labels.shard }} has no majority'
+          description: 'Fewer than half of the shard''s copies answer the coordinator: with failover its primary serves no reads and the shard takes no writes. Bring a copy back.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down
+      - alert: ChloeDBCopyDown
+        expr: 'chloedb_cluster_copy_up == 0'
+        for: 30s
+        labels:
+          severity: warning
+          chloedb_rule: copy-down
+        annotations:
+          summary: 'Copy {{ $labels.copy }} of shard {{ $labels.shard }} is down'
+          description: 'The copy {{ $labels.copy }} ({{ $labels.url }}) has not answered the coordinator for 30 seconds. Its shard still serves while a majority of its copies answer.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down
+      - alert: ChloeDBUnderReplicated
+        expr: 'chloedb_cluster_copies_in_sync < chloedb_cluster_copies'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: under-replicated
+        annotations:
+          summary: 'Shard {{ $labels.shard }} is under-replicated'
+          description: 'The shard has fewer copies in sync and serving reads than it has copies, for a minute.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down
+      - alert: ChloeDBPrimaryChanged
+        expr: 'increase(chloedb_cluster_primary_changes_total[10m]) > 0'
+        labels:
+          severity: info
+          chloedb_rule: primary-changed
+        annotations:
+          summary: 'Shard {{ $labels.shard }} elected another primary'
+          description: 'A failover or a handover in the last 10 minutes. It resolves 10 minutes after the last change.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-shards-primary-changed
+      - alert: ChloeDBCoordinatorBlind
+        expr: 'chloedb_cluster_checked_seconds > 60'
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The coordinator has not checked its cluster for a minute'
+          description: 'Its chloedb_cluster_* series are older than a minute, so the rules above judge an old picture.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down
+      - alert: ChloeDBSearchesFail
+        expr: '(sum by (job) (rate(chloedb_queries_total{outcome=~"error|timeout"}[5m])) / sum by (job) (rate(chloedb_queries_total{outcome!="client_error"}[5m]))) > 0.01 and sum by (job) (increase(chloedb_queries_total{outcome!="client_error"}[5m])) >= 100'
+        labels:
+          severity: critical
+          chloedb_rule: availability
+        annotations:
+          summary: 'Over 1% of searches fail'
+          description: 'Over 1% of the queries that ended in 5 minutes failed on the server''s side (errors and the server''s deadline; not bad SQL), over 100 queries or more. 1% is the default --slo-error-ratio: change it here if you changed the flag.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#searches-fail
+      - alert: ChloeDBPartialAnswers
+        expr: 'sum by (job) (rate(chloedb_queries_total{outcome="partial"}[2m])) > 0.1'
+        labels:
+          severity: warning
+          chloedb_rule: partial-answers
+        annotations:
+          summary: 'Answers leave out shards'
+          description: 'Over 2 minutes, more than one answer in 10 seconds left out shards that did not answer.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#searches-fail
+  - name: chloedb-copies
+    rules:
+      - alert: ChloeDBRefusesWrites
+        expr: 'chloedb_failing > 0'
+        for: 30s
+        labels:
+          severity: critical
+          chloedb_rule: failing
+        annotations:
+          summary: '{{ $labels.instance }} refuses writes'
+          description: 'A write failed partway (a full disk, an I/O error), and the database refuses writes until it is reopened. On a primary, hand the primary over to a replica in sync first.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#writes-fail-or-queue
+      - alert: ChloeDBFlushesFail
+        expr: 'chloedb_flush_failing > 0'
+        for: 30s
+        labels:
+          severity: critical
+          chloedb_rule: flush-failing
+        annotations:
+          summary: 'Flushes fail on {{ $labels.instance }}'
+          description: 'Writes still commit to the log until the memtable holds twice its limit. Usually a full disk.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#writes-fail-or-queue
+      - alert: ChloeDBMergesFail
+        expr: 'chloedb_merge_failing > 0'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: merge-failing
+        annotations:
+          summary: 'Merges fail on {{ $labels.instance }}'
+          description: 'Segments pile up and queries slow down until merges succeed again.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#writes-fail-or-queue
+      - alert: ChloeDBDataDamaged
+        expr: 'chloedb_damaged_segments > 0'
+        for: 30s
+        labels:
+          severity: critical
+          chloedb_rule: damaged
+        annotations:
+          summary: 'Damaged segments on {{ $labels.instance }}'
+          description: 'A scrub found segments that fail their checksums on this copy: it must not become the primary. Replace the copy, or restore it from a checkpoint.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#data-damaged-on-disk
+      - alert: ChloeDBReplicaOutOfSync
+        expr: 'chloedb_replica_in_sync == 0'
+        for: 1m
+        labels:
+          severity: critical
+          chloedb_rule: out-of-sync
+        annotations:
+          summary: 'A replica of {{ $labels.instance }} is out of sync'
+          description: 'The replica {{ $labels.replica }} does not hold what its primary committed: a failover now could lose writes.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-replica-is-behind
+      - alert: ChloeDBReplicaBehind
+        expr: 'chloedb_replica_behind > 0'
+        for: 5m
+        labels:
+          severity: warning
+          chloedb_rule: replica-behind
+        annotations:
+          summary: 'A replica of {{ $labels.instance }} is behind'
+          description: 'The replica {{ $labels.replica }} has lacked transactions its primary committed for 5 minutes. (The server''s own rule judges seconds behind; Prometheus sees transactions.)'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-replica-is-behind
+      - alert: ChloeDBReplicaNoReads
+        expr: 'chloedb_replication_role == 2 and chloedb_replica_serves_reads == 0'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: replica-reads
+        annotations:
+          summary: 'Replica {{ $labels.instance }} does not serve reads'
+          description: 'The replica is catching up with its primary, or lost it.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-replica-is-behind
+      - alert: ChloeDBQueryMemory
+        expr: 'chloedb_query_memory_bytes / (chloedb_query_memory_limit_bytes > 0) > 0.9'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: query-memory
+        annotations:
+          summary: 'Query memory almost spent on {{ $labels.instance }}'
+          description: 'The running queries hold over 90% of --query-memory-mb; more are refused with 429.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#queries-are-refused
+      - alert: ChloeDBQueriesRefused
+        expr: 'rate(chloedb_rejected_total[5m]) > 0.5'
+        labels:
+          severity: warning
+          chloedb_rule: rejected
+        annotations:
+          summary: 'Queries refused (429) on {{ $labels.instance }}'
+          description: 'Queries found no slot (--max-concurrent) before their deadline.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#queries-are-refused
+      - alert: ChloeDBWriteQueue
+        expr: 'chloedb_write_queue_requests > 512'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: write-queue
+        annotations:
+          summary: 'Writes queue up on {{ $labels.instance }}'
+          description: 'Write requests wait for the writer; at --max-queued-writes they are refused.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#writes-fail-or-queue
+      - alert: ChloeDBWritesSlow
+        expr: 'histogram_quantile(0.99, sum by (job, instance, le) (rate(chloedb_write_duration_seconds_bucket[1m]))) > 0.5'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: write-p99
+        annotations:
+          summary: 'Writes are slow on {{ $labels.instance }}'
+          description: 'The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow, or the disk is.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#writes-fail-or-queue
+      - alert: ChloeDBQueryP99
+        expr: 'histogram_quantile(0.99, sum by (job, instance, le) (rate(chloedb_query_duration_seconds_bucket[5m]))) > 0.25'
+        labels:
+          severity: warning
+          chloedb_rule: p99
+        annotations:
+          summary: 'Query p99 over 250 ms on {{ $labels.instance }}'
+          description: 'The slowest 1% of queries took over 250 ms over 5 minutes. 250 ms is the default --slo-p99-ms: change it here if you changed the flag.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#queries-are-slow
+      - alert: ChloeDBQueryErrors
+        expr: '(sum by (job, instance) (rate(chloedb_queries_total{outcome=~"error|timeout"}[5m])) / sum by (job, instance) (rate(chloedb_queries_total{outcome!="client_error"}[5m]))) > 0.01 and sum by (job, instance) (increase(chloedb_queries_total{outcome!="client_error"}[5m])) >= 100'
+        labels:
+          severity: warning
+          chloedb_rule: errors
+        annotations:
+          summary: 'Query errors over 1% on {{ $labels.instance }}'
+          description: 'Over 1% of the queries that ended in 5 minutes failed on the server''s side (errors and the server''s deadline; not bad SQL nor a client''s own deadline), over 100 queries or more. 1% is the default --slo-error-ratio.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#searches-fail
+      - alert: ChloeDBQueryP99Doubled
+        expr: 'histogram_quantile(0.99, sum by (job, instance, le) (rate(chloedb_query_duration_seconds_bucket[5m]))) > 2 * histogram_quantile(0.99, sum by (job, instance, le) (rate(chloedb_query_duration_seconds_bucket[5m] offset 5m))) and histogram_quantile(0.99, sum by (job, instance, le) (rate(chloedb_query_duration_seconds_bucket[5m]))) > 0.125'
+        labels:
+          severity: warning
+          chloedb_rule: p99-jump
+        annotations:
+          summary: 'Query p99 doubled on {{ $labels.instance }}'
+          description: 'The p99 of the last 5 minutes is over twice the p99 of the 5 minutes before, and over half the p99 objective (125 ms of the default 250 ms).'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#queries-are-slow
+      - alert: ChloeDB5xx
+        expr: '(sum by (job, instance) (rate(chloedb_http_requests_total{status=~"5.."}[5m])) / sum by (job, instance) (rate(chloedb_http_requests_total[5m]))) > 0.01 and sum by (job, instance) (increase(chloedb_http_requests_total[5m])) >= 100'
+        labels:
+          severity: warning
+          chloedb_rule: 5xx
+        annotations:
+          summary: 'Server errors over 1% of requests on {{ $labels.instance }}'
+          description: 'Over 1% of the HTTP requests of 5 minutes failed on the server''s side (5xx), over 100 requests or more.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#searches-fail
+      - alert: ChloeDBFollowerBehind
+        expr: 'chloedb_follow_lag_seconds > 60'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: follow-behind
+        annotations:
+          summary: 'A follower writing to {{ $labels.instance }} is behind'
+          description: 'A follow process (a cluster following another, or follow-postgres) has been over a minute behind its source for a minute.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-replica-is-behind
+  - name: chloedb-disk
+    rules:
+      - alert: ChloeDBDiskAlmostFull
+        expr: '1 - node_filesystem_avail_bytes{mountpoint="/var/lib/chloedb"} / node_filesystem_size_bytes{mountpoint="/var/lib/chloedb"} > 0.9'
+        for: 5m
+        labels:
+          severity: warning
+          chloedb_rule: disk-full
+        annotations:
+          summary: 'Disk almost full on {{ $labels.instance }}'
+          description: 'Under 10% of the disk that holds the database is left.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#the-disk-is-filling
+      - alert: ChloeDBDiskNearlyFull
+        expr: '1 - node_filesystem_avail_bytes{mountpoint="/var/lib/chloedb"} / node_filesystem_size_bytes{mountpoint="/var/lib/chloedb"} > 0.97'
+        for: 2m
+        labels:
+          severity: critical
+          chloedb_rule: disk-critical
+        annotations:
+          summary: 'Disk nearly full on {{ $labels.instance }}'
+          description: 'Under 3% of the disk is left: writes fail when it is full. Free space or move slots off the copy now.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#the-disk-is-filling
+      - alert: ChloeDBDiskFilling
+        expr: 'predict_linear(node_filesystem_avail_bytes{mountpoint="/var/lib/chloedb"}[30m], 12 * 3600) < 0'
+        for: 30m
+        labels:
+          severity: warning
+          chloedb_rule: disk-filling
+        annotations:
+          summary: 'Disk full within 12 hours on {{ $labels.instance }}'
+          description: 'At the rate the disk filled over the last 30 minutes, it is full in under 12 hours.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#the-disk-is-filling
+  - name: chloedb-prometheus
+    rules:
+      - alert: ChloeDBTargetDown
+        expr: 'up{job=~"chloedb-.*"} == 0'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: copy-down
+        annotations:
+          summary: 'Prometheus cannot scrape {{ $labels.instance }}'
+          description: 'The server does not answer /metrics, or refuses the key. This rule works when the coordinator itself is down, which the rules over chloedb_cluster_* cannot see.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down
+      - alert: ChloeDBAlertsFiring
+        expr: 'chloedb_alerts_firing{severity="critical"} > 0'
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.instance }} has a critical alert firing'
+          description: 'The server''s own alert rules (GET /v1/alerts) have a critical alert firing that the rules above may not cover. Open the command center''s Alerts page.'

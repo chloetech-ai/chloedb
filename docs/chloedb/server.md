@@ -819,6 +819,8 @@ A connector keeps another system's data coming into a table: it pulls Prometheus
 
 ### Backups
 
+[Back up, restore and upgrade](../guide/backup.md) runs each step on one server, from the first checkpoint to a rollback.
+
 Copying the database's files while the server runs is not a backup: a commit reuses pages an older version freed, and the directory layout deletes files a version stops naming, so a copy (`cp`, rsync, a disk snapshot, Time Machine) can pair one version's manifest with another's pages. A checkpoint is the safe copy. `POST /v1/admin/checkpoint` flushes the memtable, pins the version that holds every committed write and copies it into `--backup-dir/<name>` while queries and writes go on (they wait only for the flush). The checkpoint is itself a database, checked against its checksums before it gets its name. Beside it the server writes what a restore needs besides the rows, under the names a server serving the checkpoint with `--db` reads: the cluster map a shard holds, `<name>.slots`, and the API keys, `<name>.keys.json` (the keys' names, scopes and the SHA-256 of their secrets, readable by the server's user only). A checkpoint written while the cluster map changed (a slot move's flip) is not kept, and the answer says to write it again. Restore with [`chloedb-server restore`](#restoring-a-checkpoint).
 
 ```sh
@@ -1700,7 +1702,7 @@ A short statement plans on the thread that serves the request, a longer one on a
 
 It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only for `failing`, so that an orchestrator restarts the server (the [Kubernetes manifests](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/deploy) use them as probes), and `/readyz` also while the server drains: with `--drain-ms N` (`CHLOEDB_DRAIN_MS`; 0 by default, 5,000 under the operator), a server sent SIGTERM answers `/readyz` 503 (`"status": "draining"`) and closes each HTTP connection after its answer for N ms while it goes on serving, so that a load balancer stops sending it requests before it stops; then it stops as it does without the flag, finishing the requests it holds (over TLS too), for up to `--stop-grace-ms` (20 s), and ending the feeds followers read. Neither asks a coordinator's shards, so one slow shard cannot take every coordinator out of service at once; `/v1/health` shows the shards. The writer thread survives a panic while applying a write: the requests in that batch get 500, the panic is counted in `chloedb_writer_panics_total`, and the next batch goes on.
 
-`GET /metrics` serves, in Prometheus text format, with `# HELP` and `# TYPE` lines for every family and durations in seconds. Its families are named `chloedb_*`; servers from before the rename name the same families `strata_*` (a dashboard over both versions matches `{__name__=~"(chloedb|strata)_.*"}`):
+`GET /metrics` serves, in Prometheus text format, with `# HELP` and `# TYPE` lines for every family and durations in seconds. Its families are named `chloedb_*`; servers from before the rename name the same families `strata_*` (a dashboard over both versions matches `{__name__=~"(chloedb|strata)_.*"}`). A scrape config, alerting rules mirroring the [built-in alerts](#alerts) and a Grafana dashboard are in [`chloedb-server/deploy/monitoring`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/deploy/monitoring) ([how to use them](../guide/operate-cluster.md#check-its-health)):
 
 | metric | labels | what |
 |---|---|---|

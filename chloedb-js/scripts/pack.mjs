@@ -47,6 +47,12 @@ function target(p) {
   return { os: [os], cpu: [cpu], ...(libc ? { libc: [libc === "gnu" ? "glibc" : "musl"] } : {}) };
 }
 
+// The third-party notices of the crates compiled into chloedb.node
+// (LENA-408), which js-release.yml writes with packaging/sbom/sbom.py
+// before it packs: every package that carries the addon carries them.
+const NOTICES = "THIRD-PARTY-NOTICES.md";
+const notices = () => (existsSync(join(root, NOTICES)) ? [NOTICES] : []);
+
 function needAddon() {
   if (!existsSync(join(root, "chloedb.node"))) {
     console.error("chloedb-js: chloedb.node is missing: build it first (node scripts/build.mjs)");
@@ -81,14 +87,14 @@ if (kind === "release") {
   const t = target(platform);
   needAddon();
   // No build at install: the addon is in the package.
-  pack([...JS, "chloedb.node"], { ...pkg, ...t, scripts: {} }, ["dist"], `${pkg.name}-${pkg.version}-${platform}.tgz`);
+  pack([...JS, "chloedb.node", ...notices()], { ...pkg, ...t, scripts: {} }, ["dist"], `${pkg.name}-${pkg.version}-${platform}.tgz`);
 } else if (kind === "platform") {
   const t = target(platform);
   needAddon();
   const manifest = { name: `${scope}/${platform}`, ...common, description: `ChloeDB's native addon for ${platform}, which the package chloedb loads`, main: "chloedb.node", ...t, publishConfig: { access: "public" } };
   // Its README says what it is; the package's own is chloedb's.
   const readme = `# ${scope}/${platform}\n\nThe native addon of [chloedb](https://www.npmjs.com/package/chloedb) for ${platform}. Install \`chloedb\`, which depends on it; npm picks the package of your platform.\n`;
-  pack(["chloedb.node"], manifest, ["dist", "npm"], `chloedb-${platform}-${pkg.version}.tgz`, { "README.md": readme });
+  pack(["chloedb.node", ...notices()], manifest, ["dist", "npm"], `chloedb-${platform}-${pkg.version}.tgz`, { "README.md": readme });
 } else {
   const optionalDependencies = Object.fromEntries(PLATFORMS.map((p) => [`${scope}/${p}`, pkg.version]));
   pack(JS, { ...published, scripts: {}, optionalDependencies, publishConfig: { access: "public" } }, ["dist", "npm"], `chloedb-${pkg.version}.tgz`);
