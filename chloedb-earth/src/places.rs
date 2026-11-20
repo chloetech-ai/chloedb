@@ -45,6 +45,22 @@ pub struct Places {
 
 const CELL: f64 = 0.1;
 
+/// Lower case without accents, so that "concepcion" finds Concepción.
+fn fold(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            c => c,
+        })
+        .collect()
+}
+
 fn key(lat: f64, lon: f64) -> (i32, i32) {
     ((lat / CELL).floor() as i32, (lon / CELL).floor() as i32)
 }
@@ -95,7 +111,7 @@ impl Places {
     /// first, then those containing them, the biggest first. One place a
     /// town (the most people).
     pub fn find(&self, q: &str, limit: usize) -> Vec<(String, &Place)> {
-        let q = q.trim().to_lowercase();
+        let q = fold(q.trim());
         if q.is_empty() {
             return Vec::new();
         }
@@ -116,7 +132,7 @@ impl Places {
         }
         let mut best: HashMap<(String, String), (u8, &Place)> = HashMap::new();
         for p in &self.all {
-            let (town, county) = (p.town.to_lowercase(), p.adm2.to_lowercase());
+            let (town, county) = (fold(&p.town), fold(&p.adm2));
             let rank = if !town.is_empty() && town.starts_with(&q) {
                 0
             } else if !county.is_empty() && county.starts_with(&q) {
@@ -241,6 +257,8 @@ mod tests {
         );
         assert!(p.nearest(34.5, -118.0, 3.0).is_none());
         assert_eq!(p.find("34.01, -118.0", 5).len(), 1);
+        let q = Places::new(vec![Place { id: "v".into(), town: "Concepción".into(), adm1: "Biobío".into(), ..Default::default() }]);
+        assert_eq!(q.find("concepcion", 5).first().map(|x| x.0.as_str()), Some("Concepción, Biobío"));
         // a and b are within 5 km; c is 110 km away.
         assert!((p.people_within(34.0, -118.0, 5.0) - 3780.0 / OVERLAP).abs() < 1e-6);
     }

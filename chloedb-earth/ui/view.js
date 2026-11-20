@@ -477,12 +477,12 @@ async function home(app, page) {
     h("a", { class: "btn", href: app.href("picture") }, "By a picture"));
   const found = h("div", { class: "ea-list" });
   let t = 0;
-  const finder = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); const f = found.querySelector("a"); if (f) f.click(); } },
+  const finder = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); const f = found.querySelector("[data-id]"); if (f) app.go("place", f.dataset.id); } },
     h("input", { type: "search", name: "q", placeholder: "Find a place: a town, a county, or 34.05, -118.2", oninput: async (e) => {
       const q = e.target.value.trim(), mine = ++t;
       if (q.length < 2) return swap(found);
       const r = await app.api(`/v1/find?q=${encodeURIComponent(q)}`, { keep: 60000 });
-      if (mine === t) swap(found, r.found.map((x) => h("a", { href: app.href("place", x.id), class: "warn" }, `${x.label} · ${REGION[x.region]?.title || x.region}`)));
+      if (mine === t) swap(found, r.found.length ? r.found.map((x) => h("div", { class: "info", "data-id": x.id, onclick: () => app.go("place", x.id) }, h("span", { class: "t" }, x.label), x.label.endsWith(REGION[x.region]?.title || x.region) ? null : h("span", { class: "v" }, REGION[x.region]?.title || x.region))) : h("p", { class: "ea-note" }, "No town or county of California or Chile starts with that."));
     } }),
     h("button", { type: "button", class: "btn", onclick: () => navigator.geolocation?.getCurrentPosition(async (pos) => { const at = await app.api(`/v1/at?lat=${pos.coords.latitude.toFixed(5)}&lon=${pos.coords.longitude.toFixed(5)}`, { fresh: true }); if (at.id) app.go("place", at.id); else swap(found, h("p", { class: "ea-note" }, "Your location is outside California and Chile.")); }) }, "Use my location"));
   put(page, h("div", { class: "ea-hero" },
@@ -858,7 +858,7 @@ const eventLine = (app, e) => {
 async function report(app, page, id) {
   const j = await app.api(`/v1/place/${encodeURIComponent(id)}`);
   const p = j.place, st = j.story;
-  const box = h("div", { class: "ea-map", style: { minHeight: "280px" } });
+  const box = h("div", { class: "ea-map", style: { minHeight: "280px", height: "min(560px, 70vh)", position: "sticky", top: "12px", alignSelf: "start" } });
   put(page, h("div", { class: "ea-hero" }, h("h2", {}, placeName(p)), h("p", {}, st.headline),
     h("div", { class: "ea-search" }, h("a", { class: "btn", href: app.href("map", p.id) }, "Open on the map"))));
   put(page, h("div", { class: "ea-split wide" }, box,
@@ -872,7 +872,7 @@ async function report(app, page, id) {
   setData(map, "story", { type: "FeatureCollection", features: feats }, [
     { id: "story-fill", type: "fill", paint: { "fill-color": ["case", ["==", ["get", "me"], 1], "rgba(0,0,0,0)", ["==", ["get", "burned"], 1], "#e5484d", "#f5a524"], "fill-opacity": 0.35 } },
     { id: "story-line", type: "line", paint: { "line-color": ["case", ["==", ["get", "me"], 1], "#fff", "#ff8a3d"], "line-width": 2 } }]);
-  put(page, h("div", { style: { marginTop: "14px" } }, placePanel(app, j)));
+  put(page, h("div", { class: "ea-two", style: { marginTop: "14px", alignItems: "start" } }, placePanel(app, j)));
 }
 
 function coverBar(p) {
