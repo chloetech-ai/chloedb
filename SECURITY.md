@@ -28,7 +28,7 @@ The parts this repository ships:
 
 ## What is supported
 
-The latest release, 0.3.8 (18 November 2026), and `main`. Each release is
+The latest release, 0.3.9 (20 November 2026), and `main`. Each release is
 tagged per package: `chloedb-server-v<version>` (the server, with
 `chloectx`, `chloedb-crawl`, `chloedb-sheets` and `chloedb-netops`
 attached prebuilt),
