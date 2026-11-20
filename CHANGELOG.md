@@ -71,6 +71,12 @@ changes collect under "Unreleased".
   the browser as notifications and an Atom feed. There are no accounts:
   watches belong to a random key the browser keeps. An example plays the
   Park Fire's first 12 hours over three made-up places.
+- **Earth explorer: Clear sky.** GOES's cloud mask and smoke over every
+  place of California and Chile, every 5 or 10 minutes: a map of the sky
+  now and of the clear nights and days of the last 30, a finder for the
+  clearest places near a town (for the stars, a picnic or a picture),
+  each place's sky on its page, and a fire watch that says when the night
+  over it is clear.
 
 ## 0.3.9
 

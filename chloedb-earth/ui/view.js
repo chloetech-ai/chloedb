@@ -7,6 +7,8 @@
 //   (home)                 what it is, both regions now, the replays
 //   live/<region>          the fires GOES sees burning now, and its last hour
 //   replay/<id>            a past day played back, scan by scan
+//   sky/<region>           Clear sky: the clouds now, the clear nights and
+//                          days of 30, and a finder of clear places
 //   watch[/<id>]           Fire watch: places a browser keeps an eye on,
 //                          each checked on every scan, and its alerts;
 //                          watch/example plays the Park Fire's first hours
@@ -212,6 +214,10 @@ div > .ea-wcard + .ea-wcard { margin-top: 10px; }
 .ea-pill.good { background: var(--good-soft); color: var(--good-ink); }
 .ea-pill.warn { background: var(--warn-soft); color: var(--text); }
 .ea-pill.crit { background: var(--crit); color: #fff; }
+.ea-pill.mute { background: var(--surface-3); color: var(--text-2); }
+.ea-skybars { width: 120px; height: 22px; display: inline-block; vertical-align: middle; }
+.ea-skyrow { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ea-skyline svg { width: 90px; height: 16px; vertical-align: -3px; }
 .ea-whead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 12px; }
 .ea-whead h2 { margin: 0; font-size: 22px; letter-spacing: -.01em; }
 .ea-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
@@ -438,7 +444,7 @@ function render(root, ctx) {
   const body = h("div");
   root.append(head, tabs, body);
 
-  const TABS = [["", "Home"], ["live", "Live"], ["watch", "Fire watch"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
+  const TABS = [["", "Home"], ["live", "Live"], ["watch", "Fire watch"], ["sky", "Clear sky"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
   const drawTabs = (p) => {
     tabs.replaceChildren(...TABS.map(([k, t]) => {
       const on = (p[0] || "") === k || (k === "explore" && p[0] === "map") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
@@ -460,6 +466,7 @@ function render(root, ctx) {
         live: () => live(app, page, a || "california"),
         replay: () => replay(app, page, a),
         watch: () => (a ? watchOne(app, page, a) : watchHome(app, page)),
+        sky: () => skyPage(app, page, a || "california"),
         fire: () => fire(app, page, a),
         fires: () => pastFires(app, page, a || "california"),
         explore: () => explore(app, page, a || "california", null),
@@ -1046,6 +1053,7 @@ function placePanel(app, j) {
     } catch (err) { mixOut.replaceChildren(h("div", { class: "ea-err" }, String(err.message || err))); }
   };
   return [
+    skyCard(j.sky),
     card(placeName(p), `${R.title} · ${fmt(p.lat, 3)}, ${fmt(p.lon, 3)}`,
       h("img", { src: thumbUrl(p.lat, p.lon, 384), alt: placeName(p), style: { width: "100%", borderRadius: "8px", display: "block", aspectRatio: "1" } }),
       h("p", { class: "ea-note", style: { margin: "4px 0 8px" } }, `Picture: Sentinel-2 cloudless 2016 (EOX). Its vector: Major TOM's Sentinel-2 scene of ${p.taken ? when(p.taken, p.region, { year: true, date: true }) : "–"}.`),
@@ -1210,7 +1218,7 @@ function sourcesCard(region) {
 }
 
 function alertLog(alerts, region, empty) {
-  return alerts.length ? h("div", { class: "ea-list" }, alerts.map((a) => h("div", { class: a.kind === "here" || a.kind === "near" ? "bad" : "warn" },
+  return alerts.length ? h("div", { class: "ea-list" }, alerts.map((a) => h("div", { class: a.kind === "here" || a.kind === "near" ? "bad" : a.kind === "clear" ? "info" : "warn" },
     h("span", { class: "t" }, a.title), h("span", { class: "v" }, when(a.t, region)), h("span", { class: "m" }, a.body)))) : h("p", { class: "ea-empty" }, empty);
 }
 
@@ -1359,6 +1367,7 @@ function settingsCard(app, w, kms, reload) {
     h("div", { class: "ea-row" }, h("span", {}, "A fire is within"), h("span", { class: "ea-chips", style: { margin: 0 } }, kms.map((k) => h("button", { class: `ea-chip${k === w.km ? " on" : ""}`, onclick: () => save({ km: k }) }, `${k} km`)))),
     sw("It comes 2 km closer in an hour", "closer"),
     sw("It passes 1,000 MW (large and intense)", "power"),
+    sw("The night over it is clear (for the stars)", "sky"),
     h("div", { class: "ea-row" }, h("span", {}, "Within 5 km, and over the place"), h("span", { class: "ea-note" }, "always")),
     h("form", { class: "ea-search", style: { marginTop: "10px" }, onsubmit: (e) => { e.preventDefault(); save({ name: name.value }); } }, name, h("button", { class: "btn sm" }, "Rename")),
     h("div", { style: { marginTop: "10px" } }, remove),
@@ -1414,6 +1423,134 @@ async function watchExample(app, page) {
   const tick = setInterval(() => { if (!s.playing) return; s.m = Math.min(720, s.m + 5); if (s.m >= 720) s.playing = false; paint(); }, 400);
   app.stops.push(() => clearInterval(tick));
   paint();
+}
+
+// --------------------------------------------------------------- clear sky
+
+const SKY_WORDS = { clear: "Clear", "partly cloudy": "Partly cloudy", cloudy: "Cloudy", smoke: "Smoke", "not seen": "Not seen" };
+const SKY_SEV = { clear: "good", "partly cloudy": "warn", cloudy: "mute", smoke: "crit", "not seen": "mute" };
+const skyPill = (s) => h("span", { class: `ea-pill ${SKY_SEV[s?.words] || "mute"}` }, SKY_WORDS[s?.words] || "Not seen");
+
+/// The last 30 days (or nights) as bars: the taller, the clearer; grey
+/// where none was read.
+function skyBars(v, night) {
+  const W = 120, H = 22, n = v.length || 30, bw = W / n;
+  return svg("svg", { viewBox: `0 0 ${W} ${H}`, class: "ea-skybars", role: "img", "aria-label": `${night ? "Nights" : "Days"} of the last 30, by how clear` },
+    v.map((x, i) => svg("rect", { x: (i * bw + 0.5).toFixed(1), width: (bw - 1).toFixed(1), y: x < 0 ? H - 2 : (H - Math.max(2, (x / 100) * H)).toFixed(1), height: x < 0 ? 2 : Math.max(2, (x / 100) * H).toFixed(1), fill: x < 0 ? "var(--line-2)" : night ? (x >= 80 ? "#3d5afe" : "#8c9eff") : x >= 80 ? "#f2a900" : "#ffd36b" })));
+}
+
+function skyCard(s) {
+  if (!s) return null;
+  const tonight = s.nights?.[s.nights.length - 1], today = s.days?.[s.days.length - 1];
+  return card("Its sky", s.t ? `GOES's cloud mask, last scan ${ago((Date.now() - Date.parse(s.t)) / 1000)}` : "",
+    h("div", { class: "ea-row" }, h("span", {}, "Now"), h("span", {}, skyPill({ words: s.clear < 0 ? "not seen" : s.smoke >= 0.3 ? "smoke" : s.clear >= 0.8 ? "clear" : s.clear >= 0.4 ? "partly cloudy" : "cloudy" }), " ", h("span", { class: "ea-note" }, s.clear >= 0 ? `${fmt(s.clear * 100)}% of its pixels clear` : ""))),
+    h("div", { class: "ea-row" }, h("span", {}, "Nights, the last 30"), h("span", { class: "ea-skyrow" }, skyBars(s.nights || [], true), h("span", { class: "ea-note" }, s.clear_nights == null ? "none read" : `${fmt(s.good_nights)} clear, ${fmt(s.clear_nights)}% on average`))),
+    h("div", { class: "ea-row" }, h("span", {}, "Days, the last 30"), h("span", { class: "ea-skyrow" }, skyBars(s.days || [], false), h("span", { class: "ea-note" }, s.clear_days == null ? "none read" : `${fmt(s.good_days)} clear, ${fmt(s.clear_days)}% on average`))),
+    h("p", { class: "ea-note" }, `A night counts its scans with the sun 12° down or more, a day those with it 5° up; a clear one is ${80}% clear or more.${tonight >= 0 ? ` Tonight so far: ${tonight}%.` : today >= 0 ? ` Today so far: ${today}%.` : ""}`));
+}
+
+async function skyPage(app, page, region) {
+  const R = REGION[region];
+  if (!R) throw new Error(`no region ${region}`);
+  const box = h("div", { class: "ea-map" });
+  const side = h("div");
+  put(page, h("div", { class: "ea-hero", style: { paddingTop: "8px" } },
+    h("h2", {}, "Where is the sky ", h("em", {}, "clear?")),
+    h("p", {}, `GOES's cloud mask over every place of ${R.title}, ${region === "chile" ? "every 10 minutes" : "every 5 minutes"}, and its last 30 days and nights: for a night under the stars, a photograph, a flight or a solar panel.`)),
+    regionSwitch(app, "sky", region), h("div", { class: "ea-split wide" }, box, side));
+  const map = await makeMap(box, { center: R.center, zoom: R.zoom, bounds: R.bounds });
+  app.stops.push(() => map.remove());
+  const tl = h("div", { class: "ea-maptl" });
+  box.append(tl);
+  const skyNote = await addSky(app, map, region);
+  const legend = h("div", { class: "ea-legend" });
+  box.append(legend);
+  const s = { mode: "now", at: null, km: 50, want: "now", q: "", label: "" };
+  let L = null;
+  const drawMap = () => {
+    if (!L) return;
+    const v = s.mode === "now" ? L.clear : s.mode === "nights" ? L.nights : L.days;
+    const sq = squares(L.lat, L.lon, HALF);
+    const features = [];
+    for (let i = 0; i < sq.length; i++) {
+      let x = v[i];
+      if (x == null) continue;
+      const [la, lo2, dl] = sq[i];
+      const smoke = s.mode === "now" && (L.smoke[i] ?? 0) >= 3;
+      // Now: clouds white, clear see-through; 30 days: the clearer, the deeper blue (nights) or gold (days).
+      const t = s.mode === "now" ? 1 - x / 10 : x / 100;
+      if (s.mode === "now" && t < 0.15 && !smoke) continue;
+      features.push({ type: "Feature", properties: { t, smoke: smoke ? 1 : 0 }, geometry: { type: "Polygon", coordinates: square(la, lo2, HALF, dl) } });
+    }
+    const paint = s.mode === "now"
+      ? { "fill-color": ["case", ["==", ["get", "smoke"], 1], "#a0522d", "#ffffff"], "fill-opacity": ["case", ["==", ["get", "smoke"], 1], 0.55, ["*", 0.75, ["get", "t"]]] }
+      : { "fill-color": ["interpolate", ["linear"], ["get", "t"], 0, "#2b2b2b", 0.5, s.mode === "nights" ? "#4a5fc1" : "#c99a2e", 1, s.mode === "nights" ? "#a9c1ff" : "#ffe08a"], "fill-opacity": 0.7 };
+    if (map.getLayer("skyq")) map.removeLayer("skyq");
+    if (map.getSource("skyq")) map.removeSource("skyq");
+    map.addSource("skyq", { type: "geojson", data: { type: "FeatureCollection", features } });
+    map.addLayer({ id: "skyq", type: "fill", source: "skyq", paint }, "labels");
+    legend.replaceChildren(s.mode === "now"
+      ? h("div", {}, h("b", {}, "Clouds now"), h("div", {}, h("span", { class: "sw" }, h("i", { style: { background: "#fff" } }), "cloudy"), h("span", { class: "sw" }, h("i", { style: { background: "#a0522d" } }), "smoke"), h("span", { class: "sw" }, "clear: the ground shows")), h("div", { class: "ea-note", style: { color: "#ddd" } }, L.t ? `GOES's clear sky mask of ${when(L.t, region)}` : "No scan read yet."))
+      : h("div", {}, h("b", {}, s.mode === "nights" ? "Clear nights, the last 30" : "Clear days, the last 30"), h("div", { class: "bar", style: { background: `linear-gradient(90deg, #2b2b2b, ${s.mode === "nights" ? "#4a5fc1, #a9c1ff" : "#c99a2e, #ffe08a"})` } }), h("div", { class: "ends" }, h("span", {}, "never clear"), h("span", {}, "always"))));
+  };
+  const modeChips = () => [["now", "Clouds now"], ["nights", "Clear nights"], ["days", "Clear days"]].map(([k, t]) => h("button", { class: `ea-mapbtn${s.mode === k ? " on" : ""}`, onclick: () => { s.mode = k; drawTop(); drawMap(); } }, t));
+  const drawTop = () => tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, R.title), ` · ${R.sat}'s cloud mask`), h("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } }, modeChips()), skyNote);
+  drawTop();
+  const load = async (fresh) => {
+    L = await app.api(`/v1/sky?region=${region}`, { fresh, keep: 60000 });
+    drawMap();
+  };
+  await load(false);
+  const again = setInterval(() => load(true).catch(() => {}), 120000);
+  app.stops.push(() => clearInterval(again));
+
+  // The finder.
+  const out = h("div");
+  const found = h("div", { class: "ea-list" });
+  const where = h("div", { class: "ea-note" }, "Anywhere in ", R.title, ".");
+  let t = 0;
+  const placeIn = h("input", { type: "search", autocomplete: "off", placeholder: "Near a town, or 34.05, -118.2", "aria-label": "Near where", oninput: async (e) => {
+    const q = e.target.value.trim(), mine = ++t;
+    if (q.length < 2) return swap(found);
+    const r = await app.api(`/v1/find?q=${encodeURIComponent(q)}`, { keep: 60000 });
+    if (mine === t) swap(found, r.found.filter((x) => x.region === region || !REGION[x.region]).slice(0, 6).map((x) => h("div", { class: "info", "data-i": "1", onclick: () => { s.at = [x.lat, x.lon]; s.label = x.label; placeIn.value = ""; swap(found); run(); } }, h("span", { class: "t" }, x.label))));
+  } });
+  const chips = (list, key) => h("div", { class: "ea-chips", style: { margin: "4px 0" } }, list.map(([k, txt]) => h("button", { class: `ea-chip${s[key] === k ? " on" : ""}`, onclick: () => { s[key] = k; if (key === "want" && k !== "now") { s.mode = k; drawTop(); drawMap(); } run(); } }, txt)));
+  const lookIn = h("input", { type: "search", placeholder: "Looks like (optional): mountains, a dark desert, a beach…", "aria-label": "What the place looks like" });
+  const form = h("div");
+  const drawForm = () => swap(form,
+    h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); found.querySelector("[data-i]")?.click(); } }, placeIn,
+      h("button", { type: "button", class: "btn", onclick: () => navigator.geolocation?.getCurrentPosition((p) => { s.at = [p.coords.latitude, p.coords.longitude]; s.label = "your location"; run(); }, (err) => swap(out, h("div", { class: "ea-err" }, `No location: ${err.message}`))) }, "Use my location")),
+    found, where,
+    s.at ? chips([[25, "25 km"], [50, "50 km"], [100, "100 km"], [200, "200 km"]], "km") : null,
+    chips([["now", "Clear now"], ["nights", "Most clear nights"], ["days", "Most clear days"]], "want"),
+    h("form", { class: "ea-search", style: { marginTop: "6px" }, onsubmit: (e) => { e.preventDefault(); s.q = lookIn.value.trim(); run(); } }, lookIn, h("button", { class: "btn sm" }, "Find")));
+  let mark = null;
+  const run = async () => {
+    drawForm();
+    swap(where, s.at ? [`Within ${s.km} km of `, h("b", {}, s.label || `${fmt(s.at[0], 3)}, ${fmt(s.at[1], 3)}`), " · ", h("a", { href: "#", onclick: (e) => { e.preventDefault(); s.at = null; s.label = ""; run(); } }, "anywhere")] : ["Anywhere in ", R.title, "."]);
+    swap(out, h("p", { class: "ea-note" }, "Looking…"));
+    const qs = new URLSearchParams({ region, want: s.want, km: s.km, q: s.q });
+    if (s.at) { qs.set("lat", s.at[0].toFixed(4)); qs.set("lon", s.at[1].toFixed(4)); }
+    try {
+      const j = await app.api(`/v1/sky/find?${qs}`, { fresh: true });
+      if (s.at) {
+        mark?.remove();
+        mark = new window.maplibregl.Marker({ color: "#2f6fe0" }).setLngLat([s.at[1], s.at[0]]).addTo(map);
+        map.fitBounds(ringsBounds([{ lat: s.at[0], lon: s.at[1], km: s.km }]), { padding: 30, duration: 600 });
+      }
+      swap(out,
+        h("p", { class: "ea-note" }, j.seen ? `${fmt(j.clear_now)} of ${fmt(j.seen)} places ${s.q ? "like that " : ""}${s.at ? "here " : ""}are clear now.` : "No sky read here yet."),
+        j.places.length ? h("div", { class: "ea-list" }, j.places.map((p) => h("div", { class: "info", onclick: () => app.go("place", p.id) },
+          h("span", { class: "t" }, [p.town, p.adm2].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(", ") || `${fmt(p.lat, 3)}, ${fmt(p.lon, 3)}`),
+          h("span", { class: "v" }, skyPill(p.sky)),
+          h("span", { class: "m ea-skyline" }, p.km != null ? `${fmt(p.km, 1)} km ${p.dir} · ` : "", `${cap(p.kind)}, ${fmt(p.elev)} m · `,
+            s.want === "days" ? [skyBars(p.sky.days, false), ` ${fmt(p.sky.good_days)} clear days`] : [skyBars(p.sky.nights, true), ` ${fmt(p.sky.good_nights)} clear nights`])))) : h("p", { class: "ea-empty" }, "None found."));
+    } catch (e) { swap(out, h("div", { class: "ea-err" }, String(e.message || e))); }
+  };
+  put(side, card("Find a clear place", "", form, out),
+    card("How it's read", "", h("p", { class: "ea-note" }, `GOES's clear sky mask (ABI L2 ACM) says for each 2 km pixel whether it is clear, probably clear, probably cloudy or cloudy; a place is the share of its pixels clear. Smoke is the aerosol product's (ADP), by day only. Nights count the scans with the sun 12° below the horizon or more.`)));
+  run();
 }
 
 // ------------------------------------------------------------------ search
