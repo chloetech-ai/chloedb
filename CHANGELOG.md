@@ -11,6 +11,18 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Graph walks and recommenders run through a coordinator.** `REACHABLE`,
+  `PATH`, `hops()` and `ppr()` over an `EDGES` column or an edge table are
+  walked by the coordinator, a round of reads by key over every shard per
+  hop, and answer as one database does; joins along links run on a cluster
+  too, and a coordinator of one shard leaves the walk to it. A recommender
+  runs on a cluster when its events table is placed by its user column
+  (`OPTIONS(shard_by = 'usr')`): each shard counts its own events and
+  `recommend()` reads the counts summed over the shards. Plans that carry a
+  walk's answer need the plan feature `graph_given` (shard protocol:
+  `Graph.given`), which older shards refuse. Walks over a `VECTOR` column
+  are still refused on a cluster ([cluster limits](docs/chloedb/cluster-limits.md#graphs-and-recommenders)).
+
 - **`chloectx remember preference` says it is kept for this project only.**
   Memory is per project, so a preference stored there is not recalled in
   another repository; the command now prints a note naming
