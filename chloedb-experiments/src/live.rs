@@ -491,7 +491,7 @@ impl Live {
                 sums: Vec::new(),
                 quality: Vec::new(),
                 latencies: vec![Vec::new(); k],
-                series: vec![vec![Vec::new(); k.saturating_sub(1)]; METRICS.len() + 1],
+                series: vec![vec![Vec::new(); k.saturating_sub(1)]; METRICS.len() + 2],
                 checkpoints: Vec::new(),
                 points: Vec::new(),
                 point_id: 0,
@@ -846,11 +846,11 @@ impl Live {
         let mut point_d = Vec::new();
         let mut deltas8 = Vec::new();
         for mi in 0..nm {
-            let (key, title, unit, higher, guardrail, margin, exact, about) = if mi < METRICS.len() {
+            let (key, title, unit, higher, guardrail, margin, diagnostic, exact, about) = if mi < METRICS.len() {
                 let m = &METRICS[mi];
-                (m.key, m.title, m.unit, m.higher, m.guardrail, m.margin, m.exact, m.about)
+                (m.key, m.title, m.unit, m.higher, m.guardrail, m.margin, m.diagnostic, m.exact, m.about)
             } else {
-                ("ndcg", "Judged quality (nDCG)", "score", true, false, 0.0, true, "nDCG of the rows shown, by the judges' grades for the query asked: what the site's own judgments say of each arm, beside what people did.")
+                ("ndcg", "Judged quality (nDCG)", "score", true, false, 0.0, false, true, "nDCG of the rows shown, by the judges' grades for the query asked: what the site's own judgments say of each arm, beside what people did.")
             };
             let s0 = stats[mi][0].clone();
             let mut comps = Vec::new();
@@ -863,6 +863,9 @@ impl Live {
                 st.series[mi][a - 1].push((delta, se));
                 let tau = 0.05 * s0.value.abs().max(1e-9);
                 let av = ab::always_valid(&st.series[mi][a - 1], tau).last().copied().unwrap_or(1.0);
+                // The always-valid interval, the one to read once a run
+                // stopped because it was decided.
+                let av_half = ab::always_valid_half(se, tau);
                 let pv = ab::p_two(delta / se);
                 let lift = s1.value / s0.value - 1.0;
                 let lift_se = (s1.value / s0.value) * ((s1.se / s1.value).powi(2) + (s0.se / s0.value).powi(2)).sqrt();
@@ -873,6 +876,7 @@ impl Live {
                 comps.push(json!({
                     "arm": self.spec.arms[a].name, "delta": num(delta), "se": num(se), "lo": num(delta - Z975 * se), "hi": num(delta + Z975 * se),
                     "p": num(pv), "p_always_valid": num(av), "lift": num(lift), "lift_lo": num(lift - Z975 * lift_se), "lift_hi": num(lift + Z975 * lift_se),
+                    "av_lo": num(delta - av_half), "av_hi": num(delta + av_half), "lift_av_lo": num(lift - av_half / s0.value.abs()), "lift_av_hi": num(lift + av_half / s0.value.abs()),
                     "true_delta": opt(true_delta), "true_lift": opt(t0.zip(t1).map(|(x, y)| y / x - 1.0)), "mde": num(mde), "mde_lift": num(mde / s0.value.abs()), "power": opt(power),
                 }));
                 pd.push(json!([num(delta), num(delta - Z975 * se), num(delta + Z975 * se), num(pv), num(av)]));
@@ -886,8 +890,23 @@ impl Live {
             if mi < METRICS.len() {
                 deltas8.push(d8);
             }
-            metrics.push(json!({"key": key, "title": title, "unit": unit, "higher": higher, "guardrail": guardrail, "margin": margin, "exact": exact, "about": about, "arms": arms, "comparisons": comps}));
+            metrics.push(json!({"key": key, "title": title, "unit": unit, "higher": higher, "guardrail": guardrail, "margin": margin, "diagnostic": diagnostic, "exact": exact, "about": about, "arms": arms, "comparisons": comps}));
         }
+        // The guardrail on speed: the 95th percentile of the last 5,000
+        // searches' times per arm, with an always-valid p value of its own.
+        let tails: Vec<Vec<f64>> = st.latencies.iter().map(|l| l.iter().rev().take(5000).copied().collect()).collect();
+        let mut avs = Vec::new();
+        if tails.iter().all(|t| !t.is_empty()) {
+            let q0 = { let mut v = tails[0].clone(); v.sort_by(f64::total_cmp); v[((v.len() - 1) as f64 * 0.95).round() as usize] };
+            for a in 1..k {
+                let (d, se) = ab::latency_p95_delta(&tails, a);
+                st.series[nm][a - 1].push((d, se));
+                avs.push(ab::always_valid(&st.series[nm][a - 1], 0.05 * q0.abs().max(1e-9)).last().copied().unwrap_or(1.0));
+            }
+            let names: Vec<String> = self.spec.arms.iter().map(|a| a.name.clone()).collect();
+            metrics.push(ab::latency_p95(&names, &tails, Some(&avs)));
+        }
+        ab::q_values(&mut metrics, k);
         st.checkpoints.push((searches, deltas8));
         // The sample ratio: users seen in each arm against the split.
         let mut seen = vec![0.0; k];
@@ -902,7 +921,7 @@ impl Live {
         let shares: f64 = self.spec.arms.iter().map(|a| a.share).sum();
         let chi: f64 = self.spec.arms.iter().zip(&seen).map(|(a, s)| { let e = total * a.share / shares; if e > 0.0 { (s - e) * (s - e) / e } else { 0.0 } }).sum();
         let srm_p = if total > 0.0 { stats::chi2_upper(chi, (k - 1) as f64) } else { 1.0 };
-        let verdicts: Vec<Value> = (1..k).map(|a| verdict(&self.spec, &metrics, a)).collect();
+        let verdicts: Vec<Value> = (1..k).map(|a| verdict(&self.spec, &metrics, a, srm_p >= 0.001)).collect();
         let lat: Vec<Value> = st.latencies.iter().map(|l| {
             let tail: Vec<f64> = l.iter().rev().take(5000).copied().collect();
             let mut v = tail;
@@ -1447,8 +1466,9 @@ impl Live {
 }
 
 /// The verdict of a live run for arm `a`: its primary metric by the
-/// always-valid p value, which may be read at any time.
-fn verdict(spec: &LiveSpec, metrics: &[Value], a: usize) -> Value {
+/// always-valid p value, which may be read at any time; with users split
+/// unlike the plan (`srm_ok` false), invalid.
+fn verdict(spec: &LiveSpec, metrics: &[Value], a: usize, srm_ok: bool) -> Value {
     let primary = metrics.iter().find(|m| m["key"] == json!(spec.primary)).unwrap_or(&metrics[0]);
     let c = &primary["comparisons"][a - 1];
     let higher = primary["higher"].as_bool().unwrap_or(true);
@@ -1466,7 +1486,9 @@ fn verdict(spec: &LiveSpec, metrics: &[Value], a: usize) -> Value {
         })
         .map(|m| m["title"].as_str().unwrap_or("").to_string())
         .collect();
-    let call = if p >= 0.05 {
+    let call = if !srm_ok {
+        "invalid: users split unlike the plan"
+    } else if p >= 0.05 {
         "no detectable difference"
     } else if better && worse_guards.is_empty() {
         "ship"

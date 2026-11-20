@@ -129,12 +129,15 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     let metrics = v["metrics"].as_array().unwrap();
-    assert_eq!(metrics.len(), 9, "the eight metrics and the judged quality");
+    assert_eq!(metrics.len(), 10, "the eight metrics, the judged quality and the p95 query time");
+    let p95 = metrics.iter().find(|m| m["key"] == "latency_p95").unwrap();
+    assert_eq!(p95["guardrail"], json!(true));
+    assert!(p95["comparisons"][0]["lift_hi"].is_number() && p95["comparisons"][0]["p_always_valid"].is_number(), "{p95}");
     let success = metrics.iter().find(|m| m["key"] == "success").unwrap();
     assert!(success["arms"][0]["value"].as_f64().unwrap() > 0.0);
     assert!(success["arms"][1]["truth"].as_f64().unwrap() > success["arms"][0]["truth"].as_f64().unwrap(), "the title ranking is truly better here: {success}");
     let cmp = &success["comparisons"][0];
-    for k in ["delta", "lo", "hi", "p", "p_always_valid", "lift", "true_delta", "mde", "power"] {
+    for k in ["delta", "lo", "hi", "p", "p_always_valid", "av_lo", "av_hi", "lift", "true_delta", "mde", "power"] {
         assert!(cmp[k].is_number(), "{k}: {cmp}");
     }
     assert!(cmp["p_always_valid"].as_f64().unwrap() >= cmp["p"].as_f64().unwrap() * 0.999, "{cmp}");
@@ -211,12 +214,15 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     c.post(&format!("/v1/live/{id}/stop"), json!({})).await;
     let r = c.done(&id).await;
     let rep = &r["report"];
-    assert_eq!(rep["metrics"].as_array().unwrap().len(), 8);
+    assert_eq!(rep["metrics"].as_array().unwrap().len(), 9, "the eight metrics and the p95 query time");
     assert_eq!(rep["spec"]["mode"], "live");
     let searches = rep["searches"].as_u64().unwrap();
     assert!(searches >= 300, "{searches}");
     let srch = rep["metrics"].as_array().unwrap().iter().find(|m| m["key"] == "success").unwrap();
     assert!(srch["comparisons"][0]["series"].as_array().unwrap().len() >= 2);
+    // A run read by its always-valid interval, as one that stops early must be.
+    let sc = &srch["comparisons"][0];
+    assert!(sc["av_lo"].as_f64().unwrap() <= sc["lo"].as_f64().unwrap() && sc["av_hi"].as_f64().unwrap() >= sc["hi"].as_f64().unwrap(), "{sc}");
     assert!(rep["live"]["agent_tally"][0]["tasks"].is_number());
     // Why the agents gave up: per arm, counted, and summed up by the model
     // where some did.
@@ -254,9 +260,12 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     assert_eq!(s, 404);
 
     // A run that stops once decided: the body ranking against its own
-    // matches shuffled, a loss no test misses, with two scripted agents.
+    // matches shuffled, a loss of about 4 points of success, with two
+    // scripted agents. Over 20,000 users, not 2,000: each user's searches
+    // are alike, so with fewer users the interval stays too wide for the
+    // always-valid p value within the three minutes.
     let shuffled = format!("(({}) * 7919) % 1", common::BODY);
-    let spec = json!({"name": "decided", "site": "shop", "arms": [{"name": "Body", "rank": common::BODY}, {"name": "Shuffled", "rank": shuffled}], "users": 2000, "rate": 200, "minutes": 3, "agents": 2, "brain": "scripted"});
+    let spec = json!({"name": "decided", "site": "shop", "arms": [{"name": "Body", "rank": common::BODY}, {"name": "Shuffled", "rank": shuffled}], "users": 20000, "rate": 200, "minutes": 3, "agents": 2, "brain": "scripted"});
     let id = c.post("/v1/live", spec).await["id"].as_str().unwrap().to_string();
     let r = c.done(&id).await;
     let live = &r["report"]["live"];

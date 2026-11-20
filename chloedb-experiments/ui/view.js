@@ -86,6 +86,9 @@ const CSS = `
 .ex-kpi { border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 12px; background: var(--surface); }
 .ex-kpi .k { font-size: 11.5px; color: var(--muted); }
 .ex-kpi .v { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ex-score tr.ex-diag td { color: var(--text-2); }
+.ex-score tr.ex-diag td.mname { font-weight: 500; }
+.ex-more > summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-2); }
 .ex-score td, .ex-score th { vertical-align: middle; }
 .ex-score .mname { font-weight: 600; }
 .ex-score .mname small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
@@ -210,6 +213,7 @@ const CALLS = {
   worse: ["worse", "Worse"],
   "no detectable difference": ["flat", "No detectable difference"],
   "better, but a guardrail got worse": ["mixed", "Better, but a guardrail got worse"],
+  "invalid: users split unlike the plan": ["worse", "Invalid: the split is off"],
 };
 const USERS = [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000];
 const RATES = [1, 2, 5, 10, 20, 50, 100, 200, 400];
@@ -277,9 +281,13 @@ function pText(p) {
 const power = (p) => (p == null ? "–" : Math.round(p * 100) + "%");
 /** good, bad or flat: a move of a metric, by its direction and whether its interval holds 0. */
 function tone(m, lo, hi) {
-  if (!(lo > 0 || hi < 0)) return "flat";
+  if (m.diagnostic || !(lo > 0 || hi < 0)) return "flat";
   return (lo > 0) === m.higher ? "good" : "bad";
 }
+/** Which way is better, or that a diagnostic has no better way. */
+const dirText = (m) => (m.diagnostic ? "a diagnostic: no better direction" : m.higher ? "higher is better" : "lower is better");
+/** The metrics one can open: not a percentile, which has no series. */
+const openable = (ms) => ms.filter((m) => !m.quantile);
 const toneClass = (t) => (t === "good" ? "ex-good" : t === "bad" ? "ex-bad" : "ex-flatc");
 const toneColor = (t) => (t === "good" ? "var(--good)" : t === "bad" ? "var(--crit)" : "var(--muted)");
 function callChip(h, v) {
@@ -630,7 +638,7 @@ async function builder(ctx, root, go, meta, from) {
     const model = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.model = model.value; modelHint.textContent = meta.models.find((m) => m.name === spec.model)?.about || ""; } }, meta.models.map((m) => h("option", { value: m.name, selected: m.name === spec.model }, m.name.toUpperCase())));
     const modelHint = h("div", { class: "hint" }, meta.models.find((m) => m.name === spec.model)?.about || "");
     const policy = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.explore = meta.policies[+policy.value].explore; } }, meta.policies.map((p, i) => h("option", { value: i, selected: JSON.stringify(p.explore) === JSON.stringify(spec.explore) }, p.name)));
-    const primary = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.primary = primary.value; } }, meta.metrics.filter((m) => !m.guardrail).map((m) => h("option", { value: m.key, selected: m.key === spec.primary }, m.title)));
+    const primary = h("select", { class: "select sm", style: { width: "100%" }, onchange: () => { spec.primary = primary.value; } }, meta.metrics.filter((m) => !m.guardrail && !m.diagnostic).map((m) => h("option", { value: m.key, selected: m.key === spec.primary }, m.title)));
     const mode = core.seg([["fast", "Fast", "drawn here, from each arm's rows ranked once per query"], ["served", "Served", "every search a logged query to ChloeDB, and its clicks written back"], ["live", "Live", "watch it as it runs: simulated users at a rate you set, AI agents on the site, every metric each second"], ["interleave", "Interleave", "both arms' rows in one list, drafted by turns, and every click credited to the arm whose row it was: far fewer searches tell two rankings apart; the A/B of the same pair runs beside it"]], spec.mode, (v) => {
       spec.mode = v;
       if (v === "interleave") { spec.arms = spec.arms.slice(0, 2); spec.explore_share = 0; }
@@ -791,35 +799,51 @@ async function report(ctx, root, go, meta, id, tab, onStop) {
   else page.append(setup(ctx, rep, r));
 }
 
+/** A comparison as a report should read it: after a run stopped early,
+ *  its always-valid interval and p value, since the fixed ones are too
+ *  narrow and the estimate leans away from zero (it stopped when the
+ *  difference looked big). */
+function readable(rep, c) {
+  if (!rep.live?.decided || !Number.isFinite(c.lift_av_lo)) return c;
+  return { ...c, lift_lo: c.lift_av_lo, lift_hi: c.lift_av_hi, lo: c.av_lo, hi: c.av_hi, p_fixed: c.p, p: c.p_always_valid, early: true };
+}
+
 function verdicts(ctx, rep) {
   const { core } = ctx;
   const { h } = core;
   const pm = rep.metrics.find((m) => m.key === rep.spec?.primary) || rep.metrics[0];
   return h("div", { class: "ex-verdicts" }, rep.verdicts.map((v, i) => {
-    const c = pm.comparisons[i];
+    const c = readable(rep, pm.comparisons[i]);
     const t = tone(pm, c.lift_lo, c.lift_hi);
     const truthTone = v.true_lift == null ? null : Math.abs(v.true_lift) < 1e-9 ? "flat" : (v.true_lift > 0) === pm.higher ? "good" : "bad";
     const agrees = v.truth_call && ((v.call === "ship" || v.call.startsWith("better")) ? v.truth_call === "truly better" : v.call === "worse" ? v.truth_call === "truly worse" : null);
     const [lo, hi] = domain([c.lift_lo, c.lift_hi, v.true_lift ?? 0]);
     return h("div", { class: "ex-verdict", style: { borderTop: `3px solid ${ARM_COLORS[i + 1]}` } },
       h("div", { class: "row between" }, h("b", {}, `${v.arm} against ${rep.arms[0].name}`), callChip(h, v)),
-      h("div", { class: "row", style: { alignItems: "baseline", gap: "10px" } }, h("span", { class: "big " + toneClass(t) }, pctS(c.lift)), h("span", { class: "small dim" }, `${pm.title}, 95% interval ${pctS(c.lift_lo)} to ${pctS(c.lift_hi)}, p ${pText(c.p)}`)),
+      h("div", { class: "row", style: { alignItems: "baseline", gap: "10px" } }, h("span", { class: "big " + toneClass(t) }, pctS(c.lift)), h("span", { class: "small dim" }, `${pm.title}, ${c.early ? "always-valid " : ""}95% interval ${pctS(c.lift_lo)} to ${pctS(c.lift_hi)}, p ${pText(c.p)}`)),
       forest(core, { lo: c.lift_lo, hi: c.lift_hi, mid: c.lift, truth: v.true_lift, min: lo, max: hi, color: toneColor(t), width: 300, height: 26 }),
+      v.call.startsWith("invalid") ? h("div", { class: "line ex-bad" }, "The users did not split as planned, so nothing below can be trusted: find out why before reading a metric.") : null,
+      c.early ? h("div", { class: "line dim" }, `It stopped early, once decided: the number leans away from zero, since it stopped when the difference looked big, so the interval and p here are the always-valid ones (a fixed test's p was ${pText(c.p_fixed)}).`) : null,
       h("div", { class: "line" }, v.true_lift != null ? [h("b", { class: toneClass(truthTone) }, `The truth: ${pctS(v.true_lift, 2)}`), ` (${v.truth_call}). `, agrees === true ? "The experiment's call is right." : agrees === false ? "The experiment's call is wrong: a false positive." : v.call === "no detectable difference" && v.truth_call !== "no true difference" ? "The experiment missed it: too little power." : null] : null),
-      h("div", { class: "line" }, `Power for the true effect ${power(v.power)}`, v.power != null && v.power < 0.8 && v.users_needed ? ` · 80% would take about ${core.fmt.si(v.users_needed)} users` : "", v.guardrails_worse?.length ? ` · guardrails worse: ${v.guardrails_worse.join(", ")}` : " · no guardrail worse"));
+      h("div", { class: "line" }, v.power != null ? `Power for the true effect ${power(v.power)} (only a simulator knows the true effect; a real test plans on the smallest one worth finding)` : "", v.power != null && v.power < 0.8 && v.users_needed ? ` · 80% would take about ${core.fmt.si(v.users_needed)} users` : "", v.guardrails_worse?.length ? ` · guardrails worse: ${v.guardrails_worse.join(", ")}` : " · no guardrail worse"));
   }));
 }
 
 function kpis(ctx, rep) {
   const { core } = ctx;
   const { h } = core;
-  const k = (key, v, title) => h("div", { class: "ex-kpi", title }, h("div", { class: "k" }, key), h("div", { class: "v" }, v));
+  const k = (key, v, title, sub) => h("div", { class: "ex-kpi", title }, h("div", { class: "k" }, key), h("div", { class: "v" }, v), sub ? h("div", { class: "small dim" }, sub) : null);
   const srm = rep.srm;
+  const co = rep.counts;
+  const split = (xs) => xs.map((x) => Math.round(x * 100)).join(" / ");
+  const seen = srm.users.reduce((a, b) => a + b, 0) || 1;
   return h("div", { class: "ex-kpis" },
-    rep.live ? k("Users seen", core.fmt.n(rep.arms.reduce((s, a) => s + (a.users || 0), 0)), `of a population of ${core.fmt.n(rep.users)}`) : k("Users", core.fmt.n(rep.users)),
+    rep.live ? k("Users seen", core.fmt.n(rep.arms.reduce((s, a) => s + (a.users || 0), 0)), `of a population of ${core.fmt.n(rep.users)}`)
+      : co ? k("Users", core.fmt.n(co.population), "", `${core.fmt.n(co.in_arms)} searched in the arms${co.exploring ? `, ${core.fmt.n(co.exploring)} exploring` : ""}${co.idle ? `, ${core.fmt.n(co.idle)} in the arms never searched` : ""}`)
+      : k("Users", core.fmt.n(rep.users)),
     k("Searches", core.fmt.si(rep.searches), rep.live ? "live: no pre-period" : `and ${core.fmt.si(rep.pre_searches)} in the pre-period`),
     rep.arms.map((a, i) => k(a.name, `${core.fmt.n(a.users)} users`, `${core.fmt.si(a.searches)} searches`)),
-    k("Sample ratio", srm.ok ? "as planned" : "MISMATCH", `chi-square ${srm.chi2.toFixed(2)}, p ${pText(srm.p)}: the users each arm got against the split planned`),
+    k("Sample ratio", srm.ok ? "as planned" : "MISMATCH", `chi-square ${srm.chi2.toFixed(2)}: the users each arm got against the split planned; below p 0.001 the test is invalid`, `planned ${split(srm.planned)}, got ${split(srm.users.map((u) => u / seen))} · p ${pText(srm.p)}`),
     k("Ran in", core.fmt.dur(rep.seconds) === "0s" ? rep.seconds.toFixed(1) + " s" : core.fmt.dur(rep.seconds)));
 }
 
@@ -827,21 +851,24 @@ function scorecard(ctx, rep, id) {
   const { core } = ctx;
   const { h } = core;
   const arms = rep.arms.slice(1);
-  const lifts = rep.metrics.flatMap((m) => m.comparisons.flatMap((c) => [c.lift_lo, c.lift_hi, c.true_lift]));
+  const lifts = rep.metrics.flatMap((m) => m.comparisons.map((c) => readable(rep, c)).flatMap((c) => [c.lift_lo, c.lift_hi, c.true_lift]));
   const [lo, hi] = domain(lifts.filter((x) => Number.isFinite(x) && Math.abs(x) < 2));
   const rows = [];
-  for (const m of rep.metrics) {
-    m.comparisons.forEach((c, i) => {
+  // The metrics that decide first, then the diagnostics.
+  const ordered = [...rep.metrics.filter((m) => !m.diagnostic), ...rep.metrics.filter((m) => m.diagnostic)];
+  for (const m of ordered) {
+    m.comparisons.forEach((c0, i) => {
+      const c = readable(rep, c0);
       const t = tone(m, c.lift_lo, c.lift_hi);
-      rows.push(h("tr", { class: "click", onclick: () => { location.hash = ctx.href("e", id, "metric:" + m.key); } },
-        i === 0 ? h("td", { rowspan: m.comparisons.length, class: "mname" }, m.title, m.guardrail ? h("span", { class: "pill warn", style: { marginLeft: "6px", fontSize: "10.5px" } }, "guardrail") : null, h("small", {}, m.higher ? "higher is better" : "lower is better")) : null,
+      rows.push(h("tr", { class: (m.quantile ? "" : "click") + (m.diagnostic ? " ex-diag" : ""), onclick: m.quantile ? null : () => { location.hash = ctx.href("e", id, "metric:" + m.key); } },
+        i === 0 ? h("td", { rowspan: m.comparisons.length, class: "mname" }, m.title, m.guardrail ? h("span", { class: "pill warn", style: { marginLeft: "6px", fontSize: "10.5px" } }, "guardrail") : null, m.key === rep.spec?.primary ? h("span", { class: "pill", style: { marginLeft: "6px", fontSize: "10.5px" } }, "primary") : null, h("small", {}, dirText(m))) : null,
         arms.length > 1 ? h("td", { style: { color: ARM_COLORS[i + 1], fontWeight: 600 } }, c.arm) : null,
         h("td", { class: "num ex-num" }, unitValue(m, c.control.value)),
         h("td", { class: "num ex-num" }, unitValue(m, c.treatment.value)),
         h("td", { class: "num ex-num " + toneClass(t) }, unitDelta(m, c.delta)),
         h("td", { class: "num ex-num " + toneClass(t) }, pctS(c.lift), h("div", { class: "small dim" }, `${pctS(c.lift_lo)} to ${pctS(c.lift_hi)}`)),
         h("td", {}, forest(core, { lo: c.lift_lo, hi: c.lift_hi, mid: c.lift, truth: c.true_lift, min: lo, max: hi, color: toneColor(t) })),
-        h("td", { class: "num ex-num" }, pText(c.p), h("div", { class: "small dim" }, `q ${pText(c.q)}`)),
+        h("td", { class: "num ex-num" }, pText(c.p), h("div", { class: "small dim" }, m.diagnostic ? "not in q" : `q ${pText(c.q)}`)),
         h("td", { class: "num ex-num" }, c.cuped ? [Math.max(0, Math.round(c.cuped.variance_reduction * 100)) + "%", h("div", { class: "small dim" }, `p ${pText(c.cuped.p)}`)] : "–"),
         h("td", { class: "num ex-num" }, power(c.power), h("div", { class: "small dim" }, `MDE ${pctS(c.mde_lift)}`)),
         h("td", { class: "num ex-num" }, c.true_lift == null ? "measured" : [pctS(c.true_lift, 2), h("div", { class: "small " + (c.covers ? "dim" : "ex-bad") }, c.covers ? "inside the interval" : "outside it")])));
@@ -851,7 +878,7 @@ function scorecard(ctx, rep, id) {
     h("thead", {}, h("tr", {}, h("th", {}, "Metric"), arms.length > 1 ? h("th", {}, "Arm") : null, h("th", { class: "num" }, rep.arms[0].name), h("th", { class: "num" }, arms.length > 1 ? "Arm" : arms[0].name), h("th", { class: "num" }, "Difference"), h("th", { class: "num" }, "Lift, 95%"), h("th", {}, "Interval ◇ truth"), h("th", { class: "num", title: "p: this metric alone; q: Benjamini-Hochberg over the metrics" }, "p · q"), h("th", { class: "num", title: "the variance CUPED removed, and its p" }, "CUPED"), h("th", { class: "num", title: "the chance this test sees the true effect, and the smallest lift it would see with 80% power" }, "Power"), h("th", { class: "num" }, "Truth"))),
     h("tbody", {}, rows));
   return h("div", { style: { display: "grid", gap: "14px" } },
-    core.card({ title: "Every metric", sub: "a row opens the metric; ◇ marks the truth", body: h("div", { class: "tbl-wrap" }, tbl), flush: true }),
+    core.card({ title: "Every metric", sub: `a row opens the metric; ◇ marks the truth; q is over the metrics that decide, the diagnostics below them explain${rep.live?.decided ? "; stopped early, so the intervals and p values are the always-valid ones" : ""}`, body: h("div", { class: "tbl-wrap" }, tbl), flush: true }),
     latency(ctx, rep));
 }
 
@@ -868,8 +895,8 @@ function latency(ctx, rep) {
 function metricPage(ctx, rep, id, key) {
   const { core } = ctx;
   const { h } = core;
-  const m = rep.metrics.find((x) => x.key === key) || rep.metrics[0];
-  const pick = h("select", { class: "select sm", onchange: () => { location.hash = ctx.href("e", id, "metric:" + pick.value); } }, rep.metrics.map((x) => h("option", { value: x.key, selected: x.key === m.key }, x.title)));
+  const m = openable(rep.metrics).find((x) => x.key === key) || rep.metrics[0];
+  const pick = h("select", { class: "select sm", onchange: () => { location.hash = ctx.href("e", id, "metric:" + pick.value); } }, openable(rep.metrics).map((x) => h("option", { value: x.key, selected: x.key === m.key }, x.title)));
   const cards = [h("div", { class: "row between" }, h("p", { class: "ex-note", style: { margin: 0 } }, m.about), pick)];
   m.comparisons.forEach((c, i) => {
     const color = ARM_COLORS[i + 1];
@@ -958,7 +985,7 @@ function cohorts(ctx, rep, id, cuttable) {
   let attr = "device", metric = rep.spec?.primary || "success", arm = 0, second = "";
   const box = h("div");
   const attrSeg = core.seg(rep.attributes.map((a) => [a, a]), attr, (v) => { attr = v; draw(); });
-  const metricSel = h("select", { class: "select sm", onchange: () => { metric = metricSel.value; draw(); } }, rep.metrics.map((m) => h("option", { value: m.key, selected: m.key === metric }, m.title)));
+  const metricSel = h("select", { class: "select sm", onchange: () => { metric = metricSel.value; draw(); } }, openable(rep.metrics).map((m) => h("option", { value: m.key, selected: m.key === metric }, m.title)));
   const armSel = rep.arms.length > 2 ? h("select", { class: "select sm", onchange: () => { arm = +armSel.value; draw(); } }, rep.arms.slice(1).map((a, i) => h("option", { value: i }, a.name))) : null;
   const secondSel = h("select", { class: "select sm", disabled: !cuttable, title: cuttable ? "" : "the app keeps the last three runs in memory for this: run it again to cut by two", onchange: () => { second = secondSel.value; draw(); } }, h("option", { value: "" }, "and by…"), rep.attributes.map((a) => h("option", { value: a }, a)));
   async function draw() {
@@ -971,15 +998,17 @@ function cohorts(ctx, rep, id, cuttable) {
       } catch (e) { box.replaceChildren(h("div", { class: "error" }, e.message)); }
       return;
     }
-    const cells = rep.cohorts[attr].metrics[metric][arm].cells;
-    box.replaceChildren(...cohortTable(ctx, m, cells, m.comparisons[arm], attr, rep.arms[0].name));
+    const per = rep.cohorts[attr].metrics[metric][arm];
+    box.replaceChildren(...cohortTable(ctx, m, per.cells, m.comparisons[arm], attr, rep.arms[0].name, per.interaction));
   }
   draw();
   return core.card({ title: "Cohorts", tools: h("div", { class: "row" }, attrSeg, secondSel, metricSel, armSel), body: box });
 }
 
-/** One attribute's cells of metric `m`: each a test of its own, with q over the cells and the truth. */
-function cohortTable(ctx, m, cells, overall, attr, control) {
+/** One attribute's cells of metric `m`: first whether the effect differs
+ *  between them at all (Cochran's Q), then each cell's own estimate, with
+ *  q over the cells and the truth. */
+function cohortTable(ctx, m, cells, overall, attr, control, interaction) {
   const { core } = ctx;
   const { h } = core;
   const [lo, hi] = domain(cells.flatMap((c) => [c.lift_lo, c.lift_hi, c.true_lift]).filter((x) => Number.isFinite(x) && Math.abs(x) < 3));
@@ -997,8 +1026,13 @@ function cohortTable(ctx, m, cells, overall, attr, control) {
       h("td", { class: "num ex-num" }, c.true_lift == null ? "–" : [pctS(c.true_lift, 2), h("div", { class: "small " + (c.covers ? "dim" : "ex-bad") }, c.covers ? "inside" : "outside")]));
   });
   const differ = cells.filter((c) => c.true_lift != null && overall.true_lift != null && Math.abs(c.true_lift - overall.true_lift) > Math.abs(overall.true_lift) * 0.5 + 0.005);
+  const ix = interaction;
+  const ixLine = !ix ? `Too few users in each ${attr} to test whether the effect differs between them.`
+    : ix.p < 0.05 ? `The effect differs by ${attr}: Cochran's Q ${fixed(ix.q, 1)} on ${ix.df} degrees of freedom, p ${pText(ix.p)}. The rows say where.`
+    : `No sign the effect differs by ${attr}: Cochran's Q ${fixed(ix.q, 1)} on ${ix.df} degrees of freedom, p ${pText(ix.p)}. Read the overall number; a row that looks different is most likely noise.`;
   return [
-    h("p", { class: "ex-note" }, `Overall: ${pctS(overall.lift)} (${pctS(overall.lift_lo)} to ${pctS(overall.lift_hi)}), truly ${pctS(overall.true_lift, 2)}. Each ${attr} below is a test of its own; q is Benjamini-Hochberg over the ${cells.length} cells, the one to read before believing a cohort differs.`, differ.length ? ` Truly different from the rest: ${differ.map((c) => c.cell).join(", ")}.` : ""),
+    h("div", { class: "line " + (ix && ix.p < 0.05 ? "ex-bad" : ""), style: { marginBottom: "6px" } }, h("b", {}, ixLine)),
+    h("p", { class: "ex-note" }, `Overall: ${pctS(overall.lift)} (${pctS(overall.lift_lo)} to ${pctS(overall.lift_hi)})${overall.true_lift != null ? `, truly ${pctS(overall.true_lift, 2)}` : ""}. Each row is the effect within one ${attr}, with fewer users and so a wider interval. That one row is significant and another is not does not show they differ: the test above does. q is Benjamini-Hochberg over the ${cells.length} rows.`, differ.length ? ` Truly different from the rest: ${differ.map((c) => c.cell).join(", ")}.` : ""),
     h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, attr), h("th", { class: "num" }, "Users"), h("th", { class: "num" }, control), h("th", { class: "num" }, "Lift"), h("th", {}, "95% interval ◇ truth"), h("th", { class: "num" }, "p · q"), h("th", { class: "num" }, "Power"), h("th", { class: "num" }, "Truth"))),
         h("tbody", {}, rows)))];
@@ -1034,7 +1068,7 @@ function whatif(ctx, rep) {
   const w = rep.whatif;
   if (!w) return core.empty("info", "No exploring share", "This experiment kept no users exploring: give it an exploring share to value every arm from the log alone.");
   const reward = "clicks";
-  const out = [h("p", { class: "ex-note" }, `${core.fmt.n(w.users)} users (${Math.round(w.share * 100)}%) were served the control through ${w.policy.policy} over its top ${w.policy.top} rows, and their ${core.fmt.si(w.searches)} searches logged with each row's chance of being where it was. From that log alone each estimator says what every arm would have got, here in clicks per search; beside it, what the arm measured and the truth for the exploring users. An estimator is shown when its weights are well supported; it holds when the click model is one it assumes.`)];
+  const more = [h("p", { class: "ex-note" }, `${core.fmt.n(w.users)} users (${Math.round(w.share * 100)}%) were served the control through ${w.policy.policy} over its top ${w.policy.top} rows, and their ${core.fmt.si(w.searches)} searches logged with each row's chance of being where it was. From that log alone each estimator says what every arm would have got, here in clicks per search; beside it, what the arm measured and the truth for the exploring users. An estimator is shown when its weights are well supported; it holds when the click model is one it assumes.`)];
   const best = (a) => {
     const est = a.estimates.filter((e) => e.reward === reward && Number.isFinite(e.value));
     const by = (xs) => xs.slice().sort((x, y) => x.se - y.se)[0];
@@ -1042,6 +1076,14 @@ function whatif(ctx, rep) {
   };
   const picks = w.arms.map(best);
   const base = w.arms[0], b0 = picks[0];
+  const liftOf = (x, y) => (Number.isFinite(x) && Number.isFinite(y) && y !== 0 ? x / y - 1 : null);
+  const plain = w.arms.slice(1).map((a, j) => {
+    const e = picks[j + 1];
+    const ab = liftOf(a.measured[reward], base.measured[reward]);
+    if (!e || !b0) return `The log cannot say what ${a.arm} would do: it rarely showed its lists. The A/B test measured ${pctS(ab)}.`;
+    return `From the exploring users' log alone, ${a.arm} would change clicks per search by ${pctS(liftOf(e.value, b0.value))}${e.holds ? "" : " (if clicks follow position)"}; the A/B test measured ${pctS(ab)}.`;
+  });
+  const out = [h("div", { class: "ex-verdict" }, h("b", {}, "What the log says"), plain.map((t) => h("div", { class: "line" }, t)))];
   const rows = w.arms.map((a, i) => {
     const e = picks[i];
     const lift = (x, y) => (Number.isFinite(x) && Number.isFinite(y) && y !== 0 ? x / y - 1 : null);
@@ -1054,7 +1096,7 @@ function whatif(ctx, rep) {
       i === 0 ? h("td", { class: "num dim" }, "–") : h("td", { class: "num ex-num" }, pctS(lift(a.measured[reward], base.measured[reward]))),
       i === 0 ? h("td", { class: "num dim" }, "–") : h("td", { class: "num ex-num" }, pctS(lift(a.truth[reward], base.truth[reward]), 2)));
   });
-  out.push(core.card({ title: "What the log says before running", sub: "each arm's best supported estimate, against the A/B test and the truth", body: h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+  more.push(core.card({ title: "What the log says before running", sub: "each arm's best supported estimate, against the A/B test and the truth", body: h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
     h("thead", {}, h("tr", {}, h("th", {}, "Arm"), h("th", {}, "Estimator"), h("th", { class: "num" }, "Clicks per search, from the log"), h("th", { class: "num" }, "Truth, exploring users"), h("th", { class: "num" }, "Lift, from the log"), h("th", { class: "num" }, "Lift, A/B test"), h("th", { class: "num" }, "Lift, truth"))),
     h("tbody", {}, rows))) }));
   for (const a of w.arms) {
@@ -1075,11 +1117,12 @@ function whatif(ctx, rep) {
         h("td", {}, e.shown ? core.pill("ok", "supported") : core.pill("warn", e.ess != null ? `ess ${Math.round(e.ess)}` : "no")),
         h("td", {}, e.holds ? core.pill("ok", "holds") : core.pill("info", "assumes another model")));
     });
-    out.push(core.card({
+    more.push(core.card({
       title: `${a.arm}`, sub: `truth for the exploring users ${fixed(truth, 4)} · measured in its arm ${fixed(a.measured[reward], 4)}${a.unsupported > 0 ? ` · ${pctS(a.unsupported, 0).replace("+", "")} of its slots never explored` : ""}`,
       body: h("div", { class: "tbl-wrap" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Estimator"), h("th", {}, "95% interval ◇ truth"), h("th", { class: "num" }, "Value"), h("th", { class: "num" }, "Error"), h("th", {}, "Support"), h("th", {}, "Under " + (rep.spec?.model || "").toUpperCase()))), h("tbody", {}, rows))),
     }));
   }
+  out.push(h("details", { class: "ex-more" }, h("summary", {}, "Every estimator, its support and its error"), h("div", { style: { display: "grid", gap: "14px", marginTop: "10px" } }, more)));
   return h("div", { style: { display: "grid", gap: "14px" } }, out);
 }
 
@@ -1479,9 +1522,9 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     const by = coSecond && coSecond !== coAttr ? [coAttr, coSecond] : [coAttr];
     try {
       const t = await ctx.api(`${path}/cohorts`, { method: "POST", body: { by } });
-      const cells = t.metrics[mk][coArm].cells;
+      const per = t.metrics[mk][coArm], cells = per.cells;
       coTitle.textContent = `Cohorts, now: ${m.title} by ${by.join(" and ")}${mk !== metricKey ? " (nDCG is the judges', the same for everyone)" : ""}`;
-      coBox.replaceChildren(...(by.length === 2 ? [heat(ctx, m, cells, by[0], by[1])] : cohortTable(ctx, m, cells, m.comparisons[coArm], coAttr, arms[0].name)));
+      coBox.replaceChildren(...(by.length === 2 ? [heat(ctx, m, cells, by[0], by[1])] : cohortTable(ctx, m, cells, m.comparisons[coArm], coAttr, arms[0].name, per.interaction)));
     } catch (e) { coBox.replaceChildren(h("div", { class: "error" }, e.message)); }
     coBusy = false;
   }
@@ -1534,7 +1577,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
 
   const pickMetric = (key) => { metricKey = key; drawChart(); drawTable(); drawCohorts(true); };
   function drawPick() {
-    pick.replaceChildren(...(v.metrics || []).map((m) => h("button", { type: "button", "aria-pressed": String(m.key === metricKey), onclick: () => pickMetric(m.key) }, m.title)));
+    pick.replaceChildren(...openable(v.metrics || []).map((m) => h("button", { type: "button", "aria-pressed": String(m.key === metricKey), onclick: () => pickMetric(m.key) }, m.title)));
   }
 
   function drawChart() {
@@ -1576,8 +1619,8 @@ async function livePage(ctx, root, go, meta, id, onStop) {
       m.comparisons.forEach((c, i) => {
         const t = c.p_always_valid < 0.05 ? tone(m, c.lift_lo, c.lift_hi) : "flat";
         const hist = points.filter((p) => p.n > 0).map((p) => p.d?.[mi]?.[i]?.[0]);
-        rows.push(h("tr", { class: "click" + (m.key === metricKey ? " on" : ""), onclick: () => pickMetric(m.key) },
-          i === 0 ? h("td", { rowspan: m.comparisons.length, class: "mname" }, m.title, m.guardrail ? h("span", { class: "pill warn", style: { marginLeft: "6px", fontSize: "10.5px" } }, "guardrail") : null, h("small", {}, m.higher ? "higher is better" : "lower is better")) : null,
+        rows.push(h("tr", { class: (m.quantile ? "" : "click") + (m.key === metricKey ? " on" : ""), onclick: m.quantile ? null : () => pickMetric(m.key) },
+          i === 0 ? h("td", { rowspan: m.comparisons.length, class: "mname" }, m.title, m.guardrail ? h("span", { class: "pill warn", style: { marginLeft: "6px", fontSize: "10.5px" } }, "guardrail") : null, h("small", {}, dirText(m))) : null,
           i === 0 ? h("td", { rowspan: m.comparisons.length, class: "num ex-num" }, unitValue(m, m.arms[0].value), m.arms[0].truth != null ? h("div", { class: "small dim" }, "◇ " + unitValue(m, m.arms[0].truth)) : null) : null,
           h("td", { class: "num ex-num", style: { color: k > 2 ? ARM_COLORS[i + 1] : null } }, unitValue(m, m.arms[i + 1].value), m.arms[i + 1].truth != null ? h("div", { class: "small dim" }, "◇ " + unitValue(m, m.arms[i + 1].truth)) : null),
           h("td", { class: "num ex-num " + toneClass(t) }, pctS(c.lift), h("div", { class: "small dim" }, `${pctS(c.lift_lo)} to ${pctS(c.lift_hi)}`)),
@@ -1646,7 +1689,7 @@ async function livePage(ctx, root, go, meta, id, onStop) {
     else banner.replaceChildren();
     drawKpis();
     drawVerdicts();
-    if (pick.children.length !== (v.metrics || []).length) drawPick();
+    if (pick.children.length !== openable(v.metrics || []).length) drawPick();
     drawChart();
     drawTable();
     drawCohorts(st !== "live");

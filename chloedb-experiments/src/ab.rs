@@ -68,6 +68,10 @@ pub struct Metric {
     /// (relative) with p below 0.05.
     pub guardrail: bool,
     pub margin: f64,
+    /// A diagnostic: it says why something moved, not whether the arm is
+    /// better, so it has no better direction, is not a primary metric and
+    /// stays out of the q values.
+    pub diagnostic: bool,
     #[serde(skip)]
     pub num: usize,
     #[serde(skip)]
@@ -78,14 +82,14 @@ pub struct Metric {
 }
 
 pub const METRICS: [Metric; 8] = [
-    Metric { key: "success", title: "Success rate", unit: "share of searches", higher: true, guardrail: false, margin: 0.0, num: SUCCESS, den: N, exact: true, about: "Searches with at least one satisfied click (a click the user stayed on for more than 30 seconds)." },
-    Metric { key: "clicks", title: "Clicks per search", unit: "clicks", higher: true, guardrail: false, margin: 0.0, num: CLICKS, den: N, exact: true, about: "Every click, satisfied or not, over the searches." },
-    Metric { key: "satisfied", title: "Satisfied clicks per search", unit: "clicks", higher: true, guardrail: false, margin: 0.0, num: SATISFIED, den: N, exact: true, about: "Clicks the user stayed on for more than 30 seconds." },
-    Metric { key: "abandonment", title: "Abandonment", unit: "share of searches", higher: false, guardrail: true, margin: 0.01, num: ABANDON, den: N, exact: true, about: "Searches with no click at all." },
-    Metric { key: "top", title: "First-row clicks", unit: "share of searches", higher: true, guardrail: false, margin: 0.0, num: TOP, den: N, exact: true, about: "Searches whose first row was clicked." },
-    Metric { key: "dwell", title: "Dwell time per search", unit: "seconds", higher: true, guardrail: false, margin: 0.0, num: DWELL, den: N, exact: true, about: "Seconds spent on the rows clicked, summed over a search's clicks." },
-    Metric { key: "session", title: "Searches per session", unit: "searches", higher: true, guardrail: false, margin: 0.0, num: N, den: ENDS, exact: true, about: "A session goes on after each search with a chance set by how it went: a satisfied search keeps people searching." },
-    Metric { key: "latency", title: "Query time", unit: "ms", higher: false, guardrail: true, margin: 0.1, num: LATENCY, den: N, exact: false, about: "The server's time to answer the search (took_ms), as it answered then, its answer cache included. Measured, not modelled: a served run times every search, a fast one each query once, the arms taking turns at going first." },
+    Metric { key: "success", title: "Success rate", unit: "share of searches", higher: true, guardrail: false, margin: 0.0, diagnostic: false, num: SUCCESS, den: N, exact: true, about: "Searches with at least one satisfied click (a click the user stayed on for more than 30 seconds)." },
+    Metric { key: "clicks", title: "Clicks per search", unit: "clicks", higher: true, guardrail: false, margin: 0.0, diagnostic: false, num: CLICKS, den: N, exact: true, about: "Every click, satisfied or not, over the searches." },
+    Metric { key: "satisfied", title: "Satisfied clicks per search", unit: "clicks", higher: true, guardrail: false, margin: 0.0, diagnostic: true, num: SATISFIED, den: N, exact: true, about: "Clicks the user stayed on for more than 30 seconds, every one of a search's. Close to success rate, which counts a search once: a diagnostic, read beside it, not a second goal." },
+    Metric { key: "abandonment", title: "Abandonment", unit: "share of searches", higher: false, guardrail: true, margin: 0.01, diagnostic: false, num: ABANDON, den: N, exact: true, about: "Searches with no click at all." },
+    Metric { key: "top", title: "First-row clicks", unit: "share of searches", higher: true, guardrail: false, margin: 0.0, diagnostic: true, num: TOP, den: N, exact: true, about: "Searches whose first row was clicked. A diagnostic with no better direction: more can mean a better first row or a worse rest of the page." },
+    Metric { key: "dwell", title: "Dwell time per search", unit: "seconds", higher: true, guardrail: false, margin: 0.0, diagnostic: false, num: DWELL, den: N, exact: true, about: "Seconds spent on the rows clicked, summed over a search's clicks." },
+    Metric { key: "session", title: "Searches per session", unit: "searches", higher: true, guardrail: false, margin: 0.0, diagnostic: true, num: N, den: ENDS, exact: true, about: "A session goes on after each search with a chance set by how it went. A diagnostic with no better direction: more searches can mean people find more, or that they had to search again." },
+    Metric { key: "latency", title: "Query time, mean", unit: "ms", higher: false, guardrail: false, margin: 0.1, diagnostic: true, num: LATENCY, den: N, exact: false, about: "The server's time to answer the search (took_ms), as it answered then, its answer cache included. Measured, not modelled: a served run times every search, a fast one each query once, the arms taking turns at going first. The guardrail is its 95th percentile, since the slow tail is what people notice; the mean is a diagnostic." },
 ];
 
 pub fn metric(key: &str) -> Option<&'static Metric> {
@@ -287,8 +291,8 @@ impl Spec {
         if !(0.0..=2.0).contains(&self.pre) {
             return Err("the pre-period is from 0 to 2 times the experiment".into());
         }
-        if metric(&self.primary).is_none() {
-            return Err(format!("no metric {}", self.primary));
+        if metric(&self.primary).is_none_or(|m| m.diagnostic || m.guardrail) {
+            return Err(format!("no primary metric {}: a primary metric is one of success, clicks, dwell", self.primary));
         }
         Ok(())
     }
@@ -829,6 +833,91 @@ pub fn always_valid(series: &[(f64, f64)], tau: f64) -> Vec<f64> {
         .collect()
 }
 
+/// The half-width of the always-valid 95% interval (a confidence
+/// sequence) that goes with [`always_valid`]'s p value, for a difference
+/// with standard error `se` and mixing scale `tau`: the differences it
+/// keeps are those whose p value would stay above 0.05.
+pub fn always_valid_half(se: f64, tau: f64) -> f64 {
+    let (v, t2) = (se * se, tau * tau);
+    if !(v > 0.0 && v.is_finite() && t2 > 0.0) {
+        return f64::NAN;
+    }
+    (2.0 * v * (v + t2) / t2 * ((1.0f64 / 0.05).ln() + 0.5 * ((v + t2) / v).ln())).sqrt()
+}
+
+/// Cochran's Q over differences `(delta, se)`: whether they differ more
+/// than their errors say, the test of an interaction between the arm and
+/// the cells they come from. Cells with no error are left out. Returns
+/// (Q, degrees of freedom, p), or none with fewer than two cells.
+pub fn cochran_q(cells: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
+    let ok: Vec<(f64, f64)> = cells.iter().copied().filter(|&(d, se)| d.is_finite() && se.is_finite() && se > 0.0).collect();
+    if ok.len() < 2 {
+        return None;
+    }
+    let w: Vec<f64> = ok.iter().map(|&(_, se)| 1.0 / (se * se)).collect();
+    let pooled = ok.iter().zip(&w).map(|(&(d, _), w)| w * d).sum::<f64>() / w.iter().sum::<f64>();
+    let q: f64 = ok.iter().zip(&w).map(|(&(d, _), w)| w * (d - pooled) * (d - pooled)).sum();
+    let df = (ok.len() - 1) as f64;
+    Some((q, df, stats::chi2_upper(q, df)))
+}
+
+/// Quantile `q` of `v`, sorted, with its standard error from the order
+/// statistics' distribution-free 95% interval (ranks n q ± 1.96 √(n q (1 − q))).
+fn quantile_se(v: &[f64], q: f64) -> (f64, f64) {
+    let n = v.len();
+    if n == 0 {
+        return (f64::NAN, f64::NAN);
+    }
+    let at = |r: f64| v[(r.round().max(0.0) as usize).min(n - 1)];
+    let mid = (n - 1) as f64 * q;
+    let half = Z975 * (n as f64 * q * (1.0 - q)).sqrt();
+    (at(mid), (at(mid + half) - at(mid - half)) / (2.0 * Z975))
+}
+
+/// The guardrail on query time: each arm's 95th percentile against the
+/// control's, a metric of the report's shape (no series, no truth: the
+/// times are measured). `latencies` per arm; `av`, the always-valid p
+/// value per arm after the control when the run keeps a series of them.
+pub fn latency_p95(names: &[String], latencies: &[Vec<f64>], av: Option<&[f64]>) -> Value {
+    let sorted: Vec<Vec<f64>> = latencies.iter().map(|l| { let mut v = l.clone(); v.sort_by(f64::total_cmp); v }).collect();
+    let qs: Vec<(f64, f64)> = sorted.iter().map(|v| quantile_se(v, 0.95)).collect();
+    let (q0, se0) = qs[0];
+    let comps: Vec<Value> = (1..names.len())
+        .map(|a| {
+            let (q1, se1) = qs[a];
+            let delta = q1 - q0;
+            let se = (se0 * se0 + se1 * se1).sqrt();
+            let lift = q1 / q0 - 1.0;
+            let lift_se = (q1 / q0) * ((se1 / q1).powi(2) + (se0 / q0).powi(2)).sqrt();
+            let p = if se > 0.0 { p_two(delta / se) } else { f64::NAN };
+            let num = |x: f64| if x.is_finite() { json!(x) } else { Value::Null };
+            json!({
+                "arm": names[a],
+                "control": {"users": Value::Null, "searches": sorted[0].len(), "value": num(q0), "se": num(se0)},
+                "treatment": {"users": Value::Null, "searches": sorted[a].len(), "value": num(q1), "se": num(se1)},
+                "delta": num(delta), "se": num(se), "lo": num(delta - Z975 * se), "hi": num(delta + Z975 * se), "p": num(p),
+                "p_always_valid": av.and_then(|v| v.get(a - 1)).map_or(Value::Null, |&x| num(x)),
+                "lift": num(lift), "lift_lo": num(lift - Z975 * lift_se), "lift_hi": num(lift + Z975 * lift_se),
+                "true_delta": Value::Null, "true_lift": Value::Null, "mde": num((Z975 + Z80) * se), "mde_lift": num((Z975 + Z80) * se / q0.abs()), "power": Value::Null,
+            })
+        })
+        .collect();
+    let arms: Vec<Value> = names.iter().zip(&qs).zip(&sorted).map(|((n, &(q, se)), v)| json!({"arm": n, "value": if q.is_finite() { json!(q) } else { Value::Null }, "se": if se.is_finite() { json!(se) } else { Value::Null }, "users": Value::Null, "searches": v.len(), "truth": Value::Null})).collect();
+    json!({
+        "key": "latency_p95", "title": "Query time, 95th percentile", "unit": "ms", "higher": false, "guardrail": true, "margin": 0.1, "diagnostic": false, "quantile": true, "exact": false,
+        "about": "The 95th percentile of the server's time to answer, per arm: the guardrail on speed, since the slow tail is what people notice. Its interval comes from the order statistics, which assume nothing of the times' shape.",
+        "arms": arms, "comparisons": comps,
+    })
+}
+
+/// The difference of arm `a`'s p95 query time from the control's and its
+/// standard error, for a series of always-valid p values.
+pub fn latency_p95_delta(latencies: &[Vec<f64>], a: usize) -> (f64, f64) {
+    let q = |l: &Vec<f64>| { let mut v = l.clone(); v.sort_by(f64::total_cmp); quantile_se(&v, 0.95) };
+    let ((q0, s0), (q1, s1)) = (q(&latencies[0]), q(&latencies[a]));
+    (q1 - q0, (s0 * s0 + s1 * s1).sqrt())
+}
+
 /// The CUPED estimate of arm `b` against arm `a` for one metric: each
 /// user's linearised value adjusted by their pre-period's, with one θ for
 /// both arms. Returns (delta, se, the share of variance it removed).
@@ -992,6 +1081,16 @@ fn srm(d: &RunData) -> Value {
     json!({"users": seen, "planned": d.spec.arms.iter().map(|a| a.share / shares).collect::<Vec<_>>(), "chi2": chi, "p": p, "ok": p >= 0.001})
 }
 
+/// Who the users were: the population, those in an arm who searched (the
+/// ones every metric counts), those given to the exploring share, and
+/// those in an arm who never searched.
+fn counts(d: &RunData) -> Value {
+    let searched = |u: usize| d.sums[u][N] > 0.0;
+    let in_arms = (0..d.users.len()).filter(|&u| d.arm[u].is_some() && searched(u)).count();
+    let exploring = d.arm.iter().filter(|a| a.is_none()).count();
+    json!({"population": d.users.len(), "in_arms": in_arms, "exploring": exploring, "idle": d.users.len() - in_arms - exploring})
+}
+
 fn percentile(v: &mut [f64], p: f64) -> f64 {
     if v.is_empty() {
         return f64::NAN;
@@ -1045,7 +1144,15 @@ pub fn cohort_table(d: &RunData, by: &[&str]) -> Value {
             for (r, q) in rows.iter_mut().zip(bh(&ps)) {
                 r["q"] = json!(q);
             }
-            per_arm.push(json!({"arm": d.spec.arms[a].name, "cells": rows}));
+            // Whether the cells' differences differ: the interaction test,
+            // over the cells with users enough in both arms.
+            let ds: Vec<(f64, f64)> = rows
+                .iter()
+                .filter(|r| r["control"]["users"].as_u64().unwrap_or(0) >= 30 && r["treatment"]["users"].as_u64().unwrap_or(0) >= 30)
+                .map(|r| (r["delta"].as_f64().unwrap_or(f64::NAN), r["se"].as_f64().unwrap_or(f64::NAN)))
+                .collect();
+            let interaction = cochran_q(&ds).map_or(Value::Null, |(q, df, p)| json!({"q": q, "df": df, "p": p, "cells": df as usize + 1}));
+            per_arm.push(json!({"arm": d.spec.arms[a].name, "cells": rows, "interaction": interaction}));
         }
         out.insert(m.key.to_string(), json!(per_arm));
     }
@@ -1226,7 +1333,6 @@ fn band_finding(arm: &str, bands: &[Value]) -> Option<String> {
 pub fn report(d: &RunData) -> Value {
     let k = d.spec.arms.len();
     let mut metrics = Vec::new();
-    let mut ps_by_arm: Vec<Vec<f64>> = vec![Vec::new(); k];
     for (mi, m) in METRICS.iter().enumerate() {
         let mut comps = Vec::new();
         for a in 1..k {
@@ -1240,7 +1346,17 @@ pub fn report(d: &RunData) -> Value {
             }
             let base = c["control"]["value"].as_f64().unwrap_or(1.0).abs().max(1e-9);
             c["series"] = series(d, a, mi, 0.05 * base);
-            ps_by_arm[a].push(c["p"].as_f64().unwrap_or(f64::NAN));
+            // The always-valid p value and interval, which a run that
+            // stopped once decided must be read by.
+            let (delta, se, c0) = (c["delta"].as_f64().unwrap_or(f64::NAN), c["se"].as_f64().unwrap_or(f64::NAN), c["control"]["value"].as_f64().unwrap_or(f64::NAN));
+            let half = always_valid_half(se, 0.05 * base);
+            let lift = c["lift"].as_f64().unwrap_or(f64::NAN);
+            let num = |x: f64| if x.is_finite() { json!(x) } else { Value::Null };
+            c["p_always_valid"] = c["series"].as_array().and_then(|s| s.last()).map_or(Value::Null, |p| p["p_always_valid"].clone());
+            c["av_lo"] = num(delta - half);
+            c["av_hi"] = num(delta + half);
+            c["lift_av_lo"] = num(lift - half / c0.abs());
+            c["lift_av_hi"] = num(lift + half / c0.abs());
             comps.push(c);
         }
         let arms: Vec<Value> = (0..k)
@@ -1250,15 +1366,11 @@ pub fn report(d: &RunData) -> Value {
                 json!({"arm": d.spec.arms[a].name, "value": s.value, "se": s.se, "users": s.users, "truth": truth_of(d, &|_| true, a, m)})
             })
             .collect();
-        metrics.push(json!({"key": m.key, "title": m.title, "unit": m.unit, "higher": m.higher, "guardrail": m.guardrail, "margin": m.margin, "exact": m.exact, "about": m.about, "arms": arms, "comparisons": comps, "histogram": histogram(d, m)}));
+        metrics.push(json!({"key": m.key, "title": m.title, "unit": m.unit, "higher": m.higher, "guardrail": m.guardrail, "margin": m.margin, "diagnostic": m.diagnostic, "exact": m.exact, "about": m.about, "arms": arms, "comparisons": comps, "histogram": histogram(d, m)}));
     }
-    // q values across the metrics, per arm.
-    for a in 1..k {
-        let q = bh(&ps_by_arm[a]);
-        for (m, q) in metrics.iter_mut().zip(q) {
-            m["comparisons"][a - 1]["q"] = json!(q);
-        }
-    }
+    let names: Vec<String> = d.spec.arms.iter().map(|a| a.name.clone()).collect();
+    metrics.push(latency_p95(&names, &d.latencies, None));
+    q_values(&mut metrics, k);
     let mut cohorts = serde_json::Map::new();
     for attr in ATTRIBUTES {
         cohorts.insert(attr.to_string(), cohort_table(d, &[attr]));
@@ -1273,6 +1385,7 @@ pub fn report(d: &RunData) -> Value {
         "pre_searches": (d.spec.impressions as f64 * d.spec.pre).round(),
         "seconds": d.seconds,
         "srm": srm(d),
+        "counts": counts(d),
         "metrics": metrics,
         "verdicts": verdicts,
         "cohorts": cohorts,
@@ -1283,8 +1396,22 @@ pub fn report(d: &RunData) -> Value {
     })
 }
 
+/// Benjamini-Hochberg q values across the metrics that decide (the
+/// primary candidates and the guardrails), per arm; a diagnostic's q is
+/// none, since it is not one of the questions asked.
+pub fn q_values(metrics: &mut [Value], k: usize) {
+    for a in 1..k {
+        let at: Vec<usize> = (0..metrics.len()).filter(|&i| metrics[i]["diagnostic"] != json!(true)).collect();
+        let ps: Vec<f64> = at.iter().map(|&i| metrics[i]["comparisons"][a - 1]["p"].as_f64().unwrap_or(f64::NAN)).collect();
+        for (&i, q) in at.iter().zip(bh(&ps)) {
+            metrics[i]["comparisons"][a - 1]["q"] = if q.is_finite() { json!(q) } else { Value::Null };
+        }
+    }
+}
+
 /// What an arm's result says: its primary metric's move, and any
-/// guardrail it made worse.
+/// guardrail it made worse. With users split unlike the plan, nothing
+/// else is read: the call is that the test is invalid.
 fn verdict(d: &RunData, metrics: &[Value], a: usize) -> Value {
     let primary = metrics.iter().find(|m| m["key"] == json!(d.spec.primary)).unwrap_or(&metrics[0]);
     let c = &primary["comparisons"][a - 1];
@@ -1303,7 +1430,10 @@ fn verdict(d: &RunData, metrics: &[Value], a: usize) -> Value {
         })
         .map(|m| m["title"].as_str().unwrap_or("").to_string())
         .collect();
-    let call = if p >= 0.05 {
+    let srm_ok = srm(d)["ok"] != json!(false);
+    let call = if !srm_ok {
+        "invalid: users split unlike the plan"
+    } else if p >= 0.05 {
         "no detectable difference"
     } else if better && worse_guards.is_empty() {
         "ship"
@@ -1347,6 +1477,41 @@ mod tests {
         assert!((q[1] - 0.16 / 3.0).abs() < 1e-12);
         assert!((q[3] - 0.2).abs() < 1e-12);
         assert!(bh(&[f64::NAN, 0.5])[0].is_nan());
+    }
+
+    #[test]
+    fn the_always_valid_interval_ends_where_its_p_value_is_0_05() {
+        let (se, tau) = (0.02, 0.01);
+        let half = always_valid_half(se, tau);
+        // A difference at the interval's edge has an always-valid p of 0.05.
+        let p = always_valid(&[(half, se)], tau)[0];
+        assert!((p - 0.05).abs() < 1e-9, "p {p}");
+        // And it is wider than the fixed interval.
+        assert!(half > Z975 * se);
+    }
+
+    #[test]
+    fn cochran_q_finds_cells_that_differ() {
+        // Alike: Q small. Unlike: Q large, p tiny.
+        let (q, df, p) = cochran_q(&[(0.01, 0.01), (0.012, 0.01), (0.009, 0.01)]).unwrap();
+        assert_eq!(df, 2.0);
+        assert!(q < 0.1 && p > 0.9);
+        let (_, _, p) = cochran_q(&[(0.05, 0.01), (-0.05, 0.01)]).unwrap();
+        assert!(p < 1e-6);
+        // Cells with no error are left out; one cell is no test.
+        assert!(cochran_q(&[(0.05, 0.01), (0.0, 0.0)]).is_none());
+    }
+
+    #[test]
+    fn latency_p95_reads_the_tail() {
+        let fast: Vec<f64> = (0..1000).map(|i| 1.0 + (i % 100) as f64 * 0.01).collect();
+        // The same times, but one in ten three times slower: the mean moves a little, the tail a lot.
+        let slow: Vec<f64> = fast.iter().enumerate().map(|(i, t)| if i % 10 == 0 { t * 3.0 } else { *t }).collect();
+        let m = latency_p95(&["A".into(), "B".into()], &[fast, slow], None);
+        let c = &m["comparisons"][0];
+        assert!(c["lift"].as_f64().unwrap() > 0.5, "{c}");
+        assert!(c["p"].as_f64().unwrap() < 0.001);
+        assert_eq!(m["guardrail"], json!(true));
     }
 
     #[test]

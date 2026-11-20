@@ -121,6 +121,7 @@ The token (`--experiments-token`, or `CHLOEDB_HN_EXPERIMENTS_TOKEN`) opens only 
 | `GET /v1/experiment/item/:id` | a story's title, link and text |
 | `GET /v1/experiment/sample?n=&seed=` | stories to write people from: well voted and ordinary, across the years |
 | `GET /v1/experiment/log?since=&limit=` | with `--explore-share`: the page's logged searches since `since` (seconds), each with the stories as ranked, as shown and opened, and the policy |
+| `GET /v1/experiment/interleave`, `POST /v1/experiment/interleave`, `POST /v1/experiment/interleave/stop`, `GET /v1/experiment/interleave/log` | the test interleaving two arms on the page's searches: what runs, start one, stop it, read its searches ([below](#interleaving-two-arms-on-real-visitors-searches)) |
 
 The knobs, by group (an arm names the ones it changes; the rest stay as the site is):
 
@@ -137,6 +138,10 @@ A knob it does not have, a number out of its range, an index it was not given, o
 ### Exploring: the page's searches, logged
 
 With `--explore-share ε` (or `CHLOEDB_HN_EXPLORE_SHARE`; it needs `--experiments-token`), the page's searches are logged so that the Experiments app can value a ranking on what real people opened, off-policy, without serving it. A logged search is the page's own (`log=1`): the first page of stories by the best match, with words. The log holds the stories in the order the site ranked them, the order shown and the stories opened from it (`GET /v1/click?r=&id=`, which the page calls, kept only for a recent request that showed the story). With chance ε the top `--explore-top` (10) stories are shown in a uniform random order instead (the rank log's `epsilon` policy), so every story of the top has a known chance at every place. The draw is seeded by the request's id. A search through the API, the Experiments app's agents' included, is not logged. The tables are `hn_explore_log` and `hn_explore_clicks`, and a tune ([Experiments](../../chloedb-experiments/README.md#tune-the-relevance-autopilot-on-a-sites-knobs)) values the site as it is and its proposal on them.
+
+### Interleaving: two arms on real visitors' searches
+
+The Experiments app's last step before a decision. When it starts a test (`POST /v1/experiment/interleave` with `{id, name, a, b, share}`, `a` and `b` each a set of the knobs above), a share of the page's logged searches (`log=1`) runs both arms' searches and shows one list drafted from the two by team draft: a coin seeded by the request picks which arm chooses first in each round, and each round both place their best story not yet shown. Each search is kept in `hn_interleave_log` with its query, both arms' stories and times, the order shown, the arm that placed each story and the device (phone or not, from the page's width), and the clicks are the ones the page already logs. Only one test runs at a time; it keeps running across a restart until `POST /v1/experiment/interleave/stop`. `GET /v1/experiment/interleave` says what runs, and `GET /v1/experiment/interleave/log?test=&since=&limit=` reads its searches with their clicks. Two arms that search alike are refused. No test runs until one is started.
 
 ## Measured against hn.algolia.com
 

@@ -73,6 +73,19 @@ query's share of the traffic) and their judged rows (`query`, `doc`,
 | `POST /v1/live/<id>/try`, `/try/open`, `/try/done` | search the site as a visitor in the run, open a result, say it answered |
 | `POST /v1/live/<id>/cohorts` | every metric by one or two attributes (`by`), over the users the run has seen so far |
 
+The home is experiments on real sites ([below](#an-experiment-from-a-question-to-a-decision));
+the simulator's experiments are in the **Practice lab** (`#/lab`), where the
+truth is known. Its report reads the metrics that decide (success rate,
+clicks per search, dwell time, and the guardrails abandonment and query
+time's 95th percentile) apart from the diagnostics (satisfied clicks,
+first-row clicks, searches per session and the mean query time), which
+have no better direction and stay out of the q values. A sample ratio
+mismatch (p below 0.001) makes the call invalid. A live run that stopped
+once decided is read by its always-valid interval and p value, since a
+fixed one is too narrow after an early stop. Cohorts start with an
+interaction test, Cochran's Q over the cells, before each cell's own
+interval.
+
 Sites and experiments are rows of the server (`exp_sites`,
 `exp_experiments`); a served run's rank log and events are tables of their
 own (`exp_log_<id>`, `exp_events_<id>`), dropped with it. The page is
@@ -251,6 +264,57 @@ steps:
    one of them found, and a sentence. The page has a grid of needs by
    arms, and each need opens the arms' sessions side by side, step by
    step.
+
+### An experiment: from a question to a decision
+
+The app's home lists experiments on real sites by what they need: a
+decision, running, gathering evidence, decided. **New experiment** takes a
+hypothesis, a site, a control (the site as it is by default) and a
+treatment, each a set of the site's knobs and named from the knobs it
+changes, the guardrails (query time's 95th percentile no more than 10%
+slower, no regressed need) and the smallest difference worth finding.
+The experiment's page climbs four steps, each dearer than the last, and
+any can be skipped:
+
+1. **Side by side.** The busiest logged searches (or the study's), each
+   shown by both arms, with how much of the first page changed.
+2. **Judged queries.** The judge grades every row either arm shows for
+   them, once, on a different model than the agents by default (Claude
+   Opus 5.5), and the arms are compared by nDCG need by need: the
+   difference, its interval, the needs that regressed and the known rows
+   lost, with what the queries could detect.
+3. **Simulated users.** A study of the two arms (above).
+4. **Real visitors.** When the site takes it (chloedb-hn's
+   [interleaving](../docs/chloedb/hn.md#interleaving-two-arms-on-real-visitors-searches)),
+   a share of its real searches shows both arms in one list drafted by
+   team draft, and a click counts for the arm that placed the row. The
+   report gives the preference (wins less losses over searches) with its
+   interval, the always-valid p value, the coin's balance, each arm's
+   p95 time, what the searches so far can detect and the days still
+   needed. It starts only when you press it, and stops when you stop it.
+
+The rule declared up front then says **ship**, **don't ship**, **not yet**,
+**a trade-off** (the treatment wins but a guardrail failed), **flat** or
+**invalid** (the coin was unbalanced), with each reason, and the decision
+box records the call (ship, don't ship, iterate) with a note, and whether
+it overrode the rule. Below it the report has every metric with its
+difference, 95% interval, p value and n; a chart over days or over the
+units as they came, cumulative or per period, with its interval; and every
+attribute (device, need kind, query length, day) as chips that filter and
+as groups, each with Benjamini-Hochberg q values over the groups and
+Cochran's Q on whether the effect differs between them.
+
+| route | what |
+|---|---|
+| `GET /v1/trials`, `POST /v1/trials` | the experiments; a spec makes one |
+| `GET /v1/trials/<id>`, `DELETE /v1/trials/<id>` | one, with its steps, its units and the rule's call |
+| `POST /v1/trials/<id>/judged` | judge the queries (`brain`, `judge_model`, `budget`, at most $5) |
+| `POST /v1/trials/<id>/study` | start the study of its two arms |
+| `POST /v1/trials/<id>/online`, `/online/stop` | start (`share`) or stop the interleaving on real visitors |
+| `POST /v1/trials/<id>/decide` | record the call (`ship`, `dont_ship`, `iterate`) and a note |
+| `POST /v1/trials/<id>/stop` | stop what it runs |
+
+Experiments are rows of `exp_trials`.
 
 ### Tune: the relevance autopilot on a site's knobs
 

@@ -11,6 +11,39 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Experiments: an experiment on a real site is one object, with its
+  evidence in steps, a decision rule and a detailed report**
+  (`chloedb-experiments`, `chloedb-hn`, demos). The home lists
+  experiments by what they need (a decision, running, gathering evidence,
+  decided); New experiment takes a hypothesis, a control and a treatment
+  (arms named from the knobs they change), guardrails and the smallest
+  difference worth finding. Its page climbs four steps, each dearer than
+  the last: side by side, judged queries (a judge on another model than
+  the agents, Claude Opus 5.5 by default), simulated users (a study) and
+  real visitors interleaved; the rule declared up front then says ship,
+  don't ship, not yet, a trade-off, flat or invalid, and the decision box
+  records the call and whether it overrode the rule. The report has every
+  metric with its difference, interval, p value and n, charts over days or
+  units (cumulative or per period, with intervals), filters and groups by
+  any attribute with Benjamini-Hochberg q values and Cochran's Q.
+  chloedb-hn interleaves two arms on real visitors' searches by team
+  draft when the app starts a test (`/v1/experiment/interleave`, off until
+  one is started), logging each search's teams and clicks. Studies and
+  tunes say what they can detect, list the needs a treatment lost first,
+  and refuse an arm that is a duplicate. `GET/POST /v1/trials`.
+- **Experiments: the Practice lab's statistics** (`chloedb-experiments`,
+  a demo). The simulator's home is now the Practice lab. Satisfied clicks,
+  first-row clicks, searches per session and the mean query time are
+  diagnostics: no better direction, left out of the q values, not a
+  primary metric. The query time guardrail is its 95th percentile, with an
+  interval from the order statistics. A sample ratio mismatch makes the
+  call "invalid", and the report shows the split planned and got, and who
+  the users were (in an arm, exploring, never searched). A live run that
+  stopped once decided is read by its always-valid interval and p value.
+  Cohorts open with an interaction test (Cochran's Q) before the cells,
+  What-if says in one line what the log predicts against the A/B test,
+  and power for the true effect is marked as the simulator's alone.
+
 - **Experiments tunes a real site's knobs as the relevance autopilot
   does.** On a finished study's page, Tune its knobs takes the study's
   needs, the searches its agents typed and the grades it kept, holds a
