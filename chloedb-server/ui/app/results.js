@@ -2,14 +2,14 @@
 // details, copy and download), a chart of chosen columns, the plan as a
 // tree of operators with what ran on each segment, and the raw JSON.
 
-import { h, s, icon, clear, fmt, copy, drawer, showTip, hideTip, seg, empty, when } from "./core.js";
+import { h, s, icon, clear, fmt, copy, drawer, showTip, hideTip, seg, empty, when, toast } from "./core.js";
 import { SERIES } from "./charts.js";
 
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 const isTime = (v) => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v);
 // A column named like a time is a chart's axis, never a value, even when it
 // holds numbers: the log store's `minute` is minutes since 1970.
-const TIME_COL = /^(ts|t|time|minute|hour|day|bucket|date)$/i;
+const TIME_COL = /^(ts|t|time|minute|hour|day|week|month|bucket|date)$|_(day|week|month)$/i;
 /** How to read a time-like column's numbers as milliseconds, or null when they are not times. */
 function timeScale(name, values) {
   if (!TIME_COL.test(name)) return null;
@@ -123,10 +123,10 @@ export function grid(j, { max = 1000, onRow, first = 1 } = {}) {
 }
 
 /** One row of an answer, every column in full. */
-export function rowDrawer(i, j) {
+export function rowDrawer(i, j, { title = null } = {}) {
   const r = rowsOf(j)[i];
   drawer({
-    title: `Row ${i + 1}`, sub: j.keys?.[i] != null ? `key ${cellText(j.keys[i])}` : null,
+    title: title || `Row ${i + 1}`, sub: j.keys?.[i] != null ? `key ${cellText(j.keys[i])}` : null,
     body: [
       h("dl", { class: "kv" }, Object.entries(r).flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, typeof v === "string" && v.length > 80 ? h("div", { class: "small", style: { whiteSpace: "pre-wrap" } }, v) : cell(v, k))])),
       j.scores?.[i] != null ? h("div", { class: "small muted" }, `score ${j.scores[i]}`) : null,
@@ -136,54 +136,148 @@ export function rowDrawer(i, j) {
   });
 }
 
-/** The tools over a grid: copy and download in four forms. */
-export function exportMenu(j, name = "chloedb") {
+/**
+ * The tools over a grid: copy and download. With `all` ({sql, params,
+ * total}), the answer is a page of more rows: CSV and JSONL write every
+ * row the statement answers, read a page at a time, and say how many;
+ * Copy is the page on screen, and says so (GRACE-403). Without it, the
+ * answer is whole.
+ */
+export function exportMenu(j, name = "chloedb", { all = null } = {}) {
   const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, "");
+  const n = j.rows.length;
+  const paged = all && all.total != null && all.total > n;
+  const every = (format) => async (e) => {
+    const btn = e.currentTarget, label = btn.lastChild, was = label.textContent;
+    if (btn.dataset.busy) return;
+    btn.dataset.busy = "1";
+    try {
+      const { exportRows } = await import("./bigresult.js");
+      const k = await exportRows(all.sql, all.params || {}, `${name}-${stamp}.${format}`, { format, onPage: (rows) => { label.textContent = `${was} · ${fmt.n(rows)}…`; } });
+      if (k != null) toast(`${fmt.plural(k, "row")} written to ${name}-${stamp}.${format}`, "ok");
+    } catch (err) { toast(`Export failed: ${err.message}`, "bad", 6000); }
+    finally { delete btn.dataset.busy; label.textContent = was; }
+  };
+  const count = all?.total != null ? fmt.n(all.total) : null;
   return [
-    h("button", { class: "btn sm ghost", title: "Copy as tab-separated text, for a spreadsheet", onclick: () => copy(asDelimited(j, "\t"), `${fmt.plural(j.rows.length, "row")} copied`) }, icon("copy"), "Copy"),
-    h("button", { class: "btn sm ghost", title: "Download as CSV", onclick: () => download(`${name}-${stamp}.csv`, asDelimited(j), "text/csv") }, icon("download"), "CSV"),
-    h("button", { class: "btn sm ghost", title: "Download as JSON Lines, a row an object", onclick: () => download(`${name}-${stamp}.jsonl`, rowsOf(j).map((r) => JSON.stringify(r)).join("\n") + "\n", "application/x-ndjson") }, "JSONL"),
+    h("button", { class: "btn sm ghost", title: paged ? `Copy the ${fmt.plural(n, "row")} on screen as tab-separated text, for a spreadsheet` : "Copy as tab-separated text, for a spreadsheet", onclick: () => copy(asDelimited(j, "\t"), `${fmt.plural(n, "row")} copied${paged ? ` (this page of ${count})` : ""}`) }, icon("copy"), paged ? `Copy ${fmt.n(n)}` : "Copy"),
+    all ? h("button", { class: "btn sm ghost", title: `Download all ${count ? `${count} rows` : "the rows"} as CSV, not just this page`, onclick: every("csv") }, icon("download"), h("span", {}, count ? `CSV · all ${count}` : "CSV · all"))
+      : h("button", { class: "btn sm ghost", title: "Download as CSV", onclick: () => download(`${name}-${stamp}.csv`, asDelimited(j), "text/csv") }, icon("download"), "CSV"),
+    all ? h("button", { class: "btn sm ghost", title: `Download all ${count ? `${count} rows` : "the rows"} as JSON Lines, a row an object`, onclick: every("jsonl") }, h("span", {}, "JSONL"))
+      : h("button", { class: "btn sm ghost", title: "Download as JSON Lines, a row an object", onclick: () => download(`${name}-${stamp}.jsonl`, rowsOf(j).map((r) => JSON.stringify(r)).join("\n") + "\n", "application/x-ndjson") }, "JSONL"),
   ];
 }
 
 // ---------------------------------------------------------------- chart
+/** The most series a chart split by a column draws: one colour each. */
+export const MAX_SERIES = SERIES.length;
+const key = (v) => (v == null ? "\u0000" : typeof v === "object" ? JSON.stringify(v) : String(v));
+
+/**
+ * What a chart draws (GRACE-406): {names, pts: [{x, ys}], left}. Without
+ * `split`, a series per column of `ys` and a point per row. With `split`
+ * (a column of categories, priority), a series per value of it, of the
+ * first column of `ys`: rows of one x make one point, each value at its
+ * series' place (NULL where the row is missing), so four priorities are
+ * four lines, not one line through all of them. The values with the most
+ * rows come first, at most MAX_SERIES; `left` counts the others.
+ */
+export function chartSeries(cols, rows, { x, ys, split = null, max = 400 }) {
+  const xi = cols.indexOf(x);
+  const si = split && split !== x ? cols.indexOf(split) : -1;
+  if (si < 0) return { names: ys, pts: rows.slice(0, max).map((r) => ({ x: r[xi], ys: ys.map((y) => r[cols.indexOf(y)]) })), left: 0 };
+  const yi = cols.indexOf(ys[0]);
+  const seen = new Map();
+  for (const r of rows) seen.set(key(r[si]), { v: r[si], n: (seen.get(key(r[si]))?.n || 0) + 1 });
+  const order = [...seen.values()].sort((a, b) => b.n - a.n);
+  const names = order.slice(0, MAX_SERIES).map((o) => (o.v == null ? "(none)" : cellText(o.v)));
+  const at = new Map(order.slice(0, MAX_SERIES).map((o, k) => [key(o.v), k]));
+  const byX = new Map();
+  for (const r of rows) {
+    const k = at.get(key(r[si]));
+    if (k == null) continue;
+    const xk = key(r[xi]);
+    if (!byX.has(xk)) { if (byX.size >= max) continue; byX.set(xk, { x: r[xi], ys: names.map(() => null) }); }
+    byX.get(xk).ys[k] = r[yi];
+  }
+  return { names, pts: [...byX.values()], left: Math.max(0, order.length - MAX_SERIES) };
+}
+
+/**
+ * How a chart labels a time: "18 May" when every point is at midnight (a
+ * day, a week, a month of date_trunc), else the date and the minute.
+ */
+export function timeLabel(values) {
+  const day = values.filter(isNum).every((ms) => ms % 86400e3 === 0);
+  return day ? (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }) : (ms) => when(ms, { sec: false });
+}
+
 /**
  * A chart of an answer's columns: a category or time down one axis and up
- * to four numeric columns, as bars, lines or dots; the columns are picked
- * from the answer's own and the first fitting ones start chosen.
+ * to four numeric columns, or one split into a series per value of a
+ * column, as bars, lines or dots; the columns are picked from the answer's
+ * own and the first fitting ones start chosen. `init` ({x, ys, split,
+ * kind}) chooses instead, and `onChange(config)` hears each choice (a
+ * saved view keeps them).
  */
-export function resultChart(j) {
+export function resultChart(j, { init = null, onChange = null, compact = false } = {}) {
   const cols = j.columns || [], rows = j.rows || [];
   const numeric = cols.filter((_, ci) => rows.some((r) => isNum(r[ci])) && rows.every((r) => r[ci] == null || isNum(r[ci])));
   if (!numeric.length || !rows.length) return empty("perf", "Nothing to chart", "A chart needs a numeric column: a COUNT(*), a SUM, a price…");
-  const timeLike = cols.find((c) => TIME_COL.test(c));
+  const timeLike = cols.find((c) => TIME_COL.test(c) || rows.some((r) => isTime(r[cols.indexOf(c)])));
   const first = timeLike ?? cols.find((c) => !numeric.includes(c)) ?? cols[0];
   let x = first, ys = numeric.filter((c) => c !== x && !TIME_COL.test(c)).slice(0, 1), kind = timeLike || rows.some((r) => isTime(r[cols.indexOf(x)])) ? "line" : "bar";
   if (!ys.length) ys = [numeric.find((c) => c !== x) ?? numeric[0]];
-  const xSel = h("select", { class: "select sm", onchange: () => { x = xSel.value; draw(); } }, cols.map((c) => h("option", { value: c, selected: c === x }, c)));
+  // Another category beside a time (week, priority, n) splits the series
+  // by it from the start: one line per priority.
+  const cats = () => cols.filter((c) => c !== x && !numeric.includes(c));
+  let split = timeLike && x === timeLike ? cats()[0] ?? null : null;
+  if (init) {
+    if (cols.includes(init.x)) x = init.x;
+    const iy = (init.ys || []).filter((y) => numeric.includes(y));
+    if (iy.length) ys = iy;
+    split = init.split && cats().includes(init.split) ? init.split : init.split === null ? null : split;
+    if (["bar", "line", "dot"].includes(init.kind)) kind = init.kind;
+  }
+  const tell = () => onChange?.({ x, ys, split, kind });
+  const xSel = h("select", { class: "select sm", "aria-label": "Across", onchange: () => { x = xSel.value; if (split === x) split = null; drawSplit(); draw(); } }, cols.map((c) => h("option", { value: c, selected: c === x }, c)));
+  const splitSel = h("select", { class: "select sm", "aria-label": "A line or bar for each value of", onchange: () => { split = splitSel.value || null; if (split) ys = ys.slice(0, 1); draw(); } });
+  const drawSplit = () => clear(splitSel, h("option", { value: "", selected: !split }, "nothing"), cats().map((c) => h("option", { value: c, selected: c === split }, c)));
+  drawSplit();
   const yBox = h("div", { class: "row", style: { gap: "4px" } });
   const kindSeg = seg([["bar", "Bars"], ["line", "Lines"], ["dot", "Dots"]], kind, (v) => { kind = v; draw(); });
   const plot = h("div", { class: "rchart" });
   const legend = h("div", { class: "legend" });
   function drawY() {
-    clear(yBox, numeric.map((c) => { const on = ys.includes(c); return h("button", { class: "chip", "aria-pressed": String(on), onclick: () => { ys = on ? ys.filter((y) => y !== c) : [...ys, c].slice(-4); if (!ys.length) ys = [c]; draw(); } }, on ? h("span", { class: "dot", style: { background: SERIES[ys.indexOf(c)] } }) : null, c); }));
+    clear(yBox, numeric.map((c) => { const on = ys.includes(c); return h("button", { class: "chip", "aria-pressed": String(on), onclick: () => { ys = on ? ys.filter((y) => y !== c) : split ? [c] : [...ys, c].slice(-4); if (!ys.length) ys = [c]; draw(); } }, on && !split ? h("span", { class: "dot", style: { background: SERIES[ys.indexOf(c)] } }) : null, c); }));
   }
   function draw() {
     drawY();
-    const xi = cols.indexOf(x), yi = ys.map((y) => cols.indexOf(y));
-    const asMs = timeScale(x, rows.map((r) => r[xi]));
-    const pts = rows.slice(0, 400).map((r) => ({ x: asMs && isNum(r[xi]) ? asMs(r[xi]) : r[xi], ys: yi.map((i) => r[i]) }));
-    clear(legend, ys.length > 1 ? ys.map((y, k) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "k box", style: { background: SERIES[k], display: "inline-block" } }), y)) : null);
-    clear(plot, svgChart(pts, ys, kind, x, asMs ? (ms) => when(ms, { sec: false }) : null));
+    const xi = cols.indexOf(x);
+    const xs = rows.map((r) => r[xi]);
+    // Times as numbers since 1970 (a minute, a bucket), or as dates (date_trunc's).
+    const asMs = timeScale(x, xs) || (xs.some((v) => v != null) && xs.every((v) => v == null || isTime(v)) ? (v) => Date.parse(v) : null);
+    const ser = chartSeries(cols, rows, { x, ys, split });
+    const pts = ser.pts.map((p) => ({ ...p, x: asMs && p.x != null ? asMs(p.x) : p.x }));
+    const named = split ? ser.names : ys;
+    clear(legend, named.length > 1 || split ? [named.map((y, k) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "k box", style: { background: SERIES[k], display: "inline-block" } }), y)), ser.left ? h("span", { class: "muted" }, `+${ser.left} more not drawn`) : null] : null);
+    clear(plot, svgChart(pts, named, kind, x, asMs ? timeLabel(pts.map((p) => p.x)) : null, split ? `${ys[0]} by ${split}` : null));
+    tell();
   }
   draw();
-  return h("div", {}, h("div", { class: "row", style: { marginBottom: "8px", gap: "10px" } }, h("span", { class: "small muted" }, "across"), xSel, h("span", { class: "small muted" }, "show"), yBox, h("span", { class: "sep" }), kindSeg), legend, plot);
+  const tools = h("div", { class: "row chart-tools", style: { marginBottom: "8px", gap: "10px", flexWrap: "wrap" } }, h("span", { class: "small muted" }, "across"), xSel, h("span", { class: "small muted" }, "show"), yBox, h("span", { class: "small muted" }, "a line for each"), splitSel, h("span", { class: "sep" }), kindSeg);
+  // A saved view shows its chart first, its choices folded under it (a phone has room for one).
+  if (compact) return h("div", {}, legend, plot, h("details", { class: "small" }, h("summary", { class: "muted" }, "Change the chart"), tools));
+  return h("div", {}, tools, legend, plot);
 }
 
-function svgChart(pts, names, kind, xName, xfmt) {
+function svgChart(pts, names, kind, xName, xfmt, what = null) {
   const xText = (v) => xfmt && isNum(v) ? xfmt(v) : cellText(v);
-  const W = 1000, H = 300, M = { l: 56, r: 14, t: 12, b: 46 };
-  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: H + "px" }, role: "img", "aria-label": `${names.join(", ")} by ${xName}` });
+  // A phone draws a narrower chart, so its labels stay a readable size
+  // when the chart is scaled to the screen (GRACE-407: a view opened on a phone).
+  const narrow = typeof matchMedia === "function" && matchMedia("(max-width: 600px)").matches;
+  const W = narrow ? 420 : 1000, H = narrow ? 260 : 300, M = { l: 56, r: 14, t: 12, b: 46 };
+  const svgEl = s("svg", { viewBox: `0 0 ${W} ${H}`, style: { width: "100%", height: "auto", maxHeight: H + "px" }, role: "img", "aria-label": `${what || names.join(", ")} by ${xName}` });
   const all = pts.flatMap((p) => p.ys).filter(isNum);
   // Round ticks (0, 250M, 500M...), the axis from the first to the last.
   const yt = fmt.ticks(Math.min(0, ...all), Math.max(...all, Math.min(0, ...all) + 1e-9), 4);
@@ -198,9 +292,12 @@ function svgChart(pts, names, kind, xName, xfmt) {
     svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(v), y2: Y(v), style: { stroke: "var(--grid)" } }), s("text", { x: M.l - 8, y: Y(v) + 3.5, "text-anchor": "end", style: { fill: "var(--muted)", fontSize: "11px" } }, fmt.tick(v)));
   }
   svgEl.append(s("line", { x1: M.l, x2: W - M.r, y1: Y(0), y2: Y(0), style: { stroke: "var(--axis)" } }));
-  const every = Math.max(1, Math.ceil(n / 14));
+  const every = Math.max(1, Math.ceil(n / (narrow ? 6 : 14)));
   pts.forEach((p, i) => { if (i % every === 0 && !numX) svgEl.append(s("text", { x: X(i), y: H - M.b + 16, "text-anchor": "end", transform: `rotate(-30 ${X(i)} ${H - M.b + 16})`, style: { fill: "var(--muted)", fontSize: "11px" } }, xText(p.x).slice(0, 18))); });
-  if (numX) for (let k = 0; k <= 4; k++) { const v = x0 + (x1 - x0) * k / 4; svgEl.append(s("text", { x: M.l + iw * k / 4, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt ? xfmt(v) : fmt.tick(v))); }
+  // Dates label the points themselves (a week's Monday, not a time between two).
+  const ticks = numX && xfmt && pts.length <= (narrow ? 6 : 12) ? pts.map((p) => p.x) : null;
+  if (ticks) for (const v of ticks) svgEl.append(s("text", { x: M.l + (v - x0) / (x1 - x0) * iw, y: H - M.b + 16, "text-anchor": "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt(v)));
+  else if (numX) { const k1 = narrow ? 3 : 4; for (let k = 0; k <= k1; k++) { const v = x0 + (x1 - x0) * k / k1; svgEl.append(s("text", { x: M.l + iw * k / k1, y: H - M.b + 16, "text-anchor": k === 0 ? "start" : k === k1 ? "end" : "middle", style: { fill: "var(--muted)", fontSize: "11px" } }, xfmt ? xfmt(v) : fmt.tick(v))); } }
   const group = iw / n, bw = Math.max(2, Math.min(36, (group - 4) / names.length - 2));
   names.forEach((name, k) => {
     const color = SERIES[k];
