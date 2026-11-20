@@ -1767,6 +1767,50 @@ function knobWords(d, knobs) {
   }).join(" · ");
 }
 
+/** The knobs an arm changes from the site's defaults (those left at their
+ *  default dropped), so two arms that search alike compare equal. */
+function effKnobs(d, knobs) {
+  const out = {};
+  for (const [key, v] of Object.entries(knobs || {})) {
+    const k = (d?.knobs || []).find((x) => x.key === key);
+    if (k && (k.default === v || (typeof v === "number" && typeof k.default === "number" && Math.abs(v - k.default) < 1e-12))) continue;
+    out[key] = v;
+  }
+  return out;
+}
+
+/** An arm's name, from what it changes: the nearest preset, then each
+ *  change from it, those that change which rows come back first (switches,
+ *  blending, the index, the ranking expression), then weights, three at
+ *  most. The second value is every change, for a line under the name. */
+function armName(d, knobs) {
+  const eff = effKnobs(d, knobs);
+  const kn = (key) => (d?.knobs || []).find((x) => x.key === key);
+  const val = (key, ks) => (key in ks ? ks[key] : kn(key)?.default);
+  const presets = (d?.presets || []).map((p) => ({ name: p.name, knobs: effKnobs(d, p.knobs) }));
+  if (!presets.length) presets.push({ name: "As it is", knobs: {} });
+  const diff = (p) => [...new Set([...Object.keys(eff), ...Object.keys(p.knobs)])].filter((key) => JSON.stringify(val(key, eff)) !== JSON.stringify(val(key, p.knobs)));
+  let base = presets[0], keys = diff(presets[0]);
+  for (const p of presets.slice(1)) { const k = diff(p); if (k.length < keys.length) { base = p; keys = k; } }
+  if (!keys.length) return [base.name, ""];
+  const order = { bool: 0, choice: 1, sql: 2, int: 3, number: 4 };
+  keys.sort((a, b) => (order[kn(a)?.kind] ?? 5) - (order[kn(b)?.kind] ?? 5));
+  const fmt = (v) => (typeof v === "number" ? String(+v.toFixed(3)) : String(v));
+  const one = (key) => {
+    const k = kn(key), t = (k?.title || key).replace(/^./, (c) => c.toLowerCase());
+    const to = val(key, eff), from = val(key, base.knobs);
+    if (k?.kind === "bool") return `${t} ${to ? "on" : "off"}`;
+    if (k?.kind === "sql") return `${t} rewritten`;
+    if (k?.kind === "choice") return `${t}: ${(k.choices || []).find((c) => c.value === to)?.title || to}`;
+    return `${t} ${fmt(from)}→${fmt(to)}`;
+  };
+  const items = keys.map(one);
+  const head = Object.keys(base.knobs).length ? [base.name] : [];
+  const shown = items.slice(0, 3);
+  const name = [...head, ...shown].join(" · ") + (items.length > 3 ? ` · +${items.length - 3} more` : "");
+  return [name.replace(/^./, (c) => c.toUpperCase()), items.length > 3 ? items.join(" · ") : ""];
+}
+
 async function realHome(ctx, root, go, meta, onStop) {
   const { core } = ctx;
   const { h } = core;
@@ -1974,21 +2018,38 @@ async function realBuilder(ctx, root, go, meta) {
   }));
   // Arms
   const armsBox = h("div", { style: { display: "grid", gap: "10px" } });
+  const armsWarn = h("div", { class: "small ex-bad" });
+  const armName_ = (a) => (a.nick && a.nick !== a.derived ? `${a.nick} (${a.derived})` : a.derived || "As it is");
+  // Two arms that search alike, or share a name, would make every result
+  // built on them a lie: the study waits until each arm differs.
+  const armsClash = () => {
+    for (let i = 0; i < spec.arms.length; i++) for (let j = 0; j < i; j++) {
+      const a = spec.arms[i], b = spec.arms[j];
+      if (a.source === b.source && JSON.stringify(effKnobs(desc(a.source), a.knobs)) === JSON.stringify(effKnobs(desc(b.source), b.knobs))) return `${armName_(a)} searches the same as ${armName_(b)}: change a knob of one.`;
+      if (armName_(a) === armName_(b)) return `Two arms are named ${armName_(a)}.`;
+    }
+    return "";
+  };
+  let start;
+  const checkArms = () => { const w = armsClash(); armsWarn.textContent = w; if (start) start.disabled = !!w; };
   const drawArms = () => {
     armsBox.replaceChildren(...spec.arms.map((a, i) => {
       const d = desc(a.source);
-      const words = h("div", { class: "small dim" }, knobWords(d, a.knobs));
-      const name = h("input", { value: a.name, oninput: () => { a.name = name.value; } , style: { fontWeight: 600, flex: 1, minWidth: "120px" } });
+      const label = h("b", { style: { flex: 1, minWidth: "120px" } });
+      const words = h("div", { class: "small dim" });
+      const named = () => { const [n, all] = armName(d, a.knobs); a.derived = n; label.textContent = n; words.textContent = all; checkArms(); };
+      const name = h("input", { value: a.nick || "", placeholder: "nickname (optional)", title: "shown beside the name its settings give it", oninput: () => { a.nick = name.value.trim(); checkArms(); }, style: { width: "150px" } });
       const src = h("select", { onchange: () => { a.source = src.value; a.knobs = {}; drawArms(); } }, sources.map((x) => h("option", { value: x.source, selected: x.source === a.source }, x.title || x.source)));
-      const presets = h("div", { class: "ex-pick" }, (d?.presets || []).map((p) => h("button", { "aria-pressed": String(JSON.stringify(p.knobs || {}) === JSON.stringify(a.knobs)), onclick: () => { a.knobs = { ...(p.knobs || {}) }; if (i > 0 || !Object.keys(a.knobs).length) a.name = p.name; drawArms(); } }, p.name)));
-      const more = h("details", {}, h("summary", { class: "small" }, "Every knob"), knobPanel(core, d || {}, a.knobs, () => { words.textContent = knobWords(d, a.knobs); }));
+      const presets = h("div", { class: "ex-pick" }, (d?.presets || []).map((p) => h("button", { "aria-pressed": String(JSON.stringify(p.knobs || {}) === JSON.stringify(a.knobs)), onclick: () => { a.knobs = { ...(p.knobs || {}) }; drawArms(); } }, p.name)));
+      const more = h("details", {}, h("summary", { class: "small" }, "Every knob"), knobPanel(core, d || {}, a.knobs, named));
+      named();
       const rm = spec.arms.length > 2 ? h("button", { class: "btn sm ghost", title: "Remove this arm", onclick: () => { spec.arms.splice(i, 1); drawArms(); estimate(); } }, core.icon("trash")) : null;
       return h("div", { class: "ex-arm", style: { "--arm": ARM_COLORS[i] } },
-        h("div", { class: "ex-arm-top" }, h("span", { class: "ex-chip", style: { background: ARM_COLORS[i], color: "#fff" } }, i === 0 ? "Control" : `Arm ${i + 1}`), name, src, rm),
+        h("div", { class: "ex-arm-top" }, h("span", { class: "ex-chip", style: { background: ARM_COLORS[i], color: "#fff" } }, i === 0 ? "Control" : `Arm ${i + 1}`), label, name, src, rm),
         presets, words, more);
     }));
   };
-  const addBtn = h("button", { class: "btn sm", onclick: () => { if (spec.arms.length >= (L.arms || 4)) return; const s0 = spec.arms[0].source; spec.arms.push({ name: `Arm ${spec.arms.length + 1}`, source: s0, knobs: {} }); drawArms(); estimate(); } }, core.icon("plus"), "Arm");
+  const addBtn = h("button", { class: "btn sm", onclick: () => { if (spec.arms.length >= (L.arms || 4)) return; const s0 = spec.arms[0].source; spec.arms.push({ name: "", source: s0, knobs: {} }); drawArms(); estimate(); } }, core.icon("plus"), "Arm");
   drawArms();
   // Agents
   const model = (key) => core.seg((meta.live?.models || []).map((m) => [m.id, m.name.replace("Claude ", ""), `$${m.input} / $${m.output} a million tokens in / out`]), spec[key], (v) => { spec[key] = v; estimate(); });
@@ -2002,9 +2063,12 @@ async function realBuilder(ctx, root, go, meta) {
   const knob = (title, hint, input, value) => h("div", { class: "ex-knob" }, h("label", {}, title, value), input, hint ? h("div", { class: "hint" }, hint) : null);
   const brain = core.seg([["claude", "Claude", claude ? "agents, judge: Claude through the Messages API" : "the app has no ANTHROPIC_API_KEY"], ["scripted", "Scripted", "no model: the need's words searched, the best title opened"]], spec.brain, (v) => { spec.brain = v; estimate(); });
   const nameIn = h("input", { placeholder: "What it asks, e.g. Does meaning help people find stories they remember?", style: { width: "100%" }, oninput: () => { spec.name = nameIn.value; } });
-  const start = h("button", { class: "btn primary" }, core.icon("play"), "Start the study");
+  start = h("button", { class: "btn primary" }, core.icon("play"), "Start the study");
+  checkArms();
   start.onclick = async () => {
-    const body = { ...spec, name: spec.name.trim() || spec.arms.map((a) => a.name).join(" vs ") };
+    if (armsClash()) return;
+    const arms = spec.arms.map((a) => ({ name: armName_(a), source: a.source, knobs: a.knobs }));
+    const body = { ...spec, arms, name: spec.name.trim() || arms.map((a) => a.name).join(" vs ") };
     start.disabled = true;
     try { const j = await ctx.api("/v1/studies", { method: "POST", body }); go("real", "study", j.id); } catch (e) { core.toast(e.message, "error"); start.disabled = false; }
   };
@@ -2012,7 +2076,7 @@ async function realBuilder(ctx, root, go, meta) {
   root.append(h("div", { class: "ex-build" },
     h("div", { style: { display: "grid", gap: "14px" } },
       core.card({ title: "People", sub: "whose needs every arm is tried on", body: setBox }),
-      core.card({ title: "Arms", sub: "the first is the control: a site with knobs, or another engine of the same rows", tools: addBtn, body: armsBox })),
+      core.card({ title: "Arms", sub: "the first is the control; each is named by what it changes", tools: addBtn, body: h("div", { style: { display: "grid", gap: "8px" } }, armsBox, armsWarn) })),
     h("div", { style: { display: "grid", gap: "14px" } },
       core.card({ title: "Agents", body: h("div", { class: "ex-knobs" },
         knob("Played by", "", brain),
@@ -2225,13 +2289,14 @@ async function realTune(ctx, root, go, id, onStop) {
     moved.replaceChildren(rep.changed ? (rep.changed.length ? h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Knob"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"))),
       h("tbody", {}, rep.changed.map((c) => h("tr", {}, h("td", {}, c.title), h("td", { class: "num ex-num" }, fmtKnob(c.from)), h("td", { class: "num ex-num" }, h("b", {}, fmtKnob(c.to))))))) : h("div", { class: "small dim" }, "No value it tried did better than the site as it is on the training needs.")) : h("div", { class: "small dim" }, running ? "…" : ""));
     const op = rep.off_policy;
+    const fix3 = (v) => { const t = v.toFixed(3); return t === "-0.000" ? "0.000" : t; };
     offBox.replaceChildren(op ? core.card({ title: "On real people's searches", sub: "off-policy: what people opened from the site's logged searches, weighted by each place's chance under the exploring policy", body: op.error ? h("div", { class: "small ex-bad" }, op.error) : h("div", { style: { display: "grid", gap: "10px" } },
       h("div", { class: "line" }, op.sentence),
       h("div", { class: "small dim" }, `${op.requests} logged searches · ${op.explored} exploring · ${op.clicks} stories opened · ${op.policy ? `ε ${op.policy.epsilon} over the top ${op.policy.top}` : ""}`),
-      h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+      (op.targets || []).some((t) => t.estimates.some((e) => e.trusted)) && h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
         h("thead", {}, h("tr", {}, h("th", {}, "Ranking"), h("th", { class: "num", title: "share of its places whose story the log could have shown there" }, "Support"), (op.targets?.[0]?.estimates || []).map((e) => h("th", { class: "num" }, e.estimator.toUpperCase())))),
         h("tbody", {}, (op.targets || []).map((t) => h("tr", {}, h("td", {}, t.name), h("td", { class: "num ex-num" }, pct0(t.coverage)),
-          t.estimates.map((e) => h("td", { class: "num ex-num" + (e.trusted ? "" : " dim"), title: e.trusted ? `±${(1.96 * e.se).toFixed(3)}` : `not trusted: ${e.ess != null ? `${Math.round(e.ess)} effective searches` : "no weights"}` }, `${e.value.toFixed(3)}${e.trusted ? "" : " ?"}`)))))))) }) : null);
+          t.estimates.map((e) => h("td", { class: "num ex-num" + (e.trusted ? "" : " dim"), title: e.trusted ? `±${(1.96 * e.se).toFixed(3)}` : `not trusted: ${e.ess != null ? `${Math.round(e.ess)} effective searches` : "no weights"}` }, `${fix3(e.value)}${e.trusted ? "" : " ?"}`)))))))) }) : "");
     const pn = rep.per_need || [];
     needs.replaceChildren(pn.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, "Need"), h("th", {}, "Searched"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"), h("th", {}, ""))),

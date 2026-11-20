@@ -230,6 +230,10 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
     assert_eq!(st, 400, "{v}");
     let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": "Bad knob", "source": "made-up", "knobs": {"nope": 1}}], "brain": "scripted"})), Some("t")).await;
     assert_eq!(st, 400, "a knob the site refuses: {v}");
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": "Other", "source": arms[0]["source"], "knobs": {}}], "brain": "scripted"})), Some("t")).await;
+    assert!(st == 400 && v.to_string().contains("same settings"), "two arms that search alike: {v}");
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": arms[0]["name"], "source": arms[1]["source"], "knobs": arms[1]["knobs"]}], "brain": "scripted"})), Some("t")).await;
+    assert!(st == 400 && v.to_string().contains("named"), "two arms of one name: {v}");
     let s = c.post("/v1/studies", json!({"name": "Broken ranking", "personas": id, "arms": arms, "brain": "scripted", "budget": 1, "workers": 2})).await;
     let sid = s["id"].as_str().unwrap().to_string();
     let v = until(&c, &format!("/v1/studies/{sid}"), "the study", |v| v["status"] != "running").await;

@@ -605,7 +605,7 @@ impl Tune {
         let sentence = match (headline(1), headline(2)) {
             _ if imps.is_empty() => "No logged searches yet: the page's searches are logged as people make them.".to_string(),
             (Some(a), Some(b)) if a.trusted() && b.trusted() => format!("On {} logged searches ({explored} exploring), people would open {:.3} stories a search as it is and {:.3} with the proposal (SNRIPS, ±{:.3} and ±{:.3}).", imps.len(), a.value, b.value, 1.96 * a.se, 1.96 * b.se),
-            (Some(a), Some(b)) => format!("Not enough yet: {} logged searches, {explored} of them exploring, {clicks} stories opened. The estimates ({:.3} as it is, {:.3} proposed) rest on too few exploring searches to trust (at least 400 effective).", imps.len(), a.value, b.value),
+            (Some(_), Some(_)) => format!("Not enough yet: {} logged {}, {explored} of them exploring, {clicks} {} opened. An estimate needs about 400 effective exploring searches; until then there is none.", imps.len(), if imps.len() == 1 { "search" } else { "searches" }, if clicks == 1 { "story" } else { "stories" }),
             _ => "No estimate.".to_string(),
         };
         Ok(json!({"requests": imps.len(), "explored": explored, "clicks": clicks, "policy": log["policy"], "targets": out, "sentence": sentence}))

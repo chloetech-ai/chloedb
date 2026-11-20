@@ -20,7 +20,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::ab::{self, Progress, RunData, Spec};
 use crate::click::Model;
@@ -1083,6 +1083,15 @@ async fn stop_study(State(app): State<Shared>, Path(id): Path<String>) -> Answer
 }
 
 /// A study, started: every need of the personas on every arm.
+/// An arm's knobs with the site's defaults filled in, and those left at
+/// their default dropped: two arms with the same result compare equal.
+fn effective_knobs(describe: &Value, knobs: &Value) -> Map<String, Value> {
+    let Some(knobs) = knobs.as_object() else { return Map::new() };
+    let defaults: HashMap<&str, &Value> = describe["knobs"].as_array().map(|ks| ks.iter().filter_map(|k| Some((k["key"].as_str()?, &k["default"]))).collect()).unwrap_or_default();
+    let same = |a: &Value, b: &Value| a == b || matches!((a.as_f64(), b.as_f64()), (Some(x), Some(y)) if (x - y).abs() < 1e-12);
+    knobs.iter().filter(|(k, v)| !defaults.get(k.as_str()).is_some_and(|d| same(d, v))).map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
 async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) -> Answer {
     let set = app.persona_set_of(&spec.personas).await?;
     spec.check(&set).map_err(bad)?;
@@ -1090,12 +1099,24 @@ async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) ->
         return Err(ApiError(StatusCode::CONFLICT, format!("a study is running ({}): stop it first", on.spec.name)));
     }
     let mut sources = Vec::new();
+    let mut seen: Vec<(String, String, Map<String, Value>)> = Vec::new();
     for a in &spec.arms {
         let s = app.source(&a.source)?;
         let d = s.describe().await;
         if d["allowed"] != json!(true) {
             return Err(bad(format!("{}: {} takes no experiments ({})", a.name, s.name, d["error"].as_str().unwrap_or(""))));
         }
+        // Arms are told apart by their names and their settings: a name
+        // twice, or the same settings twice, makes every result a lie.
+        let eff = effective_knobs(&d, &a.knobs);
+        if let Some((n, _, _)) = seen.iter().find(|(n, src, k)| n.trim() == a.name.trim() || (*src == a.source && *k == eff)) {
+            return Err(bad(if n.trim() == a.name.trim() {
+                format!("two arms are named {}: name each by what it changes", a.name)
+            } else {
+                format!("{} and {n} search with the same settings: change one", a.name)
+            }));
+        }
+        seen.push((a.name.clone(), a.source.clone(), eff));
         // An arm's knobs are checked by a search before the study starts.
         s.search("test", &a.knobs, 3).await.map_err(|e| bad(format!("{}: {e}", a.name)))?;
         sources.push(s);

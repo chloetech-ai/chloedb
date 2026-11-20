@@ -599,7 +599,7 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
             format!("{name} against {control}: too few needs tried on both yet.")
         } else {
             format!(
-                "{name} found what people came for in {} of {} needs, {control} in {} ({} points, 95% interval {} to {}); {} needs only {name} found, {} only {control} (McNemar p {:.3}).",
+                "{name} found what people came for in {} of {} needs, {control} in {} ({} points, 95% interval {} to {}); {} {} only {name} found, {} only {control} (McNemar p {:.3}).",
                 pairs.iter().filter(|(_, y)| y.success).count(),
                 pairs.len(),
                 pairs.iter().filter(|(x, _)| x.success).count(),
@@ -607,6 +607,7 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
                 pct(succ["lo"].as_f64()),
                 pct(succ["hi"].as_f64()),
                 c,
+                if c == 1 { "need" } else { "needs" },
                 b,
                 p
             )
