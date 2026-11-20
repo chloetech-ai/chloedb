@@ -124,6 +124,15 @@ changes collect under "Unreleased".
   the server's own log, which an admin key reads, says so for another key
   and lists the log tables it reads, and `Enter` shows one's newest lines
   in SQL ([server.md](docs/chloedb/server.md#security)).
+- **A plan waits until a new copy counts among its shard's copies before
+  it goes on.** A copy that installed its primary's rows is in sync at
+  once, but it serves reads and counts itself among the copies only on
+  its primary's next call, which comes late on a busy host; a plan that
+  added the copy and then handed the shard over to it failed there (409,
+  "this replica is not counted among its shard's copies"). The plan's
+  step now waits for the copy's own `member`, saying "caught up; waiting
+  to be counted among the copies", and goes on after a minute in sync as
+  before. The restore test waits likewise for every copy to serve reads.
 - **An answer gives its columns' types, and a column's type follows its
   expression** (persona study round 3, SAM-301, SAM-308). `POST
   /v1/query` answers `types` beside `columns` (`"timestamp"`, `"int"`,
