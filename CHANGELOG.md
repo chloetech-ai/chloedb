@@ -11,6 +11,28 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx sync for a team: every note reaches every machine, a
+  teammate's to-dos wait to be accepted, and Retire works in the command
+  center** (persona study round 4, ANA-401, ANA-402, WEI-401, WEI-402,
+  WEI-403). **Changed:** a note kept with `chloectx remember` in a terminal
+  is `manual-<six hex digits>:<seq>`, not `manual:<seq>`, so two machines
+  that pulled the same records no longer give their next notes one id and
+  lose one on the server; a push's idempotency key names the machine, and
+  `chloectx sync status` warns when the server holds another machine's row
+  under one of this store's ids. A to-do from a machine not accepted yet is
+  held back with its rules and decisions; its facts and notes say which
+  machine they came from in the briefing and on a recalled record, and
+  `sync accept` lists only what waits. Retire on a synced project's
+  Memories asks the app for the write (`POST /v1/memory/retire/plan`) and
+  sends it with the signed-in key, so it works for an admin with the app's
+  grant unchanged. A key limited to its project's table no longer asks for
+  the shared table of 0.3.3 (by `GET /v1/whoami`), so its pulls are not
+  refused, and the Access page no longer calls a key that never expires
+  expired. `chloectx-launch setup --sync-url URL` (the key on stdin or in
+  `CHLOECTX_SYNC_TOKEN`) also sets the sync up, and setup.md's team recipe
+  works on a fresh laptop in the order it gives
+  ([setup.md](docs/chloectx/setup.md#for-a-team)).
+
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
