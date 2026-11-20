@@ -11,6 +11,21 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
+  `recommend(...)` no longer slows down as events arrive: a range on a
+  value written in place (a counts row's `next > 0`) is checked per
+  candidate, rather than by gathering every value written in the segment
+  at each call. `POST /v1/admin/optimize` on chloedb-server writes the
+  memtables and merges each table's segments (a database's own
+  `optimize` without the vacuum), which takes `recommend` back to its
+  time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
+  counts (a pair is two numbers, not two names), lets go of the events
+  it read as it counts them, flushes the counts once it commits and
+  gives the freed memory back to the system. A slice's device (`nearby`
+  in Python and JavaScript) compacts its database once the rows of the
+  tiles it dropped outnumber those it holds, so its folder no longer
+  grows with every taste.
+
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000

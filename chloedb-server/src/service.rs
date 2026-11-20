@@ -2319,6 +2319,33 @@ impl Service {
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.storage().vacuum()?))).await.map_err(ApiError::internal)?
     }
 
+    /// Writes the rows in memory into segments and merges each table's
+    /// segments into as few as [`chloedb::storage::MergePolicy::compact`]
+    /// allows, dropping their deleted rows and old versions; reads and
+    /// writes go on meanwhile. What the merge did, as JSON.
+    pub async fn optimize(&self) -> Result<Json, ApiError> {
+        let db = self.admin_db()?;
+        let started = Instant::now();
+        let deadline = started + self.max_timeout;
+        let stats = tokio::task::spawn_blocking(move || {
+            wait_for_writer(deadline, || {
+                let s = db.storage();
+                s.flush()?;
+                Ok(s.merge(&chloedb::storage::MergePolicy::compact())?)
+            })
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        Ok(json!({
+            "merges": stats.merges,
+            "segments_merged": stats.segments_in,
+            "docs_merged": stats.docs_merged,
+            "docs_dropped": stats.docs_dropped,
+            "bytes_written": stats.bytes_written,
+            "took_ms": (started.elapsed().as_secs_f64() * 1e4).round() / 10.0,
+        }))
+    }
+
     pub(crate) fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
         self.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator has no database of its own: ask each shard server"))
     }

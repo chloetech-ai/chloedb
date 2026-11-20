@@ -115,6 +115,7 @@ fn notes(method: &Method, route: &str, tier: Tier) -> (String, bool, Option<&'st
         ("DELETE", "/v1/admin/shards/:i/replicas") => ("remove a copy from a shard", Some("add the copy again; it is sent the rows anew"), Some("the shard has one copy fewer to fail over to")),
         ("POST", "/v1/admin/shards/:i/promote") | ("POST", "/v1/admin/promote") => ("make a replica the primary of a new term", None, Some("writes pause while the primary changes; with force, transactions only the old primary held are dropped")),
         ("POST", "/v1/admin/rebalance") | ("POST", "/v1/admin/moves") => ("move slots between shards", Some("move them back"), Some("rows are copied; each slot's writes pause a moment at its switch")),
+        ("POST", "/v1/admin/optimize") => ("write the rows in memory and merge each table's segments into as few as the policy allows", None, Some("disk and CPU while it runs; reads and writes go on")),
         ("POST", "/v1/admin/vacuum") => ("rewrite segments, dropping deleted rows and old versions for good", None, Some("disk and CPU while it runs; snapshots older than it can no longer be read")),
         ("POST", "/v1/admin/hold-writes") => ("hold every write of the cluster", Some("release the hold"), Some("every write is refused (503) while held")),
         ("POST", "/v1/admin/follow/stop") => ("stop following the source cluster: this cluster takes its own writes", None, Some("writes made on the source after it are not copied")),

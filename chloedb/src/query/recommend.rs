@@ -336,46 +336,73 @@ pub fn user_key(u: &str) -> String {
     serde_json::to_string(&("u", u)).expect("strings")
 }
 
-/// What events add to the counts.
+/// What events add to the counts. Items are numbered as they come
+/// ([`Deltas::id`]), so that a pair is two numbers rather than two
+/// strings: `CREATE RECOMMENDER` counts every event of the table at once,
+/// about five pairs an event, and with the names held twice in every pair
+/// the counting took as much memory as the rows it then writes.
 #[derive(Default)]
 pub struct Deltas {
-    next: HashMap<(String, String), f64>,
-    co: HashMap<(String, String), f64>,
-    n: HashMap<String, f64>,
+    names: Vec<String>,
+    ids: HashMap<String, u32>,
+    /// A pair's change of `next` and of `co`.
+    pairs: HashMap<(u32, u32), (f64, f64)>,
+    n: HashMap<u32, f64>,
 }
 
 impl Deltas {
+    fn id(&mut self, item: &str) -> u32 {
+        if let Some(&i) = self.ids.get(item) {
+            return i;
+        }
+        let i = self.names.len() as u32;
+        self.names.push(item.to_string());
+        self.ids.insert(item.to_string(), i);
+        i
+    }
+
+    fn next(&mut self, a: &str, b: &str, d: f64) {
+        let k = (self.id(a), self.id(b));
+        self.pairs.entry(k).or_default().0 += d;
+    }
+
+    fn co(&mut self, a: &str, b: &str) {
+        let k = (self.id(a), self.id(b));
+        self.pairs.entry(k).or_default().1 += 1.0;
+    }
+
     /// Adds the event of `item` at `ts` to the user's `recent` events
     /// (oldest first, at most `d.history`), counting what it changes.
     pub fn place(&mut self, d: &Def, recent: &mut Vec<(i64, String)>, ts: Option<i64>, item: String) {
         let ts = ts.unwrap_or_else(|| recent.last().map_or(0, |r| r.0));
         let p = recent.partition_point(|(t, _)| *t <= ts);
-        let before = recent.get(p.wrapping_sub(1)).map(|r| r.1.clone());
-        let after = recent.get(p).map(|r| r.1.clone());
+        let before = p.checked_sub(1).map(|i| recent[i].1.as_str());
+        let after = recent.get(p).map(|r| r.1.as_str());
         // The pair the new event comes between is no longer adjacent.
-        if let (Some(a), Some(b)) = (&before, &after) {
+        if let (Some(a), Some(b)) = (before, after) {
             if a != b {
-                *self.next.entry((a.clone(), b.clone())).or_default() -= 1.0;
+                self.next(a, b, -1.0);
             }
         }
-        if let Some(a) = before.as_ref().filter(|a| **a != item) {
-            *self.next.entry((a.clone(), item.clone())).or_default() += 1.0;
+        if let Some(a) = before.filter(|a| *a != item) {
+            self.next(a, &item, 1.0);
         }
-        if let Some(b) = after.as_ref().filter(|b| **b != item) {
-            *self.next.entry((item.clone(), b.clone())).or_default() += 1.0;
+        if let Some(b) = after.filter(|b| *b != item) {
+            self.next(&item, b, 1.0);
         }
-        recent.insert(p, (ts, item.clone()));
         let lo = p.saturating_sub(d.window);
-        let hi = (p + d.window + 1).min(recent.len());
+        let hi = (p + d.window).min(recent.len());
         let mut seen = HashSet::new();
-        for (j, (_, other)) in recent[lo..hi].iter().enumerate() {
-            if lo + j == p || *other == item || !seen.insert(other.clone()) {
+        for other in recent[lo..hi].iter().map(|r| r.1.as_str()) {
+            if other == item || !seen.insert(other) {
                 continue;
             }
-            *self.co.entry((item.clone(), other.clone())).or_default() += 1.0;
-            *self.co.entry((other.clone(), item.clone())).or_default() += 1.0;
+            self.co(&item, other);
+            self.co(other, &item);
         }
-        *self.n.entry(item).or_default() += 1.0;
+        let i = self.id(&item);
+        *self.n.entry(i).or_default() += 1.0;
+        recent.insert(p, (ts, item));
         if recent.len() > d.history {
             recent.drain(..recent.len() - d.history);
         }
@@ -383,19 +410,23 @@ impl Deltas {
 
     /// Writes them, and the users' rows, into `counts` in transaction `t`.
     pub fn write(self, t: &mut WriteTxn<'_>, counts: &str, users: HashMap<String, Vec<(i64, String)>>) -> Result<()> {
+        let Deltas { names, ids, pairs, n } = self;
+        drop(ids);
         let mut c = t.table(counts)?;
         let row = |id: String, kind: &str, src: &str, dst: Option<&str>| {
             vec![Value::Str(id), Value::Str(kind.into()), Value::Str(src.into()), dst.map_or(Value::Null, |d| Value::Str(d.into())), Value::Null, Value::Null, Value::Null, Value::Null]
         };
-        for (field, m) in [("next", self.next), ("co", self.co)] {
-            for ((a, b), d) in m {
+        for ((a, b), (next, co)) in pairs {
+            let (a, b) = (&names[a as usize], &names[b as usize]);
+            for (field, d) in [("next", next), ("co", co)] {
                 if d != 0.0 {
-                    c.add_or_insert(row(pair_key(&a, &b), "pair", &a, Some(&b)), field, &Value::Float(d))?;
+                    c.add_or_insert(row(pair_key(a, b), "pair", a, Some(b)), field, &Value::Float(d))?;
                 }
             }
         }
-        for (i, d) in self.n {
-            c.add_or_insert(row(item_key(&i), "item", &i, None), "n", &Value::Float(d))?;
+        for (i, d) in n {
+            let i = &names[i as usize];
+            c.add_or_insert(row(item_key(i), "item", i, None), "n", &Value::Float(d))?;
         }
         for (u, recent) in users {
             let mut r = row(user_key(&u), "user", &u, None);
@@ -403,6 +434,15 @@ impl Deltas {
             c.upsert(r)?;
         }
         Ok(())
+    }
+
+    /// The change of `next` and of `co` of pair (`a`, `b`).
+    #[cfg(test)]
+    fn pair(&self, a: &str, b: &str) -> (f64, f64) {
+        match (self.ids.get(a), self.ids.get(b)) {
+            (Some(&a), Some(&b)) => self.pairs.get(&(a, b)).copied().unwrap_or_default(),
+            _ => (0.0, 0.0),
+        }
     }
 }
 
@@ -848,11 +888,11 @@ mod tests {
         }
         // Out of order: d between b and c.
         deltas.place(&d, &mut recent, Some(3), "d".into());
-        let next = |a: &str, b: &str| deltas.next.get(&(a.to_string(), b.to_string())).copied().unwrap_or(0.0);
+        let next = |a: &str, b: &str| deltas.pair(a, b).0;
         assert_eq!((next("a", "b"), next("b", "c"), next("b", "d"), next("d", "c")), (1.0, 0.0, 1.0, 1.0));
         assert_eq!(recent.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["a", "b", "d", "c"]);
-        assert_eq!(deltas.co.get(&("a".to_string(), "c".to_string())), Some(&1.0));
-        assert_eq!(deltas.co.get(&("d".to_string(), "a".to_string())), Some(&1.0));
+        assert_eq!(deltas.pair("a", "c").1, 1.0);
+        assert_eq!(deltas.pair("d", "a").1, 1.0);
         // History keeps the last four.
         deltas.place(&d, &mut recent, Some(9), "e".into());
         assert_eq!(recent.len(), 4);

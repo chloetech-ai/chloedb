@@ -569,7 +569,7 @@ fn spill_place<'a>(path: &'a Path, dir: Option<&'a Path>) -> (&'a Path, String) 
 /// (`examples/merge_memory.rs`, the `probe` shape), counted against the
 /// process's memory limit while queries and other merges allocate
 /// elsewhere.
-fn release_freed_memory() {
+pub(crate) fn release_freed_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim only returns free memory to the system.
     unsafe {

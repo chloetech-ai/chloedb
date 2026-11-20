@@ -357,6 +357,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/check", post(admin_check))
         .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
+        .route("/v1/admin/optimize", post(admin_optimize))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
         .route("/v1/admin/follow", get(follow_view))
@@ -4483,6 +4484,13 @@ async fn admin_check(State(app): State<App>) -> Res {
 
 async fn admin_vacuum(State(app): State<App>) -> Res {
     Ok(AxJson(json!({"bytes_freed": app.svc.vacuum().await?})))
+}
+
+/// Writes what the memtables hold and merges every table's segments into as
+/// few as the merge policy allows ([`Service::optimize`]): what restores the
+/// latency of `recommend(...)` and of searches after many small writes.
+async fn admin_optimize(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.optimize().await?))
 }
 
 async fn admin_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
