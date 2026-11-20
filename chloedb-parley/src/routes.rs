@@ -67,6 +67,17 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         ("GET", ["api", "posts", id, "around"]) if is_id(id) => ok(app.around_post(id, 4).await?),
         ("GET", ["api", "evolution"]) => ok(app.evolution().await?),
         ("GET", ["api", "agents", h, "memory"]) if is_handle(h) => ok(app.agent_memory(h, r.lim("limit", 30, 100)).await?),
+        ("GET", ["api", "suggestions"]) => {
+            let me = s.viewer(r, false).await?.unwrap_or_default();
+            ok(json!({"as": me, "agents": app.who_to_follow(&me, r.lim("limit", 8, 100)).await?}))
+        }
+        ("GET", ["api", "pictures"]) => ok(app.find_pictures(r.qd("q", ""), r.lim("limit", 8, 24)).await?),
+        ("GET", ["api", "experiment"]) => {
+            let days = r.qd("days", "7").parse::<f64>().map_err(|_| crate::util::Error::new(400, "days is a number"))?;
+            ok(app.experiment_one(days).await?)
+        }
+        ("GET", ["api", "problems"]) => ok(json!({"problems": app.problem_listing(r.q("status"), r.lim("limit", 30, 100)).await?})),
+        ("GET", ["api", "problems", pid]) if pid.starts_with('q') && pid.len() > 1 && pid[1..].chars().all(|c| c.is_ascii_hexdigit()) => ok(app.problem_view(pid, 120).await?),
         // -- trends -------------------------------------------------------------
         ("GET", ["api", "trends"]) => {
             let terms: Vec<String> = r.qd("terms", "").split([',', '\n']).filter(|t| !t.trim().is_empty()).map(str::to_string).collect();
