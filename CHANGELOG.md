@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **The command center designs a search stage by stage, as a template
+  apps call by name** (`chloedb-server`). The Query designer (Build, key
+  `z`) takes the text a person types as its one input and steps through
+  Understanding, Retrieval (words, meaning, expansion, filters), Ranking
+  (boosts, then heads of words, meaning, numbers, recency, `gbdt` models
+  and a `cross_encoder`, fused by weights or `rrf`), Blending (several
+  queries with one text, each with a boost) and Save, which runs `CREATE
+  RANK PROFILE`, `CREATE BLEND`, `CREATE FUNCTION <name>(q TEXT, k INT)
+  RETURNS TABLE` and `<name>_template()`. Each step previews a sample
+  query as result rows, coloured by how far each moved, or as plain lists.
+  **Fixed:** a stored function or rank profile whose body understands,
+  expands, blends or embeds text answers as its body does; an understood
+  boost inside `rrf` or `tmm` boosts the whole fusion instead of being
+  refused; `CREATE FUNCTION` accepts a body that embeds text or reads a
+  blend; an expanded query no longer answers its feedback rows from the
+  answer cache (#728).
 - **A server keeps no parameter values unless asked.**
   **Changed:** the running and finished queries, the statements and the
   log store keep a query's parameters as their types (`{"q": "text"}`),
