@@ -1,0 +1,69 @@
+# A checkpoint a night of the Earth explorer's server, on its node's own
+# disk, after the Backbone explorer's (5:10 AM Pacific): POST
+# /v1/admin/checkpoint writes a consistent copy into the server's
+# --backup-dir (/work/db/backup) while it serves, hard-linking the files the
+# previous one has, and the two newest are kept. The newest is then copied
+# off the node to a DigitalOcean volume, so losing the node loses at most a
+# day of fires (GOES's archive has them again: `goes --from` reads it). A
+# restore is a checkpoint copied back in place of the database with the
+# server stopped.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: earth-backup, namespace: strata}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 100Gi}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: earth-backup, namespace: strata}
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    apk add --no-cache curl rsync coreutils >/dev/null
+    NAME="n-$(date -u +%Y%m%d-%H%M)"
+    PREV="$(ls -1 /local/backup 2>/dev/null | grep '^n-' | sort | tail -1 || true)"
+    BODY="{\"name\":\"$NAME\",\"layout\":\"dir\"${PREV:+,\"link_from\":\"$PREV\"}}"
+    t0=$(date +%s)
+    curl -sS -f -m 3000 -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' "$SERVER/v1/admin/checkpoint" -d "$BODY"
+    echo
+    echo "checkpoint $NAME in $(( $(date +%s) - t0 )) s: $(du -sh "/local/backup/$NAME" | cut -f1)"
+    D=/vol/earth
+    mkdir -p "$D"
+    rsync -a --delete "/local/backup/$NAME/" "$D/latest/" && echo "$NAME" > "$D/latest.name" && sync
+    echo "copied off the node to $D in $(( $(date +%s) - t0 )) s: $(du -sh "$D/latest" | cut -f1)"
+    ls -1 /local/backup | grep '^n-' | sort -r | tail -n +3 | while read -r old; do rm -rf "/local/backup/$old"; done
+    # Drop the copies' pages from the node's memory.
+    find "/local/backup/$NAME" /vol -type f -exec dd if={} iflag=nocache count=0 status=none \;
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: earth-backup, namespace: strata}
+spec:
+  schedule: "10 5 * * *"
+  timeZone: America/Los_Angeles
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector: {chloedb/pool: earth}
+          tolerations: [{key: chloedb/pool, operator: Equal, value: earth, effect: NoSchedule}]
+          containers:
+          - name: b
+            image: mirror.gcr.io/library/alpine:3.20
+            command: ["sh", "/script/backup.sh"]
+            env:
+            - {name: SERVER, value: "http://earth-db.strata.svc:7700"}
+            - {name: KEY, valueFrom: {secretKeyRef: {name: earth-admin, key: token}}}
+            volumeMounts: [{name: local, mountPath: /local}, {name: script, mountPath: /script}, {name: vol, mountPath: /vol}]
+          volumes:
+          - {name: local, hostPath: {path: /mnt/chloedb/earth/db, type: Directory}}
+          - {name: script, configMap: {name: earth-backup}}
+          - {name: vol, persistentVolumeClaim: {claimName: earth-backup}}
