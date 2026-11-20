@@ -632,10 +632,12 @@ mod tests {
         // is its JSON; an event's name is an attribute.
         assert_eq!(rows.docs[1]["ts"], json!("2025-11-08T00:00:01Z"));
         assert_eq!(rows.docs[1]["observed_ts"], json!("2025-11-08T00:00:01Z"));
-        assert_eq!(rows.docs[1]["severity"], json!("Warning"));
+        // "Warning" is kept as WARN, with the first number of its range.
+        assert_eq!(rows.docs[1]["severity"], json!("WARN"));
+        assert_eq!(rows.docs[1]["severity_number"], json!(13));
         assert_eq!(rows.docs[1]["body"], json!(r#"{"a":"b"}"#));
         assert_eq!(rows.docs[1]["attributes"], json!({"event_name": "retry"}));
-        assert!(rows.docs[1].get("trace_id").is_none() && rows.docs[1].get("severity_number").is_none());
+        assert!(rows.docs[1].get("trace_id").is_none());
     }
 
     #[test]
