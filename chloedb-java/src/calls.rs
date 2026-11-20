@@ -678,6 +678,9 @@ fn call_static(method: &str, a: &mut Args) -> R<Vec<u8>> {
             w.b
         }
         "create" => {
+            // A model ChloeDB knows is downloaded on first use
+            // (CHLOEDB_FETCH_MODELS=0 stops it), as in Python and JavaScript.
+            chloedb::fetch::set_auto_fetch(true);
             let path = a.path("path")?;
             let schema = a.json_text("schema")?.ok_or_else(|| Fail::Arg("create: schema is missing".into()))?;
             let schema = Schema::from_json(&schema)?;
@@ -688,6 +691,7 @@ fn call_static(method: &str, a: &mut Args) -> R<Vec<u8>> {
             Handle::new(with_threads(db, threads), &models).opened(None)
         }
         "open" => {
+            chloedb::fetch::set_auto_fetch(true);
             let path = a.path("path")?;
             let models = a.opt_path("models")?.unwrap_or_else(chloedb::embed::models_dir);
             let threads = threads_or_cores(a.opt_count("threads")?)?;

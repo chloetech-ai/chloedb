@@ -8,7 +8,7 @@
 // `useFromCode` and `saveSearch` serve the other pages: a table's search
 // (views/table.js) and the query builder save from there.
 
-import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, modal, confirm, gate, can, sqlBlock, seg, store, at } from "../core.js";
+import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, modal, confirm, gate, can, sqlBlock, seg, store, at, isOpenServer } from "../core.js";
 import { isProduction } from "../data.js";
 import { grid, answerStats } from "../results.js";
 
@@ -87,10 +87,13 @@ export function useFromCode({ sql, params = {}, tool = null }) {
   const body = js({ sql, params });
   const pyParams = Object.keys(params).length ? `, ${JSON.stringify(params, null, 0).replace(/\btrue\b/g, "True").replace(/\bfalse\b/g, "False").replace(/\bnull\b/g, "None")}` : "";
   const jsParams = Object.keys(params).length ? `, ${JSON.stringify(params)}` : "";
+  // A server open on this machine takes no key: its code sends none, so
+  // that it runs as pasted.
+  const open = isOpenServer();
   const tabs = [
-    ["curl", "curl", `curl -s ${origin()}/v1/query \\\n  -H "authorization: Bearer $CHLOEDB_TOKEN" \\\n  -H 'content-type: application/json' \\\n  -d '${body.replace(/'/g, "'\\''")}'`],
-    ["python", "Python", `import chloedb  # pip install chloedb\n\ndb = chloedb.connect("${origin()}")  # the key from $CHLOEDB_TOKEN\nrows = db.query(${js(sql)}${pyParams}).rows`],
-    ["js", "JavaScript", `import { connect } from "chloedb/client";  // npm install chloedb\n\nconst db = connect("${origin()}", { token: process.env.CHLOEDB_TOKEN });\nconst { rows } = await db.query(${js(sql)}${jsParams});`],
+    ["curl", "curl", `curl -s ${origin()}/v1/query \\\n${open ? "" : `  -H "authorization: Bearer $CHLOEDB_TOKEN" \\\n`}  -H 'content-type: application/json' \\\n  -d '${body.replace(/'/g, "'\\''")}'`],
+    ["python", "Python", `import chloedb  # pip install chloedb\n\ndb = chloedb.connect("${origin()}")${open ? "" : "  # the key from $CHLOEDB_TOKEN"}\nrows = db.query(${js(sql)}${pyParams}).rows`],
+    ["js", "JavaScript", `import { connect } from "chloedb/client";  // npm install chloedb\n\nconst db = connect("${origin()}"${open ? "" : ", { token: process.env.CHLOEDB_TOKEN }"});\nconst { rows } = await db.query(${js(sql)}${jsParams});`],
   ];
   if (tool) tabs.push(["mcp", "Agent (MCP)", `# Claude Code: the server's MCP endpoint, with a read key\nclaude mcp add --transport http chloedb ${origin()}/v1/mcp \\\n  --header "Authorization: Bearer $CHLOEDB_TOKEN"\n\n# The agent then has the tool ${tool}, with these arguments:\n${JSON.stringify(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, v && v.embed != null ? v.embed : v])), null, 2)}`]);
   let pick = store.get("code.tab", "curl");
