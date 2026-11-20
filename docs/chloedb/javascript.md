@@ -26,7 +26,7 @@ If importing `chloedb` throws an error that calls it a placeholder, npm installe
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.8/chloedb-0.3.8-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.9/chloedb-0.3.9-darwin-arm64.tgz
 ```
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets. From 0.3.9 the release also carries the packages npm serves, byte for byte, and its `SHA256SUMS` lists them, so a package installed from npm can be checked against the release; npm's provenance names the workflow that published it (`npm audit signatures`): [checking what you download](../../SECURITY.md#checking-what-you-download).
@@ -71,7 +71,7 @@ r.rows;          // [[1999, 1]]
 await db.close();
 ```
 
-<!-- since 0.3.9 --> The schema's `emb` field names `potion-retrieval-32M`, a model ChloeDB knows: on a machine that does not have it yet, the first `open` downloads it once into the models folder (about 130 MB, from its pinned revision on Hugging Face, each file checked against its SHA-256) and says so on stderr. `CHLOEDB_FETCH_MODELS=0` turns that off (then `chloedb-server fetch-model potion-retrieval-32M` fetches it), and `HF_ENDPOINT` names a mirror of Hugging Face.
+<!-- since 0.3.10 --> The schema's `emb` field names `potion-retrieval-32M`, a model ChloeDB knows: on a machine that does not have it yet, the first `open` downloads it once into the models folder (about 130 MB, from its pinned revision on Hugging Face, each file checked against its SHA-256) and says so on stderr. `CHLOEDB_FETCH_MODELS=0` turns that off (then `chloedb-server fetch-model potion-retrieval-32M` fetches it), and `HF_ENDPOINT` names a mirror of Hugging Face.
 
 `open(path, {schema})` opens the file, or creates it with the schema when it does not exist; `Database.create(path, schema)` and `Database.open(path)` do one or the other. A schema is an object, JSON text or the path of a JSON file, in the [short form or the long one](server.md#schemas). `directory: true` keeps a database as a directory of segment files, `models` is where embedded fields' models are (`$CHLOEDB_MODELS`, else `~/.local/share/chloedb/models` (or `~/.local/share/strata/models`, on a machine that has that folder from before the rename and no `~/.local/share/chloedb`; before 0.3.2, always); `chloedb-server fetch-model` fetches them), and `threads` how many cores index builds and each query use (every core by default).
 

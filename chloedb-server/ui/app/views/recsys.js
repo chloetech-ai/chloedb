@@ -44,13 +44,13 @@ export function guessEvents(ts, log) {
 
 // ---------------------------------------------------------------- measures
 
-/** A request's measures at k: nDCG (null with no good row logged), hit, reciprocal rank, gain. */
+/** A request's measures at k: nDCG (0 with no good row logged: a miss counts, as in BEIR and trec_eval), hit, reciprocal rank, gain. */
 export function requestMeasures(rows, k) {
   const shown = rows.filter((r) => r.shown).sort((a, b) => a.position - b.position).slice(0, k);
   const dcg = shown.reduce((a, r, i) => a + (2 ** (r.label || 0) - 1) / Math.log2(i + 2), 0);
   const ideal = rows.map((r) => r.label || 0).sort((a, b) => b - a).slice(0, k).reduce((a, l, i) => a + (2 ** l - 1) / Math.log2(i + 2), 0);
   const first = shown.findIndex((r) => (r.label || 0) > 0);
-  return { ndcg: ideal > 0 ? dcg / ideal : null, hit: first >= 0 ? 1 : 0, rr: first >= 0 ? 1 / (first + 1) : 0, gain: shown.reduce((a, r) => a + (r.label || 0), 0), shown };
+  return { ndcg: ideal > 0 ? dcg / ideal : 0, hit: first >= 0 ? 1 : 0, rr: first >= 0 ? 1 / (first + 1) : 0, gain: shown.reduce((a, r) => a + (r.label || 0), 0), shown };
 }
 
 const mean = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
@@ -361,7 +361,7 @@ function render(page) {
       requestsCard());
   }
 
-  const METRICS = [["ndcg", "nDCG", "Discounted gain of the labels in the order shown, over the best order of the request's logged rows; requests with a good row only"], ["hit", "Hit rate", "Requests with a good row in the top k"], ["rr", "MRR", "The reciprocal rank of the first good row (0 with none)"], ["gain", "Gain", "The sum of the labels in the top k, per request"]];
+  const METRICS = [["ndcg", "nDCG", "Discounted gain of the labels in the order shown, over the best order of the request's logged rows, averaged over every request (a request with no good row counts 0)"], ["hit", "Hit rate", "Requests with a good row in the top k"], ["rr", "MRR", "The reciprocal rank of the first good row (0 with none)"], ["gain", "Gain", "The sum of the labels in the top k, per request"]];
 
   function scoreboard() {
     const ctl = out.variants.find((v) => v.name === st.control) || out.variants[0];
@@ -474,7 +474,7 @@ function render(page) {
         const xs = v.reqs.filter((q) => segments.get(String(q.context)) === g).map((q) => q.ndcg).filter((x) => x != null);
         const m = mean(xs);
         const lvl = m == null ? 0 : 1 + Math.min(6, Math.floor(m * 7));
-        return h("td", { class: "num rx-heat", style: { background: m == null ? null : `var(--seq-${lvl})`, color: lvl >= 5 ? "var(--seq-1)" : null }, title: `${fmt.plural(xs.length, "request")} with a good row` }, m == null ? "–" : fmt.n(m, 3));
+        return h("td", { class: "num rx-heat", style: { background: m == null ? null : `var(--seq-${lvl})`, color: lvl >= 5 ? "var(--seq-1)" : null }, title: `${fmt.plural(xs.length, "request")}, those with no good row counting 0` }, m == null ? "–" : fmt.n(m, 3));
       };
       bodyEl = h("div", { class: "tbl-wrap" }, h("table", { class: "t compact" },
         h("thead", {}, h("tr", {}, h("th", {}, st.segment), out.variants.map((v) => h("th", { class: "num" }, h("span", { class: "rx-dot", style: { background: v.color } }), v.name)))),

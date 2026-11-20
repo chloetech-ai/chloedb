@@ -356,6 +356,7 @@ pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),
     ("siglip-base-patch16-224", "google/siglip-base-patch16-224", "SigLIP, images and text, 768 dimensions (feature vision)"),
+    ("siglip-so400m-patch14-384", "google/siglip-so400m-patch14-384", "SigLIP so400m, images and text, 1152 dimensions, 384-pixel images, 3.5 GB (feature vision): the model of Major TOM's Sentinel-2 vectors"),
     ("clap-htsat-unfused", "laion/clap-htsat-unfused", "CLAP, sound and text, 512 dimensions (feature audio)"),
     ("answerai-colbert-small-v1", "answerdotai/answerai-colbert-small-v1", "ColBERT, a 96-dimension vector a token, for a multi-vector field (feature bert)"),
 ];
@@ -369,7 +370,7 @@ pub fn known_dim(model: &str) -> Option<usize> {
     if let Some(k) = crate::hosted::known_model(model) {
         return Some(k.dim);
     }
-    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
+    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("siglip-so400m-patch14-384", 1152), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
     dims.iter().find(|(m, _)| m.eq_ignore_ascii_case(model)).map(|&(_, d)| d)
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-gh-pin"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "Locks a database's vector codes and graphs in memory, beside the server that reads them"

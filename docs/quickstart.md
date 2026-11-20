@@ -6,7 +6,7 @@ You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch
 
 ## In one minute
 
-<!-- since 0.3.9 --> Two commands: install, then start a server with a demo catalogue of 20,000 products.
+<!-- since 0.3.10 --> Two commands: install, then start a server with a demo catalogue of 20,000 products.
 
 ```sh
 # install
@@ -54,7 +54,7 @@ It asks GitHub's API (`api.github.com`) which release is the newest, and when a 
 chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   ...
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.8 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -62,7 +62,7 @@ A copy of the script from before 18 November 2026 asked GitHub's API alone, and 
 
 ```sh
 # install
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.8 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh
 ```
 
 **pipx, uv or pip** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
@@ -88,7 +88,7 @@ pip install chloedb-server       # or: pip install "chloedb[server]"
 
 ```sh
 # install
-v=0.3.8 p=macos-arm64
+v=0.3.9 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -246,7 +246,7 @@ EOF
 [['b1', 'The river and the dragon'], ['b3', 'Dragons of the northern rivers']]
 ```
 
-`chloedb.open` creates the database the first time and opens it after; one process at a time may open it to write. <!-- since 0.3.9 --> A schema with an embedded vector field that names a model ChloeDB knows (`"embed": {"from": ["title"], "model": "potion-retrieval-32M"}`) works on a new machine as written: the first open downloads the model once (about 130 MB, each file checked against its pinned SHA-256) and says so; `CHLOEDB_FETCH_MODELS=0` turns that off. The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`. [Python](chloedb/python.md) goes on from here, and [Build a search page](guide/search-page.md) makes a search box with typos, highlights and filters from these pieces.
+`chloedb.open` creates the database the first time and opens it after; one process at a time may open it to write. <!-- since 0.3.10 --> A schema with an embedded vector field that names a model ChloeDB knows (`"embed": {"from": ["title"], "model": "potion-retrieval-32M"}`) works on a new machine as written: the first open downloads the model once (about 130 MB, each file checked against its pinned SHA-256) and says so; `CHLOEDB_FETCH_MODELS=0` turns that off. The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`. [Python](chloedb/python.md) goes on from here, and [Build a search page](guide/search-page.md) makes a search box with typos, highlights and filters from these pieces.
 
 ## ChloeDB in Docker
 
@@ -255,7 +255,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.8
+  ghcr.io/chloetech-ai/chloedb-server:0.3.9
 ```
 
 Then every request sends the token, and the console asks for it once:
