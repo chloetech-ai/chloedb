@@ -32,6 +32,7 @@ use crate::judge::Judge;
 use crate::personas::{self, PersonaSet};
 use crate::source::Source;
 use crate::study::{self, Study, StudySpec};
+use crate::trial::{self, Trial, TrialSpec};
 use crate::tune::{Tune, TuneSpec};
 use crate::users::{AGES, ATTRIBUTES, COUNTRIES, DEVICES, GENDERS, TENURES};
 
@@ -45,6 +46,7 @@ const EXPERIMENTS: &str = "exp_experiments";
 const PERSONAS: &str = "exp_personas";
 const STUDIES: &str = "exp_studies";
 const TUNES: &str = "exp_tunes";
+const TRIALS: &str = "exp_trials";
 /// Runs kept in memory for cuts by two attributes.
 const KEPT: usize = 3;
 
@@ -82,6 +84,10 @@ pub struct App {
     studies: Mutex<VecDeque<Arc<Study>>>,
     /// Tunes in memory, newest first ([`crate::tune`]).
     tunes: Mutex<VecDeque<Arc<Tune>>>,
+    /// Experiments on real sites read so far, by id ([`crate::trial`]),
+    /// and each one's real visitors' summary, a little while.
+    trials: Mutex<HashMap<String, Arc<Trial>>>,
+    online: Mutex<HashMap<String, (std::time::Instant, Value)>>,
 }
 
 type Shared = Arc<App>;
@@ -193,6 +199,8 @@ pub async fn serve(server: Server, listener: tokio::net::TcpListener, o: Opts) -
         writing: Mutex::new(HashMap::new()),
         studies: Mutex::new(VecDeque::new()),
         tunes: Mutex::new(VecDeque::new()),
+        trials: Mutex::new(HashMap::new()),
+        online: Mutex::new(HashMap::new()),
     });
     {
         let app = app.clone();
@@ -223,6 +231,7 @@ async fn start(app: Shared, beir: Vec<(PathBuf, String)>) {
         format!("CREATE TABLE IF NOT EXISTS {PERSONAS} (id KEYWORD PRIMARY KEY, source KEYWORD, created INT, doc TEXT OPTIONS(indexed = false))"),
         format!("CREATE TABLE IF NOT EXISTS {STUDIES} (id KEYWORD PRIMARY KEY, name TEXT, created INT, status KEYWORD, state TEXT OPTIONS(indexed = false), sessions TEXT OPTIONS(indexed = false))"),
         format!("CREATE TABLE IF NOT EXISTS {TUNES} (id KEYWORD PRIMARY KEY, name TEXT, created INT, status KEYWORD, state TEXT OPTIONS(indexed = false))"),
+        format!("CREATE TABLE IF NOT EXISTS {TRIALS} (id KEYWORD PRIMARY KEY, name TEXT, created INT, doc TEXT OPTIONS(indexed = false))"),
     ];
     for t in &tables {
         if let Err(e) = s.sql(t, json!({})).await {
@@ -314,6 +323,14 @@ pub fn router(app: Shared) -> Router {
         .route("/v1/tunes", get(tunes).post(create_tune))
         .route("/v1/tunes/:id", get(one_tune))
         .route("/v1/tunes/:id/stop", post(stop_tune))
+        .route("/v1/trials", get(trials).post(create_trial))
+        .route("/v1/trials/:id", get(one_trial).delete(drop_trial))
+        .route("/v1/trials/:id/judged", post(trial_judged))
+        .route("/v1/trials/:id/study", post(trial_study))
+        .route("/v1/trials/:id/online", post(trial_online))
+        .route("/v1/trials/:id/online/stop", post(trial_online_stop))
+        .route("/v1/trials/:id/decide", post(trial_decide))
+        .route("/v1/trials/:id/stop", post(trial_stop))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(app)
@@ -1093,6 +1110,12 @@ fn effective_knobs(describe: &Value, knobs: &Value) -> Map<String, Value> {
 }
 
 async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) -> Answer {
+    let id = start_study(&app, spec).await?;
+    Ok(Json(json!({"id": id})))
+}
+
+/// A study, checked and started; its id.
+async fn start_study(app: &Shared, spec: StudySpec) -> Result<String, ApiError> {
     let set = app.persona_set_of(&spec.personas).await?;
     spec.check(&set).map_err(bad)?;
     if let Some(on) = app.studies.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.running()) {
@@ -1152,7 +1175,7 @@ async fn create_study(State(app): State<Shared>, Json(spec): Json<StudySpec>) ->
     };
     save(s.clone());
     tokio::spawn(s.clone().run(save));
-    Ok(Json(json!({"id": id})))
+    Ok(id)
 }
 
 async fn tunes(State(app): State<Shared>) -> Answer {
@@ -1233,4 +1256,320 @@ async fn create_tune(State(app): State<Shared>, Json(mut spec): Json<TuneSpec>) 
     save(t.clone());
     tokio::spawn(t.clone().run(described, save));
     Ok(Json(json!({"id": id})))
+}
+
+// ------------------------------------------------------------ experiments on real sites
+
+impl App {
+    /// An experiment, from memory or its row.
+    async fn trial(&self, id: &str) -> Result<Arc<Trial>, ApiError> {
+        if let Some(t) = self.trials.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+            return Ok(t.clone());
+        }
+        let a = self.server.query(&format!("SELECT doc FROM {TRIALS} WHERE id = {}", lit(id)), json!({}), None).await.map_err(upstream)?;
+        let doc = a["rows"][0][0].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("no experiment {id}")))?;
+        let t = Arc::new(Trial::of(doc));
+        self.trials.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), t.clone());
+        Ok(t)
+    }
+
+    /// Keeps an experiment's record, one write at a time.
+    fn trial_saver(&self) -> impl Fn(&Trial) + Send + Sync + Clone + 'static {
+        let server = self.server.clone();
+        let turn = Arc::new(tokio::sync::Mutex::new(()));
+        move |t: &Trial| {
+            let (server, turn) = (server.clone(), turn.clone());
+            let v = t.view();
+            let (id, created) = (t.id.clone(), t.created);
+            tokio::spawn(async move {
+                let _t = turn.lock().await;
+                let doc = json!({"id": id, "name": v["spec"]["name"], "created": created, "doc": v.to_string()});
+                if let Err(e) = server.write(vec![json!({"op": "upsert", "table": TRIALS, "doc": doc})]).await {
+                    eprintln!("chloedb-experiments: keeping experiment {id}: {e}");
+                }
+            });
+        }
+    }
+
+    /// The real visitors' summary of an experiment, read from its site's
+    /// log at most every 20 seconds.
+    async fn trial_online(&self, t: &Trial, spec: &TrialSpec) -> Value {
+        let step = t.step("online");
+        if step.is_null() {
+            return Value::Null;
+        }
+        if let Some((at, v)) = self.online.lock().unwrap_or_else(|e| e.into_inner()).get(&t.id) {
+            if at.elapsed() < Duration::from_secs(20) {
+                return v.clone();
+            }
+        }
+        let Ok(source) = self.source(&spec.source) else { return json!({"error": format!("no source {}", spec.source)}) };
+        let mut v = match source.interleave_log(&t.id).await {
+            Ok(log) => {
+                let units = trial::search_units(&log);
+                let mut s = trial::online_summary(&units, spec, trial::now_s());
+                s["units"] = json!(units);
+                s
+            }
+            Err(e) => json!({"error": e}),
+        };
+        let running = source.interleave_running().await.ok().map(|r| r["test"]["id"] == json!(t.id));
+        v["running"] = json!(running.unwrap_or(false));
+        v["share"] = step["share"].clone();
+        v["started"] = step["started"].clone();
+        v["stopped"] = step["stopped"].clone();
+        self.online.lock().unwrap_or_else(|e| e.into_inner()).insert(t.id.clone(), (std::time::Instant::now(), v.clone()));
+        v
+    }
+
+    /// The newest persona set written from a source.
+    async fn newest_set(&self, source: &str) -> Option<String> {
+        let a = self.server.query(&format!("SELECT id FROM {PERSONAS} WHERE source = {} ORDER BY created DESC LIMIT 1", lit(source)), json!({}), None).await.ok()?;
+        a["rows"][0][0].as_str().map(str::to_string)
+    }
+
+    /// The finished studies of a persona set, with their sessions.
+    async fn studies_of_set(&self, set: &str) -> Vec<study::Session> {
+        let Ok(a) = self.server.query(&format!("SELECT id FROM {STUDIES} ORDER BY created DESC LIMIT 50"), json!({}), None).await else { return Vec::new() };
+        let mut kept = Vec::new();
+        for r in a["rows"].as_array().into_iter().flatten() {
+            if let Some(id) = r[0].as_str() {
+                if let Ok(x) = self.study_kept(id).await {
+                    kept.push(x);
+                }
+            }
+        }
+        trial::sessions_of_set(&kept, set)
+    }
+}
+
+/// An experiment's record with what the evidence says now: the real
+/// visitors' summary and the rule's call.
+async fn trial_full(app: &App, t: &Trial) -> Value {
+    let spec = t.spec();
+    let mut v = t.view();
+    let online = app.trial_online(t, &spec).await;
+    if !online.is_null() {
+        v["steps"]["online"] = online.clone();
+    }
+    v["rule"] = trial::rule(&spec, &v["steps"]["judged"], &online);
+    v
+}
+
+async fn trials(State(app): State<Shared>) -> Answer {
+    let a = app.server.query(&format!("SELECT id FROM {TRIALS} ORDER BY created DESC LIMIT 200"), json!({}), None).await.map_err(upstream)?;
+    let mut out = Vec::new();
+    for r in a["rows"].as_array().into_iter().flatten() {
+        let Some(id) = r[0].as_str() else { continue };
+        let Ok(t) = app.trial(id).await else { continue };
+        let mut v = trial_full(&app, &t).await;
+        // The list needs no units.
+        for k in ["side", "judged", "online"] {
+            if let Some(o) = v["steps"][k].as_object_mut() {
+                o.remove("units");
+                o.remove("rows");
+                o.remove("days");
+            }
+        }
+        out.push(v);
+    }
+    Ok(Json(json!({"trials": out})))
+}
+
+async fn one_trial(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t = app.trial(&id).await?;
+    Ok(Json(trial_full(&app, &t).await))
+}
+
+async fn drop_trial(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t = app.trial(&id).await?;
+    if t.step("online")["stopped"].is_null() && !t.step("online").is_null() {
+        return Err(bad("it is running on real visitors: stop that first"));
+    }
+    app.server.write(vec![json!({"op": "delete", "table": TRIALS, "id": id})]).await.map_err(upstream)?;
+    app.trials.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    Ok(Json(json!({"deleted": id})))
+}
+
+/// An experiment, made: its spec checked against the site, then the side
+/// by side started.
+async fn create_trial(State(app): State<Shared>, Json(mut spec): Json<TrialSpec>) -> Answer {
+    spec.check().map_err(bad)?;
+    let source = app.source(&spec.source)?;
+    let d = source.describe().await;
+    if d["allowed"] != json!(true) {
+        return Err(bad(format!("{} takes no experiments ({})", source.name, d["error"].as_str().unwrap_or(""))));
+    }
+    if spec.control.is_null() {
+        spec.control = json!({});
+    }
+    if effective_knobs(&d, &spec.control) == effective_knobs(&d, &spec.treatment) {
+        return Err(bad("the treatment searches like the control: change a knob"));
+    }
+    source.search("test", &spec.control, 3).await.map_err(|e| bad(format!("the control: {e}")))?;
+    source.search("test", &spec.treatment, 3).await.map_err(|e| bad(format!("the treatment: {e}")))?;
+    if spec.personas.is_empty() {
+        spec.personas = app.newest_set(&spec.source).await.unwrap_or_default();
+    }
+    let needs: Vec<String> = match app.persona_set_of(&spec.personas).await {
+        Ok(set) => set.personas.iter().flat_map(|p| p.needs.iter().map(|n| n.text.clone())).collect(),
+        Err(_) => Vec::new(),
+    };
+    let created = now_ms();
+    let id = format!("x{created}");
+    let t = Arc::new(Trial::new(&id, created, &spec));
+    app.trials.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), t.clone());
+    let save = app.trial_saver();
+    save(&t);
+    tokio::spawn(t.clone().side(source, needs, save));
+    Ok(Json(json!({"id": id})))
+}
+
+#[derive(serde::Deserialize)]
+struct JudgedReq {
+    #[serde(default = "claude_s")]
+    brain: String,
+    #[serde(default = "judge_default")]
+    judge_model: String,
+    #[serde(default = "one")]
+    budget: f64,
+}
+fn claude_s() -> String {
+    "claude".into()
+}
+fn judge_default() -> String {
+    "claude-opus-5-5".into()
+}
+fn one() -> f64 {
+    1.0
+}
+
+/// Step 2: the judged queries, started.
+async fn trial_judged(State(app): State<Shared>, Path(id): Path<String>, Json(r): Json<JudgedReq>) -> Answer {
+    let t = app.trial(&id).await?;
+    let spec = t.spec();
+    if t.step("judged")["status"] == "running" {
+        return Err(ApiError(StatusCode::CONFLICT, "the judged queries are running".into()));
+    }
+    if !(r.budget > 0.0 && r.budget <= 5.0) {
+        return Err(bad("the judge's budget is more than $0 and at most $5"));
+    }
+    if spec.personas.is_empty() {
+        return Err(bad("the experiment has no personas: write some for its site first"));
+    }
+    let set = app.persona_set_of(&spec.personas).await?;
+    let sessions = app.studies_of_set(&spec.personas).await;
+    let source = app.source(&spec.source)?;
+    let judge = Arc::new(Judge::new(app.brain(&r.brain, &r.judge_model)?, app.server.clone()));
+    tokio::spawn(t.clone().judged(source, set, sessions, judge, r.budget, app.trial_saver()));
+    Ok(Json(json!({"started": "judged"})))
+}
+
+#[derive(serde::Deserialize)]
+struct StudyReq {
+    #[serde(default = "claude_s")]
+    brain: String,
+    #[serde(default = "sonnet")]
+    agent_model: String,
+    #[serde(default = "judge_default")]
+    judge_model: String,
+    #[serde(default = "five")]
+    budget: f64,
+    #[serde(default)]
+    needs: usize,
+}
+fn sonnet() -> String {
+    "claude-sonnet-5-5".into()
+}
+fn five() -> f64 {
+    5.0
+}
+
+/// Step 3: a study of the two arms by simulated users.
+async fn trial_study(State(app): State<Shared>, Path(id): Path<String>, Json(r): Json<StudyReq>) -> Answer {
+    let t = app.trial(&id).await?;
+    let spec = t.spec();
+    if spec.personas.is_empty() {
+        return Err(bad("the experiment has no personas: write some for its site first"));
+    }
+    let arm = |name: &str, knobs: &Value| study::StudyArm { name: name.to_string(), source: spec.source.clone(), knobs: knobs.clone() };
+    let s = StudySpec {
+        name: spec.name.clone(), personas: spec.personas.clone(), arms: vec![arm(&spec.control_name, &spec.control), arm(&spec.treatment_name, &spec.treatment)],
+        per: 10, needs: r.needs, brain: r.brain, agent_model: r.agent_model, judge_model: r.judge_model, budget: r.budget, workers: 3,
+    };
+    let sid = start_study(&app, s).await?;
+    t.set(|d| d["steps"]["study"] = json!({"id": sid}));
+    (app.trial_saver())(&t);
+    Ok(Json(json!({"study": sid})))
+}
+
+#[derive(serde::Deserialize)]
+struct OnlineReq {
+    #[serde(default = "half")]
+    share: f64,
+}
+fn half() -> f64 {
+    0.5
+}
+
+/// Step 4: the two arms interleaved on the site's real visitors.
+async fn trial_online(State(app): State<Shared>, Path(id): Path<String>, Json(r): Json<OnlineReq>) -> Answer {
+    let t = app.trial(&id).await?;
+    let spec = t.spec();
+    if !(r.share > 0.0 && r.share <= 1.0) {
+        return Err(bad("the share of searches is more than 0 and at most 1"));
+    }
+    let source = app.source(&spec.source)?;
+    if let Ok(run) = source.interleave_running().await {
+        if let Some(other) = run["test"]["id"].as_str().filter(|x| *x != id) {
+            return Err(ApiError(StatusCode::CONFLICT, format!("another experiment ({other}) is running on {}'s visitors: stop it first", source.name)));
+        }
+    }
+    source.interleave_start(&id, &spec.name, &spec.control, &spec.treatment, r.share).await.map_err(bad)?;
+    let started = t.step("online")["started"].as_i64().unwrap_or_else(trial::now_s);
+    t.set(|d| d["steps"]["online"] = json!({"status": "running", "share": r.share, "started": started, "stopped": null}));
+    app.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    (app.trial_saver())(&t);
+    Ok(Json(json!({"started": "online"})))
+}
+
+async fn trial_online_stop(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t = app.trial(&id).await?;
+    let spec = t.spec();
+    let source = app.source(&spec.source)?;
+    source.interleave_stop(&id).await.map_err(bad)?;
+    t.set(|d| {
+        d["steps"]["online"]["status"] = json!("stopped");
+        d["steps"]["online"]["stopped"] = json!(trial::now_s());
+    });
+    app.online.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    (app.trial_saver())(&t);
+    Ok(Json(json!({"stopped": "online"})))
+}
+
+#[derive(serde::Deserialize)]
+struct DecideReq {
+    call: String,
+    #[serde(default)]
+    note: String,
+}
+
+/// Step 5: the call recorded, with the rule's at that moment.
+async fn trial_decide(State(app): State<Shared>, Path(id): Path<String>, Json(r): Json<DecideReq>) -> Answer {
+    if !["ship", "dont_ship", "iterate"].contains(&r.call.as_str()) {
+        return Err(bad("a decision is ship, dont_ship or iterate"));
+    }
+    let t = app.trial(&id).await?;
+    let full = trial_full(&app, &t).await;
+    let rule = full["rule"].clone();
+    let override_ = r.call == "ship" && !matches!(rule["call"].as_str(), Some("ship"));
+    t.set(|d| d["decision"] = json!({"call": r.call, "note": r.note.chars().take(4000).collect::<String>(), "at": trial::now_s(), "rule": rule, "override": override_}));
+    (app.trial_saver())(&t);
+    Ok(Json(json!({"decided": r.call, "override": override_})))
+}
+
+async fn trial_stop(State(app): State<Shared>, Path(id): Path<String>) -> Answer {
+    let t = app.trial(&id).await?;
+    t.stop();
+    Ok(Json(json!({"stopping": id})))
 }
