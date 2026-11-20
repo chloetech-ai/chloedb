@@ -118,6 +118,8 @@
   .sharebox .sharerow span { flex: 1 1 240px; }
   .morebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 13px; color: var(--ink-2); }
   .morebox .faint { flex: 1 1 220px; }
+  .morebox .moments { flex: 1 1 100%; display: flex; flex-direction: column; gap: 6px; }
+  .morebox .moment { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
   .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
   .sharebox .people { display: contents; }
   .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
@@ -484,7 +486,7 @@ function screen() {
   return widgets.map((w, i) => [w, i]).sort((a, b) => (b[0].touched ?? 0) - (a[0].touched ?? 0) || b[1] - a[1]).map(([w]) => w).slice(0, 12).map(w =>
     isPrivate(w.app.id)
       ? { id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: '(private: the person keeps what this app shows to themselves)', did: [], told: '' }
-      : { id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.told })
+      : { id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.fresh && froze[w.app.id] ? `(It opened without what it kept, after it stopped the page last time: what it keeps is not on screen, so say nothing of what it holds.) ${w.told ?? ''}` : w.told })
 }
 
 const withoutEntries = payload => {
@@ -575,33 +577,70 @@ function printing(w) {
 }
 
 // An app that never comes back (a loop without end) stops the page with it,
-// and the kit can't say so (DEV-3). The app the page was drawing or the
-// person was using is noted here, and the note goes when the page closes as
-// usual: found when the page opens again, that app was the one.
-const BUSY = 'instant-apps-busy'
-const inUse = w => local.set(BUSY, JSON.stringify({ app: w.app.id, name: w.app.name, version: w.app.version, at: Date.now() }))
-const notInUse = () => { try { localStorage.removeItem(BUSY) } catch {} }
-addEventListener('pagehide', notInUse)
-document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && notInUse())
+// and the kit can't say so (DEV-3). A watch beside the page, in a worker of
+// its own, hears from the page each second: when it hears nothing for six
+// seconds while the page is looked at, that is a hang, and it notes the app
+// in use then. A page closed, or a phone that stops the browser, is no hang:
+// the watch stops with it and notes nothing (LENA-1, INES-1, MAYA-3).
+const WATCH = `
+let last = Date.now(), app = null, watching = true, noted = false
+const put = (note, gone) => { try { const r = indexedDB.open('instant-apps', 1); r.onupgradeneeded = () => r.result.createObjectStore('hang'); r.onsuccess = () => { const t = r.result.transaction('hang', 'readwrite'); gone ? t.objectStore('hang').delete('last') : t.objectStore('hang').put(note, 'last') } } catch {} }
+onmessage = e => {
+  const m = e.data || {}
+  if (m.app) app = m.app
+  if ('watching' in m) watching = m.watching
+  const was = Date.now() - last
+  last = Date.now()
+  if (noted) { noted = false; put(null, true); postMessage({ recovered: app, ms: was }) }
+}
+setInterval(() => { const ms = Date.now() - last; if (watching && app && !noted && ms > 6000) { noted = true; put({ ...app, ms, at: Date.now() }) } }, 1000)`
+const watch = (() => {
+  try {
+    return new Worker(URL.createObjectURL(new Blob([WATCH], { type: 'text/javascript' })))
+  } catch {
+    return null
+  }
+})()
+const inUse = w => watch?.postMessage({ app: { app: w.app.id, name: w.app.name, version: w.app.version } })
+setInterval(() => watch?.postMessage({ ping: 1 }), 1000)
+document.addEventListener('visibilitychange', () => watch?.postMessage({ watching: document.visibilityState === 'visible' }))
+addEventListener('pagehide', () => watch?.postMessage({ watching: false }))
+watch?.addEventListener('message', e => {
+  const w = widgets.find(x => x.app.id === e.data?.recovered?.app && !x.folded && x.node)
+  if (w) frozen(w, e.data.ms)
+})
 // Using an app moves the focus into its frame.
 addEventListener('blur', () => {
   const name = document.activeElement?.tagName === 'IFRAME' ? document.activeElement.name : ''
   const w = name && widgets.find(x => x.frameName === name)
   if (w) inUse(w)
 })
-const stuck = (() => {
+// What the watch noted last time: that app opens without what it kept.
+const hung = new Promise(resolve => {
   try {
-    const was = JSON.parse(local.get(BUSY) || 'null')
-    notInUse()
-    return was?.app ? was : null
+    const r = indexedDB.open('instant-apps', 1)
+    r.onupgradeneeded = () => r.result.createObjectStore('hang')
+    r.onerror = () => resolve(null)
+    r.onsuccess = () => {
+      const t = r.result.transaction('hang', 'readwrite')
+      const get = t.objectStore('hang').get('last')
+      get.onsuccess = () => {
+        t.objectStore('hang').delete('last')
+        resolve(get.result ?? null)
+      }
+      get.onerror = () => resolve(null)
+    }
   } catch {
-    return null
+    resolve(null)
   }
-})()
-if (stuck) {
-  froze[stuck.app] = { ms: 0, version: stuck.version, at: stuck.at, name: stuck.name, stopped: true }
-  local.set('instant-apps-froze', JSON.stringify(froze))
-}
+}).then(was => {
+  if (was?.app) {
+    froze[was.app] = { ms: was.ms ?? 0, version: was.version, at: was.at, name: was.name, stopped: true }
+    local.set('instant-apps-froze', JSON.stringify(froze))
+  }
+})
+// A mark of the build before this one, which noted any app drawn: not a hang.
+try { localStorage.removeItem('instant-apps-busy') } catch {}
 
 // ---- with no signal (MAYA-8, INES-4) ----
 // What each app kept, as last read here, so it opens with no signal; and
@@ -732,6 +771,7 @@ async function draw(w) {
   w.frameName = iframe.name = `app-${++frames}`
   // It froze the page last time with what it kept: this time it opens without.
   const fresh = froze[w.app.id]?.version === w.app.version
+  w.fresh = fresh
   frame.append(iframe)
   const bridge = new AppBridge(
     null,
@@ -760,12 +800,20 @@ async function draw(w) {
       frozen(w, Number(params.arguments?.ms) || 0)
       return { content: [{ type: 'text', text: 'noted' }], structuredContent: {} }
     }
-    if (fresh && params.name === 'app_kept') {
+    // What it keeps meanwhile goes on top of what it kept: opening without
+    // it never writes over it (LENA-1, INES-1).
+    if (fresh && froze[w.app.id] && params.name === 'app_keep') {
+      const a = params.arguments ?? {}
+      const now = (await keptCall(w, { name: 'app_kept', arguments: { key: a.key } }))?.structuredContent?.value ?? null
+      const blankOf = v => (Array.isArray(v) ? [] : v && typeof v === 'object' ? {} : null)
+      return keptCall(w, { ...params, arguments: { ...a, value: now == null ? a.value : merged(blankOf(a.value), a.value, now) } })
+    }
+    if (fresh && froze[w.app.id] && params.name === 'app_kept') {
       w.node.querySelector('.frozebox')?.remove()
       const box = document.createElement('div')
       box.className = 'frozebox'
       const how = froze[w.app.id].stopped ? 'stopped the page last time, while it was working' : `froze the page last time (${Math.round(froze[w.app.id].ms / 1000)} s)`
-      box.innerHTML = `<span><b>${esc(w.app.name)}</b> ${how}, so it opened without what it kept.</span><button class="btn keep" type="button">Open with what it kept</button>${limited(w.app.id) || guest ? '' : '<button class="btn fix" type="button">Fix it</button>'}`
+      box.innerHTML = `<span><b>${esc(w.app.name)}</b> ${how}, so it opened without what it kept. Nothing is lost: what you add now goes on top of it.</span><button class="btn keep" type="button">Open with what it kept</button>${limited(w.app.id) || guest ? '' : '<button class="btn fix" type="button">Fix it</button>'}`
       box.querySelector('.keep').onclick = () => { delete froze[w.app.id]; local.set('instant-apps-froze', JSON.stringify(froze)); box.remove(); draw(w) }
       box.querySelector('.fix')?.addEventListener('click', () => w.change?.('Fix this app: it stopped the whole page while it was working, most likely a loop that never ends or a pattern that runs without end on what was typed. Make every loop end, and run typed patterns with Kit.regex.', 'Fixing it'))
       w.node.querySelector('.wbar').after(box)
@@ -1093,11 +1141,43 @@ function bar(w) {
     box.className = 'morebox'
     const canPrivate = !guest && !shared[app.id] && app.tool !== 'findings'
     const print = `<button class="btn print" type="button">Print</button>`
-    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    const canEarlier = !limited(app.id) && !isPrivate(app.id) && app.tool !== 'findings'
+    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canEarlier ? `<button class="btn earlier" type="button">Earlier versions of what it kept</button>` : ''}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
     box.querySelector('.print').onclick = () => {
       box.remove()
       printing(w)
     }
+    // What it held before, a moment at a time, and bringing one back (LENA-1, INES-1).
+    box.querySelector('.earlier')?.addEventListener('click', async () => {
+      const list = box.querySelector('.moments') ?? el('moments', '<span class="faint">Looking…</span>', box)
+      const out = await (await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(error => ({ error: error.message }))
+      if (out.error || !out.moments?.length) {
+        list.innerHTML = `<span class="faint">${esc(out.error ?? 'Nothing earlier yet: what it keeps now is all it has held.')}</span>`
+        return
+      }
+      const when = t => new Date(t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+      list.innerHTML = `<span class="faint">Now: ${esc(out.now || 'nothing')}</span>${out.moments.map(m => `<div class="moment"><span>${esc(when(m.at))} · ${esc(m.says || 'nothing')}</span><button class="btn back" type="button" data-at="${m.at}">Bring back</button></div>`).join('')}`
+      for (const button of list.querySelectorAll('.back')) {
+        button.onclick = async () => {
+          button.textContent = 'Bringing it back…'
+          const done = await (await fetch('/api/restore', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, at: Number(button.dataset.at) }) })).json().catch(error => ({ error: error.message }))
+          if (done.error) {
+            button.textContent = done.error
+            return
+          }
+          delete froze[app.id]
+          local.set('instant-apps-froze', JSON.stringify(froze))
+          delete cache[slotOf(app.id)]
+          saveOffline()
+          box.remove()
+          w.node.querySelector('.frozebox')?.remove()
+          draw(w)
+          const told = el('offline-note', `Brought back what it held on ${esc(when(Number(button.dataset.at)))}. What it held just before is under Earlier versions too.`, w.node)
+          w.node.querySelector('.wbar').after(told)
+          setTimeout(() => told.remove(), 10000)
+        }
+      }
+    })
     box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: csvOf(await keptOf(app)), type: 'text/csv' })
     box.querySelector('.json').onclick = async () => download({ name: `${slug(app.name)}.json`, text: JSON.stringify(await keptOf(app), null, 2), type: 'application/json' })
     box.querySelector('.private')?.addEventListener('click', async () => {
@@ -1110,6 +1190,8 @@ function bar(w) {
         // What it kept comes into this browser, and leaves the chat's store.
         privately[app.id] = await keptOf(app)
         for (const key of Object.keys(privately[app.id])) await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me, name: 'app_keep', arguments: { key, value: null } }) })
+        // Nor does what it held before stay there.
+        await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me, self: me, forget: true }) }).catch(() => {})
         privateApps[app.id] = true
       }
       saveLocal()
@@ -1412,9 +1494,10 @@ if (guest) {
   document.querySelector('.top .faint').textContent = 'shared with you by a link'
   el('guest-note', 'This page has only what was shared with you. What you can do is on each app’s bar.', col)
   loaded = (async () => {
+    await hung
     for (const id of guestApps()) await openFromRail(id, 'the shared app', 'linked')
   })()
-} else loaded = restore().then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
+} else loaded = hung.then(() => restore()).then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
 // A shared app shows what the others kept since, when the page is looked at again.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return

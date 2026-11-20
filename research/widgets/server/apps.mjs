@@ -103,7 +103,13 @@ export function partOf(value, only) {
 export function withPart(before, after, { by, only } = {}) {
   if (!Array.isArray(after)) return after
   const was = new Set((Array.isArray(before) ? before : []).map(e => e?.id).filter(id => id != null))
-  const added = after.map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && e.by == null ? { by } : {}), ...(only?.field && e[only.field] == null ? { [only.field]: only.value } : {}) } : e))
+  // An entry the link can't see (another crew's) is not its to write: an
+  // app that saw none of its starting entries and wrote them again doesn't
+  // put a second one under the same id (DEV-1).
+  const unseen = new Set(only?.field && parted(before, only) ? before.filter(e => e?.id != null && !inPart(e, only)).map(e => e.id) : [])
+  const added = after
+    .filter(e => !(e && typeof e === 'object' && e.id != null && unseen.has(e.id)))
+    .map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && blank(e.by) ? { by } : {}), ...(only?.field && blank(e[only.field]) ? { [only.field]: only.value } : {}) } : e))
   if (!only?.field || !parted(before, only)) return added
   const theirs = new Map(added.filter(e => e?.id != null).map(e => [e.id, e]))
   const out = []
@@ -116,6 +122,69 @@ export function withPart(before, after, { by, only } = {}) {
     }
   }
   for (const e of added) if (e?.id == null || !placed.has(e.id)) out.push(e)
+  return out
+}
+// What a helper link added or filled that wasn't there: its own, which it
+// may go on changing and take out again. A note typed one key at a time is
+// kept at each key, and the second key changes what the first one filled
+// (PRIYA-1, TOM-1). Each is a path: /field, [id] for an entry of a list
+// with ids, #n for an entry put at the end of a list without.
+const ided = v => Array.isArray(v) && v.length > 0 && v.every(e => e && typeof e === 'object' && e.id != null)
+export function madeBy(before, after, path = '', out = [], depth = 0) {
+  if (after === undefined || depth > 6) return out
+  if (blank(before)) {
+    if (!blank(after)) out.push(path)
+    return out
+  }
+  if (Array.isArray(before) && Array.isArray(after)) {
+    if (ided(before)) {
+      const was = new Map(before.map(e => [String(e.id), e]))
+      for (const e of after) {
+        if (!e || typeof e !== 'object' || e.id == null) continue
+        const old = was.get(String(e.id))
+        if (!old) out.push(`${path}[${e.id}]`)
+        else madeBy(old, e, `${path}[${e.id}]`, out, depth + 1)
+      }
+    } else for (let i = before.length; i < after.length; i++) out.push(`${path}#${i}`)
+    return out
+  }
+  if (typeof before === 'object' && !Array.isArray(before) && after && typeof after === 'object' && !Array.isArray(after)) {
+    for (const [k, v] of Object.entries(after)) madeBy(before[k], v, `${path}/${k}`, out, depth + 1)
+  }
+  return out
+}
+// What is there without what the link made itself: the helper rule is
+// checked against this, so what it made it may change.
+export function withoutMade(value, made, path = '', depth = 0) {
+  if (!made?.size || depth > 6) return value
+  if (made.has(path)) return Array.isArray(value) ? [] : value && typeof value === 'object' ? {} : ''
+  if (Array.isArray(value)) {
+    if (ided(value)) return value.filter(e => !made.has(`${path}[${e.id}]`)).map(e => withoutMade(e, made, `${path}[${e.id}]`, depth + 1))
+    return value.filter((e, i) => !made.has(`${path}#${i}`))
+  }
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withoutMade(v, made, `${path}/${k}`, depth + 1)]))
+  return value
+}
+
+// Fields a person's link never gets (a crew lead doesn't see prices): taken
+// out of every entry it reads, and put back from what is there when it
+// keeps, so leaving them out takes nothing away (MARCUS-1).
+const hidden = (key, hide) => hide.some(h => String(h).toLowerCase() === String(key).toLowerCase())
+export function hideIn(value, hide, depth = 0) {
+  if (!hide?.length || depth > 6 || !value || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map(e => hideIn(e, hide, depth + 1))
+  return Object.fromEntries(Object.entries(value).filter(([k]) => !hidden(k, hide)).map(([k, v]) => [k, hideIn(v, hide, depth + 1)]))
+}
+export function withHidden(before, after, hide, depth = 0) {
+  if (!hide?.length || depth > 6 || !after || typeof after !== 'object' || !before || typeof before !== 'object') return after
+  if (Array.isArray(after)) {
+    if (!Array.isArray(before)) return after
+    const was = new Map(before.filter(e => e && typeof e === 'object' && e.id != null).map(e => [String(e.id), e]))
+    return after.map((e, i) => (e && typeof e === 'object' && e.id != null ? withHidden(was.get(String(e.id)), e, hide, depth + 1) : ided(before) ? e : withHidden(before[i], e, hide, depth + 1)))
+  }
+  if (Array.isArray(before)) return after
+  const out = Object.fromEntries(Object.entries(after).map(([k, v]) => [k, withHidden(before[k], v, hide, depth + 1)]))
+  for (const [k, v] of Object.entries(before)) if (hidden(k, hide)) out[k] = v
   return out
 }
 export async function keeping(apps, appId, name, args = {}, owner = '', self = '') {

@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart } from '../server/apps.mjs'
+import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -96,7 +96,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (!id) return null
     if (!id.startsWith('s-')) return { owner: id, role: 'own' }
     const link = await apps.kept(appId, `link:${id.slice(2)}`, LINKS).catch(() => null)
-    return link ? { owner: link.owner, role: link.role, ...(link.name ? { name: link.name } : {}), ...(link.only?.field ? { only: link.only } : {}) } : { owner: id, role: 'full' }
+    return link ? { owner: link.owner, role: link.role, token: id.slice(2), ...(link.name ? { name: link.name } : {}), ...(link.only?.field ? { only: link.only } : {}), ...(link.hide?.length ? { hide: link.hide } : {}) } : { owner: id, role: 'full' }
   }
   const STOPPED = 'This link was stopped by whoever shared it: it opens nothing any more.'
   // What a request's links let it do to an app itself (change it, undo,
@@ -120,8 +120,28 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (isView(args?.key ?? '')) return ''
     if (who.role === 'viewer') return 'Not kept: this link can only look. Whoever shared it can change it.'
     if (who.role !== 'helper') return ''
-    const before = partOf(await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null), who.only)
-    return changesWhatIsThere(before, args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
+    const key = String(args?.key ?? '')
+    const before = hideIn(partOf(await apps.kept(appId, key, who.owner).catch(() => null), who.only), who.hide)
+    // What the link added or filled itself it may go on changing (PRIYA-1, TOM-1).
+    const made = new Set((await made_(appId, who.token))[key] ?? [])
+    return changesWhatIsThere(withoutMade(before, made), args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
+  }
+  const made_ = async (appId, token) => (token ? ((await apps.kept(appId, `made:${token}`, LINKS).catch(() => null)) ?? {}) : {})
+  // Keeps of one value go one after another, in the order they came: the
+  // keys of a word typed fast arrive close together (PRIYA-1).
+  const queues = new Map()
+  function inTurn(name, fn) {
+    const run = (queues.get(name) ?? Promise.resolve()).then(fn, fn)
+    const tail = run.catch(() => {})
+    queues.set(name, tail)
+    tail.then(() => queues.get(name) === tail && queues.delete(name))
+    return run
+  }
+  // Pages that have a shared app open hear when someone else keeps
+  // something in it, and draw it again (MARCUS-4, LENA-5).
+  const watchers = new Map()
+  const told = (appId, owner, self) => {
+    for (const w of watchers.get(`${appId}|${owner}`) ?? []) w({ app: appId, self })
   }
   // Each app sent to a page with a conversation is recorded as shown in it,
   // with what it was filled with, so it opens again as it was.
@@ -464,29 +484,66 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         if (!event) return json(res, { error: 'not in this conversation' }, 404)
         return json(res, event)
       }
+      // What someone else kept in a shared app, as it happens: the page draws
+      // it again (MARCUS-4). Only that something changed is said; the page
+      // reads it through its own link.
+      if (req.method === 'GET' && url.pathname === '/api/watch') {
+        const pairs = String(url.searchParams.get('apps') ?? '').split(',').map(x => x.split('|')).filter(([a, o]) => a && /^s-[0-9a-f]{32}$/.test(o ?? '')).slice(0, 20)
+        const named = []
+        for (const [a, o] of pairs) {
+          const who = await owning(a, o)
+          if (who && who.role !== 'gone') named.push(`${a}|${who.owner}`)
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' })
+        res.write(': watching\n\n')
+        const send = event => res.write(`data: ${JSON.stringify(event)}\n\n`)
+        for (const n of named) watchers.set(n, new Set([...(watchers.get(n) ?? []), send]))
+        const ping = setInterval(() => res.write(': ping\n\n'), 25000)
+        req.on('close', () => {
+          clearInterval(ping)
+          for (const n of named) {
+            const set = watchers.get(n)
+            set?.delete(send)
+            if (set && !set.size) watchers.delete(n)
+          }
+        })
+        return
+      }
       // A tool an app calls from its view: only the tools it was made with.
       if (req.method === 'POST' && url.pathname === '/api/call') {
         const { app: appId, name, arguments: args, me, self } = await body(req)
         const app = await apps.get(appId)
         if (app && KEEPING.includes(name)) {
           const who = await owning(app.id, me)
-          const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
-          if (refused) return json(res, { content: [{ type: 'text', text: refused }], isError: true })
           // How each person looks at it (view: names) stays with their own browser.
           const mine = own(self) && !own(self).startsWith('s-') ? own(self) : ''
-          // A person's link: what it adds says who added it, and it sees and
-          // keeps only its part (INES-5, MARCUS-4).
-          let asked = args
-          if (name === 'app_keep' && (who?.name || who?.only) && !isView(args?.key ?? '')) {
-            const before = await apps.kept(app.id, String(args?.key ?? ''), who.owner).catch(() => null)
-            asked = { ...args, value: withPart(before, args?.value, { by: who.name, only: who.only }) }
+          const key = String(args?.key ?? '')
+          const work = async () => {
+            const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
+            if (refused) return { content: [{ type: 'text', text: refused }], isError: true }
+            // A person's link: what it adds says who added it, it sees and
+            // keeps only its part, and what it doesn't see stays (INES-5, MARCUS-4, MARCUS-1).
+            let asked = args
+            const own_ = name === 'app_keep' && who && !isView(key)
+            const before = own_ ? await apps.kept(app.id, key, who.owner).catch(() => null) : null
+            if (own_ && (who.name || who.only || who.hide)) asked = { ...args, value: withHidden(before, withPart(before, args?.value, { by: who.name, only: who.only }), who.hide) }
+            const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine)
+            if (own_ && !out.isError) {
+              if (who.role === 'helper' && who.token) {
+                const made = await made_(app.id, who.token)
+                const now = new Set([...(made[key] ?? []), ...madeBy(hideIn(partOf(before, who.only), who.hide), args?.value)])
+                if (now.size !== (made[key] ?? []).length) await apps.keep(app.id, `made:${who.token}`, { ...made, [key]: [...now].slice(-2000) }, LINKS)
+              }
+              told(app.id, who.owner, String(self ?? ''))
+            }
+            if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {
+              const sc = out.structuredContent
+              const seen = v => hideIn(partOf(v, who.only), who.hide)
+              out.structuredContent = sc.values ? { ...sc, values: Object.fromEntries(Object.entries(sc.values).map(([k, v]) => [k, seen(v)])), ...(who.hide ? { hidden: who.hide } : {}) } : { ...sc, value: seen(sc.value) }
+            }
+            return out
           }
-          const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine)
-          if (who?.only && name === 'app_kept' && out.structuredContent) {
-            const sc = out.structuredContent
-            out.structuredContent = sc.values ? { ...sc, values: Object.fromEntries(Object.entries(sc.values).map(([k, v]) => [k, partOf(v, who.only)])) } : { ...sc, value: partOf(sc.value, who.only) }
-          }
-          return json(res, out)
+          return json(res, name === 'app_keep' ? await inTurn(`${app.id}|${who?.owner ?? ''}|${key}`, work) : await work())
         }
         // An app that books can cancel what it booked.
         const its = app && (app.tools.includes(name) || (name === 'table_cancel' && app.tools.includes('table_book')))
@@ -556,10 +613,12 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const role = person.role === 'viewer' ? 'viewer' : 'helper'
           const field = String(person.only?.field ?? '').trim().slice(0, 40)
           const only = field && person.only?.value != null && String(person.only.value).trim() ? { field, value: String(person.only.value).trim().slice(0, 60) } : null
+          // Fields their link never gets, such as prices (MARCUS-1).
+          const hide = (Array.isArray(person.hide) ? person.hide : []).map(h => String(h ?? '').trim().slice(0, 40)).filter(h => h && !/^(id|by)$/.test(h)).slice(0, 12)
           if (!name) return json(res, { error: 'Give the person a name.' }, 400)
           const tok = randomBytes(16).toString('hex')
-          await apps.keep(app.id, `link:${tok}`, { owner: `s-${token}`, role, name, ...(only ? { only } : {}) }, LINKS)
-          links = { ...links, people: [...(links.people ?? []), { token: tok, name, role, ...(only ? { only } : {}) }] }
+          await apps.keep(app.id, `link:${tok}`, { owner: `s-${token}`, role, name, ...(only ? { only } : {}), ...(hide.length ? { hide } : {}) }, LINKS)
+          links = { ...links, people: [...(links.people ?? []), { token: tok, name, role, ...(only ? { only } : {}), ...(hide.length ? { hide } : {}) }] }
           await apps.keep(app.id, '-links', links, `s-${token}`)
         }
         return json(res, { token, helper: links.helper, viewer: links.viewer, people: links.people ?? [] })
@@ -589,6 +648,40 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         for (const key of Object.keys(values)) await apps.keep(app.id, key, null, who.owner)
         return json(res, { stopped: true })
       }
+      // What an app held before, and bringing it back (LENA-1, INES-1): for
+      // whoever owns it, or a link that changes everything.
+      if (req.method === 'POST' && (url.pathname === '/api/history' || url.pathname === '/api/restore')) {
+        const input = await body(req)
+        const app = input.app ? await apps.get(String(input.app)) : null
+        const who = app && (await owning(app.id, input.me))
+        if (!who || who.role === 'gone') return json(res, { error: who ? STOPPED : 'no such app' }, who ? 403 : 404)
+        if (who.role !== 'own' && who.role !== 'full') return json(res, { error: 'Only whoever shared it can bring back what it kept.' }, 403)
+        // A private app keeps nothing with the chat, nor what it held before.
+        if (input.forget) {
+          if (who.role !== 'own') return json(res, { error: 'Only whoever owns it can.' }, 403)
+          await apps.forgetHistory(app.id, who.owner)
+          return json(res, { forgot: true })
+        }
+        const rows = await apps.history(app.id, who.owner)
+        // As it was just before the change at t: each value as held until its next change.
+        const at = t => {
+          const out = {}
+          for (const r of [...rows].reverse()) if (r.at >= t && !(r.name in out)) out[r.name] = r.value
+          return out
+        }
+        if (url.pathname === '/api/history') {
+          const times = [...new Set(rows.map(r => Math.floor(r.at / 60_000) * 60_000))].slice(0, 30)
+          const now = await apps.keptAll(app.id, who.owner)
+          const says = values => Object.entries(values).filter(([k]) => !/^(-|view:)/.test(k)).map(([k, v]) => (Array.isArray(v) ? `${v.length} in ${k}` : v && typeof v === 'object' ? Object.entries(v).filter(([, x]) => Array.isArray(x)).map(([n, x]) => `${x.length} in ${n}`).join(', ') || k : `${k} ${String(v).slice(0, 20)}`)).filter(Boolean).join(', ').slice(0, 120)
+          return json(res, { now: says(now), moments: times.map(t => ({ at: t, says: says({ ...now, ...at(t) }) })) })
+        }
+        const t = Number(input.at)
+        if (!Number.isFinite(t)) return json(res, { error: 'when?' }, 400)
+        const values = at(t)
+        for (const [key, value] of Object.entries(values)) await apps.keep(app.id, key, value, who.owner)
+        told(app.id, who.owner, String(input.self ?? ''))
+        return json(res, { restored: Object.keys(values) })
+      }
       if (req.method === 'POST' && url.pathname === '/api/note') {
         const { app: appId, summary, history = [] } = await body(req)
         const app = await apps.get(appId)
@@ -608,6 +701,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         }
         if (parts[3] === 'change') return stream(res, send => (limited(req) ? Promise.reject(new Error(tooMany)) : change(appId, String(input.text ?? ''), send, { shownId: String(input.shown ?? ''), talk: own(input.talk), inPlace: true })))
         if (parts[3] === 'open') {
+          // A stopped link opens nothing: not the app, not what it was made with (PRIYA-2, TOM-7).
+          const token = input?.links?.[appId]
+          if (typeof token === 'string' && /^[0-9a-f]{32}$/.test(token) && (await owning(appId, `s-${token}`))?.role === 'gone') {
+            return stream(res, async send => send({ type: 'stopped', app: appId, text: STOPPED }))
+          }
           return stream(res, async send => {
             const out = recording(own(input.talk), send)
             await open(appId, out)
