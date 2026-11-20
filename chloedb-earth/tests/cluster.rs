@@ -223,6 +223,11 @@ async fn every_page_against_a_real_server() {
     let (rows, chips) = (tmp.path().join("rows"), tmp.path().join("chips"));
     std::fs::create_dir_all(&rows).unwrap();
     std::fs::create_dir_all(&chips).unwrap();
+    // A picture of the sky under the replay, as tools/frames.py leaves it.
+    let frames = tmp.path().join("frames");
+    std::fs::create_dir_all(frames.join("la-2025")).unwrap();
+    std::fs::write(frames.join("la-2025/0.jpg"), [0xFFu8, 0xD8, 0xFF, 0xE0]).unwrap();
+    std::fs::write(frames.join("la-2025/frames.json"), r#"{"replay":"la-2025","box":[33.55,34.75,-119.15,-117.55],"sat":"G18","product":"MCMIPC","frames":[{"n":0,"t":"2025-01-07T17:01:17Z","day":1.0}]}"#).unwrap();
     let port = free_port();
     let strata = format!("http://127.0.0.1:{port}");
     let _server = Kill(
@@ -317,6 +322,8 @@ async fn every_page_against_a_real_server() {
         Command::new(env!("CARGO_BIN_EXE_chloedb-earth"))
             .args(["serve", "--listen", &format!("127.0.0.1:{app_port}"), "--token", TOKEN, "--strata", &strata, "--no-rules", "--chips"])
             .arg(&chips)
+            .arg("--frames")
+            .arg(&frames)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -360,6 +367,17 @@ async fn every_page_against_a_real_server() {
     let rp = ok(&http, &base, "/v1/replay/la-2025").await;
     let px = rp["pixels"].as_array().unwrap_or_else(|| panic!("{}", rp["queries"]));
     assert!(!px.is_empty(), "the replay has the 7 January fire: {}", rp["queries"]);
+    assert_eq!(rp["frames"]["sat"], "G18", "{}", rp["frames"]);
+    assert_eq!(rp["frames"]["frames"][0]["t"], "2025-01-07T17:01:17Z");
+    let r = http.get(format!("{base}/v1/frame/la-2025/0")).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    let (st, _) = get(&http, &format!("{base}/v1/frame/la-2025/1"), Some(TOKEN)).await;
+    assert_eq!(st, 404);
+    for bad in ["/v1/frame/la-2025/..%2F..%2Fx", "/v1/frame/nowhere/0"] {
+        let (st, _) = get(&http, &format!("{base}{bad}"), Some(TOKEN)).await;
+        assert_eq!(st, 400, "{bad}");
+    }
 
     // The last fire: the six before it were out when it was at its age,
     // and began much like it.

@@ -14,7 +14,7 @@ Three things on it are ChloeDB's own:
 |---|---|---|
 | Home | a search box for a town, a county or "lat, lon" (and "use my location") that opens a place's report, then each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read | `ea_fires`, `ea_alerts`, `ea_places`, `ea_backtest`, `ea_scans` |
 | Live | the region's map with the fire pixels of the last hours (a red light when the newest scan is under three hours old), the fires burning with their alerts, refreshed every 30 seconds | `ea_detections`, `ea_fires`, `ea_alerts`, `ea_scans` |
-| A replay | a night of the archive played back on the map, a scan at a time: Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024 | `ea_detections`, `ea_scans`, `ea_fires` |
+| A replay | a night of the archive played back on the map, a scan at a time, over GOES's picture of the sky at that moment (with `--frames`): Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024 | `ea_detections`, `ea_scans`, `ea_fires` |
 | A fire | its pixels on the map, its first hours drawn, the fires that began like it with the outlook they give, its alerts, and how well the outlook has done before | `ea_fires`, `ea_detections`, `ea_backtest` |
 | Past fires | a region's fires by size, year or name | `ea_fires` |
 | Explore | the map with a layer over it (people, trees, shrubs, grass, crops, built, bare, water, snow, terrain, slope, mines, fire history, climate, land cover, crops by kind), and the place under a click | `ea_places` |
@@ -53,8 +53,11 @@ chloedb-earth load --dir DATA                              # the tables, and the
 chloedb-earth goes --region california --from 2025-01-07 --to 2025-01-09   # a stretch of GOES's archive
 chloedb-earth goes --region chile --live                   # after the newest scan kept, then each new one
 chloedb-earth backtest --region california                 # how well the fires like each one did
-chloedb-earth serve --public --chips DATA/chips            # the page and its API at 127.0.0.1:7790
+python3 tools/frames.py --replay la-2025 --sat 18 --product MCMIPC --from 2025-01-07T17:00:00Z --to 2025-01-09T06:00:00Z --box 33.55,34.75,-119.15,-117.55 --out DATA/frames
+chloedb-earth serve --public --chips DATA/chips --frames DATA/frames   # the page and its API at 127.0.0.1:7790
 ```
+
+NASA GIBS keeps GOES's GeoColor pictures for about 90 days, which Live shows under the fires; a replay is older, so `tools/frames.py` draws its own from NOAA's archive of the Cloud and Moisture Imagery product (ABI-L2-MCMIPC over the United States, MCMIPF for the full disk over Chile): the scan nearest every 10 minutes, cut to the replay's box in Web Mercator, true colour by day (the green made from the red, blue and vegetation bands, as ABI has no green band) and the clean infrared band by night, blended by the sun's height. Each scan file is 50 MB (CONUS) or 340 MB (full disk), read and deleted; the pictures are about 60 KB each. The fires are left to the app, which draws GOES's fire pixels over them.
 
 `goes` reads GOES-West's CONUS product over California (GOES-17 from February 2019, GOES-18 from January 2023) and GOES-East's full disk over Chile (GOES-16, GOES-19 from April 2025), from NOAA's buckets on AWS, keeping only the pixels within 4 km of a place. Low-probability pixels (masks 15 and 35) are left out: most are hot ground and cloud edges with no power worked out, a whole desert valley on a summer night, and beside a real fire they made it look ten times its size. A fire's area is the ground of the pixels GOES saw burning, each 2 to 4 km a side, so a fire spread by embers reads larger than the ground that burned: the Palisades and Eaton fires read 273 and 182 km², inside perimeters of 95 and 57 km², while the York Fire of 2023 read 377 km² and burned about that. A feed started again takes back the fires burning in the 12 hours before where it starts, and marks out those it left burning longer ago. Without `vision` on the server the app still runs, and searches by the description; searches by a picture or by meaning say why they cannot.
 

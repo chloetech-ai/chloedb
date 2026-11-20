@@ -27,6 +27,10 @@ changes collect under "Unreleased".
   since 1878, named GOES fires, FIRMS years, places nearby that changed)
   over a map of their outlines, a town search with "use my location", and
   a fire year that needs three detections (one was often a hot roof).
+  The replays play over GOES's own pictures of the sky (true colour by day,
+  infrared by night, every 10 minutes, drawn from NOAA's archive by
+  `tools/frames.py` and served with `serve --frames`), and fire pixels
+  glow, fading with age, rather than show as red squares.
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:

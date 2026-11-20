@@ -122,6 +122,9 @@ enum Command {
         /// The places' yearly pictures (tools/years.py fetch's chips).
         #[arg(long, env = "CHLOEDB_EARTH_CHIPS")]
         chips: Option<PathBuf>,
+        /// The replays' pictures of the sky (tools/frames.py's folder).
+        #[arg(long, env = "CHLOEDB_EARTH_FRAMES")]
+        frames: Option<PathBuf>,
         #[command(flatten)]
         server: Server,
     },
@@ -182,12 +185,12 @@ async fn main() -> Result<()> {
             let v = analogs::backtest(&db, &region, limit).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
-        Command::Serve { listen, token, public, per_minute, at_once, no_rules, chips, server } => {
+        Command::Serve { listen, token, public, per_minute, at_once, no_rules, chips, frames, server } => {
             let db = server.db();
             if let Err(e) = load::create(&db).await {
                 tracing::warn!(error = %e, "tables");
             }
-            api::serve(api::Opts { listen, strata: server.strata, key: server.key, token, public, per_minute, at_once, rules: !no_rules, chips }).await?;
+            api::serve(api::Opts { listen, strata: server.strata, key: server.key, token, public, per_minute, at_once, rules: !no_rules, chips, frames }).await?;
         }
     }
     Ok(())

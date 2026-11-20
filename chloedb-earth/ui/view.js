@@ -338,6 +338,28 @@ function pixelFeatures(rows, half = 0.009) {
     }),
   };
 }
+/// Fire pixels as heat: a soft halo the size of the pixel and more, and a
+/// bright core while the pixel is fresh, both fading with age and growing
+/// with power. Points, so they stay round at every zoom.
+function glowFeatures(rows) {
+  return {
+    type: "FeatureCollection",
+    features: rows.map((p) => ({ type: "Feature", properties: { mw: p.mw || 0, age: p.age ?? 0, s: 0.75 + 0.75 * Math.sqrt(Math.min(1, (p.mw || 0) / 300)) }, geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
+  };
+}
+/// About a GOES pixel's half width (1.1 km) in screen pixels at each zoom,
+/// times `k` and the point's own size.
+const glowRadius = (k) => ["interpolate", ["exponential", 2], ["zoom"], 3, ["*", 1.4 * k, ["get", "s"]], 8, ["*", 2.6 * k, ["get", "s"]], 13, ["*", 70 * k, ["get", "s"]], 17, ["*", 1120 * k, ["get", "s"]]];
+const GLOW_LAYERS = [
+  { id: "px-halo", type: "circle", paint: {
+    "circle-radius": glowRadius(2.2), "circle-blur": 1, "circle-pitch-alignment": "map",
+    "circle-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffb300", 80, "#ff7a00", 400, "#ff3d00"],
+    "circle-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.42, 0.5, 0.2, 1, 0.06] } },
+  { id: "px-core", type: "circle", paint: {
+    "circle-radius": glowRadius(0.55), "circle-blur": 0.9, "circle-pitch-alignment": "map",
+    "circle-color": ["interpolate", ["linear"], ["get", "age"], 0, "#fff8e1", 0.15, "#ffd54f", 0.5, "#ff8f00", 1, "#b71c1c"],
+    "circle-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.9, 0.5, 0.45, 1, 0.1] } },
+];
 const PIXEL_PAINT = {
   "fill-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffd54f", 20, "#ffa000", 80, "#f4511e", 250, "#d50000", 1000, "#7f0000"],
   "fill-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.92, 1, 0.25],
@@ -578,7 +600,7 @@ async function live(app, page, region) {
     const j = await app.api(`/v1/live?region=${region}`, { fresh, keep: 15000 });
     const now = Date.parse(j.now) || 0;
     const pixels = j.pixels.map((p) => ({ ...p, age: now ? Math.min(1, (now - Date.parse(p.ts)) / 3600e3) : 0 }));
-    setData(map, "px", pixelFeatures(pixels, PX_HALF), [{ id: "px", type: "fill", paint: PIXEL_PAINT }]);
+    setData(map, "px", glowFeatures(pixels), GLOW_LAYERS);
     const pts = { type: "FeatureCollection", features: j.fires.map((f) => ({ type: "Feature", properties: { id: f.id, mw: f.mw_now }, geometry: { type: "Point", coordinates: [f.lon, f.lat] } })) };
     setData(map, "fires", pts, [{ id: "fires", type: "circle", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 5, 10, 12], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#fff", "circle-stroke-width": 1.6 } }]);
     if (!fitted && j.fires.length) {
@@ -649,6 +671,45 @@ async function replay(app, page, id) {
   const firstSeen = new Map();
   for (const p of px) if (!firstSeen.has(p[4])) firstSeen.set(p[4], p[0]);
   const fires = j.fires;
+  // The sky as GOES saw it at each moment (tools/frames.py's pictures):
+  // the newest picture at or before the clock, the next one loaded ahead.
+  const fr = (j.frames?.frames || []).map((f) => ({ ...f, at: Date.parse(f.t) }));
+  const skyNote = fr.length ? h("div", { class: "ea-mapttl" }) : null;
+  let skyOn = true, skyN = -1, skyWant = -1;
+  const frameUrl = (n) => mediaSrc(app, `/v1/frame/${encodeURIComponent(j.id)}/${n}`);
+  const loaded = new Map();
+  const load = (n) => {
+    if (!loaded.has(n)) loaded.set(n, frameUrl(n).then((u) => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(u); im.onerror = no; im.src = u; })));
+    return loaded.get(n);
+  };
+  if (fr.length) {
+    const [S, N, W, E] = j.frames.box;
+    const bs = h("button", { class: "ea-mapbtn on", title: "Show or hide GOES's pictures of the sky" }, "Satellite");
+    bs.onclick = () => {
+      skyOn = !skyOn;
+      bs.classList.toggle("on", skyOn);
+      skyNote.style.display = skyOn ? "" : "none";
+      if (map.getLayer("sky")) map.setLayoutProperty("sky", "visibility", skyOn ? "visible" : "none");
+    };
+    map.ea.tr.prepend(bs);
+    const first = await load(0).catch(() => null);
+    if (first) {
+      map.addSource("sky", { type: "image", url: first, coordinates: [[W, N], [E, N], [E, S], [W, S]] });
+      map.addLayer({ id: "sky", type: "raster", source: "sky", paint: { "raster-opacity": 0.92, "raster-fade-duration": 0 } }, "labels");
+      skyN = 0;
+    }
+  }
+  function showSky(ms) {
+    if (!fr.length || !map.getSource("sky")) return;
+    let k = 0;
+    while (k + 1 < fr.length && fr[k + 1].at <= ms) k++;
+    const f = fr[k];
+    skyNote.replaceChildren(h("b", {}, `${j.frames.sat.replace("G", "GOES-")} picture`), ` of ${when(f.t, j.region)}, ${f.day > 0.5 ? "true colour" : "infrared (night)"}`);
+    if (k === skyWant) return;
+    skyWant = k;
+    load(k).then((u) => { if (skyWant === k && skyN !== k) { map.getSource("sky")?.updateImage({ url: u }); skyN = k; } }).catch(() => {});
+    for (let a = 1; a <= 3 && k + a < fr.length; a++) load(k + a).catch(() => {});
+  }
   let lastI = -1;
   const paint = () => {
     playBtn.textContent = s.playing ? "Pause" : "Play";
@@ -662,10 +723,12 @@ async function replay(app, page, id) {
       lastI = i;
       const rows = [];
       for (let k = 0; k < i; k++) { const p = px[k]; const age = (s.t - p[0]) / 10800; if (age <= 1) rows.push({ lat: p[1], lon: p[2], mw: p[3], age }); }
-      setData(map, "px", pixelFeatures(rows, PX_HALF), [{ id: "px", type: "fill", paint: PIXEL_PAINT }]);
+      setData(map, "px", glowFeatures(rows), GLOW_LAYERS);
     }
+    showSky(t0 + s.t * 1000);
     tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${R.sat} fire pixels`),
-      h("div", { class: `ea-onair${s.playing ? "" : " off"}` }, h("span", { class: "light" }), h("b", {}, s.playing ? "REPLAY" : "PAUSED"), h("span", { class: "t" }, `real scans, ${speeds[s.speed]}× speed`)));
+      h("div", { class: `ea-onair${s.playing ? "" : " off"}` }, h("span", { class: "light" }), h("b", {}, s.playing ? "REPLAY" : "PAUSED"), h("span", { class: "t" }, `real scans, ${speeds[s.speed]}× speed`)),
+      skyNote);
     // Fires seen in two scans or more: one pixel once is often a field burnt
     // on purpose, or a hot roof.
     const seen = fires.filter((f) => { const k = j.fire_ids.indexOf(f.id); return f.scans >= 2 && k >= 0 && firstSeen.get(k) <= s.t; });
@@ -1063,7 +1126,12 @@ const chipCache = new Map();
 /// A place's picture of a year: a plain URL on the app's own page, a blob
 /// read through the key in the command center.
 async function chipSrc(app, place, year) {
-  const path = `/v1/chip/${encodeURIComponent(place)}/${year}`;
+  return mediaSrc(app, `/v1/chip/${encodeURIComponent(place)}/${year}`);
+}
+/// A picture the app serves: its path where the page can load it as it is,
+/// else (in the command center, whose requests carry the key in a header)
+/// read as base64 and made a blob.
+async function mediaSrc(app, path) {
   if (app.ctx.media) return app.ctx.media(path);
   if (chipCache.has(path)) return chipCache.get(path);
   const p = app.ctx.api(`${path}?b64=1`, { timeout: 30000 }).then((j) => {
