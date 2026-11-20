@@ -1025,7 +1025,9 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // An app that checks its callers runs a caller's statement narrowed
     // to the caller's tables ([`Principal::narrowed`]): checked as theirs.
     let (who, narrowing) = match (who, header_str(req.headers(), header::HeaderName::from_static(keys::AS_TABLES))) {
-        (Some(w), Some(g)) => match w.narrowed(g) {
+        // A key bound to a tenant is not narrowed (which would drop its
+        // binding): it is refused below as it is.
+        (Some(w), Some(g)) if w.tenant().is_none() => match w.narrowed(g) {
             Ok(n) => (Some(n), None),
             Err(e) => (Some(w), Some(e)),
         },
@@ -1060,6 +1062,15 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
             code: Some("scope_refused"),
             status: 403,
             message: format!("{method} {route} is not for {:?}, a connector's push key: it writes its table through the connector's push, and reads nothing", w.name),
+        }),
+        // A key bound to a tenant (KENJI-402) reads its tenant's documents
+        // on the OpenSearch API, which enforces its filter; no route here
+        // does, so it calls none but whether the server is up and who it
+        // is ([`keys::Tenant`]).
+        Some(w) if w.tenant().is_some() && !(matches!(route, "/v1/health" | "/v1/whoami") && method.is_safe()) => Some(ApiError {
+            code: Some("scope_refused"),
+            status: 403,
+            message: format!("the key {:?} is bound to a tenant ({}): it calls the OpenSearch API, where that filter is enforced, and not {method} {route}", w.name, w.tenant().map(keys::Tenant::text).unwrap_or_default()),
         }),
         // A key limited to tables calls the routes that check them, and no
         // other ([`crate::scoped`]).
@@ -7501,7 +7512,7 @@ async fn whoami(State(app): State<App>, w: Option<axum::Extension<Principal>>) -
     // app its own token ([`crate::apps`]), as the operator asks before it
     // gives an app a key of its own. `own_keys`: a key with the admin
     // scope on tables makes keys within them (`/v1/keys/own`).
-    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true, "limited_feed": true, "roles": true});
+    j["auth"] = json!({"token": app.token.is_some(), "cluster_token": app.cluster.is_some(), "keys": !app.svc.keys.is_empty(), "open": !app.guarded() && app.svc.keys.is_empty(), "app_keys": true, "own_keys": true, "limited_feed": true, "roles": true, "tenant_keys": true});
     j["cluster"] = app.svc.identity.json();
     let caller = keys::caller();
     // ops: what this key may do, by tier ([`crate::ops::may`]); an agent
@@ -7709,7 +7720,7 @@ async fn create_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     // A misspelt field would otherwise be left out without a word, and a
     // key without its limits reads every table: refuse what is not a
     // field of a key.
-    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason", "budget"];
+    const FIELDS: &[&str] = &["name", "scope", "tables", "routes", "apps", "preset", "prefix", "tenant", "expires_days", "expires_minutes", "agent", "owner", "note", "on_behalf_of", "reason", "budget"];
     let Json::Object(fields) = &b else { return Err(ApiError::bad("a key is a JSON object: {\"name\": ..., \"scope\": ...}")) };
     if let Some(k) = fields.keys().find(|k| !FIELDS.contains(&k.as_str())) {
         return Err(ApiError::bad(format!("{k:?} is not a field of a key: {}", FIELDS.join(", "))));
@@ -7740,6 +7751,12 @@ async fn create_key(State(app): State<App>, w: Option<axum::Extension<Principal>
         let (g, a) = keys::preset(p, prefix)?;
         tables = Some(g);
         allow = a;
+    }
+    // `"tenant": {"index": "tickets", "field": "tenant_id", "value":
+    // "t007"}`: a key bound to one tenant of a shared index on the
+    // OpenSearch API, and nothing else ([`keys::Tenant`], KENJI-402).
+    if let Some(t) = b.get("tenant").filter(|t| !t.is_null()) {
+        allow.tenant = Some(keys::Tenant::of(t)?);
     }
     let asked = b.get("scope").and_then(|v| v.as_str()).unwrap_or(if tables.is_some() { "admin" } else { "read" });
     // ops: `ops` and `propose` are roles over a read key ([`keys::Role`]).
@@ -7780,7 +7797,9 @@ async fn create_key(State(app): State<App>, w: Option<axum::Extension<Principal>
         ..Default::default()
     });
     tracing::info!(key = %key.id, name = %key.name, scope, limited = key.tables.is_some(), agent = key.agent, "API key created");
+    let tenant = key.allow.as_ref().and_then(|a| a.tenant.as_ref());
     let detail = match &key.tables {
+        Some(_) if tenant.is_some() => format!("created key {} ({}, {}, bound to tenant {} on the OpenSearch API)", key.name, key.id, scope, tenant.map(keys::Tenant::text).unwrap_or_default()),
         Some(t) => format!("created key {} ({}, limited to {}{})", key.name, key.id, keys::grants_text(t), key.allow.as_ref().map_or(String::new(), |a| format!("{}{}{}", a.preset.as_ref().map_or(String::new(), |p| format!("; preset {p}")), if a.routes.is_empty() { String::new() } else { format!("; routes {}", a.routes.join(", ")) }, if a.apps.is_empty() { String::new() } else { format!("; apps {}", a.apps.join(", ")) }))),
         None => format!("created key {} ({}, {}{})", key.name, key.id, scope, if key.agent { ", an agent's" } else { "" }),
     };

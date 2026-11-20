@@ -89,6 +89,7 @@ mod scoped_keys;
 mod signin;
 mod silent_answers;
 mod limited_keys;
+mod tenant_keys;
 mod scroll_pages;
 mod server;
 mod sim;
