@@ -52,6 +52,7 @@ pub(crate) mod arrivals;
 mod failover;
 pub mod feed;
 mod moving;
+mod recommend;
 mod scroll;
 pub mod scrub;
 mod switch;
@@ -1427,6 +1428,12 @@ impl Service {
         self.slots.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Whether this shard holds every slot of its map, none moving: the
+    /// only shard of its cluster, which holds every row of its tables.
+    pub fn holds_every_slot(&self) -> bool {
+        self.slots.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|(m, i)| m.shards() == 1 && m.count(*i) == slots::SLOTS && m.moving().is_none())
+    }
+
     /// Takes `map`, with this server as its shard `shard`, from a
     /// coordinator, as [`core::take`] decides: a map of an older epoch than
     /// this shard's is refused (409), as is another map of the same epoch.
@@ -1523,6 +1530,11 @@ impl Service {
         let mut held = self.slots.write().unwrap_or_else(|e| e.into_inner());
         self.slots_since.store(since, Ordering::Relaxed);
         self.hide_residue(&map, shard);
+        // The counts its recommenders add go under keys of this shard and
+        // this map, which no other shard, and no map before, writes.
+        if held.as_ref().is_none_or(|(m, s)| m.epoch != map.epoch || *s != shard) {
+            db.set_counts_part(Some(format!("{epoch}.{shard}")));
+        }
         *held = Some((map, shard));
         drop(frozen);
         Ok(epoch)
@@ -3756,24 +3768,25 @@ impl Service {
     }
 
     /// A query that calls `recommend(...)`, or `None` for one that calls
-    /// none. A coordinator refuses it: each shard holds the counts of the
-    /// events it holds, not a user's whole history.
+    /// none. A coordinator reads the counts of every shard, summed.
     async fn recommend_query(self: &Arc<Self>, req: &QueryReq) -> Result<Option<Answer>, ApiError> {
         let t0 = Instant::now();
-        let db = match &self.backend {
-            Backend::Local(db) => db.clone(),
+        if req.scroll.is_some() && chloedb::query::recommend::calls_sql(&req.sql, &req.params)? {
+            return Err(ApiError::bad("a query that calls recommend() is not scrolled: page it with LIMIT and OFFSET"));
+        }
+        let done = match &self.backend {
+            Backend::Local(db) => {
+                let (db, sql, params) = (db.clone(), req.sql.clone(), req.params.clone());
+                tokio::task::spawn_blocking(move || db.recommend_sql(&sql, &params)).await.map_err(ApiError::internal)??
+            }
+            // The counts of every shard, summed ([`recommend`]).
             Backend::Cluster(_) => {
                 if !chloedb::query::recommend::calls_sql(&req.sql, &req.params)? {
                     return Ok(None);
                 }
-                return Err(ApiError::bad("recommend() does not run through a coordinator: a recommender counts the events of one database (run it on a server that holds the events table, or keep the counts in tables of your own; see cluster-limits)"));
+                self.cluster_recommend_sql(req).await?
             }
         };
-        if req.scroll.is_some() {
-            return Err(ApiError::bad("a query that calls recommend() is not scrolled: page it with LIMIT and OFFSET"));
-        }
-        let (sql, params) = (req.sql.clone(), req.params.clone());
-        let done = tokio::task::spawn_blocking(move || db.recommend_sql(&sql, &params)).await.map_err(ApiError::internal)??;
         match done {
             None => Ok(None),
             Some(chloedb::db::RecommendSql::Rows(rs)) => Ok(Some(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "recommend", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None })),
@@ -4107,6 +4120,8 @@ impl Service {
                         // reuses its typo expansions.
                         expansions: self.lease_expansions(req.snapshot),
                         shard: req.shard,
+                        // The cluster's only shard walks its graphs itself.
+                        whole: req.shard && self.holds_every_slot(),
                         threads: (self.cores / n).max(1),
                         deadline: Some(t0 + timeout),
                         cancel: Some(cancel.0.clone()),
@@ -4810,8 +4825,13 @@ impl Service {
         // writes then feed the counts ([`chloedb::query::recommend`]).
         if chloedb::query::recommend::parse_statement(sql)?.is_some() {
             who.may(Scope::Admin, "a recommender statement")?;
-            let Backend::Local(db) = &self.backend else {
-                return Err(ApiError::bad("CREATE RECOMMENDER does not run through a coordinator: a recommender counts the events of one database, and a user's events are on several shards (see cluster-limits)"));
+            let db = match &self.backend {
+                Backend::Local(db) => db,
+                Backend::Cluster(c) => {
+                    keys::note(obs::truncate(sql, 500).into_owned());
+                    let st = chloedb::query::recommend::parse_statement(sql)?.expect("a recommender statement");
+                    return self.cluster_recommender(c, sql, &st).await;
+                }
             };
             keys::note(obs::truncate(sql, 500).into_owned());
             let t0 = Instant::now();
@@ -7085,7 +7105,13 @@ fn rows_elsewhere(db: &Db, map: &SlotMap, shard: usize) -> Result<Option<(usize,
     let snap = db.snapshot();
     let opts = ExecOptions { max_rows: None, ..db.exec.clone() };
     let mut out: Option<(usize, Value)> = None;
+    // A recommender's counts are each shard's own, under keys of its part
+    // ([`chloedb::query::recommend::Def::part`]): placed by none.
+    let counts: Vec<String> = db.recommenders().map_err(ApiError::from)?.iter().map(|d| d.counts()).collect();
     for schema in db.catalog() {
+        if counts.iter().any(|c| c.eq_ignore_ascii_case(&schema.table)) {
+            continue;
+        }
         let Some(place) = schema.shard_by_field().or(schema.primary_key) else { continue };
         let view = snap.table(&schema.table).ok_or_else(|| ApiError::internal(format!("no table {} in its own snapshot", schema.table)))?;
         let sql = format!("SELECT {} FROM {}", quoted(&schema.fields[place].name), ident(&schema.table));

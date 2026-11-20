@@ -197,6 +197,13 @@ pub enum Seeds {
     /// ([`crate::query::ir::Expr::Keys`], [`crate::query::ir::Expr::Values`]),
     /// which runs first: like [`Pred::Sub`], never the executor's.
     Plan(Box<crate::query::ir::Expr>),
+    /// The walk's result, found elsewhere: by a coordinator, which walks a
+    /// graph whose rows are on several shards a round of reads by key per
+    /// hop. Each key with its value: its hop distance for `REACHABLE`, its
+    /// place on the path for `PATH`, its score for `ppr`. The executor
+    /// walks nothing: the rows of the keys it holds are the result
+    /// (feature [`crate::query::ir::GRAPH_GIVEN`]).
+    Given(Vec<(Value, f64)>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

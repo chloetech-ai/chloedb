@@ -66,10 +66,10 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 37] = [
+pub const FEATURES: [&str; 38] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
     SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX, DATE_BIN, APPROX_PERCENTILES,
-    FULL_JOIN, SQL_FUNCTIONS,
+    FULL_JOIN, SQL_FUNCTIONS, GRAPH_GIVEN,
 ];
 
 /// The feature of a plan with operators over rows in memory: a join,
@@ -117,6 +117,11 @@ pub const SEMANTIC_ID: &str = "semantic_id";
 
 /// The feature of a plan with a walk over an edge table ([`Graph::edges`]).
 pub const EDGE_TABLE: &str = "edge_table";
+
+/// The feature of a plan with a graph whose result a coordinator found,
+/// walking over its shards ([`Graph::given`]): a Strata from before it
+/// would walk from those keys as seeds.
+pub const GRAPH_GIVEN: &str = "graph_given";
 
 /// The feature of a plan whose Search reranks its top rows in phases
 /// ([`Search::phases`]).
@@ -1371,6 +1376,12 @@ pub struct Graph {
     pub k: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_sim: Option<f64>,
+    /// `seeds` and `weights` are the walk's result, found by a coordinator
+    /// (each key's hop distance, place on the path or PageRank score), not
+    /// where it starts: the executor walks nothing (feature
+    /// [`GRAPH_GIVEN`], [`crate::query::logical::Seeds::Given`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub given: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1682,6 +1693,14 @@ impl Node {
     pub fn walks_edge_tables(&self) -> bool {
         let mut found = false;
         self.visit_exprs(&mut |e| found |= matches!(e, Expr::Graph(g) | Expr::Ppr(g) if g.edges.is_some()));
+        found
+    }
+
+    /// Whether a graph of the plan is a result a coordinator found
+    /// ([`GRAPH_GIVEN`]).
+    pub fn has_given_graphs(&self) -> bool {
+        let mut found = false;
+        self.visit_exprs(&mut |e| found |= matches!(e, Expr::Graph(g) | Expr::Ppr(g) if g.given));
         found
     }
 
@@ -2370,6 +2389,9 @@ impl Plan {
         }
         if root.walks_edge_tables() {
             features.push(EDGE_TABLE.to_string());
+        }
+        if root.has_given_graphs() {
+            features.push(GRAPH_GIVEN.to_string());
         }
         let mut ranked = false;
         root.visit_exprs(&mut |e| ranked |= matches!(e, Expr::Ranked { .. }));

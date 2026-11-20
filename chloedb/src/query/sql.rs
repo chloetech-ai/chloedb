@@ -249,7 +249,7 @@ pub(crate) fn parse_one(sql_text: &str) -> Result<sql::Statement> {
 }
 
 /// Parses one SELECT statement.
-pub(crate) fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
+pub fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     match parse_one(sql_text)? {
         sql::Statement::Query(q) => Ok(q),
         sql::Statement::ShowTables { .. } => Err(err("SHOW TABLES runs as a statement, not as a query: POST /v1/sql (db.sql in code) answers it, and GET /v1/tables lists the tables with their columns")),

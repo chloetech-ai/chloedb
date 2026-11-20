@@ -620,6 +620,9 @@ impl pb::strata_server::Strata for Grpc {
                 };
                 match svc.sql_in(&who, &r.sql, &params_from_pb(r.params), After::Any, 0, slots, key).await? {
                     crate::service::SqlAnswer::Written { w, .. } => w,
+                    // A coordinator's CREATE RECOMMENDER: the shard's own
+                    // counts, which the coordinator counts again over all.
+                    crate::service::SqlAnswer::Rows(a) if a.kind == "recommender" => crate::service::Written::default(),
                     crate::service::SqlAnswer::Rows(_) => return Err(ApiError::bad("Write takes INSERT, UPDATE or DELETE; use Query")),
                 }
             };

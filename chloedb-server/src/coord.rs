@@ -113,6 +113,7 @@ use crate::slots::{self, hash_shard_of, Move, SlotMap};
 use crate::{json as js, plan_pb, ApiError};
 
 pub mod balance;
+pub mod graph;
 pub mod heat;
 mod moves;
 pub mod plan;
@@ -676,11 +677,6 @@ fn send_again(shard_key: &str) -> String {
 /// How many times a request goes to the shards while the cluster map
 /// changes under it ([`Coordinator::route_again`]).
 pub(crate) const ROUTE_TRIES: u32 = 8;
-
-/// Why a coordinator refuses a graph query ([`Coordinator::query`]): a
-/// walk reads every row it meets in one snapshot, and a row's edges point
-/// at rows on any shard.
-pub const GRAPHS_ON_SHARDS: &str = "graph queries (REACHABLE, PATH, hops(), ppr) are not supported through a coordinator yet: a row's edges point at rows other shards hold. Run them on a server or an embedded database that holds the whole table, or walk from the application, one round of reads by key per hop (the Graphs page of the docs, On a cluster)";
 
 /// Why `seq_no()` and `if_seq_no` need a shard of several replicas to
 /// replicate: otherwise each numbers the writes it takes in its own order.
@@ -1816,6 +1812,11 @@ impl Coordinator {
     }
 
     /// The shards and their servers now.
+    /// How many shards the cluster has.
+    pub fn shard_count(&self) -> usize {
+        self.topo().replicas.len()
+    }
+
     pub(crate) fn topo(&self) -> Arc<Topology> {
         self.topo.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -2577,10 +2578,20 @@ impl Coordinator {
     /// their answers. A guarded query (`min_rows`, `max_rows`) runs at the
     /// level the sums of its shards' counts choose ([`Self::level_counts`]).
     pub async fn query(&self, req: &QueryReq, schema: &Schema, select: &Select, deadline: Instant) -> Result<Merged, ApiError> {
-        if !select.graphs.is_empty() {
-            return Err(ApiError::bad(GRAPHS_ON_SHARDS));
-        }
         self.heat_query(schema, select);
+        // A graph walk: the cluster's only shard walks it itself; over
+        // several, the coordinator walks it ([`graph`]) and sends the
+        // shards its result.
+        if !select.graphs.is_empty() && self.topo().replicas.len() > 1 && !graph::shard_local(schema, select) {
+            let walked = self.walk(req, schema, select, deadline).await?;
+            // The plan sent is the walked query's, not one given.
+            let req = QueryReq { plan: None, ..req.clone() };
+            let mut m = self.routed(|| self.query_once(&req, schema, &walked.select, deadline)).await?;
+            m.rs.stats.plan.splice(0..0, walked.lines);
+            m.rs.stats.max_pushes_reached |= walked.capped;
+            m.rs.stats.ppr_unsettled |= walked.unsettled;
+            return Ok(m);
+        }
         self.routed(|| self.query_once(req, schema, select, deadline)).await
     }
 

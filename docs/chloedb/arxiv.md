@@ -56,7 +56,7 @@ Open `http://127.0.0.1:7700` and go to **Apps → arXiv**. `--only cs.,stat.ML` 
 
 ### Two servers, split by job
 
-The papers, people, topics and their words live on one chloedb-server (the **search server**, `--strata`); the reading events, the recommender, the citation and coauthor graphs, what readers keep, and the model calls live on another (the **graph server**, `--graph`). A recommender and a graph walk each need their rows in one database, so these tables are not sharded over a coordinator; splitting by job gives each server a machine of its own instead. Without `--graph`, one server holds everything. The graph server holds a row per paper and per person (`ax_nodes`) for the walks to rank.
+The papers, people, topics and their words live on one chloedb-server (the **search server**, `--strata`); the reading events, the recommender, the citation and coauthor graphs, what readers keep, and the model calls live on another (the **graph server**, `--graph`). A recommender and a graph walk are fastest with their rows in one database (through a coordinator, a walk takes a round of reads over the shards per hop), so these tables are not sharded; splitting by job gives each server a machine of its own instead. Without `--graph`, one server holds everything. The graph server holds a row per paper and per person (`ax_nodes`) for the walks to rank.
 
 ```bash
 chloedb-arxiv serve --strata http://search:7700 --graph http://graph:7700 --key "$CHLOEDB_KEY" --token "$ARXIV_TOKEN" --listen 0.0.0.0:7860 --live

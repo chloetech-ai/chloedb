@@ -78,7 +78,7 @@ Personalized PageRank pushes a row only while its share of the walk is at least 
 
 ## Kept for you: `CREATE RECOMMENDER`
 
-`CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)` keeps the counts of order 1 and items seen together from the writes of an events table, and `ORDER BY recommend('shop', :u)` fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last `history` of them), not every item the user has had ([recommenders](query-language.md#recommenders-create-recommender-and-recommend)). To leave out everything the user has an event for, filter it: `SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k => 500) DESC LIMIT 10`. It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.
+`CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)` keeps the counts of order 1 and items seen together from the writes of an events table, and `ORDER BY recommend('shop', :u)` fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last `history` of them), not every item the user has had ([recommenders](query-language.md#recommenders-create-recommender-and-recommend)). To leave out everything the user has an event for, filter it: `SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k => 500) DESC LIMIT 10`. It runs on one database, and through a coordinator when the events table is placed by its user column ([on a cluster](cluster-limits.md#graphs-and-recommenders)); the tables of this page work on any cluster.
 
 ## Which to use
 

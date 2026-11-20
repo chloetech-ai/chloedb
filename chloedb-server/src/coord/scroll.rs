@@ -91,12 +91,17 @@ impl Coordinator {
     /// rows, and the scroll of the rest while rows are left. Each shard
     /// keeps its scroll for `keep_alive` after each page.
     pub async fn scroll(&self, req: &QueryReq, schema: &Schema, select: &Select, page: usize, keep_alive: Duration, deadline: Instant) -> Result<(ResultSet, Option<ShardScroll>), ApiError> {
-        if !select.graphs.is_empty() {
-            return Err(ApiError::bad(super::GRAPHS_ON_SHARDS));
-        }
         // Counted once, as the query it is ([`super::heat`]); its later
         // pages read the version it started on, and are not.
         self.heat_query(schema, select);
+        // A graph walked first, as a query's is: the scroll pages its rows.
+        if !select.graphs.is_empty() && self.topo().replicas.len() > 1 && !super::graph::shard_local(schema, select) {
+            let walked = self.walk(req, schema, select, deadline).await?;
+            let req = QueryReq { plan: None, ..req.clone() };
+            let (mut rs, rest) = self.routed(|| self.scroll_once(&req, schema, &walked.select, page, keep_alive, deadline)).await?;
+            rs.stats.plan.splice(0..0, walked.lines);
+            return Ok((rs, rest));
+        }
         self.routed(|| self.scroll_once(req, schema, select, page, keep_alive, deadline)).await
     }
 

@@ -117,7 +117,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/cluster-limits.md">docs/chloedb/cluster-limits.md</a>.</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#refused-on-a-cluster">Refused on a cluster</a></li><li><a href="#different-on-a-cluster">Different on a cluster</a></li><li><a href="#a-table-placed-by-a-column-shard_by">A table placed by a column (shard_by)</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#refused-on-a-cluster">Refused on a cluster</a></li><li><a href="#different-on-a-cluster">Different on a cluster</a></li><li><a href="#graphs-and-recommenders">Graphs and recommenders</a></li><li><a href="#a-table-placed-by-a-column-shard_by">A table placed by a column (shard_by)</a></li></ol></details>
     <div class="doc-body">
 
 <p>A coordinator over shards (<a href="server.html#sharding-one-coordinator-many-shards">sharding</a>) answers most requests as one server does: the tests run every query kind against three shards and one database and compare the answers. This page lists what it refuses, and what it does in another way, so that nobody finds out in production. A table placed by a column (<code>OPTIONS(shard_by = '...')</code>, <a href="server.html#tables-on-shards">tables on shards</a>) has a few differences of its own, listed after.</p>
@@ -134,10 +134,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </thead>
 <tbody>
 <tr>
-<td>Graph queries: <code>REACHABLE</code>, <code>PATH</code>, <code>hops()</code>, <code>ppr()</code></td>
+<td>Graph walks over a <code>VECTOR</code> column (<code>REACHABLE(emb, ...)</code>, <code>ppr(emb, ...)</code> over the nearest-neighbour graph)</td>
 <td>run</td>
-<td>refused: a row's edges point at rows other shards hold</td>
-<td>run them on a server that holds the whole table, or walk from the application a round of reads by key per hop (<a href="graphs.html#on-a-cluster">graphs</a>)</td>
+<td>refused: the graph is each shard's own index</td>
+<td>walk an <code>EDGES</code> column or an edge table, or run it on a server that holds the whole table</td>
 </tr>
 <tr>
 <td><code>ALTER TABLE ... DROP COLUMN</code></td>
@@ -170,10 +170,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <td><code>POST /v1/explain</code></td>
 </tr>
 <tr>
-<td>Recommenders: <code>CREATE RECOMMENDER</code>, <code>recommend(...)</code> (<a href="sql.html#recommenders-create-recommender-and-recommend">query language</a>)</td>
-<td>run</td>
-<td>refused: a recommender counts each user's events in order, and they are spread over the shards</td>
-<td>run it on a server that holds the events table; or keep counts in an <a href="sql.html#edge-tables">edge table</a> or <a href="next-items.html">next-items table</a> and rank with <code>ranked(...)</code> of what you read</td>
+<td><code>CREATE RECOMMENDER</code> over an events table that is not placed by its user column, on a coordinator of several shards</td>
+<td>runs</td>
+<td>refused: each user's events are counted in order, on one shard</td>
+<td>create the events table with <code>OPTIONS(shard_by = '&lt;user column&gt;')</code> and load its events again (<a href="#graphs-and-recommenders">below</a>)</td>
 </tr>
 </tbody>
 </table></div>
@@ -194,6 +194,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong>Rank-log export and interleaving credit</strong> (<code>/v1/rank_log/export</code>, <code>/v1/rank_log/interleaving</code>) run their queries over every shard, each read whole by a scroll, rather than from one snapshot: a request logged during the export may be left out or come with part of its events.</li>
 <li><strong>Conditional writes</strong> (<code>if_seq_no</code>, <code>seq_no()</code>) need every shard to number its writes alike (one replica, or a primary its replicas follow), and answers carry each shard's number (<code>seq_nos</code>), not one.</li>
 <li><strong>Write receipts</strong> count per shard (<code>receipt.per_shard</code>); a shard from before protocol 21 does not count, and its counts are <code>null</code>. A strict write goes only to shards of protocol 21.</li>
+</ul>
+<h2 id="graphs-and-recommenders">Graphs and recommenders<a class="anchor" href="#graphs-and-recommenders" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Graph walks</strong> (<code>REACHABLE</code>, <code>PATH</code>, <code>hops()</code>, <code>ppr()</code>) over an <code>EDGES</code> column or an <a href="sql.html#edge-tables">edge table</a> run on the coordinator: it runs the same walk one database runs, over what it has read so far, and reads what the walk is missing in one round of reads by key over every shard (keys in batches of 2,000, all at once), then walks again, until nothing is missing. <code>REACHABLE</code> and <code>hops()</code> take about one round per hop, <code>PATH</code> one per hop from either end, <code>ppr()</code> one each time its pushes reach rows it has not read. Each shard is then given the walk's answer (hops, place on the path, score) for its own rows, and the rest of the query (filters, <code>bm25</code>, <code>GROUP BY</code>, joins) runs as for any query. The plan says <code>walked by the coordinator in N rounds</code>, and the answer is one database's, but for two things: <code>PATH</code> may pick another path of the same length, and <code>ppr()</code> scores may differ in the last digits, since it pushes rows in the order it met them (more when it adapts its own <code>eps</code>). A walk is refused past <code>max_nodes</code> rows, as on one database, and after 256 rounds.</li>
+<li><strong>A coordinator of one shard</strong> that holds every slot (no move in progress) sends graph queries to that shard, which walks them itself.</li>
+<li><strong>Joins along links</strong> (<code>JOIN items b ON b.cooc = a.id</code>, rows that point at a key) run on a cluster too: each shard answers one hop in by key from its own rows' edges, whatever shard the key's row is on.</li>
+<li><strong>Recommenders</strong> run when the events table is placed by its user column (<code>OPTIONS(shard_by = 'usr')</code>). <code>CREATE RECOMMENDER</code> runs on every shard, and each shard counts the events it holds, as they are written, in its own rows of the counts table (keys that end with its slot map's epoch and shard). <code>recommend(...)</code> reads the counts summed over the shards (<code>sum(next)</code>, <code>sum(co)</code> and <code>sum(n)</code> grouped by item, and every row of the user's), ranks as one database does, and runs the query with each call as <code>ranked(...)</code> of the keys; the plan says <code>counts summed over the shards</code>. So a counts table read directly on a cluster holds each shard's part, not the totals. After a move of slots, the shards that take a user's events count them in new rows of their own, and a user's recent events are those of all their rows; <code>CREATE OR REPLACE RECOMMENDER</code> counts everything again.</li>
+<li><strong>Kept whole on every shard:</strong> not yet. An edge table is placed by its key like any table, so a walk over it reads by key each round. Keeping a small edge table whole on every shard would let each shard walk it alone; that is next.</li>
 </ul>
 <h2 id="a-table-placed-by-a-column-shard_by">A table placed by a column (<code>shard_by</code>)<a class="anchor" href="#a-table-placed-by-a-column-shard_by" aria-label="Link to this section">#</a></h2>
 <p>A row goes to the shard of its <code>shard_by</code> value, not of its key. So:</p>
