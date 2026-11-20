@@ -456,8 +456,63 @@ function parse(text) {
 // without case); else the one entry that has find's words (its name) and
 // most of the rest, since a day or a date the chat worked out may be off
 // (MARCUS-4). Answers { entry, index } or null.
+// A day the request names ("yesterday", "Thursday") is held to: an entry
+// on another day is never the one, even when its name fits (round 9
+// INES-2, MARCUS-2).
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+function dayOf(word) {
+  const w = String(word ?? '').trim().toLowerCase()
+  const at = new Date()
+  const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  if (w === 'today') return { date: iso(at), weekday: at.getDay() }
+  if (w === 'yesterday' || w === 'tomorrow') {
+    const d = new Date(at)
+    d.setDate(d.getDate() + (w === 'yesterday' ? -1 : 1))
+    return { date: iso(d), weekday: d.getDay() }
+  }
+  const i = DAYS.findIndex(d => d === w || d.slice(0, 3) === w || (w.length >= 3 && d.startsWith(w)))
+  return i >= 0 ? { weekday: i } : null
+}
+function onDay(entry, day) {
+  let dated = false
+  let hit = false
+  const walk = (v, depth = 0) => {
+    if (depth > 2 || v == null || hit) return
+    if (typeof v === 'object') return Object.values(v).forEach(x => walk(x, depth + 1))
+    const t = String(v).trim()
+    const iso = /^(\d{4})-(\d\d)-(\d\d)/.exec(t)
+    if (iso) {
+      dated = true
+      const d = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]))
+      if (day.date ? t.slice(0, 10) === day.date : d.getDay() === day.weekday) hit = true
+      return
+    }
+    const named = DAYS.findIndex(d => new RegExp(`\\b(${d}|${d.slice(0, 3)})\\b`, 'i').test(t))
+    if (named >= 0) {
+      dated = true
+      if (named === day.weekday && !day.date) hit = true
+      if (day.date && named === day.weekday) hit = true
+    }
+  }
+  walk(entry)
+  return { dated, hit }
+}
 function match(list, find) {
   if (!Array.isArray(list) || !find || typeof find !== 'object') return null
+  const dayWord = Object.entries(find).find(([k, v]) => typeof v === 'string' && (/^(day|when|on)$/i.test(k) || dayOf(v)) && dayOf(v))
+  if (dayWord) {
+    const day = dayOf(dayWord[1])
+    const rest = Object.fromEntries(Object.entries(find).filter(([k]) => k !== dayWord[0]))
+    const dated = list.some(e => e && typeof e === 'object' && onDay(e, day).dated)
+    if (dated) {
+      const on = list.map((e, i) => ({ e, i })).filter(x => x.e && typeof x.e === 'object' && onDay(x.e, day).hit)
+      if (!Object.keys(rest).length) return on.length === 1 ? { entry: on[0].e, index: on[0].i } : null
+      const got = match(on.map(x => x.e), rest)
+      return got ? { entry: got.entry, index: on[got.index].i } : null
+    }
+    find = rest
+    if (!Object.keys(find).length) return null
+  }
   const norm = v => String(v ?? '').trim().toLowerCase()
   const num = v => {
     const n = parse(v)

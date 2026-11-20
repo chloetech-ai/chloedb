@@ -129,6 +129,7 @@
   .clash-note .clash-text::before { content: '⚠ '; }
   .clash-note button { border: 1px solid var(--warn-line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 3px 9px; font-size: 13px; cursor: pointer; }
   .wbtn.undo { margin-left: 10px; }
+  .chip.nothing { background: var(--warn-bg); color: var(--warn); }
   .wbtn.sure { background: var(--warn-bg); color: var(--warn); }
   .connect-note { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0; padding: 10px 12px; }
   .connect-go { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: var(--bg, #fff); text-decoration: none; font-weight: 600; }
@@ -1728,7 +1729,23 @@ async function ask(question) {
           privateApps[ev.app.id] = true
           saveLocal()
         }
+        // An entry asked for (added, changed, taken out): what it kept
+        // before, to say "Nothing changed" when the app took none of it
+        // instead of a "sent" that reads as done (round 9 MAYA-3).
+        const asked = ev.args?.values && ['add', 'edit', 'remove'].some(k => ev.args.values[k] != null) && !isPrivate(ev.app.id)
+        const keptNow = () => viaServer({ app: ev.app.id, me: ownerOf(ev.app.id), self: me, name: 'app_kept', arguments: { all: true } }).then(o => JSON.stringify(o?.structuredContent?.values ?? null)).catch(() => null)
+        const before = asked ? await keptNow() : null
         shownNow = widget(body, ev, { request: question })
+        if (asked && before != null) {
+          const w = shownNow
+          Promise.race([w.seen, sleep(6000)]).then(() => sleep(2500)).then(keptNow).then(after => {
+            if (after == null || after !== before || !w.node) return
+            const chip = w.node.querySelector('.wbar .chip')
+            if (chip) { chip.textContent = 'Nothing changed'; chip.className = 'chip nothing' }
+            const line = w.node.previousElementSibling?.classList.contains('toolline') ? w.node.previousElementSibling.querySelector('span:last-child') : null
+            if (line) line.textContent = line.textContent.replace(' · sent: ', ' · asked: ') + ' · nothing changed'
+          })
+        }
         if (pasted && shownNow?.node?.querySelector('.wbar')) {
           const box = el('offline-note private-note', esc('Private, because it is for what you paste: Claude reads nothing of it, and what it keeps stays in this browser. To let Claude read it, use ⋯ on it.'), shownNow.node)
           shownNow.node.querySelector('.wbar').after(box)

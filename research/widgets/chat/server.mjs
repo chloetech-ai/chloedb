@@ -23,7 +23,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
-import { addFound } from '../server/widgets/findings.mjs'
+import { addFound, takeOut } from '../server/widgets/findings.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
 import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep, signed } from '../server/apps.mjs'
 import { claude } from './model.mjs'
@@ -356,7 +356,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const candidates = await apps.recall(text, 8)
     send({ type: 'recall', candidates: candidates.map(c => ({ id: c.id, name: c.name, score: c.score })) })
     const last = lastApp ? await apps.get(lastApp.id) : null
-    const plan = await model.route({
+    let plan = await model.route({
       request: text,
       history: history.slice(-6),
       candidates,
@@ -422,7 +422,18 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     // and name stay, and every phone with it open gets it (PRIYA-1, PRIYA-4).
     // What was found is added to the answer, never put in its place: no
     // option, price or source kept drops off (round 9 PRIYA-1, PRIYA-3).
-    if (keptAnswer && plan.tool === 'findings' && LOOKUP.test(text) && !(await mayChange(app.id, { links }))) {
+    // An option taken off a kept answer by asking goes, in place, as a new
+    // version Undo brings back; one it can't tell is said (round 9 PRIYA-4).
+    const TAKE = /\b(take|taking|remove|drop|cross|delete|get rid of)\b[^.?!]*\b(off|out|from)\b|\b(remove|delete|drop)\b/i
+    const taking = keptAnswer && TAKE.test(text) && !(await mayChange(app.id, { links })) ? takeOut(app.args, text) : null
+    if (taking && !taking.gone.length && /\b(off|out of)\b/i.test(text)) {
+      send({ type: 'reply', text: `I couldn't tell which option of ${app.name} to take off: say its name as the list shows it.` })
+      return
+    }
+    if (taking?.gone.length) {
+      app = await apps.put({ ...app, args: taking.kept, version: app.version + 1 }, `took off: ${taking.gone.join(', ')}`.slice(0, 300))
+      plan = { ...plan, tool: 'findings', mode: 'use' }
+    } else if (keptAnswer && plan.tool === 'findings' && LOOKUP.test(text) && !(await mayChange(app.id, { links }))) {
       send({ type: 'status', text: 'Searching the web' })
       try {
         const found = await model.research({ request: text, query: String(app.args?.query || text), history: history.slice(-6), found: app.args, changes: await apps.changesOf(app.id).catch(() => []) })

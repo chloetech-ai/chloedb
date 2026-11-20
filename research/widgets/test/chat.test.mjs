@@ -35,6 +35,7 @@ function scripted() {
         const app = input.screen[0]?.id
         return change[1].toLowerCase() === 'undo' ? { mode: 'undo', kind: 'action', app, why: 'take it back' } : { mode: 'change', kind: 'action', app, what: input.request.slice(8), why: 'a change' }
       }
+      if (/ off my list/i.test(input.request)) return { mode: 'use', kind: 'info', use: this.pick, tool: 'findings', args: { query: 'quiet headphones' }, why: 'your kept list' }
       if (/^slowly/i.test(input.request)) {
         await new Promise(r => setTimeout(r, 400))
         return { mode: 'chat', kind: 'info', tool: null, args: {}, reply: 'Took a while.', why: 'slow' }
@@ -965,6 +966,13 @@ test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { ski
   assert.deepEqual(kept.items[0].says.map(s => s.doc), [1, 2])
   assert.deepEqual(kept.documents.map(d => d.url), ['https://example.com/quiet', 'https://example.com/sony-store'])
   assert.equal(kept.query, asked, 'the question, and so the title, stays')
+  // An option taken off by asking goes from the kept answer itself, as a
+  // new version (round 9 PRIYA-4).
+  model.pick = once.id
+  const off = (await events('/api/turn', { text: 'take the AirPods Max off my list', talk })).find(e => e.type === 'app')
+  delete model.pick
+  assert.equal(off?.app.id, once.id)
+  assert.deepEqual((await chat.apps.get(once.id)).args.items.map(i => i.name), ['Sony WH-1000XM5', 'Bose QuietComfort Ultra'])
 })
 
 test('open phones keep up: a new version is told with what changed, and a stopped link is told (R: MAYA-3, DEV-7)', { skip }, async () => {

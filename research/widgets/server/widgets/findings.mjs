@@ -317,3 +317,28 @@ const alike = (a, b) => {
   return at === short.length
 }
 const SAME_SKIP = new Set(['the', 'and', 'with', 'for', 'headphones', 'headphone', 'wireless', 'noise', 'cancelling', 'canceling', 'over', 'ear'])
+
+// The options of a kept answer a request takes out ("take the AirPods Max
+// off my list"): those whose name's own words are all in the request, or,
+// when none is, the one most of whose words are (round 9 PRIYA-4).
+export function takeOut(kept = {}, request = '') {
+  const said = String(request).toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  const words = name => String(name ?? '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1 && !SAME_SKIP.has(w))
+  const asked = new Set(said.split(/[^a-z0-9]+/).filter(Boolean))
+  const share = item => {
+    const w = words(item.name)
+    const hit = x => asked.has(x) || [...asked].some(a => alike(a, x) || (/\d/.test(a) && a.length >= 3 && x.endsWith(a)))
+    // A model number alone ("the XM4") picks its option.
+    if (w.some(x => /\d/.test(x) && [...asked].some(a => /\d/.test(a) && a.length >= 3 && x.endsWith(a)))) return 1
+    return w.length ? w.filter(hit).length / w.length : 0
+  }
+  const items = kept.items ?? []
+  let gone = items.filter(item => share(item) === 1)
+  if (!gone.length) {
+    const scored = items.map(item => ({ item, s: share(item) })).filter(x => x.s >= 0.5).sort((a, b) => b.s - a.s)
+    if (scored.length && (scored.length === 1 || scored[0].s > scored[1].s)) gone = [scored[0].item]
+  }
+  if (!gone.length) return { kept, gone: [] }
+  const names = new Set(gone.map(i => i.name))
+  return { kept: { ...kept, items: items.filter(i => !names.has(i.name)), needs: (kept.needs ?? []).filter(n => !names.has(n.pick)) }, gone: [...names] }
+}
