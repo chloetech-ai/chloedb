@@ -254,17 +254,18 @@ async fn every_page_against_a_real_server() {
     let (ny, nc) = years(&rows, &chips);
     // One CAL FIRE perimeter around the first fire of the week, and the
     // place it burned half of.
-    // The outline has 4,000 points (about 80 KB, as the largest of CAL
+    // The first fire (33.985, -118.515) is 0.02 degrees inside the
+    // outline's north edge, which its box must still find. The outline has 4,000 points (about 80 KB, as the largest of CAL
     // FIRE's do): a long KEYWORD the server must take.
     let ring: Vec<Value> = (0..=4000).map(|i| {
         let a = i as f64 / 4000.0 * std::f64::consts::TAU;
-        json!([-118.5 + 0.1 * a.cos(), 34.0 + 0.1 * a.sin()])
+        json!([-118.515 + 0.1 * a.cos(), 33.905 + 0.1 * a.sin()])
     }).collect();
     let shape = json!({"type": "Polygon", "coordinates": [ring]}).to_string();
     assert!(shape.len() > 70_000);
     std::fs::write(rows.join("ea_perimeters.jsonl"), format!("{}\n", json!({"id": "cf-2025-test", "source": "calfire", "name": "Testwood", "complex": "", "year": 2025,
         "alarm": "2025-01-01T00:00:00Z", "contained": "2025-01-04T00:00:00Z", "acres": 1000.0, "km2": 4.05, "cause": "Lightning", "agency": "CDF", "unit": "LAC", "inc": "",
-        "lat": 34.0, "lon": -118.5, "s": 33.9, "n": 34.1, "w": -118.6, "e": -118.4, "shape": shape.clone()}))).unwrap();
+        "lat": 33.905, "lon": -118.515, "s": 33.805, "n": 34.005, "w": -118.615, "e": -118.415, "shape": shape.clone()}))).unwrap();
     std::fs::write(rows.join("ea_burns.jsonl"), format!("{}\n", json!({"id": "ca0000:cf-2025-test", "place": "ca0000", "perimeter": "cf-2025-test", "region": "california",
         "name": "Testwood", "year": 2025, "alarm": "2025-01-01T00:00:00Z", "acres": 1000.0, "share": 0.5, "cause": "Lightning"}))).unwrap();
     run(&["load", "--dir", rows.to_str().unwrap()], &strata);

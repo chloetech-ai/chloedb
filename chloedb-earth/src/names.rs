@@ -51,19 +51,31 @@ pub async fn run(db: &Strata) -> Result<usize> {
         let (lat, lon) = (f.f("lat"), f.f("lon"));
         let a = chrono::DateTime::from_timestamp(start - 4 * 86400, 0).map(|d| d.to_rfc3339()).unwrap_or_default();
         let b = chrono::DateTime::from_timestamp(start + 3 * 86400, 0).map(|d| d.to_rfc3339()).unwrap_or_default();
-        let cands = db
+        // The outlines whose box holds the fire's centre, give or take
+        // 0.03 degrees (GOES's pixels are 2 km at best).
+        let cands = match db
             .query(
-                "SELECT id, name, alarm, acres, s, n, w, e, shape FROM ea_perimeters WHERE alarm >= :a AND alarm <= :b AND s <= :lat AND n >= :lat AND w <= :lon AND e >= :lon LIMIT 50",
-                json!({"a": a, "b": b, "lat": lat + 0.03, "lon": lon}),
+                "SELECT id, name, alarm, acres, s, n, w, e, shape FROM ea_perimeters WHERE alarm >= :a AND alarm <= :b AND s <= :n AND n >= :s AND w <= :e AND e >= :w LIMIT 50",
+                json!({"a": a, "b": b, "s": lat - 0.03, "n": lat + 0.03, "w": lon - 0.03, "e": lon + 0.03}),
             )
             .await
-            .map_err(|e| anyhow!("{e}"))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(fire = %f.s("id"), error = %e, "perimeters for a fire");
+                continue;
+            }
+        };
         let Some(p) = pick(lat, lon, start, &cands) else { continue };
         ops.push(json!({"op": "set", "table": "ea_fires", "key": f.s("id"), "field": "perimeter", "value": p.s("id")}));
         if !p.s("name").is_empty() {
             ops.push(json!({"op": "set", "table": "ea_fires", "key": f.s("id"), "field": "name", "value": p.s("name")}));
         }
         named += 1;
+        // Written as they come, so that a run cut short keeps its names.
+        if ops.len() >= 400 {
+            db.write(std::mem::take(&mut ops)).await.map_err(|e| anyhow!("{e}"))?;
+        }
     }
     db.write(ops).await.map_err(|e| anyhow!("{e}"))?;
     Ok(named)

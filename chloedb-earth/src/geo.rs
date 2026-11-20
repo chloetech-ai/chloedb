@@ -7,9 +7,17 @@ use serde_json::Value;
 /// A polygon: its outer ring, then its holes, as (lon, lat).
 pub type Poly = Vec<Vec<(f64, f64)>>;
 
-/// The polygons of a GeoJSON geometry text.
+/// The polygons of a GeoJSON geometry text. A GeometryCollection (what
+/// making an outline valid leaves when it also had stray lines) gives the
+/// polygons inside it.
 pub fn parse(shape: &str) -> Vec<Poly> {
-    let Ok(v) = serde_json::from_str::<Value>(shape) else { return Vec::new() };
+    match serde_json::from_str::<Value>(shape) {
+        Ok(v) => polygons(&v),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn polygons(v: &Value) -> Vec<Poly> {
     let ring = |r: &Value| -> Vec<(f64, f64)> {
         r.as_array().map(|a| a.iter().filter_map(|p| Some((p.get(0)?.as_f64()?, p.get(1)?.as_f64()?))).collect()).unwrap_or_default()
     };
@@ -17,6 +25,7 @@ pub fn parse(shape: &str) -> Vec<Poly> {
     match v.get("type").and_then(Value::as_str) {
         Some("Polygon") => vec![poly(&v["coordinates"])],
         Some("MultiPolygon") => v["coordinates"].as_array().map(|ps| ps.iter().map(poly).collect()).unwrap_or_default(),
+        Some("GeometryCollection") => v["geometries"].as_array().map(|gs| gs.iter().flat_map(polygons).collect()).unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -72,6 +81,8 @@ mod tests {
         assert!(!contains(&p, 1.0, 1.0), "a hole");
         assert!(!contains(&p, 3.0, 3.0));
         assert!(parse("not json").is_empty());
+        let gc = format!(r#"{{"type":"GeometryCollection","geometries":[{{"type":"LineString","coordinates":[[0,0],[1,1]]}},{SQUARE}]}}"#);
+        assert!(contains(&parse(&gc), 0.3, 0.3), "the polygons inside a collection");
     }
 
     #[test]

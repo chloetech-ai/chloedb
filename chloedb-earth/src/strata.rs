@@ -192,6 +192,14 @@ impl Strata {
     /// Every row of a SELECT, however many: a scroll, `page` rows a page
     /// (a query alone answers at most 10,000).
     pub async fn scroll(&self, sql: &str, params: Value, page: usize) -> Result<Vec<Row>> {
+        self.scroll_map(sql, params, page, Some).await
+    }
+
+    /// As [`Strata::scroll`], each row turned into a `T` as its page
+    /// arrives, so that only one page of JSON is held at a time (the
+    /// places are 100,000 rows: kept as rows, they took several hundred
+    /// megabytes at their peak).
+    pub async fn scroll_map<T>(&self, sql: &str, params: Value, page: usize, mut f: impl FnMut(Row) -> Option<T>) -> Result<Vec<T>> {
         let mut j = self.post("/v1/query", &json!({ "sql": sql, "params": params, "objects": true, "page_size": page, "keep_alive_ms": 60000 })).await?;
         let mut all = Vec::new();
         loop {
@@ -203,13 +211,15 @@ impl Strata {
             };
             let n = rows.len();
             for r in rows {
-                match r {
-                    Value::Object(m) => all.push(m),
+                let row = match r {
+                    Value::Object(m) => m,
                     // A scroll's next pages are arrays, in the columns' order.
-                    Value::Array(a) => all.push(cols.iter().cloned().zip(a).collect()),
-                    _ => {}
-                }
+                    Value::Array(a) => cols.iter().cloned().zip(a).collect(),
+                    _ => continue,
+                };
+                all.extend(f(row));
             }
+            drop(j);
             match cursor {
                 Some(c) if n > 0 => j = self.post("/v1/query", &json!({ "cursor": c })).await?,
                 _ => break,
