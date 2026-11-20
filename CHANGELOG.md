@@ -11,6 +11,13 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **chloedb-hn's experiment sample answers on the whole archive.**
+  `GET /v1/experiment/sample`, which the Experiments app reads to write
+  personas, sorted its matches with every column and ran past the
+  server's 5 s deadline on hn.chloetech.ai's 4.9 million stories (502 in
+  Write personas). It now sorts the ids alone and then reads those rows:
+  1.4 s there.
+
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:

@@ -280,11 +280,24 @@ async fn exp_sample(State(svc): State<Shared>, Query(a): Query<ExpSample>) -> An
     let n = a.n.unwrap_or(60).clamp(4, 120);
     let seed = a.seed.unwrap_or(7);
     let cols = search::STORY_COLS;
+    // The ids first, then their rows: on the whole archive (4.9 million
+    // stories) sorting the matches with every column ran past the server's
+    // 5 s deadline, and the ids alone sort in about a second.
     let (top, plain) = tokio::join!(
-        c.rows("well known stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
-        c.rows("ordinary stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
+        c.rows("well known stories", &format!("SELECT id FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
+        c.rows("ordinary stories", &format!("SELECT id FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
     );
-    let mut rows: Vec<crate::strata::Row> = top?.into_iter().chain(plain?).collect();
+    let ids: Vec<i64> = top?.iter().chain(plain?.iter()).map(|r| r.i("id")).collect();
+    let mut rows: Vec<crate::strata::Row> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        let mut got = c.rows("the sample's stories", &format!("SELECT {cols} FROM hn_stories WHERE id IN ({list})"), Value::Null).await?;
+        // In the order the two queries gave: best voted, then newest.
+        let at: std::collections::HashMap<i64, usize> = ids.iter().enumerate().map(|(k, i)| (*i, k)).collect();
+        got.sort_by_key(|r| at.get(&r.i("id")).copied().unwrap_or(usize::MAX));
+        got
+    };
     if rows.len() < n / 2 {
         // A small site: its stories, best voted first.
         let more = c.soft("stories, best voted first", &format!("SELECT {cols} FROM hn_stories ORDER BY points DESC, id LIMIT {n}"), Value::Null).await;
