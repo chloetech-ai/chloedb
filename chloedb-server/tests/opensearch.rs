@@ -721,6 +721,93 @@ async fn alias_swaps(base: &str) {
     }
 }
 
+const TAGS: [&str; 6] = ["billing", "bug", "login", "refund", "vpn", "urgent"];
+
+/// Document `i` of the facets index: an id, a day shared by many (none
+/// for some), and a list of tags, a repeated one for some, none for others.
+fn facet_doc(i: usize) -> Json {
+    let n = (i * 7) % 5;
+    let mut tags: Vec<&str> = (0..n).map(|k| TAGS[(i + k * 3) % TAGS.len()]).collect();
+    if i % 11 == 0 {
+        tags.push(TAGS[i % TAGS.len()]);
+    }
+    let mut d = json!({"id": format!("c{:03}", (i * 37) % 300), "tags": tags, "body": "refund please"});
+    if i % 50 != 7 {
+        d["created_at"] = json!(format!("2026-09-{:02}T04:31:49Z", 1 + i % 9));
+    }
+    d
+}
+
+/// A terms aggregation on a field of arrays counts each document once in
+/// each tag it holds, as one on a single keyword does (finding KENJI-401),
+/// and a sort by a date and then a keyword pages as one sort of every
+/// match does, by from and size and by search_after (KENJI-404).
+async fn facets_and_sorts(base: &str) {
+    ok(base, "PUT", "/facets", Some(json!({"mappings": {"properties": {"id": {"type": "keyword"}, "tags": {"type": "keyword"}, "created_at": {"type": "date"}, "body": {"type": "text"}}}}))).await;
+    let n = 300;
+    let mut nd = String::new();
+    for i in 0..n {
+        nd.push_str(&format!("{}\n{}\n", json!({"index": {"_id": format!("f{i}")}}), facet_doc(i)));
+    }
+    assert_eq!(ok(base, "POST", "/facets/_bulk?refresh=true", Some(Json::String(nd))).await["errors"], json!(false));
+    // Each document once per distinct tag.
+    let mut counts: std::collections::BTreeMap<String, u64> = Default::default();
+    for i in 0..n {
+        let tags: BTreeSet<String> = facet_doc(i)["tags"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect();
+        for t in tags {
+            *counts.entry(t).or_default() += 1;
+        }
+    }
+    let mut want: Vec<(String, u64)> = counts.into_iter().collect();
+    want.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let total: u64 = want.iter().map(|w| w.1).sum();
+    let r = ok(base, "POST", "/facets/_search", Some(json!({"size": 0, "aggs": {"t": {"terms": {"field": "tags", "size": 3}}}}))).await;
+    let got: Vec<(String, u64)> = r["aggregations"]["t"]["buckets"].as_array().unwrap().iter().map(|b| (b["key"].as_str().unwrap().to_string(), b["doc_count"].as_u64().unwrap())).collect();
+    assert_eq!(got, want[..3].to_vec(), "{r}");
+    assert_eq!(r["aggregations"]["t"]["sum_other_doc_count"].as_u64(), Some(total - want[..3].iter().map(|w| w.1).sum::<u64>()), "{r}");
+
+    let ids = |r: &Json| r["hits"]["hits"].as_array().unwrap().iter().map(|h| h["_id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    for dir in ["desc", "asc"] {
+        let sort = json!([{"created_at": {"order": dir}}, {"id": "asc"}]);
+        let all = ids(&ok(base, "POST", "/facets/_search", Some(json!({"size": n, "sort": sort}))).await);
+        assert_eq!(all.len(), n);
+        // In the order asked: days, then ids within a day.
+        let key = |id: &str| {
+            let d = facet_doc(id[1..].parse().unwrap());
+            (d["created_at"].as_str().map(String::from), d["id"].as_str().unwrap().to_string())
+        };
+        let dated: Vec<(String, String)> = all.iter().map(|id| key(id)).filter_map(|(at, id)| at.map(|at| (at, id))).collect();
+        assert!(dated.windows(2).all(|w| if dir == "desc" { w[0].0 > w[1].0 || (w[0].0 == w[1].0 && w[0].1 < w[1].1) } else { w[0] < w[1] }), "{dir}: {dated:?}");
+        for (from, size) in [(0, 10), (5, 7), (40, 40), (290, 20)] {
+            let page = ids(&ok(base, "POST", "/facets/_search", Some(json!({"from": from, "size": size, "sort": sort, "query": {"match": {"body": "refund"}}}))).await);
+            assert_eq!(page, all[from.min(n)..(from + size).min(n)].to_vec(), "{dir} from {from} size {size}");
+        }
+        // search_after over the dated documents, by their sort values.
+        let mut paged = Vec::new();
+        let mut after: Option<Json> = None;
+        loop {
+            let mut b = json!({"size": 13, "sort": sort, "query": {"exists": {"field": "created_at"}}});
+            if let Some(a) = &after {
+                b["search_after"] = a.clone();
+            }
+            let r = ok(base, "POST", "/facets/_search", Some(b)).await;
+            let hits = r["hits"]["hits"].as_array().unwrap().clone();
+            let Some(last) = hits.last() else { break };
+            after = Some(last["sort"].clone());
+            paged.extend(hits.iter().map(|h| h["_id"].as_str().unwrap().to_string()));
+        }
+        let want: Vec<String> = all.iter().filter(|id| key(id).0.is_some()).cloned().collect();
+        assert_eq!(paged, want, "{dir}: search_after");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn array_facets_and_keyword_tie_breakers_answer_as_opensearch() {
+    let dir = tempfile::tempdir().unwrap();
+    facets_and_sorts(&serve(Arc::new(local(dir.path())), Access::default()).await).await;
+    facets_and_sorts(&serve(Arc::new(cluster(dir.path()).await), Access::default()).await).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn filtered_aliases_keep_each_tenant_to_its_documents() {
     let dir = tempfile::tempdir().unwrap();

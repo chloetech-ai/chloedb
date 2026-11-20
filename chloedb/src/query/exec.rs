@@ -672,6 +672,20 @@ fn locate_bytes(s: &Seg<'_>, index: &SubstringIndex) -> u64 {
     substring::like::locate_bytes(index, stored)
 }
 
+/// The run of a keyword column's codes whose values lie between a
+/// [`Pred::KeyRange`]'s bounds: values are in byte order, so the run
+/// starts at the lower bound's code (past it when excluded) and ends at
+/// the upper's (past it when included).
+fn key_run(kw: &KeywordColumn, lo: &Option<(String, bool)>, hi: &Option<(String, bool)>) -> std::ops::Range<u32> {
+    let at = |v: &str, past: bool| {
+        let c = kw.lower_bound(v);
+        c + u32::from(past && (c as usize) < kw.n_values() && kw.value(c) == v)
+    };
+    let start = lo.as_ref().map_or(0, |(v, incl)| at(v, !incl));
+    let end = hi.as_ref().map_or(kw.n_values() as u32, |(v, incl)| at(v, *incl));
+    start..end.max(start)
+}
+
 /// The multi-valued INT field whose ranges every condition of `cs` is, when
 /// there are several.
 fn ranges_of_one_list(schema: &Schema, cs: &[Pred]) -> Option<usize> {
@@ -2454,7 +2468,7 @@ impl<'a> Executor<'a> {
             Pred::True | Pred::False => true,
             Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } | Pred::Present { field } => self.updates(s, *field).is_none(),
             Pred::Prefix { edits, .. } => *edits == 0,
-            Pred::Like { .. } => true,
+            Pred::KeyRange { .. } | Pred::Like { .. } => true,
             Pred::Match { query, expand, .. } => expand.is_none() && !query.contains('~'),
             Pred::And(cs) | Pred::Or(cs) | Pred::AtLeast { items: cs, .. } => cs.iter().all(|c| self.own_rows(s, c)),
             Pred::Not(c) => self.own_rows(s, c),
@@ -2724,6 +2738,10 @@ impl<'a> Executor<'a> {
                 let runs = self.prefix_runs(s, *field, prefix, *edits)?;
                 self.keyword(s, *field)?.docs_prefix(&runs)
             }
+            Pred::KeyRange { field, lo, hi } => {
+                let kw = self.keyword(s, *field)?;
+                kw.docs_prefix(&[key_run(kw, lo, hi)])
+            }
             Pred::Path { field, path, test } => self.path_set(s, *field, path, test)?,
             Pred::Like { field, pattern, ci, negated } => self.like_set(s, *field, pattern, *ci, *negated)?,
             Pred::Graph { id } => self.graph_set(*id, s.ord, n),
@@ -2867,6 +2885,11 @@ impl<'a> Executor<'a> {
             Pred::Prefix { field, prefix, edits } => {
                 let runs = self.prefix_runs(s, *field, prefix, *edits)?;
                 ProbeNode::Leaf(Box::new(self.keyword(s, *field)?.filter_prefix(&runs)))
+            }
+            Pred::KeyRange { field, .. } if self.schema.fields[*field].multi => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
+            Pred::KeyRange { field, lo, hi } => {
+                let kw = self.keyword(s, *field)?;
+                ProbeNode::Leaf(Box::new(kw.filter_prefix(&[key_run(kw, lo, hi)])))
             }
             Pred::Range { field, lo, hi } => ProbeNode::Leaf(Box::new(self.numeric(s, *field)?.col().filter(*lo, *hi))),
             Pred::IntRange { field, lo, hi } => {

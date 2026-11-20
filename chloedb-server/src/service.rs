@@ -4403,6 +4403,7 @@ impl Service {
                         steps::around(&mut rs.stats.steps, te, started, ended, back);
                         (rs, Vec::new())
                     })
+                    .map_err(ApiError::from)
                 })
             }
             Backend::Cluster(c) => {
@@ -4420,6 +4421,10 @@ impl Service {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
+                    // The error of a leaf the shards failed, answered as it
+                    // is (a 503 of a shard down stays one, finding
+                    // KENJI-403) rather than as the engine words it.
+                    let mut failed: Option<ApiError> = None;
                     // The shards run the leaves; DataFusion or the operators
                     // run the rest here, on this server's cores.
                     let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, engine, threads, ..ExecOptions::default() };
@@ -4433,7 +4438,14 @@ impl Service {
                         // DataFusion takes Arrow columns past `over` rows.
                         let arrow = (over != usize::MAX).then_some(over);
                         let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, arrow, ..Default::default() };
-                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| chloedb::Error::Query(e.message))?;
+                        let mut m = match rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                let engine = chloedb::Error::Query(e.message.clone());
+                                failed = Some(e);
+                                return Err(engine);
+                            }
+                        };
                         for s in std::mem::take(&mut m.missing) {
                             if !missing.contains(&s) {
                                 missing.push(s);
@@ -4441,14 +4453,14 @@ impl Service {
                         }
                         Ok(m.leaf())
                     }, &checks);
-                    rs.map(|rs| (rs, missing))
+                    rs.map(|rs| (rs, missing)).map_err(|e| failed.unwrap_or_else(|| ApiError::from(e)))
                 }))
                 .await
             }
         };
         drop(cancel);
         match r {
-            Ok(r) => r.map_err(ApiError::from),
+            Ok(r) => r,
             Err(e) => Err(ApiError::internal(e)),
         }
     }

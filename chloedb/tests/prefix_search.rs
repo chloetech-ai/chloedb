@@ -4,7 +4,9 @@
 //! reopening and merges; the autocomplete shape (a prefix, `ORDER BY` a
 //! count, `LIMIT k`) returns the top k. With `fuzzy`, a walk of the
 //! dictionary selects the values with a prefix within that many edits,
-//! first letter exact, as a scan of every value finds them.
+//! first letter exact, as a scan of every value finds them. A KEYWORD
+//! compares by order too (`id > 'k'`, `BETWEEN`), as one run of the
+//! dictionary, so that a keyset page can start after a keyword.
 
 use chloedb::db::{Db, SqlResult};
 use chloedb::query::ir::Plan;
@@ -125,6 +127,16 @@ fn prefixes(docs: &[Document]) -> Vec<String> {
 fn check(db: &Db, docs: &[Document]) {
     let all = "SELECT id FROM queries";
     for p in prefixes(docs) {
+        // Ranges of a keyword, in byte order (finding KENJI-404).
+        let s = |v: &Value| v.as_str().map(str::to_string);
+        let pq = q(&p);
+        assert_eq!(ids(db, &format!("{all} WHERE id > '{pq}'")), want(docs, |d| s(&d[0]).is_some_and(|v| v > p)), "> {p:?}");
+        assert_eq!(ids(db, &format!("{all} WHERE id >= '{pq}'")), want(docs, |d| s(&d[0]).is_some_and(|v| v >= p)), ">= {p:?}");
+        assert_eq!(ids(db, &format!("{all} WHERE '{pq}' > id")), want(docs, |d| s(&d[0]).is_some_and(|v| v < p)), "< {p:?}");
+        assert_eq!(ids(db, &format!("{all} WHERE id <= '{pq}' AND id > 'ah'")), want(docs, |d| s(&d[0]).is_some_and(|v| v <= p && v.as_str() > "ah")), "<= {p:?}");
+        assert_eq!(ids(db, &format!("{all} WHERE id BETWEEN 'h' AND '{pq}'")), want(docs, |d| s(&d[0]).is_some_and(|v| v.as_str() >= "h" && v <= p)), "BETWEEN {p:?}");
+        // A row without a value is UNKNOWN to a range and its negation.
+        assert_eq!(ids(db, &format!("{all} WHERE NOT (lang > '{pq}')")), want(docs, |d| s(&d[1]).is_some_and(|v| v <= p)), "NOT lang > {p:?}");
         let w = want(docs, |d| starts(&d[0], &p));
         assert_eq!(ids(db, &format!("{all} WHERE id LIKE '{}%' ESCAPE '!'", q(&esc(&p)))), w, "LIKE {p:?}");
         assert_eq!(ids(db, &format!("{all} WHERE PREFIX(id, '{}')", q(&p))), w, "PREFIX {p:?}");
@@ -329,6 +341,53 @@ fn a_prefix_plan_names_its_feature_and_runs_from_json() {
     // Over rows of a subquery, PREFIX tests each value.
     let rows = db.query("SELECT id FROM (SELECT id, lang FROM queries) AS t WHERE PREFIX(id, 'ha') AND PREFIX(lang, 'en')", &none).unwrap().rows;
     assert_eq!(rows.len(), want_len(&docs, |d| starts(&d[0], "ha") && starts(&d[1], "en")));
+}
+
+/// Keyset pages by `n DESC, id` written out (`n < :n OR (n = :n AND id >
+/// :id)`) return each row once, in order, as one query of them all does
+/// (finding KENJI-404); the plan names its feature and runs from JSON; a
+/// list of keywords keeps to equality.
+#[test]
+fn keyset_pages_start_after_a_keyword() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("k.strata"), schema(), DbOptions { segment_max_docs: 400, ..DbOptions::default() }).unwrap();
+    // Few counts, so that pages break inside ties of n.
+    let docs: Vec<Document> = (0..1500)
+        .map(|i| {
+            let mut d = doc(i);
+            d[3] = Value::Int((i % 7) as i64);
+            d
+        })
+        .collect();
+    db.load(docs.iter().cloned()).unwrap();
+    let none = Params::new();
+    let all: Vec<Vec<Value>> = db.query("SELECT id, n FROM queries ORDER BY n DESC, id LIMIT 2000", &none).unwrap().rows;
+    assert_eq!(all.len(), docs.len());
+    let mut got: Vec<Vec<Value>> = Vec::new();
+    let mut after: Option<(i64, String)> = None;
+    loop {
+        let cond = after.as_ref().map(|(n, id)| format!(" WHERE n < {n} OR (n = {n} AND id > '{}')", q(id))).unwrap_or_default();
+        let page = db.query(&format!("SELECT id, n FROM queries{cond} ORDER BY n DESC, id LIMIT 97"), &none).unwrap().rows;
+        let Some(last) = page.last() else { break };
+        after = Some((last[1].as_i64().unwrap(), last[0].as_str().unwrap().to_string()));
+        got.extend(page);
+    }
+    assert_eq!(got, all);
+    let sql = "SELECT id FROM queries WHERE n = 3 AND id > 'h' AND id <= 'hz' ORDER BY id LIMIT 5";
+    let plan = db.explain(sql, &none).unwrap();
+    assert!(plan.features.iter().any(|f| f == "keyword_ranges"), "{:?}", plan.features);
+    let again = Plan::from_json(&serde_json::from_str(&plan.to_json_text().unwrap()).unwrap()).unwrap();
+    let want = db.query(sql, &none).unwrap().rows;
+    assert_eq!(want.len(), 5);
+    match db.run(&again).unwrap() {
+        SqlResult::Rows(r) => assert_eq!(r.rows, want),
+        SqlResult::Written(_) => panic!("a query"),
+    }
+    let e = Plan::readable_by(1, &["keyword_ranges"], &["prefix"]).unwrap_err().to_string();
+    assert!(e.contains("keyword_ranges"), "{e}");
+    assert!(!db.explain("SELECT id FROM queries WHERE id = 'h'", &none).unwrap().features.iter().any(|f| f == "keyword_ranges"));
+    let e = db.query("SELECT id FROM queries WHERE tags > 'h'", &none).unwrap_err().to_string();
+    assert!(e.contains("tags is a list of keywords"), "{e}");
 }
 
 fn want_len(docs: &[Document], f: impl Fn(&Document) -> bool) -> usize {

@@ -244,6 +244,23 @@ impl Lower<'_> {
             },
             Pred::In { field: f, values } => Expr::In { expr: field(*f), list: values.iter().map(|v| self.lit(*f, v)).collect() },
             Pred::Prefix { field: f, prefix, edits } => Expr::Prefix { expr: field(*f), prefix: Box::new(Expr::Lit(Value::Str(prefix.clone()))), edits: *edits },
+            // `f > lo AND f <= hi`: comparisons of a keyword with text,
+            // which a plan says it holds ([`super::KEYWORD_RANGES`]).
+            Pred::KeyRange { field: f, lo, hi } => {
+                let cmp = |op, v: &str| Expr::Cmp { op, left: field(*f), right: Box::new(Expr::Lit(Value::Str(v.to_string()))) };
+                let mut cs: Vec<Expr> = Vec::new();
+                if let Some((v, incl)) = lo {
+                    cs.push(cmp(if *incl { CmpOp::Ge } else { CmpOp::Gt }, v));
+                }
+                if let Some((v, incl)) = hi {
+                    cs.push(cmp(if *incl { CmpOp::Le } else { CmpOp::Lt }, v));
+                }
+                match cs.len() {
+                    0 => Expr::Not(Box::new(Expr::IsNull(field(*f)))),
+                    1 => cs.pop().expect("one"),
+                    _ => Expr::And(cs),
+                }
+            }
             Pred::Present { field: f } => Expr::Not(Box::new(Expr::IsNull(field(*f)))),
             Pred::Path { field: f, path, test } => path_expr(*f, path, test),
             Pred::Like { field: f, pattern, ci, negated } => {
