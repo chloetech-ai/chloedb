@@ -735,6 +735,13 @@ impl Mask {
         Mask { hide: Box::new(hide), built: Mutex::new(Default::default()) }
     }
 
+    /// Whether it hides the rows that `place` places (a table's
+    /// `shard_by` value, or else its key): a write by key reads this
+    /// rather than a masked snapshot.
+    pub fn hides(&self, schema: &Schema, place: &Value) -> bool {
+        (self.hide)(schema, place)
+    }
+
     /// The rows of `seg` (of table `table`) to hide, placed by field
     /// `place`; `None` when there are none.
     fn hidden(&self, table: u32, schema: &Schema, place: usize, seg: &SegmentView, pk: Option<&PkIndex>) -> Result<Option<Arc<crate::segment::DocSet>>> {

@@ -3,9 +3,10 @@
 //! here (`/app.json`, `/ui/view.js`) and sends the app's token with each
 //! call. Without `--public` every route but `/healthz` needs the token.
 //! With it the app also serves its page at `/` to anyone, and the page's
-//! reads without the token (and its one POST, a picture to search by, of
-//! at most a few megabytes): so many a minute from one address, and so
-//! many at once. Nothing runs SQL a reader writes.
+//! reads without the token (and its POSTs: a picture to search by, of at
+//! most a few megabytes, and a browser's own fire watches, each under the
+//! browser's random key): so many a minute from one address, and so many
+//! at once. Nothing runs SQL a reader writes.
 //!
 //! Every answer carries `queries`: the SQL it ran, each with its rows and
 //! time, which the page shows behind its "SQL" button.
@@ -52,6 +53,10 @@ pub struct Service {
     pub chips: Option<std::path::PathBuf>,
     /// Where the replays' pictures of the sky are (tools/frames.py).
     pub frames: Option<std::path::PathBuf>,
+    /// Fire watch's example, worked out once.
+    pub example: Mutex<Option<Value>>,
+    /// Each region's skies (ea_sky), read every two minutes.
+    pub sky: tokio::sync::RwLock<HashMap<&'static str, Arc<crate::sky::Mem>>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -114,6 +119,8 @@ pub async fn serve(o: Opts) -> Result<()> {
         layers: Mutex::new(HashMap::new()),
         chips: o.chips,
         frames: o.frames,
+        example: Mutex::new(None),
+        sky: tokio::sync::RwLock::new(HashMap::new()),
     });
     {
         let svc = svc.clone();
@@ -122,6 +129,9 @@ pub async fn serve(o: Opts) -> Result<()> {
             let mut read_at: Option<Instant> = None;
             let mut rules_at: Option<Instant> = None;
             let mut names_at: Option<Instant> = None;
+            let mut watch_at: Option<Instant> = None;
+            let mut watched: HashMap<&'static str, i64> = HashMap::new();
+            let mut sky_at: Option<Instant> = None;
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || svc.places.read().await.is_empty() {
                     match Places::read(&svc.db).await {
@@ -148,6 +158,35 @@ pub async fn serve(o: Opts) -> Result<()> {
                     match crate::names::run(&svc.db).await {
                         Ok(n) => tracing::info!(fires = n, "fires named"),
                         Err(e) => tracing::warn!(error = %e, "names"),
+                    }
+                }
+                // The skies, once the places are there.
+                if sky_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) && !svc.places.read().await.is_empty() {
+                    sky_at = Some(Instant::now());
+                    let places = svc.places.read().await.clone();
+                    for r in REGIONS {
+                        match crate::sky::read(&svc.db, &places, r).await {
+                            Ok(m) => {
+                                svc.sky.write().await.insert(r, Arc::new(m));
+                            }
+                            Err(e) => tracing::warn!(region = r, error = %e, "sky"),
+                        }
+                    }
+                }
+                // Fire watch: each region's new scans against the watches.
+                if run_rules && watch_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                    watch_at = Some(Instant::now());
+                    for r in REGIONS {
+                        let since = watched.get(r).copied().unwrap_or(0);
+                        match crate::watch::check(&svc.db, r, since).await {
+                            Ok((t, n)) => {
+                                watched.insert(r, t);
+                                if n > 0 {
+                                    tracing::info!(region = r, alerts = n, "fire watch");
+                                }
+                            }
+                            Err(e) => tracing::warn!(region = r, error = %e, "fire watch"),
+                        }
                     }
                 }
                 for r in REGIONS {
@@ -191,6 +230,12 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/find", get(find))
         .route("/v1/chip/:place/:year", get(chip))
         .route("/v1/frame/:replay/:n", get(frame))
+        .route("/v1/sky", get(sky_layer))
+        .route("/v1/sky/find", get(sky_find))
+        .route("/v1/watches", get(watches).post(watch_new))
+        .route("/v1/watches/example", get(watch_example))
+        .route("/v1/watches/feed/:key", get(watch_feed))
+        .route("/v1/watch/:id", get(watch_one).post(watch_change))
         .route("/v1/rules", get(rules_page))
         .route("/v1/data", get(data))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
@@ -221,7 +266,10 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
     if authed {
         return next.run(req).await;
     }
-    let reads = req.method() == Method::GET || (req.method() == Method::POST && req.uri().path() == "/v1/picture");
+    // The page's writes: a picture to search by, and a browser's own
+    // watches (each under its random key, so many and no more).
+    let path = req.uri().path();
+    let reads = req.method() == Method::GET || (req.method() == Method::POST && (path == "/v1/picture" || path == "/v1/watches" || path.starts_with("/v1/watch/")));
     if !(svc.public && reads) {
         return ApiError(StatusCode::UNAUTHORIZED, "this app needs its token: open it in ChloeDB's command center (Apps → Earth)".into()).into_response();
     }
@@ -676,6 +724,131 @@ async fn layer(State(svc): State<Shared>, headers: HeaderMap, Path(name): Path<S
         }
     };
     cached(&headers, (*body).clone(), "application/json", 600)
+}
+
+async fn sky_mem(svc: &Shared, region: &'static str) -> Result<Arc<crate::sky::Mem>, ApiError> {
+    if let Some(m) = svc.sky.read().await.get(region) {
+        return Ok(m.clone());
+    }
+    let places = svc.places.read().await.clone();
+    let m = Arc::new(crate::sky::read(&svc.db, &places, region).await?);
+    if !places.is_empty() {
+        svc.sky.write().await.insert(region, m.clone());
+    }
+    Ok(m)
+}
+
+/// Every place's sky now and its last 30 days, as the map draws it.
+async fn sky_layer(State(svc): State<Shared>, headers: HeaderMap, Query(a): Query<RegionParams>) -> Response {
+    let region = match region_of(if a.region.is_empty() { "california" } else { &a.region }) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    match sky_mem(&svc, region).await {
+        Ok(m) => cached(&headers, (*m.layer).clone(), "application/json", 60),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SkyFindParams {
+    #[serde(default)]
+    region: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    km: Option<f64>,
+    #[serde(default)]
+    want: String,
+    #[serde(default)]
+    q: String,
+}
+
+async fn sky_find(State(svc): State<Shared>, Query(a): Query<SkyFindParams>) -> Answer {
+    let t0 = Instant::now();
+    let at = a.lat.zip(a.lon).filter(|(la, lo)| la.is_finite() && lo.is_finite());
+    let region = match at.and_then(|(la, lo)| crate::watch::region_of(la, lo)) {
+        Some(r) => r,
+        None => region_of(if a.region.is_empty() { "california" } else { &a.region })?,
+    };
+    if a.q.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "what the place looks like, in at most 200 letters".into()));
+    }
+    let mem = sky_mem(&svc, region).await?;
+    ctx!(svc, trace, c);
+    let want = match a.want.as_str() {
+        "nights" | "days" => a.want.as_str(),
+        _ => "now",
+    };
+    let v = crate::sky::find(&c, &mem, crate::sky::Find { region, at, km: a.km.unwrap_or(50.0).clamp(5.0, 400.0), want, q: &a.q }).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WatcherParams {
+    #[serde(default)]
+    w: String,
+}
+
+async fn watches(State(svc): State<Shared>, Query(a): Query<WatcherParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::mine(&c, &a.w).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_new(State(svc): State<Shared>, Query(a): Query<WatcherParams>, Json(b): Json<crate::watch::NewWatch>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::create(&c, &a.w, b).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_one(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<WatcherParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::one(&c, &a.w, &id).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_change(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<WatcherParams>, Json(b): Json<crate::watch::Change>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::change(&c, &a.w, &id, b).await?;
+    done(&trace, v, t0)
+}
+
+/// The Park Fire's first 12 hours as three watches lived them: it never
+/// changes, so it is worked out once.
+async fn watch_example(State(svc): State<Shared>) -> Answer {
+    if let Some(v) = svc.example.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(Json(v));
+    }
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::example(&c).await?;
+    let Json(v) = done(&trace, v, t0)?;
+    if v["pixels"].as_array().is_some_and(|a| !a.is_empty()) && !c.places.is_empty() {
+        *svc.example.lock().unwrap_or_else(|e| e.into_inner()) = Some(v.clone());
+    }
+    Ok(Json(v))
+}
+
+/// A watcher's alerts as an Atom feed: the key in the address is all it
+/// needs, so a feed reader can follow it.
+async fn watch_feed(State(svc): State<Shared>, headers: HeaderMap, Path(key): Path<String>) -> Response {
+    let key = key.trim_end_matches(".xml").trim_end_matches(".atom").to_string();
+    if !crate::watch::key_ok(&key) {
+        return ApiError(StatusCode::NOT_FOUND, "no such feed".into()).into_response();
+    }
+    let rows = match svc.db.query("SELECT id, t, title, body, fire FROM ea_watch_alerts WHERE watcher = :w ORDER BY t DESC LIMIT 50", json!({"w": key})).await {
+        Ok(r) => r,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+    let host = headers.get("x-forwarded-host").or_else(|| headers.get(header::HOST)).and_then(|v| v.to_str().ok()).unwrap_or("earth.chloetech.ai");
+    let proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or(if host.starts_with("127.") || host.starts_with("localhost") { "http" } else { "https" });
+    let host: String = host.chars().filter(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(*c)).collect();
+    let body = crate::watch::atom(&format!("{proto}://{host}"), &key, &rows);
+    ([(header::CONTENT_TYPE, "application/atom+xml; charset=utf-8"), (header::CACHE_CONTROL, "max-age=60")], body).into_response()
 }
 
 async fn rules_page(State(svc): State<Shared>) -> Answer {

@@ -10,19 +10,22 @@ import { isProduction } from "../data.js";
 import { folded, firstMine, isMine } from "../owners.js";
 import { quoteName } from "../sqledit.js";
 import { tables, cached, table as tableOf, isStored, typeBadge, typeMeta, operators, lit, paths as listPaths, cachedPaths, pathFields, pathSql, PATH_TYPES } from "../catalog.js";
-import { grid, answerStats, exportMenu } from "../results.js";
+import { grid, answerStats, exportMenu, resultChart } from "../results.js";
 import { SERIES } from "../charts.js";
+import { saveView, getView } from "./views.js";
 
-export default { id: "builder", title: "Query builder", icon: "builder", group: "Labs", full: true, range: false, keywords: "visual query builder drag drop filter facet boost hybrid fusion rrf group no code", render, onParams };
+export default { id: "builder", title: "Query builder", icon: "builder", group: "Labs", full: true, range: false, keywords: "visual query builder drag drop filter facet boost hybrid fusion rrf group no code", render, onParams, shareParams: () => shareNow?.() || null };
+/** What the header's Share puts in its link: the team view on screen, else the table (GRACE-407). */
+let shareNow = null;
 
-let reopen = null;
-function onParams(r) { const t = r.params.get("table"); if (t && reopen) reopen(t); }
+let reopen = null, reopenView = null;
+function onParams(r) { const t = r.params.get("table"), v = r.params.get("view"); if (v && reopenView) reopenView(v); else if (t && reopen) reopen(t); }
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const isNum = (f) => f && (f.type === "int" || f.type === "float");
 const isTime = (f) => f && f.type === "timestamp";
 const searchable = (f) => f && (f.type === "text" || f.type === "json" && f.text) && f.indexed !== false;
-const groupable = (f) => f && (f.type === "keyword" || isNum(f)) && f.indexed !== false;
+const groupable = (f) => f && (f.type === "keyword" || isNum(f) || isTime(f)) && f.indexed !== false;
 const sortableField = (f) => f && (f.type === "keyword" || isNum(f) || isTime(f) || f.type === "bool") && !f.multi;
 const showable = (f) => f && f.type !== "vector" && f.type !== "sparse" && isStored(f);
 const filterable = (f) => operators(f).length > 0 && (f.type !== "text" || f.indexed !== false);
@@ -69,7 +72,16 @@ const STAGES = [
   { id: "order", title: "Order", icon: "up", hint: "Drop a field to sort by it." },
   { id: "output", title: "Show", icon: "eye", hint: "Drop fields to show them; with none, every column." },
 ];
-const MEASURES = [["count", "COUNT(*)"], ["distinct", "COUNT(DISTINCT …)"], ["sum", "SUM"], ["avg", "AVG"], ["min", "MIN"], ["max", "MAX"]];
+const MEASURES = [["count", "COUNT(*)"], ["share", "share of rows (%)"], ["distinct", "COUNT(DISTINCT …)"], ["sum", "SUM"], ["avg", "AVG"], ["median", "MEDIAN"], ["min", "MIN"], ["max", "MAX"]];
+/** The measures of a number, which also take the hours between two times. */
+const OF_NUMBER = new Set(["sum", "avg", "median", "min", "max"]);
+/** How a time is grouped: by its day, week (from Monday) or month. */
+export const BINS = [["day", "day"], ["week", "week"], ["month", "month"]];
+/**
+ * A measure's field that is the hours from one time to another
+ * ("hours:created_at:solved_at"), as {from, to}, or null.
+ */
+export const hoursOf = (name) => { const m = /^hours:([^:]+):([^:]+)$/.exec(String(name || "")); return m ? { from: m[1], to: m[2] } : null; };
 
 const blank = (table) => ({ table, signals: [], fusion: "weighted", filters: [], any: false, boosts: [], group: null, sort: null, columns: [], score: true, limit: 20 });
 
@@ -84,11 +96,30 @@ function value(f, v) {
   return lit(v);
 }
 
+/** The values of a list ("open, new"), each once. */
+const splitValues = (v) => [...new Set(String(v ?? "").split(",").map((x) => x.trim()).filter(Boolean))];
+
+/**
+ * A filter's operator changed to `op`, its values carried over as they
+ * read (GRACE-417): the picks of "is one of" stay a list under "is none
+ * of", and two or more picks under "is" or "is not" become "is one of" or
+ * "is none of", never the one value 'open, new' that matches every row.
+ * An operator that takes one value of another kind (starts with, has the
+ * words) starts empty when there were several.
+ */
+export function changeOp(c, op) {
+  const many = splitValues(c.value).length > 1;
+  if (many && (op === "=" || op === "!=")) op = op === "=" ? "in" : "notin";
+  else if (many && (op === "prefix" || op === "matches")) c.value = "";
+  c.op = op;
+  return c;
+}
+
 function condition(f, c) {
   const n = col(f);
   switch (c.op) {
     case "matches": if (!c.value) throw new Error(`${f.name} needs words`); return `MATCH(${n}, ${lit(c.value)})`;
-    case "in": { const vs = String(c.value || "").split(",").map((x) => x.trim()).filter(Boolean); if (!vs.length) throw new Error(`${f.name} needs values`); return `${n} IN (${vs.map((v) => value(f, v)).join(", ")})`; }
+    case "in": case "notin": { const vs = splitValues(c.value); if (!vs.length) throw new Error(`${f.name} needs values`); return `${n} ${c.op === "notin" ? "NOT IN" : "IN"} (${vs.map((v) => value(f, v)).join(", ")})`; }
     case "prefix": {
       // A path's prefix is LIKE 'p%', its wildcards escaped.
       if (!f.path) return `PREFIX(${n}, ${lit(c.value || "")})`;
@@ -178,15 +209,22 @@ export function toSql(st) {
 
   let sql;
   if (grouped) {
-    const by = st.group.by.map((n) => col(F(n)));
-    const ms = st.group.measures.map((m) => measureSql(m, F));
+    // A time is grouped by its day, week or month (date_trunc), named
+    // after both (created_at_week), and a grouping by time reads in time
+    // order unless sorted otherwise (GRACE-404).
+    const groups = st.group.by.map((n) => groupOf(F(n), st.group.bins?.[n]));
+    const by = groups.map((g) => g.sql);
+    const ms = st.group.measures.map((m) => measureSql(m, F, groups));
     if (!by.length && !ms.length) throw new Error("Group by a field or add a measure");
-    const cols = [...by, ...ms.map((m) => `${m.sql} AS ${m.alias}`)];
+    const cols = [...groups.map((g) => g.alias ? `${g.sql} AS ${g.alias}` : g.sql), ...ms.map((m) => `${m.sql} AS ${m.alias}`)];
     sql = `SELECT ${cols.join(", ")}\nFROM ${quoteName(t.table)}`;
     if (where.length) sql += `\nWHERE ${where.join("\n  AND ")}`;
     if (by.length) sql += `\nGROUP BY ${by.join(", ")}`;
     if (by.length && st.group.min > 1) sql += `\nHAVING COUNT(*) >= ${num(st.group.min)}`;
-    const order = st.sort && (st.group.by.includes(st.sort.field) || ms.some((m) => m.alias === st.sort.field)) ? `${st.group.by.includes(st.sort.field) ? col(F(st.sort.field)) : st.sort.field} ${st.sort.dir.toUpperCase()}` : ms.length ? `${ms[0].alias} DESC` : null;
+    const gi = st.sort ? st.group.by.indexOf(st.sort.field) : -1;
+    const timed = groups.filter((g) => g.bin);
+    const order = st.sort && (gi >= 0 || ms.some((m) => m.alias === st.sort.field)) ? `${gi >= 0 ? groups[gi].sql : st.sort.field} ${st.sort.dir.toUpperCase()}`
+      : timed.length ? [...timed, ...groups.filter((g) => !g.bin)].map((g) => g.sql).join(", ") : ms.length ? `${ms[0].alias} DESC` : null;
     if (order && by.length) sql += `\nORDER BY ${order}`;
     if (by.length) sql += `\nLIMIT ${num(st.limit || 20)}`;
   } else {
@@ -208,8 +246,31 @@ export function toSql(st) {
   return { sql: sql + ";", params, ranked: !!rank && !st.sort && !grouped, grouped, notes, count };
 }
 
-function measureSql(m, F) {
+/** A group's expression: the field, or a time's day, week or month: {sql, alias, bin}. */
+function groupOf(f, bin) {
+  if (!isTime(f)) return { field: f.name, sql: col(f), alias: null, bin: null };
+  const b = BINS.some(([k]) => k === bin) ? bin : "week";
+  return { field: f.name, sql: `date_trunc('${b}', ${col(f)})`, alias: quoteName(`${f.name}_${b}`), bin: b };
+}
+
+/**
+ * A measure as SQL: {sql, alias}. MEDIAN is the middle value; the hours
+ * between two times are date_diff's minutes over 60, so 34.8 hours is not
+ * rounded to 35; a share is each group's rows as a percentage of all the
+ * rows the filters keep, or of its group of the first field (`within`), a
+ * window over the groups (GRACE-404).
+ */
+function measureSql(m, F, groups = []) {
   if (m.fn === "count") return { sql: "COUNT(*)", alias: "n" };
+  if (m.fn === "share") {
+    const w = m.within ? groups.find((g) => g.field === m.within) : null;
+    return { sql: `ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (${w ? `PARTITION BY ${w.sql}` : ""}), 1)`, alias: w ? `pct_of_${w.field}`.replace(/\W/g, "_") : "pct" };
+  }
+  const hrs = hoursOf(m.field);
+  if (hrs && OF_NUMBER.has(m.fn)) {
+    const a = F(hrs.from), b = F(hrs.to);
+    return { sql: `${m.fn.toUpperCase()}(date_diff('minute', ${col(a)}, ${col(b)}) / 60.0)`, alias: `${m.fn}_hours_to_${b.name}`.replace(/\W/g, "_") };
+  }
   const f = F(m.field);
   const n = col(f);
   const alias = `${m.fn === "distinct" ? "distinct" : m.fn}_${f.name}`.replace(/\W/g, "_");
@@ -226,6 +287,9 @@ function render(page, r) {
   const liveDefault = () => isProduction() ? false : store.get("builder.live", true);
   let live = liveDefault(), liveTouched = false;
   let last = null, counts = {}, running = null;
+  // How the answer shows (a table or a chart) and the chart's choices: a
+  // view saved from here keeps them.
+  let shownAs = store.get("builder.shown", "table"), chartCfg = null, viewId = r.params.get("view") || null;
   const stats = new Map();      // "table.field" -> {min, max, avg} or {top: [[v, n]]}
   const totals = new Map();     // table -> rows
 
@@ -250,7 +314,7 @@ function render(page, r) {
           h("button", { class: "btn sm ghost", title: "Copy the SQL", onclick: () => last?.q && copy(last.q.sql, "SQL copied") }, icon("copy"), "Copy"),
           h("button", { class: "btn sm", title: "Open this query in the SQL workbench", onclick: openInWorkbench }, icon("sql"), "Edit as SQL"))),
       h("div", { class: "bd" }, sqlBox, notesBox),
-      h("div", { class: "ft" }, runBtn, liveLabel, h("span", { class: "sep" }), h("button", { class: "btn sm ghost", title: "Start again on this table", onclick: () => { st = blank(st.table); changed(); } }, icon("refresh"), "Clear"))),
+      h("div", { class: "ft" }, runBtn, liveLabel, h("span", { class: "sep" }), h("button", { class: "btn sm", title: "Keep it on the server for the team: a link opens it, on a phone too", onclick: () => saveAsView() }, icon("eye"), "Save as a view"), h("button", { class: "btn sm ghost", title: "Start again on this table", onclick: () => { st = blank(st.table); changed(); } }, icon("refresh"), "Clear"))),
     out);
   page.append(h("div", { class: "bld" }, palette, h("div", { class: "bld-canvas" }, flow), right));
 
@@ -291,13 +355,24 @@ function render(page, r) {
   // ------------------------------------------------------------ adding
   const first = (pred) => (tableOf(st.table)?.short?.fields || []).find(pred);
   function addBlock(kind) {
-    const pick = { words: searchable, meaning: (f) => f.type === "vector", filter: filterable, closeness: (f) => isTime(f) || isNum(f), number: isNum, group: groupable, measure: isNum, sort: sortableField, column: (f) => showable(f) && !st.columns.includes(f.name) }[kind];
+    // A group or a measure of the key counts or sums ticket numbers: the
+    // next field is taken (a measure with none counts the rows).
+    const key = tableOf(st.table)?.short?.key;
+    const pick = { words: searchable, meaning: (f) => f.type === "vector", filter: filterable, closeness: (f) => isTime(f) || isNum(f), number: isNum, group: (f) => groupable(f) && f.name !== key, measure: (f) => isNum(f) && f.name !== key, sort: sortableField, column: (f) => showable(f) && !st.columns.includes(f.name) }[kind];
     const f = first(pick);
     if (!f && kind !== "measure") { toast(`${st.table} has no field for ${BLOCKS.find((b) => b.kind === kind).label.toLowerCase()}`); return; }
     if (kind === "measure") { ensureGroup().measures.push({ id: uid(), fn: f ? "avg" : "count", field: f?.name }); return changed(); }
     addField(BLOCKS.find((b) => b.kind === kind).stage, f.name, kind);
   }
-  function ensureGroup() { return (st.group ||= { by: [], measures: [{ id: uid(), fn: "count" }], min: 0 }); }
+  function ensureGroup() { const g = (st.group ||= { by: [], measures: [{ id: uid(), fn: "count" }], min: 0 }); g.bins ||= {}; return g; }
+  /** Groups by a time's day, week or month: a series, so the limit grows to hold a year of weeks by a few values. */
+  function groupByTime(name, bin) {
+    const g = ensureGroup();
+    if (!g.by.includes(name)) g.by.push(name);
+    g.bins[name] = bin;
+    if ((st.limit || 20) < 1000) st.limit = 1000;
+    changed();
+  }
   function addField(stage, name, kind) {
     const f = field(name);
     if (stage === "find") st.signals.push(f.type === "vector" ? { id: uid(), kind: "meaning", field: name, text: "", w: 1 } : { id: uid(), kind: "words", field: name, text: "", must: false, fuzzy: false, w: 1 });
@@ -307,6 +382,7 @@ function render(page, r) {
       else st.boosts.push({ id: uid(), kind: "number", field: name, w: 0.1 });
     } else if (stage === "group") {
       const g = ensureGroup();
+      if (isTime(f) && kind !== "measure") { groupByTime(name, g.bins[name] || "week"); return; }
       if (groupable(f) && kind !== "measure" && !g.by.includes(name)) g.by.push(name);
       else if (isNum(f)) g.measures.push({ id: uid(), fn: "avg", field: name });
     } else if (stage === "order") st.sort = { field: name, dir: isNum(f) || isTime(f) ? "desc" : "asc" };
@@ -324,6 +400,8 @@ function render(page, r) {
   function useTable(name) {
     if (name === st.table) return;
     store.set(`builder.state.${st.table}`, st);
+    // Another table is another query: no longer the team view opened.
+    viewId = null; viewName = null;
     st = store.get(`builder.state.${name}`, null) || starter(tableOf(name));
     last = null; clear(out);
     drawPalette(); changed(); loadTotal();
@@ -405,7 +483,8 @@ function render(page, r) {
     if (f.type === "vector") items.push({ label: "Search by meaning", icon: "sparkle", onclick: () => addField("find", f.name) });
     if (filterable(f)) items.push({ label: "Filter on it", icon: "filter", onclick: () => addField("filter", f.name) });
     if (isNum(f) || isTime(f)) items.push({ label: isTime(f) ? "Boost the newest" : "Boost by it", icon: "bolt", onclick: () => addField("boost", f.name) });
-    if (groupable(f)) items.push({ label: "Group by it", icon: "layers", onclick: () => addField("group", f.name) });
+    if (isTime(f)) for (const [b, label] of BINS) items.push({ label: `Group by ${label}`, icon: "layers", onclick: () => groupByTime(f.name, b) });
+    else if (groupable(f)) items.push({ label: "Group by it", icon: "layers", onclick: () => addField("group", f.name) });
     if (isNum(f)) items.push({ label: "Measure it", icon: "perf", onclick: () => { ensureGroup().measures.push({ id: uid(), fn: "avg", field: f.name }); changed(); } });
     if (sortableField(f)) items.push({ label: "Sort by it", icon: "up", onclick: () => addField("order", f.name) });
     if (showable(f)) items.push({ label: "Show it", icon: "eye", onclick: () => addField("output", f.name) });
@@ -488,6 +567,18 @@ function render(page, r) {
   };
   const rm = (list, it) => h("button", { class: "btn ghost icon sm x", title: "Remove", onclick: () => { list.splice(list.indexOf(it), 1); changed(); } }, icon("x"));
 
+  /**
+   * What a sum, mean, median, least or most is of: each number, then the
+   * hours from each time to each later field of a time (created_at to
+   * solved_at): [[value, label]].
+   */
+  function numberOptions() {
+    const fs = tableOf(st.table)?.short?.fields || [];
+    const key = tableOf(st.table)?.short?.key;
+    const times = fs.filter(isTime);
+    return [...fs.filter((f) => isNum(f) && f.name !== key).map((f) => [f.name, `${typeMeta(f).glyph}  ${f.name}`]),
+      ...times.flatMap((a, i) => times.slice(i + 1).map((b) => [`hours:${a.name}:${b.name}`, `hours from ${a.name} to ${b.name}`]))];
+  }
   function stageBody(id, q) {
     const t = tableOf(st.table);
     if (id === "source") return t ? [h("div", { class: "item src", draggable: "false" }, icon("table"), h("b", {}, t.table), h("span", { class: "small muted" }, `${fmt.plural((t.short?.fields || []).length, "field")} · key ${t.short?.key || "none"}`), totals.has(t.table) ? h("span", { class: "badge" }, fmt.plural(totals.get(t.table), "row")) : null)] : [];
@@ -531,10 +622,15 @@ function render(page, r) {
       if (!st.group) return [];
       const g = st.group;
       return [
-        h("div", { class: "row" }, h("span", { class: "small dim" }, "one row per"), g.by.length ? g.by.map((n) => h("span", { class: "chip on", title: "Remove" }, typeBadge(field(n) || { type: "keyword" }), n, h("span", { class: "x", onclick: () => { g.by.splice(g.by.indexOf(n), 1); changed(); } }, "×"))) : h("span", { class: "small muted" }, "nothing: one row of totals")),
+        h("div", { class: "row" }, h("span", { class: "small dim" }, "one row per"), g.by.length ? g.by.map((n) => h("span", { class: "chip on", title: "Remove" }, typeBadge(field(n) || { type: "keyword" }), n,
+          isTime(field(n)) ? h("select", { class: "select xs", "aria-label": `Group ${n} by`, title: "Each day, each week (from Monday) or each month", onclick: (e) => e.stopPropagation(), onchange: (e) => { g.bins = { ...g.bins, [n]: e.target.value }; changed(); } }, BINS.map(([b, l]) => h("option", { value: b, selected: (g.bins?.[n] || "week") === b }, l))) : null,
+          h("span", { class: "x", onclick: () => { g.by.splice(g.by.indexOf(n), 1); changed(); } }, "×"))) : h("span", { class: "small muted" }, "nothing: one row of totals")),
         ...g.measures.map((m) => h("div", { class: "item" }, h("div", { class: "row nw" }, h("span", { class: "kind" }, icon("perf"), "Measure"),
-          h("select", { class: "select sm", onchange: (e) => { m.fn = e.target.value; if (m.fn !== "count" && !m.field) m.field = first(m.fn === "sum" || m.fn === "avg" ? isNum : groupable)?.name; changed(); } }, MEASURES.map(([v, l]) => h("option", { value: v, selected: v === m.fn }, l))),
-          m.fn === "count" ? h("span", { class: "small muted" }, "the rows") : fieldSel(m.field, m.fn === "sum" || m.fn === "avg" ? isNum : (x) => groupable(x) || isNum(x), (v) => { m.field = v; changed(); }),
+          h("select", { class: "select sm", onchange: (e) => { m.fn = e.target.value; if (OF_NUMBER.has(m.fn) && !(numberOptions().some(([v]) => v === m.field))) m.field = numberOptions()[0]?.[0]; else if (m.fn === "distinct" && !groupable(field(m.field))) m.field = first(groupable)?.name; changed(); } }, MEASURES.map(([v, l]) => h("option", { value: v, selected: v === m.fn }, l))),
+          m.fn === "count" ? h("span", { class: "small muted" }, "the rows")
+            : m.fn === "share" ? h("select", { class: "select sm", "aria-label": "A share of", onchange: (e) => { m.within = e.target.value || null; changed(); } }, h("option", { value: "", selected: !m.within }, "of all the rows"), g.by.length > 1 ? g.by.map((n) => h("option", { value: n, selected: m.within === n }, `within each ${n}`)) : null)
+            : OF_NUMBER.has(m.fn) ? h("select", { class: "select sm", "aria-label": "Of", onchange: (e) => { m.field = e.target.value; changed(); } }, numberOptions().map(([v, l]) => h("option", { value: v, selected: v === m.field }, l)))
+            : fieldSel(m.field, (x) => groupable(x) || isNum(x), (v) => { m.field = v; changed(); }),
           h("span", { class: "sep" }), rm(g.measures, m)))),
         g.by.length ? h("div", { class: "row small dim" }, "keep groups of at least", numIn(g, "min", { min: 0, step: 1, w: "70px", ph: "1" }), "rows") : null];
     }
@@ -546,7 +642,7 @@ function render(page, r) {
             : fieldSel(st.sort.field, sortableField, (v) => { st.sort.field = v; changed(); }),
           seg([["asc", "low to high"], ["desc", "high to low"]], st.sort.dir, (v) => { st.sort.dir = v; changed(); }),
           h("span", { class: "sep" }), h("button", { class: "btn ghost icon sm x", title: "Back to the score", onclick: () => { st.sort = null; changed(); } }, icon("x")))));
-      } else items.push(h("div", { class: "row small dim" }, icon(q?.ranked ? "sparkle" : "info"), q?.ranked ? "Best first by the score above." : q?.grouped ? "The largest groups first." : "In the table's order.",
+      } else items.push(h("div", { class: "row small dim" }, icon(q?.ranked ? "sparkle" : "info"), q?.ranked ? "Best first by the score above." : q?.grouped ? (st.group.by.some((n) => isTime(field(n))) ? "In time order." : "The largest groups first.") : "In the table's order.",
         h("button", { class: "btn sm ghost", onclick: () => addBlock("sort") }, "sort by a column")));
       items.push(h("div", { class: "row small dim" }, "at most", numIn(st, "limit", { min: 1, step: 1, w: "80px" }), q?.grouped ? "groups" : "rows"));
       return items;
@@ -584,7 +680,7 @@ function render(page, r) {
       const el = h("input", { class: "input sm" + (isNum(f) ? " num" : ""), type, step: "any", value: c[key] ?? "", placeholder: ph, style: { width: isNum(f) ? "100px" : isTime(f) ? "150px" : "auto" }, oninput: () => { c[key] = el.value; changed(false); syncRange(); } });
       return el;
     };
-    const a = needs ? inp("value", c.op === "in" ? "a, b, c" : c.op === "matches" ? "words" : isNum(f) && s ? `${fmt.n(s.min)} – ${fmt.n(s.max)}` : "value") : null;
+    const a = needs ? inp("value", c.op === "in" || c.op === "notin" ? "a, b, c" : c.op === "matches" ? "words" : isNum(f) && s ? `${fmt.n(s.min)} – ${fmt.n(s.max)}` : "value") : null;
     const b = c.op === "between" ? inp("value2", "and") : null;
     let range = null;
     const syncRange = () => { if (range && c.value !== "") range.value = c.value; };
@@ -592,8 +688,8 @@ function render(page, r) {
       const step = f.type === "int" ? 1 : Math.max((s.max - s.min) / 200, 1e-6);
       range = h("input", { type: "range", min: s.min, max: s.max, step, value: c.value === "" ? s.min : c.value, style: { width: "120px" }, title: `${fmt.n(s.min)} to ${fmt.n(s.max)}`, oninput: (e) => { c.value = f.type === "int" ? Number(e.target.value) : Number(round(Number(e.target.value), 2)); a.value = c.value; changed(false); } });
     }
-    const top = needs && f.type === "keyword" && s?.top && ["=", "!=", "in"].includes(c.op) ? h("div", { class: "row vals" }, s.top.map(([v, n]) => h("button", { class: "chip", "aria-pressed": String(String(c.value).split(",").map((x) => x.trim()).includes(String(v))), title: `${fmt.n(n)} rows`, onclick: () => {
-      if (c.op === "in") { const vs = String(c.value || "").split(",").map((x) => x.trim()).filter(Boolean); const i = vs.indexOf(String(v)); if (i >= 0) vs.splice(i, 1); else vs.push(String(v)); c.value = vs.join(", "); }
+    const top = needs && f.type === "keyword" && s?.top && ["=", "!=", "in", "notin"].includes(c.op) ? h("div", { class: "row vals" }, s.top.map(([v, n]) => h("button", { class: "chip", "aria-pressed": String(String(c.value).split(",").map((x) => x.trim()).includes(String(v))), title: `${fmt.n(n)} rows`, onclick: () => {
+      if (c.op === "in" || c.op === "notin") { const vs = splitValues(c.value); const i = vs.indexOf(String(v)); if (i >= 0) vs.splice(i, 1); else vs.push(String(v)); c.value = vs.join(", "); }
       else c.value = String(v);
       changed();
     } }, String(v), h("span", { class: "muted" }, fmt.si(n))))) : null;
@@ -601,7 +697,7 @@ function render(page, r) {
     return h("div", { class: "item" },
       h("div", { class: "row nw" }, h("span", { class: "kind" }, icon("filter"), "Where"),
         fieldSel(c.field, filterable, (v) => { c.field = v; const nf = field(v); if (!operators(nf).some(([o]) => o === c.op)) c.op = operators(nf)[0][0]; c.value = ""; c.value2 = ""; loadStats(nf); changed(); }),
-        h("select", { class: "select sm", onchange: (e) => { c.op = e.target.value; changed(); } }, ops.map(([v, l]) => h("option", { value: v, selected: v === c.op }, l))),
+        h("select", { class: "select sm", onchange: (e) => { changeOp(c, e.target.value); changed(); } }, ops.map(([v, l]) => h("option", { value: v, selected: v === c.op }, l))),
         a, b ? h("span", { class: "small dim" }, "and") : null, b, range, h("span", { class: "sep" }), rm(st.filters, c)),
       top);
   }
@@ -634,10 +730,7 @@ function render(page, r) {
       const [j, matched] = await Promise.all([api("/v1/query", { body: { sql: q.sql, params: q.params }, signal: mine.signal }), counted]);
       if (mine !== running) return;
       last = { ...last, j, matched, ran: q.sql };
-      clear(out, h("section", { class: "card" },
-        h("div", { class: "hd" }, h("h3", {}, "Answer"), h("div", { class: "tools" }, j.rows?.length ? exportMenu(j, `chloedb-${st.table}`) : null)),
-        h("div", { class: "bd", style: { paddingBottom: "4px" } }, answerStats(j, { matched })),
-        h("div", { class: "bd flush" }, j.rows?.length ? h("div", { class: "tbl-wrap" }, grid(j, { max: 200 })) : empty("search", "No rows", "Loosen a filter, or try other words."))));
+      drawAnswer();
       drawConns();
     } catch (e) {
       if (e.name === "AbortError") return;
@@ -646,6 +739,41 @@ function render(page, r) {
       drawConns();
     } finally { if (mine === running) { out.classList.remove("loading"); running = null; } }
   }
+  /** The answer, as a table or a chart (a line per value of a column, GRACE-406). */
+  function drawAnswer() {
+    const j = last?.j;
+    if (!j) return;
+    const n = j.rows?.length || 0;
+    const view = h("div", { class: shownAs === "chart" ? "bd" : "bd flush" });
+    if (!n) clear(view, empty("search", "No rows", "Loosen a filter, or try other words."));
+    else if (shownAs === "chart") clear(view, resultChart(j, { init: chartCfg, onChange: (c) => { chartCfg = c; } }));
+    else clear(view, h("div", { class: "tbl-wrap" }, grid(j, { max: 1000 })));
+    clear(out, h("section", { class: "card" },
+      h("div", { class: "hd" }, h("h3", {}, "Answer"), h("div", { class: "tools" }, n ? seg([["table", "Table"], ["chart", "Chart"]], shownAs, (v) => { shownAs = v; store.set("builder.shown", v); drawAnswer(); }, { "aria-label": "Show as" }) : null, n ? exportMenu(j, `chloedb-${st.table}`) : null)),
+      h("div", { class: "bd", style: { paddingBottom: "4px" } }, answerStats(j, { matched: last.matched })),
+      view));
+  }
+  /** Keeps this query on the server for the team (GRACE-407): its SQL, its state here, its chart. */
+  async function saveAsView() {
+    const q = last?.q;
+    if (!q) { toast("Build a query first"); return; }
+    const id = await saveView({ kind: "builder", sql: q.sql, params: q.params, chart: shownAs === "chart" ? chartCfg : null, state: st }, { suggested: viewName || "" });
+    if (id) { viewId = id; history.replaceState(null, "", `#/builder?view=${encodeURIComponent(id)}`); }
+  }
+  let viewName = null;
+  /** Opens a team view of the builder: its state, its chart. */
+  async function openView(id) {
+    let v;
+    try { v = await getView(id); } catch (e) { toast(e.message, "bad"); return; }
+    if (!v?.state || !tableOf(v.state.table)) { toast(v ? `${v.name} was not built here, or its table is gone: it opens in Team views` : `No view ${id}`, "bad"); return; }
+    st = v.state; viewId = v.id; viewName = v.name;
+    chartCfg = v.chart; shownAs = v.chart ? "chart" : "table";
+    last = null; clear(out);
+    drawPalette(); changed(); loadTotal(); run(true);
+    for (const c of st.filters) { const f = field(c.field); if (f) loadStats(f); }
+  }
+  reopenView = (id) => openView(id);
+  shareNow = () => (viewId ? { view: viewId } : st?.table ? { table: st.table } : null);
   function openInWorkbench() {
     const q = last?.q;
     if (!q) return;
@@ -661,10 +789,12 @@ function render(page, r) {
     if (want && tableOf(want)) st = store.get(`builder.state.${tableOf(want).table}`, null) || starter(tableOf(want));
     if (!st || !tableOf(st.table)) st = starter(firstMine(ts));
     drawPalette(); changed();
+    // A team view's link (#/builder?view=monday_numbers) opens its state.
+    if (viewId) openView(viewId);
     loadTotal();
     for (const c of st.filters) { const f = field(c.field); if (f) loadStats(f); }
   }).catch((e) => clear(flow, failure(e, "The tables")));
-  return () => { reopen = null; offs.forEach((f) => f?.()); running?.abort(); removeEventListener("dragend", endDrag); if (st) store.set(`builder.state.${st.table}`, st); };
+  return () => { reopen = null; reopenView = null; shareNow = null; offs.forEach((f) => f?.()); running?.abort(); removeEventListener("dragend", endDrag); if (st) store.set(`builder.state.${st.table}`, st); };
 
   /** A first query on a table: its words, its key and two fields to show. */
   function starter(t) {

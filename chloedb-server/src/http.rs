@@ -95,6 +95,7 @@
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, the other coordinators' stores too, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone; with `"partial": true`, in the form another coordinator merges) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster?brief=1`, `/v1/routes` | | the process and its limits; the cluster's copies (`brief=1`: without each copy's `detail`); requests by route and queries by kind |
+//! | `GET /v1/cluster/route` | | on a coordinator, for clients that write straight to each shard's primary: `{epoch, map, shards: [{shard, primary, primary_http}], moving}` (a write key) |
 //! | `GET /v1/cluster/slots?all=1` | | on a coordinator, what it routed to each slot ([`crate::coord::heat`]): per shard and over the last 1, 5 and 15 minutes, keyed reads and writes a second and requests sent to every shard, the slots most counted, and whether a shard is hot over a range of its slots or because of one (`all=1`: every slot counted since it started; `window=1m`, `5m` or `15m`: every slot counted in that window) |
 //! | `GET /v1/admin/slots/keys` | | on a coordinator started with `--slot-heat-keys`, the keys sampled as routed most, with their slot and shard |
 //! | `GET /v1/coordinators?window=1` | | `{coordinators: [{url, name, this, last_seen_ms, version}], gone, live_ms}`: this cluster's coordinators, from what the shards heard ([`crate::peers`]); `window=1` adds this one's last minute and 5 minutes of searches |
@@ -433,6 +434,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
         .route("/v1/cluster/slots", get(cluster_slots))
+        .route("/v1/cluster/route", get(cluster_route))
         .route("/v1/admin/slots/keys", get(admin_slot_keys))
         // Apps: their list, and requests forwarded to them (crate::apps).
         .route("/v1/apps", get(apps_list))
@@ -1317,7 +1319,7 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     match route {
         // All a feed key may read: the feed, and whether it is up.
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
-        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
+        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" | "/v1/cluster/route" => Scope::Write,
         // connectors: a system's push, written with its own key.
         "/v1/connectors/:name/push" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
@@ -6258,6 +6260,12 @@ async fn cluster_slots(State(app): State<App>, Query(q): Params) -> Res {
         }
     }
     Ok(AxJson(app.svc.coordinator()?.slot_heat(all, window)))
+}
+
+/// `GET /v1/cluster/route`: the slot map and each shard's primary, for a
+/// client that writes straight to the primaries ([`crate::coord::Coordinator::route`]).
+async fn cluster_route(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.coordinator()?.route().await?))
 }
 
 /// `GET /v1/admin/slots/keys`: the keys sampled as routed most, which

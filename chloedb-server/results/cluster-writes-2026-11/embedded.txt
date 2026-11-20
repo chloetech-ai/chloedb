@@ -1,0 +1,48 @@
+# Embedded runs on the DO client box (g-8vcpu-32gb, Xeon Platinum 8280 @ 2.70GHz, 8 vCPUs, sfo3), 19 Nov 2026 9:20-9:55 PM PST.
+# Python 3.13.5, SQLite 3.46.1. 'branch' is claude/project-thread-2lw90z built with --profile ci.
+
+## a1_updates.py, 4 s a cell, final branch build (two rounds, SQLite between), then 0.3.8 from PyPI
+strata branch  price 7867/s p50 0.118 ms  counter 8978/s p50 0.108 ms  counted_right True
+sqlite-full    price 6643/s p50 0.111 ms  counter 10886/s p50 0.078 ms counted_right True
+strata branch  price 8531/s p50 0.114 ms  counter 8498/s p50 0.109 ms  counted_right True
+sqlite-full    price 6771/s p50 0.106 ms  counter 13238/s p50 0.070 ms counted_right True
+strata 0.3.8   price 3500/s p50 0.278 ms  counter 3782/s p50 0.258 ms  counted_right True
+
+## a1_add_op.py (branch): counter + 1 by db.write's add
+{"write_add_per_s": 15686.62274968612, "p50_ms": 0.05833600062032929, "n": 62001, "count": 62001}
+
+## a1_sustained.py, 150 s each
+branch {"system": "strata", "rows": 6714000, "seconds": 150.0, "rows_per_s": 44760, "windows_15s": [48724, 45808, 45392, 45032, 45828, 45594, 44491, 43324, 40374], "counted": true, "bytes": 2126417972}
+0.3.8  {"system": "strata", "rows": 6800000, "seconds": 150.0, "rows_per_s": 45330, "windows_15s": [49990, 46799, 46585, 45555, 45351, 44716, 45598, 44196, 40189], "counted": true, "bytes": 2125639732}
+{"system": "sqlite-full", "rows": 2566000, "seconds": 150.0, "rows_per_s": 17104, "windows_15s": [25256, 17709, 16896, 16105, 15882, 15793, 15983, 15854, 15672], "counted": true, "bytes": 1016648016}
+
+## chloedb/examples/update_paths.rs (branch, x86-64-v3 build), 137,260 rows, 3 s a cell, sync on
+137260 rows loaded; sync true
+sql update price             31408 txns,    10481 a second (mean), p50   0.090 ms, p99   0.159
+prepare_write only          379080 txns,   127679 a second (mean), p50   0.008 ms, p99   0.016
+write_prepared only          43719 txns,    14591 a second (mean), p50   0.065 ms, p99   0.118
+sql counter + 1              34279 txns,    11441 a second (mean), p50   0.083 ms, p99   0.166
+ops set price                45362 txns,    15140 a second (mean), p50   0.059 ms, p99   0.105
+ops add counter              50823 txns,    16966 a second (mean), p50   0.055 ms, p99   0.115
+sql insert                   17479 txns,     5831 a second (mean), p50   0.167 ms, p99   0.265
+sql delete by id             12962 txns,     4323 a second (mean), p50   0.223 ms, p99   0.352
+sql update price             27825 txns,     9284 a second (mean), p50   0.098 ms, p99   0.159
+prepare_write only          383940 txns,   129256 a second (mean), p50   0.007 ms, p99   0.016
+write_prepared only          43887 txns,    14647 a second (mean), p50   0.065 ms, p99   0.121
+sql counter + 1              36655 txns,    12233 a second (mean), p50   0.076 ms, p99   0.140
+ops set price                46156 txns,    15406 a second (mean), p50   0.056 ms, p99   0.103
+ops add counter              54736 txns,    18275 a second (mean), p50   0.052 ms, p99   0.093
+sql insert                   15545 txns,     5185 a second (mean), p50   0.183 ms, p99   0.296
+sql delete by id             10583 txns,     3530 a second (mean), p50   0.288 ms, p99   0.404
+p7 rating_count [[Int(177293)]]
+
+## the same, ONLY=counter, sync off then on
+sql counter + 1  107069 txns, 53749 a second (mean), p50 0.018 ms   (no sync)
+ops add counter  562624 txns, 288389 a second (mean), p50 0.003 ms  (no sync)
+sql counter + 1   24915 txns, 12475 a second (mean), p50 0.071 ms   (sync)
+ops add counter   34649 txns, 17351 a second (mean), p50 0.055 ms   (sync)
+
+## the disk: 150-byte appends over zeros written ahead, each fdatasync'd (dsync.py)
+ahead zeros, synced with first commit    p50     50 us  mean     52 us
+ahead zeros, then a sync of their own    p50     47 us  mean     50 us
+append, no zeros                         p50    139 us  mean    151 us

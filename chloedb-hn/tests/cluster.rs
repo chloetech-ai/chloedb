@@ -114,7 +114,7 @@ impl App {
             .arg(bin)
             .arg("--rows")
             .arg(rows)
-            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=hn_stories"])
+            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=hn_stories", "--explore-share", "1", "--explore-top", "3"])
             .args(["--model", "potion-base-8M", "--comment-model", "none"])
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -162,6 +162,12 @@ async fn get(http: &reqwest::Client, app: &App, path: &str, q: &[(&str, &str)]) 
     let body = r.text().await.unwrap();
     assert!(status.is_success(), "{path} {q:?}: {status} {body}");
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("{path}: {e}: {body}"))
+}
+
+async fn exp_post(http: &reqwest::Client, app: &App, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+    let r = http.post(format!("{}{path}", app.url)).bearer_auth(EXP_TOKEN).json(&body).send().await.unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(Value::Null))
 }
 
 async fn search(http: &reqwest::Client, app: &App, q: &str) -> Value {
@@ -337,6 +343,90 @@ async fn searches_questions_and_completions() {
     assert!(it["text"].as_str().unwrap().contains("borrow checker"), "its comments too: {it}");
     let sm: Value = exp("/v1/experiment/sample?n=10&seed=1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
     assert!(sm["rows"].as_array().unwrap().len() >= 5, "{sm}");
+
+    // Exploring: the page's search is logged with its top shuffled, a
+    // story opened from it is kept, and the log reads them back; an API
+    // search (no log=1) is not logged.
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert_eq!(d["log"]["policy"]["policy"], "epsilon", "{d}");
+    let plain = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story")]).await;
+    assert!(plain["log"].is_null(), "{plain}");
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1")]).await;
+    let req = page["log"]["request"].as_str().expect("a logged request").to_string();
+    let first = page["stories"][0]["id"].as_i64().unwrap();
+    let c = get(&http, &app, "/v1/click", &[("r", &req), ("id", &first.to_string())]).await;
+    assert_eq!(c["kept"], true, "{c}");
+    let c = get(&http, &app, "/v1/click", &[("r", "made-up"), ("id", "1")]).await;
+    assert_eq!(c["kept"], false, "{c}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let l: Value = exp("/v1/experiment/log?since=0").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+        let r = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
+        if r.len() == 1 && r[0]["clicks"] == json!([first]) {
+            assert_eq!(r[0]["request"], json!(req));
+            assert_eq!(r[0]["explored"], true, "{l}");
+            let mut ranked: Vec<i64> = r[0]["ranked"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
+            let mut shown: Vec<i64> = r[0]["shown"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
+            assert_eq!(shown[0], first, "{l}");
+            ranked.sort();
+            shown.sort();
+            assert_eq!(ranked, shown, "shown is the ranked top reordered: {l}");
+            break;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the log and its click: {l}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // Interleaving: a test of two arms on every logged search; the page
+    // shows both arms' stories drafted into one list, a click on one is
+    // kept, and the test's log reads them back with each story's team.
+    let post = |path: &'static str, body: Value| exp_post(&http, &app, path, body);
+    let (st, v) = post("/v1/experiment/interleave", json!({"id": "t1", "a": {}, "b": {}})).await;
+    assert_eq!(st, 400, "two arms alike: {v}");
+    let (st, v) = post("/v1/experiment/interleave", json!({"id": "t1", "name": "newest first", "a": {}, "b": {"rank": "decay(created, now(), 157680000)", "tiers": false, "meaning": false}, "share": 1})).await;
+    assert!(st.is_success(), "{v}");
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert_eq!(d["interleave"]["test"]["id"], "t1", "{d}");
+    let vid = "0123456789abcdef";
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("dev", "m"), ("vid", vid)]).await;
+    assert_eq!(page["log"]["test"], "t1", "{page}");
+    // The next page by the same browser is kept, not drafted.
+    let next = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("page", "1"), ("vid", vid)]).await;
+    assert!(next["log"].is_null(), "{next}");
+    let req = page["log"]["request"].as_str().unwrap().to_string();
+    let second = page["stories"][1]["id"].as_i64().unwrap();
+    let c = get(&http, &app, "/v1/click", &[("r", &req), ("id", &second.to_string())]).await;
+    assert_eq!(c["kept"], true, "{c}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let l: Value = exp("/v1/experiment/interleave/log?test=t1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+        let all = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
+        let r: Vec<&Value> = all.iter().filter(|x| x["kind"] == "drafted").collect();
+        let pages: Vec<&Value> = all.iter().filter(|x| x["kind"] == "page").collect();
+        if r.len() == 1 && r[0]["clicks"] == json!([second]) && pages.len() == 1 {
+            assert_eq!(r[0]["dev"], "m");
+            assert_eq!(r[0]["vid"], vid);
+            assert_eq!(pages[0]["vid"], vid);
+            assert_eq!(pages[0]["page"], 1);
+            assert!(r[0]["click_ts"][0].as_i64().unwrap() >= r[0]["ts"].as_i64().unwrap(), "{l}");
+            // Each story either arm ranked has its age and site.
+            let meta = r[0]["meta"].as_object().unwrap_or_else(|| panic!("{l}"));
+            assert!(meta.contains_key(&second.to_string()) && meta[&second.to_string()][0].is_number(), "{l}");
+            let shown = r[0]["shown"].as_array().unwrap();
+            let teams = r[0]["teams"].as_str().unwrap();
+            assert_eq!(shown.len(), teams.len(), "{l}");
+            assert_eq!(shown[1].as_i64(), Some(second));
+            assert!(teams.contains('a') && teams.contains('b'), "both arms pick: {l}");
+            assert!(r[0]["b"].as_array().unwrap().iter().all(|x| shown.contains(x)) || shown.len() == 10, "{l}");
+            break;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the interleaved log: {l}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let (st, v) = post("/v1/experiment/interleave/stop", json!({"id": "t1"})).await;
+    assert!(st.is_success(), "{v}");
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1")]).await;
+    assert!(page["log"]["test"].is_null(), "stopped: {page}");
 
     app.stop();
 }
