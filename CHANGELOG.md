@@ -29,9 +29,10 @@ changes collect under "Unreleased".
   say it survives no loss. **Changed:** a statement the coordinator runs in
   parts (an aggregation, as the OpenSearch API sends) while every copy of a
   shard is down is refused 503, not 400 "query error", so clients retry it
-  on another node; so is a search whose shard's connection broke mid-call
-  (a 502 "transport error" before), as one whose copies refuse the
-  connection already was
+  on another node; so is a search whose shard's copies could not be
+  reached however the connection failed (broken mid-call, its request
+  dropped: a 502 "transport error" or "operation was canceled" before), as
+  one whose copies refused the connection already was
   ([server.md](docs/chloedb/server.md#fleet-health)).
 - **A Postgres follower one table cannot stop.** A table `follow-postgres`
   cannot write (a value ChloeDB refuses, a table without a primary key

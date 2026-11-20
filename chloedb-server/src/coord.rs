@@ -1642,6 +1642,16 @@ fn try_elsewhere(s: &tonic::Status) -> bool {
         )
 }
 
+/// Whether a call failed on its way to or from the copy, not with the
+/// copy's own answer: tonic gives a failure of the connection (refused,
+/// broken mid-call, its request dropped) as Unavailable, Unknown or
+/// Cancelled, and always with its cause as the status's source, which a
+/// status the copy sent never has. Unknown is never a ChloeDB server's own
+/// (its failures are Internal): an answer that was not gRPC.
+fn unreached(s: &tonic::Status) -> bool {
+    std::error::Error::source(s).is_some() || s.code() == Code::Unknown
+}
+
 /// How a call to a replica ended, for what is kept of the replica
 /// ([`ReplicaStats`]): an answer with the time a query's answer says the
 /// replica spent on it; a refusal for its load (429); a failure another
@@ -2288,14 +2298,12 @@ impl Coordinator {
                             asked_at.push(Instant::now());
                             hedge_at = Instant::now() + hedge_after(next);
                         } else if pending.is_empty() {
-                            // A copy whose connection broke mid-call (killed,
-                            // or cut off) fails with Unknown ("transport
-                            // error"), which a server never answers itself (its
-                            // own failures are Internal): the shard did not
-                            // answer, as when no copy takes the connection
-                            // (Unavailable), so the read is 503 either way, which
-                            // clients send again (KENJI-405). A read only.
-                            let unreached = s.code() == Code::Unknown;
+                            // The last copy was not reached (its connection
+                            // broke or was refused), whatever code the client
+                            // gave that: the shard did not answer, and the read
+                            // is 503, which clients send again (KENJI-405). A
+                            // read only: a write cut off may be applied.
+                            let unreached = unreached(&s);
                             let mut e = self.named(&t.replicas[i][r].url, s);
                             if unreached {
                                 e.status = 503;
@@ -5385,6 +5393,23 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KENJI-405: a call the connection failed is told from a copy's own
+    /// answer by its source, whatever code tonic gave it.
+    #[test]
+    fn a_broken_connection_is_unreached_whatever_its_code() {
+        let io = |k| Box::new(std::io::Error::new(k, "gone")) as Box<dyn std::error::Error + Send + Sync>;
+        let broken = tonic::Status::from_error(io(std::io::ErrorKind::ConnectionReset));
+        assert!(unreached(&broken), "{broken:?}");
+        let mut cancelled = tonic::Status::cancelled("operation was canceled");
+        cancelled.set_source(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "dropped")));
+        assert!(unreached(&cancelled));
+        assert!(unreached(&tonic::Status::unknown("an answer that was not gRPC")));
+        // What a copy answers itself, as headers: reached.
+        for s in [tonic::Status::internal("I/O error: disk"), tonic::Status::unavailable("this replica serves no reads"), tonic::Status::cancelled("the request was cancelled")] {
+            assert!(!unreached(&s), "{s:?}");
+        }
+    }
 
     /// OLU-401, OLU-303, OLU-402: the copy just elected primary still says
     /// "a replica takes no writes" while the old primary's lease runs out.
