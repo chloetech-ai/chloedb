@@ -100,7 +100,7 @@ pub async fn words(db: &Strata) -> Result<()> {
 }
 
 /// The files `load` reads, in order: `<dir>/<table>*.jsonl`.
-pub const ORDER: [&str; 5] = ["ea_places", "ea_years", "ea_changes", "ea_perimeters", "ea_burns"];
+pub const ORDER: [&str; 6] = ["ea_places", "ea_years", "ea_changes", "ea_perimeters", "ea_burns", "ea_climate"];
 
 /// Loads `dir/<table>*.jsonl` for each table in `only` (all when empty).
 pub async fn run(db: &Strata, dir: &Path, only: &[String], chunk_mb: usize) -> Result<u64> {

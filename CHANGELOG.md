@@ -97,6 +97,11 @@ changes collect under "Unreleased".
   clearest places near a town (for the stars, a picnic or a picture),
   each place's sky on its page, and a fire watch that says when the night
   over it is clear.
+- **Earth explorer: Future climate.** Every place of California and Chile
+  in 2071-2100 if emissions keep rising (SSP3-7.0, five models downscaled
+  by CHELSA 2.1): its hottest month, coldest nights, rain and climate
+  class now and later, a map of the change, and where its future climate
+  can be visited today, found by the distance between climate vectors.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,
