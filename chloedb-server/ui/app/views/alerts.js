@@ -45,7 +45,7 @@ function copyOf(key) {
   return null;
 }
 /** A copy's name for an entry of an alert's `where`: {copy (url), short}. */
-const whereName = (c) => findCopy(c.copy) ? copyName(c.copy) : c.short || copyName(c.copy);
+const whereName = (c) => findCopy(c.copy) ? copyName(c.copy) : c.name || c.short || copyName(c.copy);
 /** A server's node name (as the log store names it) as the copy's name. */
 function nodeShort(name) {
   const c = copyOf(name);

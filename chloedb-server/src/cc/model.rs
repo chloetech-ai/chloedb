@@ -129,7 +129,8 @@ pub fn shards(c: &Json) -> Vec<Shard> {
                     let no_reads = !down && d["capability"]["serves_reads"] == false;
                     let qps_l = f(&l["qps"]);
                     Copy {
-                        id: s(&r["short"]).unwrap_or_else(|| format!("s{i}-{k}")),
+                        // Its `--node-name`, as the command center says it (OLU-402).
+                        id: if r["short"].is_string() || r["name"].is_string() { crate::coord::shown(r) } else { format!("s{i}-{k}") },
                         name: s(&r["name"]),
                         shard: i,
                         node: s(&r["node"]).unwrap_or_else(|| host_of(&url)),
@@ -551,6 +552,19 @@ mod tests {
         assert_eq!(sh[0].copies[1].lag, Some(0.0));
         assert_eq!(sh[0].copies[2].lag, Some(1500.0));
         assert_eq!(sh[0].copies[0].err, Some(0.5));
+    }
+
+    /// OLU-402: a copy is named by its `--node-name`, as the web names it;
+    /// an operator's pod keeps its short name.
+    #[test]
+    fn copies_are_named_by_their_node_name() {
+        let c = json!({"shards": [{"shard": 1, "replicas": [
+            {"url": "http://127.0.0.1:17754", "short": "127.0.0.1:17754", "name": "s1a", "status": "down", "role": "unknown"},
+            {"url": "http://127.0.0.1:17755", "short": "127.0.0.1:17755", "role": "primary", "takes_writes": true, "status": "ok"},
+            {"url": "http://x-s1-2.x:7701", "short": "s1-2", "name": "x-s1-2", "role": "replica", "status": "ok"}
+        ]}]});
+        let ids: Vec<String> = shards(&c)[0].copies.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids, ["s1a", "127.0.0.1:17755", "s1-2"]);
     }
 
     #[test]
