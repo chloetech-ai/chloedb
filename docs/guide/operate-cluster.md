@@ -251,7 +251,11 @@ Until shard 0 has a new primary, about two seconds here, its writes are refused 
  "docs": "https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover"}
 ```
 
-The loop above sends it again, with the same idempotency key, until a new primary takes it. Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (`--write-acks all`, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.
+The loop above sends it again, with the same idempotency key, until a new primary takes it.
+
+A primary that freezes rather than dies (a stopped process, a long pause, a disk that hangs) stalls a write longer than a kill does. Its copies elect another one within about two seconds as before, but the elected copy takes writes only once the old primary's lease has run out (about two seconds more with `--failover-after-ms 2000`), and a write sent meanwhile is held rather than refused: in a drill on this page's cluster, with the primary stopped by `kill -STOP` under a steady writer, one write was held 6.8 s and then answered 200, and none failed. For those few seconds the coordinator shows the new primary as taking no writes. Leave it alone: it is waiting out the lease, and restarting it while the old primary is still frozen leaves the shard one copy of three, with no majority and no writes until a second copy answers.
+
+Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (`--write-acks all`, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.
 
 The coordinator now sees `s0a` down and another copy as shard 0's primary:
 

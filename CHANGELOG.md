@@ -11,6 +11,12 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Docs pass 4.** The SQL reference says how much memory `CREATE RECOMMENDER`
+  takes while it counts (NADIA-401); the OpenSearch page says a filtered alias
+  is not a boundary between tenants and points to keys limited to tables
+  (KENJI-402); the cluster guide says what a frozen primary costs and not to
+  restart the copy just elected while it waits out the old lease (OLU-401,
+  OLU-205).
 - **`chloectx remember preference` says it is kept for this project only.**
   Memory is per project, so a preference stored there is not recalled in
   another repository; the command now prints a note naming
