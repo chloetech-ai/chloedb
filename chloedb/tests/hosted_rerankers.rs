@@ -354,7 +354,7 @@ fn a_language_model_grades_each_row() {
     let db = create(&dir.path().join("db.strata"), &models, &docs);
     let params = Params::new().set("t", Value::Str(words(&docs, 5)));
     let overlap_rows = query(&db, &rerank("builtin:overlap"), &params);
-    for (name, mock, path) in [("anthropic/claude-haiku-5-5", &claude, "/messages"), ("local-llm", &chat, "/v1/chat/completions")] {
+    for (name, mock, path) in [("anthropic/claude-haiku-5-5", &claude, "/v1/messages"), ("local-llm", &chat, "/v1/chat/completions")] {
         let got = query(&db, &rerank(name), &params);
         // Each score is a grade, 0 to 3: the overlap's, as the mock grades.
         assert_eq!(got.keys.len(), 10, "{name}");
