@@ -447,6 +447,24 @@ async fn every_page_against_a_real_server() {
     let (st, _) = get(&http, &format!("{base}/v1/chip/..%2Fetc/2025"), Some(TOKEN)).await;
     assert!(st == 400 || st == 404, "{st}");
 
+    // The sky over four places, as `sky` writes it: a clear night and a
+    // cloudy day for two, a cloudy night and smoke for the other two.
+    let night = 1_736_323_200; // 8 Jan 2025 08:00 UTC, midnight in Santa Monica
+    let mut skies = Vec::new();
+    for (i, id) in ["ca0000", "ca0001", "ca0002", "ca0003"].iter().enumerate() {
+        let p = places.all.iter().find(|p| p.id == *id).expect("a test place");
+        let mut s = chloedb_earth::sky::Sky::new(id, "california", p.lat, p.lon, &p.town);
+        let (n, d, smoke) = if i < 2 { (1.0, 0.2, 0.0) } else { (0.1, 0.9, 0.6) };
+        for k in 0..4 {
+            s.see(night + k * 600, Some(n), Some(0.0));
+        }
+        for k in 0..4 {
+            s.see(night + 12 * 3600 + k * 600, Some(d), Some(smoke));
+        }
+        skies.push(s.doc());
+    }
+    db.upsert("ea_sky", skies).await.unwrap();
+
     // Public, as at earth.chloetech.ai: the page and its reads for anyone.
     let pub_port = free_port();
     let open = format!("http://127.0.0.1:{pub_port}");
@@ -519,6 +537,26 @@ async fn every_page_against_a_real_server() {
     assert!(mine["watches"].as_array().unwrap().is_empty() && mine["alerts"].as_array().unwrap().is_empty(), "removed with its alerts: {mine}");
     let ex = ok(&http, &base, "/v1/watches/example").await;
     assert_eq!(ex["watches"].as_array().unwrap().len(), 3, "{ex}");
+
+    // Clear sky: the map's layer, the finder and a place's sky.
+    let (s, layer) = get(&http, &format!("{open}/v1/sky?region=california"), None).await;
+    assert_eq!(s, 200, "{layer}");
+    let lats = layer["lat"].as_array().unwrap().len();
+    assert_eq!(lats, layer["clear"].as_array().unwrap().len());
+    assert_eq!(layer["clear"].as_array().unwrap().iter().filter(|v| !v.is_null()).count(), 4, "four places seen: {layer}");
+    let (s, near) = get(&http, &format!("{open}/v1/sky/find?lat=33.95&lon=-118.55&km=10&want=nights"), None).await;
+    assert_eq!(s, 200, "{near}");
+    let ids: Vec<&str> = near["places"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 4, "{near}");
+    assert!(ids[..2].contains(&"ca0000") && ids[..2].contains(&"ca0001"), "the clear nights first: {near}");
+    assert!(near["places"][0]["sky"]["nights"].as_array().unwrap().contains(&json!(100)), "{near}");
+    let (_, now) = get(&http, &format!("{open}/v1/sky/find?lat=33.95&lon=-118.55&km=10"), None).await;
+    assert_eq!(now["places"][0]["sky"]["words"], "smoke", "the last scan had smoke over the last two: {now}");
+    assert!(ids.iter().all(|id| now["places"].as_array().unwrap().iter().any(|p| p["id"] == *id)), "{now}");
+    let (s, _) = get(&http, &format!("{open}/v1/sky/find?region=mars"), None).await;
+    assert_eq!(s, 400);
+    let place = ok(&http, &base, "/v1/place/ca0000").await;
+    assert_eq!(place["sky"]["good_nights"], 1, "{place}");
 
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;
