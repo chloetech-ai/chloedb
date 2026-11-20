@@ -397,6 +397,14 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   const sy = lx.logColumns(syslog, { table: "logs_syslog" });
   assert.deepEqual([sy.ts, sy.msg, sy.host, sy.sev, sy.log, sy.substring, sy.texts], ["ts", "body", "host", "severity", true, true, ["body"]], "the host is not a text to move to");
   assert.deepEqual(lx.searchSql("Gi0/1 -debug", sy).conds, ["body ILIKE '%Gi0/1%'", "NOT (body ILIKE '%debug%')"]);
+  // OTLP logs: the level by severity_number, which a collector sets whatever its text says (nginx's "502" is ERROR 17; MARCO-502).
+  const otlp = [{ name: "ts", type: "timestamp" }, { name: "severity", type: "keyword" }, { name: "severity_number", type: "int" }, { name: "service", type: "keyword" }, { name: "body", type: "text" }];
+  const ot = lx.logColumns(otlp, { table: "logs_app" });
+  assert.deepEqual([ot.sev, ot.sevNum], ["severity", "severity_number"]);
+  assert.deepEqual(lx.searchSql("level>=error", ot).conds, ["severity_number >= 17"]);
+  assert.deepEqual(lx.searchSql("level>warn", ot).conds, ["severity_number >= 17"]);
+  assert.deepEqual(lx.searchSql("severity<info", ot).conds, ["severity_number < 9"]);
+  assert.deepEqual(lx.searchSql("level>=error", sy).conds, ["severity IN ('error', 'ERROR', 'err', 'ERR', 'critical', 'CRITICAL', 'crit', 'CRIT', 'fatal', 'FATAL', 'alert', 'ALERT', 'emerg', 'EMERG', 'emergency', 'EMERGENCY', 'panic', 'PANIC')"], "no number: the spellings");
   // BGP updates: a TIMESTAMP and no text column. Each line is its fields, and a word is a field's exact value.
   const updates = [{ name: "id", type: "int" }, { name: "ts", type: "timestamp" }, { name: "collector", type: "keyword" }, { name: "peer_as", type: "int" }, { name: "prefix", type: "keyword" }, { name: "route", type: "keyword", indexed: false }, { name: "comms", type: "keyword", multi: true }];
   const bu = lx.logColumns(updates, { table: "bb_updates", key: "id" });
@@ -635,6 +643,15 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.equal(p.label, "Shard 1 holds writes while it elects a primary");
   assert.match(p.impact, /held for seconds, then answered/);
   assert.equal(p.fix, null, "no repair while it elects");
+  // Before the election ends, with no primary at all: a write is refused with a 503 to resend, not held (OLU-501).
+  const s0 = state.cluster.shards[0];
+  const keep = { primary: s0.primary, replicas: s0.replicas };
+  s0.primary = null;
+  s0.replicas = s0.replicas.map((r) => (r.role === "primary" ? { ...r, role: "replica", takes_writes: false } : r));
+  const p0 = cl.problems(cl.model(state.cluster)).find((x) => x.shards.includes(1));
+  assert.equal(p0.label, "Shard 1 refuses writes while it elects a primary");
+  assert.match(p0.impact, /answered 503 \(retryable\).*same idempotency key/);
+  Object.assign(s0, keep);
   // The same shard once the election is over and the primary cannot write: the old advice.
   state.cluster.shards[0].electing = false;
   assert.match(cl.critAdvice(cl.model(state.cluster).shards[0]).next, /on s1c and restart it$/);

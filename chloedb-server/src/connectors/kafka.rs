@@ -347,6 +347,37 @@ pub fn json_of(svc: &Service, c: &Connector) -> Json {
     j
 }
 
+/// What a Kafka connector's consumer says on `/metrics` and to the alerts
+/// (ROSA-501), null before it first ran here.
+pub(super) struct Gauge {
+    pub failures: u64,
+    pub last_write_ms: Option<u64>,
+    /// Events Kafka holds that ChloeDB has not written, by topic and partition.
+    pub parts: Vec<(String, i32, i64)>,
+    /// How long events have waited: while any partition has some, since
+    /// the last event written of it happened (its Kafka timestamp), the
+    /// longest of those; 0 when none waits.
+    pub behind_s: f64,
+}
+
+pub(super) fn gauge(svc: &Service, c: &Connector) -> Option<Gauge> {
+    let l = lock(&svc.connectors.lives).get(&c.name).cloned()?;
+    let now = now_ms() as i64;
+    Some(l.with(|s| Gauge {
+        failures: s.failures as u64,
+        last_write_ms: (s.last_write_ms > 0).then_some(s.last_write_ms),
+        parts: s.parts.values().map(|p| (p.topic.clone(), p.partition, (p.high - p.next).max(0))).collect(),
+        behind_s: s
+            .parts
+            .values()
+            .filter(|p| p.high > p.next)
+            // A partition with events waiting and none written yet: since
+            // the session started.
+            .map(|p| (now - p.last_ts.unwrap_or(s.session_ms as i64)).max(0) as f64 / 1000.0)
+            .fold(0.0, f64::max),
+    }))
+}
+
 /// A Kafka connector's health ([`super::Connectors::health`]).
 pub fn health(svc: &Service, c: &Connector) -> &'static str {
     if c.invalid.is_some() {

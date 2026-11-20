@@ -535,8 +535,9 @@ struct Args {
     /// $USER@host), in each cluster's audit log.
     #[arg(long)]
     hub_device: Option<String>,
-    /// The alert rules' file, JSON (created when the rules are first
-    /// edited; default rules in memory without it).
+    /// The alert rules' and routes' file, JSON (created when they are
+    /// first edited; default: DB.alerts.json beside --db, and in memory
+    /// on a coordinator without it).
     #[arg(long)]
     alerts: Option<PathBuf>,
     /// Post each alert that fires or resolves to this URL, as

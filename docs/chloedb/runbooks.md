@@ -144,6 +144,30 @@ again after 30 seconds, then twice as long each time up to 15 minutes
    with `--copy-table <table>` to copy it now (tier 1): its rows stay
    readable throughout, and the other tables keep following.
 
+## A connector fails or falls behind
+
+For: `connector-failing`, `connector-behind`
+
+A connector that fails writes no new rows into its table, so what reads the
+table (a dashboard, an alert rule on it) goes quiet rather than wrong.
+
+1. Read which and why: Data > Connectors, or `GET /v1/admin/connectors`
+   (each connector's `health`, `state.last_error` and `state.failures`; a
+   Kafka connector's `stream`, with `last_error`, `lag` and each partition's
+   `lag`); on `/metrics`, `chloedb_connector_up`,
+   `chloedb_connector_failures`, `chloedb_connector_behind_seconds` and
+   `chloedb_connector_partition_lag_events`.
+2. A source that is down or refuses the connector's credentials: fix it
+   there, or the connector's secret (tier 2: a change request, since it
+   changes what the server reaches). A pull runs again on its schedule, or
+   now with `POST /v1/admin/connectors/<name>/run` (tier 1); a Kafka
+   connector tries its brokers again by itself.
+3. A Kafka connector behind but streaming: the server writes slower than
+   the topics grow. Read the writes (`GET /v1/load`, the alerts
+   `write-queue` and `write-p99`); a bigger `batch` writes more a time.
+   Stopping it (`POST /v1/admin/connectors/<name>/stop`) loses nothing:
+   it goes on from the offsets ChloeDB keeps, while Kafka still holds them.
+
 ## The disk is filling
 
 For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
