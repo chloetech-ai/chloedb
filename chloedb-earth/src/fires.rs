@@ -1,6 +1,6 @@
 //! Fires: a region's fire pixels grouped as GOES scans come in. A pixel
 //! joins the fire whose recent pixels lie within [`JOIN_KM`] of it; a
-//! fire that no scan has seen for [`GAP_S`] is out. Each fire keeps how its
+//! fire that no scan has seen for [`GAP_S`] is out (one seen in two scans or fewer, for [`BRIEF_GAP_S`]). Each fire keeps how its
 //! first hours went, a bin every [`BIN_S`] seconds: the power of its
 //! strongest scan in the bin, its pixels and how far it had spread from
 //! where it started. Those, with what it started on and the weather, are
@@ -19,6 +19,20 @@ use crate::places::Places;
 pub const JOIN_KM: f64 = 6.0;
 /// A fire unseen this long is out.
 pub const GAP_S: i64 = 6 * 3600;
+/// A fire seen in no more than `BRIEF_SCANS` scans is out sooner: one pixel
+/// once is more often a hot roof or a field burnt on purpose than a fire
+/// hidden by its smoke.
+pub const BRIEF_GAP_S: i64 = 3600;
+pub const BRIEF_SCANS: u32 = 2;
+
+/// How long a fire may go unseen and still be burning.
+pub fn gap_for(f: &Fire) -> i64 {
+    if f.scans <= BRIEF_SCANS {
+        BRIEF_GAP_S
+    } else {
+        GAP_S
+    }
+}
 /// The bins of a fire's first hours.
 pub const BIN_S: i64 = 900;
 /// The first hours kept, in bins (twelve hours).
@@ -183,7 +197,7 @@ impl Tracker {
         let watching_from = self.first_scan.unwrap_or(ts);
         self.last_scan = Some(ts);
         // Fires unseen for the gap are out.
-        let (live, out): (Vec<Fire>, Vec<Fire>) = std::mem::take(&mut self.fires).into_iter().partition(|f| ts - f.last <= GAP_S);
+        let (live, out): (Vec<Fire>, Vec<Fire>) = std::mem::take(&mut self.fires).into_iter().partition(|f| ts - f.last <= gap_for(f));
         self.fires = live;
         self.out.extend(out);
         let recent = ts - 3 * 3600;
@@ -501,6 +515,23 @@ mod tests {
         t.scan(GAP_S + 300, 300, &[], &p);
         assert!(t.fires.is_empty());
         assert_eq!(t.take_out().len(), 1);
+    }
+
+    #[test]
+    fn a_fire_seen_once_is_out_after_an_hour() {
+        let mut t = Tracker::new("california");
+        let p = places();
+        t.scan(0, 300, &[px(34.2, -118.1, 5.0, 1)], &p);
+        t.scan(BRIEF_GAP_S - 300, 300, &[], &p);
+        assert_eq!(t.fires.len(), 1, "an hour is its gap");
+        t.scan(BRIEF_GAP_S + 300, 300, &[], &p);
+        assert!(t.fires.is_empty());
+        // One seen in three scans keeps the long gap.
+        for k in 0..3 {
+            t.scan(10_000 + k * 300, 300, &[px(35.2, -119.1, 5.0, 1)], &p);
+        }
+        t.scan(10_600 + BRIEF_GAP_S + 300, 300, &[], &p);
+        assert_eq!(t.fires.len(), 1);
     }
 
     #[test]

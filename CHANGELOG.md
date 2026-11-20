@@ -16,6 +16,17 @@ changes collect under "Unreleased".
   another repository; the command now prints a note naming
   `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
   `chloectx remember --help` and the ChloeCtx page say the same.
+- **Earth explorer: What happened here.** A place's page is now a story: a
+  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
+  since 1878, named GOES fires, FIRMS years, places nearby that changed)
+  over a map of their outlines, a town search with "use my location", and
+  a fire year that needs three detections (one was often a hot roof).
+  The replays play over GOES's own pictures of the sky (true colour by day,
+  infrared by night, every 10 minutes, drawn from NOAA's archive by
+  `tools/frames.py` and served with `serve --frames`), with the fires'
+  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
+  the replays are one field of heat per fire, fading with age, and a
+  "Fire pixels" button hides them to show the fire as the picture has it.
 
 ## 0.3.9
 

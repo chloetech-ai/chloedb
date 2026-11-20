@@ -64,9 +64,18 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   area_km2 FLOAT, spread_km FLOAT, hours FLOAT,
   people5 INT, trees FLOAT, shrubs FLOAT, grass FLOAT, built FLOAT, slope FLOAT, elev INT, climate KEYWORD,
   burned_before INT, gust FLOAT, wind FLOAT, wind_dir FLOAT, rh FLOAT,
-  first KEYWORD OPTIONS(indexed = false), outlook_km2 FLOAT, outlook_lo FLOAT, outlook_hi FLOAT,
+  perimeter KEYWORD, first KEYWORD OPTIONS(indexed = false), outlook_km2 FLOAT, outlook_lo FLOAT, outlook_hi FLOAT,
   shape VECTOR({SHAPE_DIM}), shape2 VECTOR({SHAPE2_DIM}), shape1 VECTOR({SHAPE1_DIM})
 )"), "Fires: a region's fire pixels grouped in space and time, with how big and fast they got, what they burned on, the weather at their start, and their first hours as a vector (shape) for finding the fires that began like them"),
+        ("ea_perimeters", "CREATE TABLE IF NOT EXISTS ea_perimeters (
+  id KEYWORD PRIMARY KEY, source KEYWORD, name TEXT OPTIONS(analyzer = 'simple'), complex KEYWORD, year INT,
+  alarm TIMESTAMP, contained TIMESTAMP, acres FLOAT, km2 FLOAT, cause KEYWORD, agency KEYWORD, unit KEYWORD, inc KEYWORD,
+  lat FLOAT, lon FLOAT, s FLOAT, n FLOAT, w FLOAT, e FLOAT, shape KEYWORD OPTIONS(indexed = false)
+)".to_string(), "Fire perimeters: CAL FIRE's outlines of every fire since 1878, with name, dates, acres and cause"),
+        ("ea_burns", "CREATE TABLE IF NOT EXISTS ea_burns (
+  id KEYWORD PRIMARY KEY, place KEYWORD, perimeter KEYWORD, region KEYWORD, name KEYWORD, year INT,
+  alarm TIMESTAMP, acres FLOAT, share FLOAT, cause KEYWORD
+) OPTIONS(cluster_by = 'place')".to_string(), "Which fire burned which place, and the share of the square inside its perimeter"),
         ("ea_rules", "CREATE TABLE IF NOT EXISTS ea_rules (
   id KEYWORD PRIMARY KEY, title KEYWORD, severity KEYWORD, sql KEYWORD OPTIONS(indexed = false),
   about KEYWORD OPTIONS(indexed = false), enabled BOOL, last_run TIMESTAMP, last_ms FLOAT, last_rows INT
