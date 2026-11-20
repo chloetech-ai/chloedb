@@ -89,7 +89,9 @@ jobs:
           test "$GITHUB_REF_NAME" = "chloedb-py-v$v" || test "$GITHUB_REF_NAME" = "strata-py-v$v"
       # The notices of every crate compiled into the extension (LENA-408:
       # 0.3.8's wheels had LICENSE alone), in the package, so every wheel
-      # carries chloedb/THIRD-PARTY-NOTICES.md.
+      # carries chloedb/THIRD-PARTY-NOTICES.md. The file is not in
+      # chloedb-py/.gitignore: maturin leaves the files git ignores out of
+      # the wheel.
       - name: Third-party notices
         run: python3 packaging/sbom/sbom.py --crate chloedb-py --name chloedb --platform ${{ matrix.platform }} --notices chloedb-py/python/chloedb/THIRD-PARTY-NOTICES.md
       - name: Build the wheel
