@@ -9,6 +9,20 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+- **Earth explorer: What happened here.** A place's page is now a story: a
+  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
+  since 1878, named GOES fires, FIRMS years, places nearby that changed)
+  over a map of their outlines, a town search with "use my location", and
+  a fire year that needs three detections (one was often a hot roof).
+  The replays play over GOES's own pictures of the sky (true colour by day,
+  infrared by night, every 10 minutes, drawn from NOAA's archive by
+  `tools/frames.py` and served with `serve --frames`), with the fires'
+  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
+  the replays are one field of heat per fire, fading with age, and a
+  "Fire pixels" button hides them to show the fire as the picture has it.
+
 ## 0.3.9
 
 What the persona study's third round found, and new ways to see and shape
@@ -84,17 +98,6 @@ upgrade the shards before the coordinators to use them (see
   embeds pictures and words into the space of Major TOM's Sentinel-2
   vectors, as the Earth explorer (`chloedb-earth`, a new demo app:
   California and Chile from orbit, [earth.md](docs/chloedb/earth.md)) does.
-- **Earth explorer: What happened here.** A place's page is now a story: a
-  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
-  since 1878, named GOES fires, FIRMS years, places nearby that changed)
-  over a map of their outlines, a town search with "use my location", and
-  a fire year that needs three detections (one was often a hot roof).
-  The replays play over GOES's own pictures of the sky (true colour by day,
-  infrared by night, every 10 minutes, drawn from NOAA's archive by
-  `tools/frames.py` and served with `serve --frames`), with the fires'
-  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
-  the replays are one field of heat per fire, fading with age, and a
-  "Fire pixels" button hides them to show the fire as the picture has it.
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
