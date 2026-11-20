@@ -20,6 +20,14 @@ pub struct Error {
 }
 
 impl Error {
+    /// Marks the error as the day's model budget being spent.
+    pub fn budget(mut self) -> Error {
+        self.answer = Some(serde_json::json!({"budget": true}));
+        self
+    }
+    pub fn is_budget(&self) -> bool {
+        self.answer.as_ref().is_some_and(|a| a["budget"] == true)
+    }
     pub fn new(status: u16, message: impl Into<String>) -> Error {
         Error { status, message: message.into(), answer: None }
     }

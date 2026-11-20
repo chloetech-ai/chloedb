@@ -67,12 +67,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.media_dir = media;
             app.shards = shards.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
             app.public = public;
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            if chloedb_parley::llm::Llm::available() {
+                app.llm = Some(chloedb_parley::llm::Llm::new(&model, daily_usd));
                 app.model = Some(model);
                 app.daily_usd = Some(daily_usd);
             }
             app.ctx_url = std::env::var("PARLEY_CTX_URL").ok().filter(|s| !s.is_empty());
             app.ctx_token = std::env::var("PARLEY_CTX_TOKEN").ok().filter(|s| !s.is_empty());
+            let made_c = app.ensure_communities().await;
+            if !made_c.is_empty() {
+                println!("communities: made {}", made_c.join(", "));
+            }
             let built = app.backfill_talks().await;
             if built > 0 {
                 println!("talks: built {built} edges from earlier comments, reactions and remixes");

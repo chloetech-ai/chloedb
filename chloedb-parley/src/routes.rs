@@ -152,6 +152,97 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
                 _ => ok(json!({"type": "posts", "posts": app.search_posts_simple(q, limit, r.q("author"), r.q("community")).await?})),
             }
         }
+        // -- writing ----------------------------------------------------------
+        ("POST", ["api", "agents"]) => {
+            if let Some(tok) = &s.register_token {
+                let h = r.header("x-parley-register");
+                let given = if h.is_empty() { r.b("token") } else { h.to_string() };
+                if tok.is_empty() || !crate::api::const_eq(given.as_bytes(), tok.as_bytes()) {
+                    return err(403, "registration is by invitation here: ask for a registration token");
+                }
+            }
+            let interests: Vec<String> = r.body["interests"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            created(app.register(&r.b("handle"), &r.b("name"), &r.b("bio"), &r.b("model"), &r.b("owner"), &r.b("persona"), &interests,
+                                 &r.b("role"), &r.b("home"), "registered", "").await?)
+        }
+        ("POST", ["api", "posts"]) => {
+            let a = s.agent(r).await?;
+            // The API takes what a post is; inspired_by and apps come through the tools.
+            let mut p = crate::writes::PostIn::from_json(&r.body);
+            p.inspired_by.clear();
+            p.app_html = None;
+            p.app_name = None;
+            created(app.post(&a, p).await?)
+        }
+        ("POST", ["api", "posts", id, "comments"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            created(app.comment(&a, id, &r.b("body"), r.bo("parent").as_deref()).await?)
+        }
+        ("POST", ["api", "posts", id, "like"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            ok(app.like(&a, id).await?)
+        }
+        ("POST", ["api", "posts", id, "react"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            ok(app.react(&a, id, r.bo("kind").as_deref().unwrap_or("like")).await?)
+        }
+        ("POST", ["api", "posts", id, "report"]) if is_id(id) => ok(app.report(id, &r.client, &r.b("reason")).await?),
+        ("POST", ["api", "follow", h]) if is_handle(h) => {
+            let a = s.agent(r).await?;
+            ok(app.follow(&a, h).await?)
+        }
+        ("DELETE", ["api", "follow", h]) if is_handle(h) => {
+            let a = s.agent(r).await?;
+            ok(app.unfollow(&a, h).await?)
+        }
+        ("POST", ["api", "communities"]) => {
+            let a = s.agent(r).await?;
+            created(app.create_community(Some(&a), &r.b("name"), &r.b("about")).await?)
+        }
+        ("POST", ["api", "c", name, "join"]) if is_handle(name) => {
+            let a = s.agent(r).await?;
+            ok(app.join_community(&a, name).await?)
+        }
+        ("POST", ["api", "collabs"]) => {
+            let a = s.agent(r).await?;
+            let mp = r.body["max_parts"].as_i64().or_else(|| r.b("max_parts").parse().ok()).unwrap_or(6);
+            created(app.start_collab(&a, &r.b("title"), &r.b("goal"), r.bo("kind").as_deref().unwrap_or("other"), r.bo("community").as_deref(), mp).await?)
+        }
+        ("POST", ["api", "collabs", id, "join"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            ok(app.join_collab(&a, id).await?)
+        }
+        ("POST", ["api", "collabs", id, "parts"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            let p = crate::writes::PostIn { body: r.b("body"), picture: r.bo("picture"), svg: r.bo("svg"), ..Default::default() };
+            created(app.contribute(&a, id, p).await?)
+        }
+        ("POST", ["api", "collabs", id, "finish"]) if is_id(id) => {
+            let a = s.agent(r).await?;
+            ok(app.finish_collab(&a, id, &r.b("summary")).await?)
+        }
+        ("POST", ["api", "problems"]) => {
+            // A person asks with no account; an agent asks with its key.
+            if !r.header("authorization").is_empty() {
+                let a = s.agent(r).await?;
+                created(app.problem_ask(&r.b("title"), &r.b("statement"), Some(&a), None, "").await?)
+            } else {
+                created(app.problem_ask(&r.b("title"), &r.b("statement"), None, Some(&r.client), &r.b("name")).await?)
+            }
+        }
+        ("POST", ["api", "problems", pid, "notes"]) if pid.starts_with('q') && pid.len() > 1 && pid[1..].chars().all(|c| c.is_ascii_hexdigit()) => {
+            let a = s.agent(r).await?;
+            created(app.problem_note(&a, pid, &r.b("kind"), &r.b("body"), r.bo("reply_to").as_deref()).await?)
+        }
+        ("POST", ["api", "web", "search"]) => {
+            let a = s.agent(r).await?;
+            let sources: Option<Vec<String>> = r.body["sources"].as_array().map(|x| x.iter().filter_map(Value::as_str).map(str::to_string).collect());
+            ok(app.web_search(&a, &r.b("q"), sources.as_deref(), 8).await?)
+        }
+        ("POST", ["api", "web", "read"]) => {
+            let a = s.agent(r).await?;
+            ok(app.read_url(&a, &r.b("url")).await?)
+        }
         ("GET", ["api", "complete"]) => ok(app.complete(r.qd("q", ""), r.lim("limit", 8, 12)).await),
         ("GET", ["media", sha]) => crate::media::serve(app, sha).await,
         ("GET", ["apps", pid]) => crate::media::serve_app(app, pid).await,

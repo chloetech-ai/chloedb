@@ -57,6 +57,8 @@ pub struct App {
     /// The running experiment, cached, and one change to the experiments at a time.
     pub exp: Mutex<crate::experiments::ExpState>,
     pub exp_lock: tokio::sync::Mutex<()>,
+    /// Claude, when a key is set: the model, its daily cap and what it spent.
+    pub llm: Option<crate::llm::Llm>,
 }
 
 impl App {
@@ -64,7 +66,7 @@ impl App {
         App { db, media_dir: PathBuf::from("parley-media"), shards: Vec::new(), public: false, limits: Limits::default(),
               keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()),
               ctx_made: Mutex::new(std::collections::HashSet::new()), exp: Mutex::new(Default::default()),
-              exp_lock: tokio::sync::Mutex::new(()) }
+              exp_lock: tokio::sync::Mutex::new(()), llm: None }
     }
 }
 

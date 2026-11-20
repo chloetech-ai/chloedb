@@ -40,7 +40,7 @@ pub fn wilson(k: i64, n: i64, z: f64) -> (f64, f64) {
     (((c - m) / d).max(0.0), ((c + m) / d).min(1.0))
 }
 
-fn problem_out(r: Row) -> Value {
+pub fn problem_out(r: Row) -> Value {
     let mut out = Map::new();
     for (k, v) in r {
         if k == "emb" || k == "asker" || k == "score()" {
