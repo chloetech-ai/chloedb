@@ -1,6 +1,6 @@
 # Security model
 
-This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in [the server's security section](server.md#security). To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
+This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in [the server's security section](server.md#security). For a review before a team runs it (the threat model, how the controls map to SOC 2, and the notices each package ships), see the [security review pack](security-review.md). To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
 
 ## Before a server leaves your machine
 

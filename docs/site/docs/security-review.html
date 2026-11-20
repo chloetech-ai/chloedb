@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Security review pack · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="This page is for the person who has to approve ChloeDB before a team runs it: a security engineer, a GRC lead, a platform owner. It collects in one place what a review asks for. It covers what is protected and from…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/security-review.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="security-review.html" aria-current="page">Security review pack</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Security review pack</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/security-review.md">docs/chloedb/security-review.md</a>.</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-is-protected">What is protected</a></li><li><a href="#who-it-is-protected-from">Who it is protected from</a></li><li><a href="#chloectx-and-its-sync">ChloeCtx and its sync</a></li><li><a href="#left-to-you">Left to you</a></li><li><a href="#how-the-controls-map-to-soc-2">How the controls map to SOC 2</a></li><li><a href="#what-ships-in-each-package">What ships in each package</a></li></ol></details>
+    <div class="doc-body">
+
+<p>This page is for the person who has to approve ChloeDB before a team runs it: a security engineer, a GRC lead, a platform owner. It collects in one place what a review asks for. It covers what is protected and from whom, where the trust boundaries are, what ChloeDB does at each one and what it leaves to you, how its controls support the SOC 2 criteria a review usually maps to, and what ships in each package. The details are in the <a href="security.html">security model</a>, which this page links section by section. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+<p>ChloeDB is software you run. There is no hosted ChloeDB service holding your data, so this page describes the product's controls. Your organization's own controls are what an audit covers: who gets a key, where the servers run, how disks are encrypted and how backups are kept.</p>
+<h2 id="what-is-protected">What is protected<a class="anchor" href="#what-is-protected" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>asset</th>
+<th>where it is</th>
+<th>who should reach it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>rows of the tables</td>
+<td>the database file (<code>--db</code>), its <code>-wal</code>, checkpoints in <code>--backup-dir</code></td>
+<td>clients with a key for those tables</td>
+</tr>
+<tr>
+<td>queries and their values</td>
+<td>the running and finished queries, the log store (<code>DB.logs</code>)</td>
+<td>the server's admins</td>
+</tr>
+<tr>
+<td>credentials</td>
+<td>the token (<code>--token</code>), the cluster token, API keys (only their SHA-256 is kept, in <code>DB.keys.json</code>), connector secrets, cloud credentials</td>
+<td>the people who run the server; each server of a cluster for the cluster token</td>
+</tr>
+<tr>
+<td>the audit log</td>
+<td>memory, <code>--audit-log FILE</code>, the log store's <code>audit</code> table</td>
+<td>the server's admins</td>
+</tr>
+<tr>
+<td>ChloeCtx's stores</td>
+<td>a folder per project under <code>~/.local/share/chloectx/projects/</code></td>
+<td>the person whose sessions they hold</td>
+</tr>
+<tr>
+<td>ChloeCtx's synced memory</td>
+<td>a table per project on a ChloeDB server, <code>chloectx_mem_&lt;project&gt;</code></td>
+<td>the machines of that project, each with a key for that table alone</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="who-it-is-protected-from">Who it is protected from<a class="anchor" href="#who-it-is-protected-from" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>actor</th>
+<th>what they can try</th>
+<th>what stops them</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>anyone on the network</td>
+<td>reach the HTTP, gRPC or OpenSearch port</td>
+<td>a server with no credential listens on loopback only and refuses to start on another address; with one, every route but the probes and the page's files needs it (<a href="security.html#listeners">listeners</a>); TLS keeps tokens off the wire (<a href="security.html#tls">TLS</a>)</td>
+</tr>
+<tr>
+<td>a web page in the operator's browser</td>
+<td>send requests to a server on <code>localhost</code></td>
+<td>host names checked against DNS rebinding, writes with a foreign <code>Origin</code> refused, no CORS, JSON routes refuse form bodies (<a href="security.html#browsers">browsers</a>)</td>
+</tr>
+<tr>
+<td>a client with a key</td>
+<td>read or change more than its key allows</td>
+<td>scopes checked per route and per statement kind; keys limited to tables checked on every table a statement names, refused on the routes and protocols that cannot check them (<a href="security.html#api-keys-and-scopes">API keys and scopes</a>)</td>
+</tr>
+<tr>
+<td>a tenant's key</td>
+<td>read another tenant's tables</td>
+<td>a key limited to its prefix; a filtered OpenSearch alias is not a boundary (<a href="security.html#api-keys-and-scopes">multi-tenant isolation</a>, <a href="opensearch.html">aliases</a>)</td>
+</tr>
+<tr>
+<td>an AI agent with a key</td>
+<td>lose data or spend money</td>
+<td>roles <code>propose</code> and <code>ops</code>; tier 3 actions need a person's approval through a change request, and an agent's own approval is refused (<a href="security.html#api-keys-and-scopes">agents</a>)</td>
+</tr>
+<tr>
+<td>a server of another cluster, or a client</td>
+<td>ship writes to a replica, move slots, reconfigure a copy</td>
+<td>the calls between servers take the cluster token and nothing else (<a href="security.html#credentials">credentials</a>)</td>
+</tr>
+<tr>
+<td>an app the server shows</td>
+<td>call other apps as the server, or read beyond its tables</td>
+<td>a token per app, a key limited to the app's own tables, credentials taken out of its environment (<a href="security.html#apps">apps</a>)</td>
+</tr>
+<tr>
+<td>a request the server makes for you</td>
+<td>reach the internal network or cloud metadata</td>
+<td>connectors and alert routes reach the public internet unless told otherwise, never link-local addresses, and follow no redirect to another origin (<a href="security.html#requests-the-server-makes">requests the server makes</a>)</td>
+</tr>
+<tr>
+<td>someone with a shell on the machine</td>
+<td>read the files</td>
+<td>left to you: <code>umask 077</code> and disk encryption (<a href="security.html#data-at-rest">data at rest</a>)</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="chloectx-and-its-sync">ChloeCtx and its sync<a class="anchor" href="#chloectx-and-its-sync" aria-label="Link to this section">#</a></h2>
+<p>ChloeCtx records your Claude Code sessions, so its stores can hold anything those sessions saw. Its threat model is a person's shell history plus a shared notebook.</p>
+<ul>
+<li><strong>On one machine</strong>, the store is yours alone (mode 0700). The daemon's socket opens only to you. The inspector needs a random token and refuses requests from other pages. Keys, tokens and <code>NAME=value</code> secrets are redacted before anything is stored. A password written in prose is not caught, so keep secrets out of prompts (<a href="security.html#chloectx">ChloeCtx</a>).</li>
+<li><strong>Between machines</strong>, each project syncs into a table of its own, with one key per project and machine. That key reads and writes that project's table and nothing else, so a leaked laptop key exposes one project (<a href="chloectx-setup.html#keep-the-memory-on-a-chloedb-server">one key per project and machine</a>).</li>
+<li><strong>Another machine's words are held back.</strong> Rules and decisions that another machine pushed stay out of your sessions until you accept that machine, per project. So a key that can write a project's table cannot plant a "user preference" in everyone's sessions. Facts, notes and the conversation are not held back (<a href="chloectx-setup.html#keep-the-memory-on-a-chloedb-server">what another machine sent waits for you</a>).</li>
+<li><strong>Removing a person</strong> is revoking their machine's keys, then deleting what they pushed that the team does not keep. Every machine forgets those rows at its next pull (<a href="chloectx-setup.html#for-a-team">for a team</a>).</li>
+<li><strong>Recall treats stored text as data.</strong> What a session read (a file, a web page, a tool's output) is recorded, and later sessions see it as recalled context, so an instruction hidden in a file can reach a later session as text. Review what the team's sessions read as you would review what they run.</li>
+</ul>
+<h2 id="left-to-you">Left to you<a class="anchor" href="#left-to-you" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Disk encryption.</strong> ChloeDB does not encrypt its files: use the disk's or the volume's encryption.</li>
+<li><strong>The network.</strong> Let only the cluster's servers, its clients and its monitoring reach its ports. There is no mutual TLS.</li>
+<li><strong>Rate limits per client.</strong> Put a proxy in front if a client must not flood the server. A server does refuse queries past <code>--max-concurrent</code> and memory past <code>--query-memory-mb</code>.</li>
+<li><strong>Who holds a key.</strong> Issue keys per client and per job (the presets help), give them expiry dates, and revoke them when a person or a service leaves.</li>
+<li><strong>Backups off the machine.</strong> Checkpoints are consistent copies. Where they are kept, and who can read them, is yours (<a href="backup.html">Back up, restore and upgrade</a>).</li>
+</ul>
+<h2 id="how-the-controls-map-to-soc-2">How the controls map to SOC 2<a class="anchor" href="#how-the-controls-map-to-soc-2" aria-label="Link to this section">#</a></h2>
+<p>The AICPA's Trust Services Criteria (2017, revised 2022) are what a SOC 2 report covers. This table says which of ChloeDB's controls support each criterion that usually applies to a database, and what your organization does on top. It is a starting point for your own mapping, not an attestation: ChloeDB has no SOC 2 report of its own, since it is software you run.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>criterion</th>
+<th>ChloeDB's controls</th>
+<th>yours</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CC6.1 logical access</td>
+<td>API keys with scopes and table grants, checked per route and per statement; Google sign-in with an allow list; keys stored as hashes</td>
+<td>deciding who gets which key</td>
+</tr>
+<tr>
+<td>CC6.2 granting access</td>
+<td>keys made by an admin or within a key's own grants, with presets per job and expiry</td>
+<td>approving each key</td>
+</tr>
+<tr>
+<td>CC6.3 removing access</td>
+<td>revocation at once, across a cluster within 5 seconds; rotation with a grace period</td>
+<td>revoking when people leave</td>
+</tr>
+<tr>
+<td>CC6.6 the boundary</td>
+<td>loopback by default, refusal to start open on a reachable address, host and origin checks, outbound requests kept off internal addresses</td>
+<td>the network around the servers</td>
+</tr>
+<tr>
+<td>CC6.7 data in transit</td>
+<td>TLS (rustls) for HTTP and gRPC</td>
+<td>issuing the certificates</td>
+</tr>
+<tr>
+<td>CC6.8 unauthorized software</td>
+<td>release archives with build provenance and an SBOM signed through Sigstore, checksums, PyPI attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md#checking-what-you-download">checking what you download</a>)</td>
+<td>checking them before you install</td>
+</tr>
+<tr>
+<td>CC7.1 detecting changes</td>
+<td>the audit log of every change and every refused request, with who, what, and before and after</td>
+<td>keeping it (<code>--audit-log FILE</code>) and reviewing it</td>
+</tr>
+<tr>
+<td>CC7.2 monitoring</td>
+<td>built-in alert rules, <code>/metrics</code> for Prometheus, rules and a dashboard to import (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/deploy/monitoring">monitoring kit</a>)</td>
+<td>paging someone</td>
+</tr>
+<tr>
+<td>CC7.4 responding to incidents</td>
+<td><a href="runbooks.html">runbooks</a>, linked from each alert</td>
+<td>following them</td>
+</tr>
+<tr>
+<td>CC8.1 change management</td>
+<td>releases built only from commits that passed CI; one-way doors (the file format, the shard protocol, replication, authentication, installers) wait for a person's review; an agent's risky changes go through change requests</td>
+<td>how you roll out new versions</td>
+</tr>
+<tr>
+<td>A1.2 recovery</td>
+<td>checkpoints while serving, <code>chloedb-server restore</code>, replication with automatic failover</td>
+<td>how often, where they are kept, and rehearsing a restore</td>
+</tr>
+<tr>
+<td>C1.1 confidentiality</td>
+<td>keys limited to tables, the redaction of query values (<code>--redact-params</code>), files mode 0600 for secrets</td>
+<td>disk encryption, <code>umask 077</code></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="what-ships-in-each-package">What ships in each package<a class="anchor" href="#what-ships-in-each-package" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>package</th>
+<th>licence</th>
+<th>third-party notices</th>
+<th>SBOM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>release archives (chloedb-server, chloectx, chloedb-crawl, chloedb-sheets, chloedb-netops)</td>
+<td>Apache-2.0, <code>LICENSE</code></td>
+<td><code>THIRD-PARTY-NOTICES.md</code> in the archive</td>
+<td><code>&lt;program&gt;-&lt;platform&gt;.cdx.json</code> beside it, attested</td>
+</tr>
+<tr>
+<td>Python wheel (<code>chloedb</code>)</td>
+<td>Apache-2.0, in the wheel's <code>.dist-info/licenses</code></td>
+<td><code>chloedb/THIRD-PARTY-NOTICES.md</code> in the wheel</td>
+<td>not yet</td>
+</tr>
+<tr>
+<td>chloedb-server's wheels (<code>chloedb-server</code>)</td>
+<td>the archive's</td>
+<td>the archive's</td>
+<td>the archive's</td>
+</tr>
+<tr>
+<td>npm packages (<code>chloedb</code>, <code>@chloedb/&lt;platform&gt;</code>)</td>
+<td>Apache-2.0, <code>LICENSE</code></td>
+<td><code>THIRD-PARTY-NOTICES.md</code> in each package that holds the addon</td>
+<td>not yet</td>
+</tr>
+<tr>
+<td>container image (<code>ghcr.io/chloetech-ai/chloedb-server</code>)</td>
+<td>Apache-2.0 (the image is built from this repository)</td>
+<td>not in the image yet: use the archive's of the same version</td>
+<td>not yet</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each notices file lists every crate compiled into the binary with its version and licence, and the licence texts those crates ship. <code>cargo deny</code> checks every crate's licence against the allowed list in <code>deny.toml</code> every day, together with RustSec's advisories.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/security-review.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="security.html">← Security model</a><a href="sqlite.html">SQLite in and out →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

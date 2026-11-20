@@ -3256,8 +3256,9 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
 /// when it was not there.
 ///
 /// `?table=NAME` names it, and a table not there is made from the rows'
-/// columns and values ([`chloedb::ingest::create_for`]: an admin's
-/// statement, so it needs an admin key), unless `?create=false`. Without a
+/// columns and values ([`chloedb::ingest::create_for_with`]: an admin's
+/// statement, so it needs an admin key), unless `?create=false`; its prose
+/// gets a vector to search by meaning, unless `?meaning=false`. Without a
 /// table the rows go to the only table of the database when it has at
 /// least half of their columns, as before; rows that do not fit it, or a
 /// database of several tables or none, are refused with what to name,
@@ -3267,7 +3268,11 @@ async fn import_table(app: &App, who: &Principal, q: &std::collections::HashMap<
         if app.svc.table(t).await.is_ok() || !flag(q, "create", true)? {
             return Ok((Some(t.clone()), None));
         }
-        let sql = chloedb::ingest::create_for(t, body, format, q.get("key").map(String::as_str)).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
+        // Prose is searched by meaning too, by a model this server has or
+        // downloads (unless ?meaning=false, or --no-fetch-models without it).
+        let model = chloedb::ingest::MEANING_MODEL;
+        let meaning = (flag(q, "meaning", true)? && (app.svc.fetch_models || chloedb::embed::to_fetch(model, &app.svc.models_dir()).is_none())).then_some(model);
+        let sql = chloedb::ingest::create_for_with(t, body, format, q.get("key").map(String::as_str), meaning).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
         app.svc.sql(who, &sql, &chloedb::query::Params::default(), After::default(), 0).await.map_err(|e| ApiError { message: format!("{} (there is no table {t}: the import makes it from the rows' columns with {sql}; ?create=false refuses instead)", e.message), ..e })?;
         return Ok((Some(t.clone()), Some(sql)));
     }

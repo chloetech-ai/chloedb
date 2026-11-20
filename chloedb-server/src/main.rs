@@ -1201,6 +1201,12 @@ enum Command {
         /// nothing. Edit it and give it back with --schema.
         #[arg(long)]
         plan: bool,
+        /// CSV, TSV, JSON and JSON Lines: a table made from the file's
+        /// columns searches by its words only. Without it, a table with
+        /// prose gets a vector of it (`emb`, by potion-retrieval-32M, which
+        /// the server downloads once and fills in), to search by meaning.
+        #[arg(long)]
+        no_meaning: bool,
         /// Where embedded fields' models are (see `fetch-model`).
         #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
@@ -1589,9 +1595,9 @@ async fn run() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan }) => {
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan, no_meaning }) => {
             let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
-            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan };
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan, no_meaning: *no_meaning };
             let format = format
                 .as_deref()
                 .filter(|_| !files_of.sqlite && !files_of.parquet)

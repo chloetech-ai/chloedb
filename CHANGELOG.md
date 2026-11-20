@@ -28,6 +28,47 @@ changes collect under "Unreleased".
   (`HAVING total_amount > 10` said `10: no such column`), an aggregate in
   `WHERE` (use `HAVING`), and `LIKE ANY` / `ILIKE ANY` (one pattern per
   `LIKE`, joined with `OR`).
+- **A retried `/v1/logs` request writes each line once.** A request's
+  `batch` and an idempotency key for each of its parts (1,000 rows) are
+  made from its content, so a Collector that sends a request again after a
+  503 or a timeout, when the rows had in fact been written, writes nothing
+  twice (for the idempotency window, an hour by default). A request whose
+  records carry no time is not keyed. **Changed:** `batch` was random.
+- **OTLP logs' severity is one spelling, and syslog lines name their
+  host.** `/v1/logs` writes `severity` as `TRACE`, `DEBUG`, `INFO`, `WARN`,
+  `ERROR` or `FATAL` whoever spelt it (`warning`, `err`, `critical`, any
+  case; a text it does not know stays as written) and fills
+  `severity_number` from the text when the record has none, so
+  `severity_number >= 17` finds every source's errors. `host` and `service`
+  come from the record's `hostname` and `appname` attributes (the
+  Collector's syslog receiver's) when the resource has none. **Changed:**
+  severity was kept as each source spelt it. The Alerts page marks a rule
+  whose query has answered 0 on every run as "never matched".
+- **Free space in the database file is given back by itself.** Every 5
+  minutes a server that takes writes moves segments from the end of its
+  file into free space below them and shortens the file, once 64 MB and a
+  sixteenth of the file are free (`Database::trim`, vacuum without the step
+  that grows the file), so a table under retention or a dropped table
+  returns disk without `POST /v1/admin/vacuum`. **Tables and storage** shows
+  the database file beside the tables' live data, and `GET
+  /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
+  its `totals`.
+- **Search by meaning without asking for it.** A table an import makes
+  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
+  MCP tool `import` with `create`, and the command center's Import) gets
+  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
+  `TEXT` columns: the server downloads the model once and fills the
+  vectors in, and the table's search runs by words meanwhile and by words
+  and meaning once the model is open, saying so as it comes
+  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
+  leave it out). Python's `db.search` reads a word in no row as a typo of
+  the words near it (`typos=False` turns it off), and `db.ask(question)`
+  answers from the rows it finds, citing them as `[1]`, `[2]` with the
+  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
+  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
+  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
+  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
+  without it sent requests to `.../messages`).
 - **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
   `recommend(...)` no longer slows down as events arrive: a range on a
   value written in place (a counts row's `next > 0`) is checked per
@@ -200,6 +241,17 @@ changes collect under "Unreleased".
   `followed_table`), as writes already were; adding a column stays
   allowed. The Postgres page has a systemd unit and a container restart
   policy to run the follower under.
+- **A production kit.** `chloedb-server/deploy/monitoring` holds a Prometheus
+  scrape config, alerting rules that mirror every built-in alert the servers
+  page on (with each runbook as `runbook_url`; a test keeps the two in step),
+  and a Grafana dashboard to import (OLU-313). A new guide page, *Back up,
+  restore and upgrade*, runs each step on one server, from a checkpoint to a
+  restore after a bad delete and a rollback, and CI runs it with the other
+  guide pages. The *Security review pack* page collects the threat model of
+  keys and of ChloeCtx's sync, how the controls map to SOC 2's criteria, and
+  what each package ships. The Python wheel and the npm packages that hold
+  the addon now carry `THIRD-PARTY-NOTICES.md`, the licences of every crate
+  compiled into them (LENA-408).
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000

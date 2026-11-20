@@ -203,11 +203,19 @@ duckdb.sql("SELECT avg(rating) FROM r")
 
 A computed column has the type of its values: a column of only NULLs (or of no rows) is `null`, and one of integers and floats `float64`. Values of other types mixed in one column (a `CASE` that answers a number in some rows and text in others) are not one Arrow array: `query_arrow` raises `ChloeDBError` naming the column, and `query` answers it. `r.columns`, `len(r)` and `r.stats` are as a `Result`'s. `query_arrow` comes with the package's default feature `datafusion`. A `Client`'s `query_arrow` asks the server for an Arrow answer (`"format": "arrow"`) and returns a pyarrow Table with the same column types; it needs pyarrow, and a server too old for Arrow answers JSON, which it types from the values.
 
-`search(text, table=None, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case, on `table` <!-- since 0.3.2 --> (which reads that table alone: a client with a key limited to other tables than the first can search its own), or on the only table, since with several it names them and asks for one. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
+`search(text, table=None, limit=10, where=None, columns="*", mode="auto")` writes the query for the common case, on `table` <!-- since 0.3.2 --> (which reads that table alone: a client with a key limited to other tables than the first can search its own), or on the only table, since with several it names them and asks for one. It ranks by BM25 over the text fields (the generated ones if the table has any, such as a combined `body`, else every indexed text field) fused by reciprocal rank with the similarity of the first embedded vector field whose model is open; `mode="text"` or `"vector"` uses one side only. <!-- since 0.3.10 --> A word that is in no row is read as a typo of the words near it (`fuzzy => 'auto'`), so `db.search("dragn")` finds the dragon; `typos=False` matches words as written. `where` adds a condition, [built in Python](#queries-built-in-python) or in SQL with `params` for its placeholders:
 
 ```python
 db.search("dragon", where=col("year") >= 1990, columns=["id", "title"])
 db.search("dragon", where="year >= :y", params={"y": 1990})
+```
+
+<!-- since 0.3.10 --> `ask(question, table=None, k=8)` answers a question from the rows `search` finds for it, citing them: `{"answer", "sources", "model"}`, the answer marking each claim with its row as `[1]`, `[2]`, and `sources` those rows in that order (`{"n", "key", "score", "row"}`). A language model writes it through [`llm()`](query-language.md), where the query runs: `model=`, else `$CHLOEDB_ASK_MODEL`, else `anthropic/claude-haiku-5-5` with `ANTHROPIC_API_KEY`. Without a key it says so, and `search` finds the same rows. A `Client` answers so when given `table=`, and without one asks the server's agent, which writes queries of its own ([the agent](server.md)):
+
+```python
+r = db.ask("which book has a dragon in it?")
+print(r["answer"])          # The river and the dragon is a fantasy of rivers [1].
+print(r["sources"][0]["key"])  # b1
 ```
 
 `embed(text, field=None)` returns the query vector of a text (`embed(image=data, field="emb")` of an image file's bytes, by a [model of images](server.md#vectors-of-images), with the package built with `--features vision`, and `embed(audio=data)` of a sound file's, by a [model of sound](server.md#vectors-of-sound), built with `--features audio`), `embed_tokens(text, field)` the vectors of a query's tokens by the ColBERT model of a [multi-vector field](server.md#a-vector-a-token), as `maxsim` takes them (`{"embed": text, "field": "tok"}` as a parameter gives the same), and `len(db)` the number of rows.

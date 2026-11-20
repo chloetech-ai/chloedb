@@ -1060,19 +1060,27 @@ impl Schema {
     /// fields are named by on disk and how a column added later fills the
     /// rows written before it. Two databases a table was made in by
     /// different statements (`CREATE TABLE` with every column, or with
-    /// fewer and `ALTER TABLE ... ADD COLUMN`) hold the same columns.
+    /// fewer and `ALTER TABLE ... ADD COLUMN`) hold the same columns. An
+    /// embedded field's model fingerprint is compared only where both
+    /// recorded one: a table made before its model was downloaded (an
+    /// import's, whose server fetches the model after) records none, and a
+    /// copy of it made once the model is there does.
     pub fn same_columns(&self, other: &Schema) -> bool {
-        let plain = |s: &Schema| {
+        let plain = |s: &Schema, o: &Schema| {
             let mut s = s.clone();
             s.next_field_id = 0;
             s.packed_positions = false;
-            for f in &mut s.fields {
+            for (i, f) in s.fields.iter_mut().enumerate() {
                 f.id = NO_ID;
                 f.added = None;
+                let theirs = o.fields.get(i).and_then(|g| g.embed.as_ref()).map(|e| e.fingerprint.is_some());
+                if let (Some(e), Some(false)) = (f.embed.as_mut(), theirs) {
+                    e.fingerprint = None;
+                }
             }
             s
         };
-        self.fields.len() == other.fields.len() && plain(self) == plain(other)
+        self.fields.len() == other.fields.len() && plain(self, other) == plain(other, self)
     }
 
     /// Whether this schema is `earlier`, or one that `ALTER TABLE` could
@@ -2386,4 +2394,22 @@ fn short_field(j: &serde_json::Value) -> Result<Field> {
         }
     }
     Ok(f)
+}
+
+#[cfg(test)]
+mod same_columns_tests {
+    use super::*;
+
+    #[test]
+    fn a_fingerprint_counts_only_where_both_recorded_one() {
+        let made = |fp: Option<&str>| {
+            let mut s = Schema::new("t", vec![Field::new("id", FieldType::Keyword), Field::new("body", FieldType::Text { positions: true }), Field::new("emb", FieldType::Vector { dim: 8, index: crate::VectorIndexKind::Flat }).embedded("hash:8", &["body"])], Some("id")).unwrap();
+            s.fields[2].embed.as_mut().unwrap().fingerprint = fp.map(String::from);
+            s
+        };
+        assert!(made(None).same_columns(&made(Some("sha256:a"))));
+        assert!(made(Some("sha256:a")).same_columns(&made(None)));
+        assert!(made(Some("sha256:a")).same_columns(&made(Some("sha256:a"))));
+        assert!(!made(Some("sha256:a")).same_columns(&made(Some("sha256:b"))));
+    }
 }

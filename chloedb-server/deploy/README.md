@@ -19,6 +19,7 @@ replicas dies, how to move to more shards, and what network latency does.
 | `k8s/operator/crd.json` | the `StrataCluster` resource definition, which the operator installs when it starts (`chloedb-server operator --print-crd` writes it) |
 | `k8s/operator/cluster.yaml` | a cluster for it to make: 2 shards of 3 copies, 10,000 demo products |
 | `kind-test.sh` | creates the kind cluster and runs each step below |
+| `monitoring/` | a monitoring kit for any cluster, on Kubernetes or not: Prometheus's scrape config (`prometheus.yml`), alerting rules mirroring the servers' built-in alerts with their runbooks (`chloedb-rules.yml`), and a Grafana dashboard to import (`grafana-dashboard.json`); [the guide](../../docs/guide/operate-cluster.md#check-its-health) says how to use them |
 
 ## The operator
 

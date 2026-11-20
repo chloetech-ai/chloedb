@@ -4831,6 +4831,38 @@ impl Service {
         idem::forget_expired(db, chloedb::timestamp::now(), Instant::now() + self.timeout)
     }
 
+    /// Gives the database file's free space back to the file system by
+    /// itself ([`chloedb::storage::Database::trim`]), when the free pages
+    /// of its file (what a `DROP TABLE`, a retention that expired rows or a
+    /// merge left) come to `min_free` bytes and a sixteenth of the file:
+    /// a server that takes writes runs it every [`TRIM_EVERY`]
+    /// ([`crate::server::spawn_trimmer`]), so a table under retention
+    /// reaches a steady file size without `POST /v1/admin/vacuum`. It never
+    /// makes the file grow (the vacuum's lift is left to a person), waits
+    /// at most a second for the writer and moves segments for at most
+    /// [`TRIM_BUDGET`] while it holds it, so writes wait briefly (the next
+    /// run moves the rest). Not a replica. Returns the bytes the file
+    /// shrank by.
+    pub fn trim_due(&self, min_free: u64) -> Result<u64, ApiError> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() {
+            return Ok(0);
+        }
+        // Pages a commit freed are reusable two commits on (and a live
+        // snapshot holds them longer): they count, as the trim's own commits
+        // make them free. A server that only appends to its log between
+        // flushes commits no version that would.
+        let f = db.storage().file_stats();
+        let free = (f.free_pages + f.pending_pages) * chloedb::storage::pager::PAGE as u64;
+        if free < min_free || free * 16 < f.file_bytes {
+            return Ok(0);
+        }
+        let _by = self.admit_write()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let db = db.clone();
+        wait_for_writer(deadline, || Ok(db.storage().trim(TRIM_BUDGET)?))
+    }
+
     /// Rows of table `table` (the first without one) by primary key,
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
@@ -8011,6 +8043,15 @@ pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }
+
+/// How often a server looks for free space in its file to give back ([`Service::trim_due`]).
+pub const TRIM_EVERY: Duration = Duration::from_secs(300);
+
+/// The free space [`Service::trim_due`] waits for: below it, the file keeps it for the writes to come.
+pub const TRIM_MIN_FREE: u64 = 64 << 20;
+
+/// How long [`Service::trim_due`] moves segments for while it holds the writer.
+pub const TRIM_BUDGET: Duration = Duration::from_secs(2);
 
 /// Runs `write` until it gets the writer or `deadline` passes: Strata
 /// answers `Busy` (503) rather than queueing while another write, or a

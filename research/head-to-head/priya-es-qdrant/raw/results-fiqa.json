@@ -1,0 +1,293 @@
+{
+ "set": "fiqa",
+ "at": "2026-11-20T10:24:06Z",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "passages": 57638,
+ "questions": 648,
+ "judgements": 1706,
+ "model": "BAAI/bge-small-en-v1.5",
+ "embedding": {
+  "docs_s": 7825.3,
+  "queries_s": 3.5,
+  "cached": true
+ },
+ "depth": 100,
+ "rrf_k": 60,
+ "sources": {
+  "es_bm25_body": {
+   "ndcg@10": 0.2536,
+   "recall@100": 0.5489,
+   "queries": 648
+  },
+  "es_bm25_beir": {
+   "ndcg@10": 0.2536,
+   "recall@100": 0.5489,
+   "queries": 648
+  },
+  "qdrant": {
+   "ndcg@10": 0.3788,
+   "recall@100": 0.673,
+   "queries": 648,
+   "vs_exact_top10": 0.9829,
+   "vs_exact_top100": 0.9223
+  },
+  "es_qdrant_rrf": {
+   "ndcg@10": 0.3634,
+   "recall@100": 0.6856,
+   "queries": 648
+  },
+  "chloedb_bm25": {
+   "ndcg@10": 0.2533,
+   "recall@100": 0.5551,
+   "queries": 648
+  },
+  "chloedb_vector": {
+   "ndcg@10": 0.3848,
+   "recall@100": 0.6861,
+   "queries": 648,
+   "vs_exact_top10": 0.9992,
+   "vs_exact_top100": 0.9982
+  },
+  "chloedb_rrf": {
+   "ndcg@10": 0.3618,
+   "recall@100": 0.6978,
+   "queries": 648
+  },
+  "exact_vector": {
+   "ndcg@10": 0.3848,
+   "recall@100": 0.6866,
+   "queries": 648
+  }
+ },
+ "paired": {
+  "chloedb_rrf - es_qdrant_rrf": {
+   "ndcg@10": {
+    "diff": -0.0015,
+    "lo": -0.01,
+    "hi": 0.0074,
+    "better": 106,
+    "worse": 112
+   },
+   "recall@100": {
+    "diff": 0.0122,
+    "lo": 0.0015,
+    "hi": 0.0235,
+    "better": 29,
+    "worse": 15
+   }
+  },
+  "chloedb_bm25 - es_bm25_beir": {
+   "ndcg@10": {
+    "diff": -0.0003,
+    "lo": -0.0093,
+    "hi": 0.0089,
+    "better": 103,
+    "worse": 93
+   },
+   "recall@100": {
+    "diff": 0.0062,
+    "lo": -0.0055,
+    "hi": 0.018,
+    "better": 40,
+    "worse": 34
+   }
+  },
+  "chloedb_bm25 - es_bm25_body": {
+   "ndcg@10": {
+    "diff": -0.0003,
+    "lo": -0.0093,
+    "hi": 0.0089,
+    "better": 103,
+    "worse": 93
+   },
+   "recall@100": {
+    "diff": 0.0062,
+    "lo": -0.0055,
+    "hi": 0.018,
+    "better": 40,
+    "worse": 34
+   }
+  },
+  "chloedb_vector - qdrant": {
+   "ndcg@10": {
+    "diff": 0.006,
+    "lo": 0.0012,
+    "hi": 0.0119,
+    "better": 8,
+    "worse": 5
+   },
+   "recall@100": {
+    "diff": 0.0131,
+    "lo": 0.0023,
+    "hi": 0.0246,
+    "better": 23,
+    "worse": 12
+   }
+  }
+ },
+ "same_top10": {
+  "rrf": 0.0247,
+  "vector": 0.8719
+ },
+ "chloedb": {
+  "version": "chloedb-server 0.3.9 (built from 2f21f4dd0c)",
+  "memory_start_kb": 74830,
+  "load_s": 18.59,
+  "rows": 57638,
+  "latency": {
+   "chloedb_bm25": [
+    {
+     "p50_ms": 2.412,
+     "p95_ms": 3.03,
+     "n": 648,
+     "clients": 1,
+     "per_s": 397.3,
+     "server": {
+      "p50_ms": 0.931,
+      "p95_ms": 1.375,
+      "n": 648
+     }
+    },
+    {
+     "p50_ms": 5.078,
+     "p95_ms": 8.228,
+     "n": 648,
+     "clients": 4,
+     "per_s": 751.2
+    }
+   ],
+   "chloedb_vector": [
+    {
+     "p50_ms": 2.832,
+     "p95_ms": 3.687,
+     "n": 648,
+     "clients": 1,
+     "per_s": 333.2,
+     "server": {
+      "p50_ms": 1.256,
+      "p95_ms": 1.775,
+      "n": 648
+     }
+    },
+    {
+     "p50_ms": 5.349,
+     "p95_ms": 8.841,
+     "n": 648,
+     "clients": 4,
+     "per_s": 680.3
+    }
+   ],
+   "chloedb_rrf": [
+    {
+     "p50_ms": 3.368,
+     "p95_ms": 3.945,
+     "n": 648,
+     "clients": 1,
+     "per_s": 292.9,
+     "server": {
+      "p50_ms": 1.77,
+      "p95_ms": 2.176,
+      "n": 648
+     }
+    },
+    {
+     "p50_ms": 5.953,
+     "p95_ms": 9.401,
+     "n": 648,
+     "clients": 4,
+     "per_s": 643.4
+    }
+   ]
+  },
+  "plan": "{\"filter_docs\": 0, \"ir\": {\"root\": {\"columns\": [{\"expr\": {\"field\": 0}, \"name\": \"id\"}], \"input\": {\"input\": {\"node\": \"search\", \"order\": [{\"desc\": true, \"expr\": {\"rrf\": {\"depth\": 100, \"inputs\": [{\"bm25\": {\"field\": 1, \"opts\": {\"syntax\": {\"text\": \"plain\"}}, \"text\": \"Tax implications of holding EWU (or other such UK ETFs) as a US citizen?\"}}, {\"similarity\": {\"field\": 2, \"vector\": \"(384 numbers)\"}}], \"k\": 60.0}}}], \"table\": \"docs\"}, \"limit\": 100, \"node\": \"limit\"}, \"node\": \"project\"}, \"version\": 1}, \"kind\": \"hybrid\", \"logical\": \"Select {\\n    projection: [\\n        (\\n            \\\"id\\\",\\n            Field(\\n                0,\\n            ),\\n        ),\\n    ],\\n    filter: True,\\n    order: Some(\\n        Score {\\n            score: Rrf {\\n                inputs: [\\n                    Bm25 {\\n                        field: 1,\\n                        text: \\\"Tax implications of holding EWU (or other such UK ETFs) as a US citizen?\\\",\\n                        opts: {\\n                            \\\"syntax\\\": Str(\\n                                \\\"plain\\\",\\n                            ),\\n                        },\\n                    },\\n                    Similarity {\\n                        field: 2,\\n                        vector: [\\n                            -0.01805661,\\n                            -0.028895942,\\n                            0.018499305,\\n                            0.031069176,\\n                            0.05956267,\\n                            -0.0072508156,\\n                            -0.0074587488,\\n                            -0.012764387,\\n                            -0.031605776,\\n                            0.07190448,\\n                            -0.009524661,\\n                            0.027406877,\\n                            -0.038366944,\\n                            -0.044993963,\\n                            -0.014340651,\\n                            -0.019089567,\\n                            -0.07989983,\\n                            -0.069543436,\\n                            -0.058006525,\\n                            0.08725126,\\n                            0.041398738,\\n                            -0.025179984,\\n                            -0.010242364,\\n                            -0.008820373,\\n                            0.016969994,\\n                            0.012214372,\\n                            -0.011053973,\\n                            -0.00028506908,\\n                            -0.045906182,\\n                            -0.13490139,\\n                            0.0427939,\\n                            -0.026306845,\\n                            -0.048213564,\\n                            0.05242588,\\n                            0.0511917,\\n                            0.010678352,\\n                            -0.014555291,\\n                            -0.024066538,\\n                            0.03482538,\\n                            0.022215266,\\n                            0.002384519,\\n                            0.0046919016,\\n                            -0.041237757,\\n                            -0.009618566,\\n                            0.05277467,\\n                            0.031149665,\\n                            -0.04341099,\\n                            0.020846933,\\n                            -0.054169834,\\n                            0.11408129,\\n                            -0.007519116,\\n                            -0.047542814,\\n                            0.0064157313,\\n                            -0.010913115,\\n                            -0.014058936,\\n                            0.047194023,\\n                            0.072011806,\\n                            0.05215758,\\n                            -0.046469614,\\n                            0.011892411,\\n                            -0.009471001,\\n                            -0.012033269,\\n                            -0.17128292,\\n                            0.028708134,\\n                            -0.01",
+  "memory_after_kb": 319067,
+  "disk_bytes": 172343668
+ },
+ "es_qdrant": {
+  "version": "Elasticsearch 9.5.5 (Docker mirror.gcr.io/library/elasticsearch:9.5.5, heap 1g); Qdrant 1.20.0 (Docker mirror.gcr.io/qdrant/qdrant:v1.20.0)",
+  "memory_start_kb": {
+   "elasticsearch": 1445986,
+   "qdrant": 28180
+  },
+  "es_load_s": 8.47,
+  "qdrant_load_s": 15.6,
+  "qdrant_collection": {
+   "status": "green",
+   "points_count": 57638,
+   "indexed_vectors_count": 56000,
+   "segments_count": 2
+  },
+  "latency": {
+   "es_bm25_beir": [
+    {
+     "p50_ms": 5.812,
+     "p95_ms": 7.471,
+     "n": 648,
+     "clients": 1,
+     "per_s": 167.7
+    },
+    {
+     "p50_ms": 9.262,
+     "p95_ms": 16.12,
+     "n": 648,
+     "clients": 4,
+     "per_s": 399.8
+    }
+   ],
+   "qdrant": [
+    {
+     "p50_ms": 2.492,
+     "p95_ms": 2.974,
+     "n": 648,
+     "clients": 1,
+     "per_s": 395.9
+    },
+    {
+     "p50_ms": 5.041,
+     "p95_ms": 8.543,
+     "n": 648,
+     "clients": 4,
+     "per_s": 729.3
+    }
+   ],
+   "es_qdrant_rrf": [
+    {
+     "p50_ms": 6.458,
+     "p95_ms": 8.21,
+     "n": 648,
+     "clients": 1,
+     "per_s": 149.6
+    },
+    {
+     "p50_ms": 13.923,
+     "p95_ms": 21.482,
+     "n": 648,
+     "clients": 4,
+     "per_s": 273.8
+    }
+   ],
+   "es_qdrant_rrf_sequential": [
+    {
+     "p50_ms": 7.883,
+     "p95_ms": 9.496,
+     "n": 648,
+     "clients": 1,
+     "per_s": 126.2
+    }
+   ]
+  },
+  "memory_after_kb": {
+   "elasticsearch": 1595932,
+   "qdrant": 132710
+  },
+  "disk_bytes": {
+   "elasticsearch": 62530177,
+   "qdrant": 293871503
+  }
+ }
+}
