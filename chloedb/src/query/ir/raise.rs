@@ -3,7 +3,7 @@
 //! made gives back the statement it was made of; a plan from elsewhere is
 //! checked against the schema as the binder checks SQL.
 
-use super::{err, Agg, ArithOp, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
+use super::{err, Agg, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
 use crate::error::Result;
 use crate::query::logical::{self, AggFn, Col, GraphQuery, Having, OrderBy, PathCol, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, TimeCol, TimeOf, Vectors, CROSS_ENCODER_FIRST};
 use crate::query::rank::Rank;
