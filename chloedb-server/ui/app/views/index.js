@@ -73,37 +73,41 @@ export const GROUPS = ["Build", "Watch", "Run the cluster", "Apps", "Labs"];
  * there (the entry says so when the signed-in key has less); `cluster`: a
  * page about a cluster's shards and copies, left out of the sidebar on a
  * single server (the palette still finds it). The shell puts Build first
- * on a single server and Watch first on a coordinator.
+ * on a single server and Watch first on a coordinator. `first`: a page a
+ * newcomer to a single server sees; the others wait under "More pages" in
+ * the sidebar until they are opened once (from there, a link or Ctrl+K),
+ * have something to say (a badge) or are pinned, and stay in their group
+ * from then on. A coordinator shows them all.
  */
 export const NAV = [
   ["Build", [
-    { id: "start", title: "Start here", icon: "rocket", key: "g" },
-    { id: "table", title: "Tables", icon: "table", key: "e" },
-    { id: "saved", title: "Saved searches", icon: "bookmark", key: "v" },
+    { id: "start", first: true, title: "Start here", icon: "rocket", key: "g" },
+    { id: "table", first: true, title: "Tables", icon: "table", key: "e" },
+    { id: "saved", first: true, title: "Saved searches", icon: "bookmark", key: "v" },
     { id: "designer", title: "Query designer", icon: "stages", key: "z" },
     { id: "views", title: "Team views", icon: "eye", key: "y" },
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
-    { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
-    { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },
+    { id: "sql", first: true, title: "SQL workbench", icon: "sql", key: "w" },
+    { id: "import", first: true, title: "Import and export", icon: "import", key: "i", scope: "write" },
     { id: "connectors", title: "Connectors", icon: "streams", scope: "admin" },
     { id: "models", title: "Models", icon: "cpu" },
-    { id: "schema", title: "Schema", icon: "schema", key: "d" },
+    { id: "schema", first: true, title: "Schema", icon: "schema", key: "d" },
     { id: "slices", title: "Slices", icon: "layers" },
   ]],
   ["Watch", [
-    { id: "home", title: "Home", icon: "overview", key: "h" },
-    { id: "alerts", title: "Alerts", icon: "alerts", key: "a" },
-    { id: "logs", title: "Logs", icon: "logs", key: "l" },
+    { id: "home", first: true, title: "Home", icon: "overview", key: "h" },
+    { id: "alerts", first: true, title: "Alerts", icon: "alerts", key: "a" },
+    { id: "logs", first: true, title: "Logs", icon: "logs", key: "l" },
     { id: "timeline", title: "Timeline", icon: "timeline", key: "t" },
     { id: "explorer", title: "Log explorer", icon: "search", key: "m" },
-    { id: "queries", title: "Queries", icon: "queries", key: "q" },
+    { id: "queries", first: true, title: "Queries", icon: "queries", key: "q" },
     { id: "funnel", title: "Query funnel", icon: "filter", key: "j" },
     { id: "performance", title: "Performance", icon: "perf", key: "p" },
     { id: "oncall", title: "On-call agent", icon: "agent", key: "n", scope: "admin", route: "POST /v1/admin/oncall" },
     { id: "feedback", title: "Feedback", icon: "feedback", key: "f", scope: "write", route: "POST /v1/feedback" },
   ]],
   ["Run the cluster", [
-    { id: "cluster", title: "Cluster", icon: "cluster", key: "c" },
+    { id: "cluster", first: true, title: "Cluster", icon: "cluster", key: "c" },
     { id: "tables", title: "Tables and storage", icon: "layers", key: "o", fallback: "inspector" },
     { id: "profile", title: "Profiler", icon: "flame", key: "r" },
     { id: "querypath", title: "Query path", icon: "route", key: "x", cluster: true },
@@ -111,7 +115,7 @@ export const NAV = [
     { id: "autoscale", title: "Autoscaling", icon: "autoscale", scope: "admin", cluster: true },
     { id: "simulator", title: "Simulator", icon: "gauge", scope: "admin", cluster: true },
     { id: "access", title: "Access and audit", icon: "access", key: "k", scope: "admin" },
-    { id: "system", title: "Settings", icon: "system", key: "s", scope: "admin" },
+    { id: "system", first: true, title: "Settings", icon: "system", key: "s", scope: "admin" },
     { id: "cloud", title: "Cloud setup", icon: "cloud", scope: "admin" },
     { id: "connections", title: "Connections", icon: "key", scope: "admin" },
     { id: "clusters", title: "All clusters", icon: "cluster", scope: "admin" },

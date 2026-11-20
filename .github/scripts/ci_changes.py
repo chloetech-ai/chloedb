@@ -126,6 +126,13 @@ COMPILED_IN = {
     "docs/chloedb/query-language.md": ({"chloedb-server"}, set()),
     "docs/chloedb/build-an-app.md": ({"chloedb-server"}, set()),
     "docs/chloedb/runbooks.md": ({"chloedb-server"}, set()),
+    "docs/chloedb/python.md": ({"chloedb-server"}, set()),
+    "docs/chloedb/javascript.md": ({"chloedb-server"}, set()),
+    "docs/chloedb/troubleshooting.md": ({"chloedb-server"}, set()),
+    # Guide pages, whose examples the job `docs` runs too.
+    "docs/guide/agents.md": ({"chloedb-server"}, {"docs"}),
+    "docs/guide/search.md": ({"chloedb-server"}, {"docs"}),
+    "docs/guide/search-page.md": ({"chloedb-server"}, {"docs"}),
     "chloedb-workbench/GUIDE.md": ({"chloedb-workbench"}, set()),
 }
 
@@ -373,7 +380,8 @@ def self_test():
     # The pages the server compiles in reach its tests, the rest of docs nothing.
     assert on(["docs/chloedb/runbooks.md"]) == {"any", "runner", "test:chloedb-server"}
     assert on(["README.md", "docs/chloedb/server.md", "chloedb/results/x/run.json"]) == set()
-    assert on(["docs/guide/search.md"]) == {"any", "docs", "server"}
+    assert on(["docs/guide/search.md"]) == {"any", "docs", "server", "runner", "test:chloedb-server"}
+    assert on(["docs/guide/rag.md"]) == {"any", "docs", "server"}
     assert on(["chloedb/results/sequence/gate.py"]) == every
     assert on(["chloedb/notes/text.md", "chloedb/report/graph.html", "chloedb/scripts/prepare_beir.py", "research/cpu-encoders/sparse.py"]) == set()
     # The rest of .github and the scripts.
