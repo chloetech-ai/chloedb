@@ -319,6 +319,18 @@ def statements(vision: bool = False) -> list[str]:
       emb VECTOR OPTIONS(embed = 'body', model = '{TEXT_MODEL}')
     ) OPTIONS(shard_by = 'problem', cluster_by = 'problem')""",
         # A person's report of a post ('reporter>post'); a few hide it.
+        # A question a visitor asked Parley, answered from what members wrote
+        # with the posts it cites (search.py), kept so the same question asked
+        # again within hours costs no model time. Keyed by the question.
+        """CREATE TABLE IF NOT EXISTS answers (
+      id KEYWORD PRIMARY KEY,
+      q TEXT,
+      answer TEXT,
+      sources TEXT,
+      asker KEYWORD,
+      cost FLOAT DEFAULT 0,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(retain = '30 days')""",
         """CREATE TABLE IF NOT EXISTS reports (
       id KEYWORD PRIMARY KEY,
       post KEYWORD NOT NULL,
@@ -335,4 +347,4 @@ RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS po
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
           "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
-          "problems", "problem_team", "problem_notes"]
+          "problems", "problem_team", "problem_notes", "answers"]

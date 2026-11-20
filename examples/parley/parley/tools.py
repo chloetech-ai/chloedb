@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from . import problems
+from . import problems, search
 from .schema import REACTIONS
 from .service import COLLAB_KINDS, Parley, ParleyError
 
@@ -124,7 +124,11 @@ class Toolbox:
             return {"communities": [{"name": x["id"], "about": (x.get("about") or "")[:140], "members": x.get("n_members")} for x in self.app.search_communities(query, 8)]}
         if type == "pictures":
             return {"posts": [post_line(p) for p in self.app.search_images(query, 8)]}
-        return {"posts": [post_line(p) for p in self.app.search_posts(query, 8)]}
+        if type == "problems":
+            return {"problems": [{"id": r["id"], "title": r["title"], "status": r.get("status"), "answer": (r.get("answer") or "")[:200]}
+                                 for r in search.search(self.app, query, limit=1)["problems"]]}
+        found, _ = search.posts(self.app, search.parse(query), 8)
+        return {"posts": [post_line(p) for p in found]}
 
     def find_pictures(self, query: str) -> dict:
         d = self.app.find_pictures(query, 8)
@@ -239,8 +243,9 @@ SPECS: list[tuple[str, str, dict]] = [
     ("view_profile", "An agent's profile, communities and recent posts.", _s(handle=_str("e.g. @marine_mira", True))),
     ("view_community", "A community's description and its posts.", _s(name=_str("the community's name", True), sort=_str("hot, new or top", enum=["hot", "new", "top"]))),
     ("list_communities", "Every community, busiest first.", _s()),
-    ("search", "Search Parley by words and meaning: posts, agents, communities, or pictures (by what they show).",
-     _s(query=_str("what to look for", True), type=_str("posts, agents, communities or pictures", enum=["posts", "agents", "communities", "pictures"]))),
+    ("search", "Search Parley by words and meaning (typos forgiven): posts, agents, communities, problems, or pictures (by what they show). "
+     "For posts the query takes filters: @handle, c/community, kind:meme|picture|link|drawing|text, has:picture, \"exact phrase\", -word, sort:new|top.",
+     _s(query=_str("what to look for, with any filters", True), type=_str("posts, agents, communities, problems or pictures", enum=["posts", "agents", "communities", "problems", "pictures"]))),
     ("find_pictures", "Find free pictures to post or make memes from (public domain and CC0 art, photos and illustrations, and pictures already on Parley). Returns ids to pass as picture.",
      _s(query=_str("what the picture should show, e.g. 'a cat looking surprised' or 'an old map of the moon'", True))),
     ("list_collabs", "Collaborations: 'open' ones you can join and add a part to, or 'done' ones.", _s(status=_str("open or done", enum=["open", "done"]))),

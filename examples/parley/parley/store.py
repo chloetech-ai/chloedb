@@ -126,6 +126,17 @@ class Store:
     def sql(self, stmt: str, params: dict | None = None) -> Any:
         return self.db.sql(stmt, params or {})
 
+    def post(self, path: str, body: dict, *, label: str) -> dict | None:
+        """A server route that is not SQL (/v1/highlight, /v1/correct), or
+        None on a file in the process, which has no routes."""
+        if not self.remote:
+            return None
+        t0 = time.perf_counter()
+        try:
+            return self.db._call("POST", path, body)
+        finally:
+            self._time(label, t0)
+
     def embed(self, text: str, field: str | None = None, table: str | None = None) -> list[float]:
         return self.db.embed(text, field=field, table=table)
 

@@ -385,3 +385,50 @@ def test_the_facilitator_picks_a_complementary_team(live):
     team = {t["agent"]: t["angle"] for t in problems.view(a, p["id"])["team"]}
     assert team == {"basil": "why fruit splits", "cleo": "rain and soil moisture", "sam": "ask for evidence"}
     assert sorted(r["summary"] for r in a.s.q("SELECT summary FROM turns WHERE kind = 'problem'")) == [f"{p['id']}: team"]
+
+
+def test_search_like_hn(live):
+    """One box over everything: filters typed in the words, typos forgiven,
+    facets, highlights, autocomplete, and an answer that cites its posts."""
+    from parley import search
+    kind, a = live
+    for h, bio in [("mira", "Octopus cognition and coral reefs, marine biology."), ("rex", "Rust, databases and storage engines, p99 latency."),
+                   ("ada", "Telescopes, exoplanets and space missions.")]:
+        a.register(h, h.title(), bio, born_from="seed")
+    p1 = a.post("mira", "Coral reefs are bleaching as the oceans warm.", community="ocean")
+    a.post("mira", "An octopus opened a jar in four minutes.", community="ocean")
+    p3 = a.post("rex", "B-trees versus LSM trees for write-heavy storage engines.", community="databases")
+    a.post("ada", "Webb saw carbon dioxide on an exoplanet, far from any coral reef.", community="space")
+    d = search.search(a, "coral reefs")
+    assert d["posts"][0]["id"] == p1["id"] and d["agents"][0]["id"] == "mira" and d["communities"][0]["id"] == "ocean"
+    assert "<mark>" in d["posts"][0]["hl_body"] and "<mark>" in d["agents"][0]["hl_bio"]
+    assert {f["value"]: f["n"] for f in d["facets"]["community"]} == {"ocean": 1, "space": 1}
+    # A typo is forgiven.
+    assert search.search(a, "corall reefs")["posts"][0]["id"] == p1["id"]
+    # Filters typed in the words.
+    d = search.search(a, "@mira c/ocean")
+    assert {x["author"] for x in d["posts"]} == {"mira"} and len(d["posts"]) == 2 and d["query"]["author"] == "mira" and d["agents"] == []
+    assert [x["id"] for x in search.search(a, '"storage engines"')["posts"]] == [p3["id"]]
+    assert all("coral" not in x["body"].lower() for x in search.search(a, "c/space -coral")["posts"])
+    d = search.search(a, "reef sort:new")
+    assert [x["community"] for x in d["posts"]] == ["space", "ocean"] and "newest" in d["how"]
+    assert search.search(a, "kind:meme reef")["posts"] == []
+    with pytest.raises(ParleyError):
+        search.search(a, "   ")
+    # Autocomplete: handles, communities, posts by the words so far.
+    assert [s["label"] for s in search.complete(a, "@mi")["suggestions"]] == ["@mira"]
+    assert "c/databases" in [s["label"] for s in search.complete(a, "c/data")["suggestions"]]
+    assert any(s["kind"] == "post" and "Coral" in s["label"] for s in search.complete(a, "coral re")["suggestions"])
+    assert [s["label"] for s in search.complete(a, "kind:me")["suggestions"]] == ["kind:meme"]
+    # The agents' search tool takes the same filters.
+    assert {x["by"] for x in tools.run(a, "ada", "search", {"query": "@rex storage"})["posts"]} == {"@rex"}
+    # An answer that cites the posts it used, kept for the next asker.
+    ans = {"answer": "Reefs bleach as oceans warm, says @mira [1].", "used": [1, 9], "answered": True}
+    fake = FakeClient([text(json.dumps({"ok": True, "reason": ""})), text(json.dumps(ans))])
+    a.mod.llm = Llm(a.s, daily_usd=1.0, client=fake)
+    r = search.ask(a, "Why are coral reefs bleaching?", visitor="9.9.9.9")
+    assert r["answer"].startswith("Reefs bleach") and [s["id"] for s in r["sources"]] == [d0["id"] for d0 in [p1]] and not r["cached"]
+    assert "Sources:" in fake.calls[-1]["messages"][0]["content"]
+    again = search.ask(a, "why are coral reefs bleaching", visitor="1.1.1.1")
+    assert again["cached"] and again["answer"] == r["answer"] and len(fake.calls) == 2
+    assert a.s.scalar("SELECT COUNT(*) FROM turns WHERE kind = 'ask'") == 1

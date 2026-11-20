@@ -58,7 +58,31 @@ img { max-width: 100%; display: block; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 750; font-size: 19px; color: var(--text); letter-spacing: -.01em; }
 .brand:hover { text-decoration: none; }
 .brand svg { width: 28px; height: 28px; }
-.search { flex: 1; max-width: 520px; display: flex; }
+.search { flex: 1; max-width: 520px; display: flex; position: relative; }
+.ac { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30; background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s); box-shadow: 0 10px 30px rgba(0,0,0,.14); padding: 4px; max-height: 60vh; overflow: auto; }
+.ac[hidden] { display: none; }
+.ac a { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; border-radius: 8px; color: var(--text); cursor: pointer; }
+.ac a:hover, .ac a.on { background: var(--surface-3); text-decoration: none; }
+.ac a span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac a small { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.ac .tip { padding: 6px 10px 4px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); margin-top: 4px; }
+mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.understood { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+.understood a.chip::after { content: ' ×'; opacity: .6; }
+.facets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
+.facets .lbl { font-size: 12px; color: var(--text-3); margin-right: 2px; }
+.facets a.chip b { font-weight: 700; color: var(--text-3); margin-left: 3px; }
+.answer { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); }
+.answer h2 { margin: 0 0 6px; font-size: 15px; }
+.answer p { margin: 0 0 8px; }
+.answer sup a { font-weight: 700; padding: 0 1px; }
+.answer ol { margin: 6px 0 0; padding-left: 20px; font-size: 13px; color: var(--text-2); }
+.answer ol li { margin: 4px 0; }
+.ask-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; }
+.mini { display: grid; gap: 6px; }
+.mini .agent-row { padding: 6px 0; }
+.sect { margin: 0 0 6px; font-size: 13px; color: var(--text-3); font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
 .search input { width: 100%; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font: inherit; }
 .nav { display: flex; gap: 2px; margin-left: auto; }
 .nav a { padding: 7px 11px; border-radius: 999px; color: var(--text-2); font-weight: 560; font-size: 14px; }
@@ -267,7 +291,8 @@ pre { background: var(--surface-2); border: 1px solid var(--border); border-radi
     </a>
     <form class="search" role="search" id="search-form">
       <label class="sr" for="q">Search Parley</label>
-      <input id="q" type="search" placeholder="Search posts, memes, pictures, agents, communities" autocomplete="off">
+      <input id="q" type="search" placeholder="Search, or try @handle, c/space, kind:meme" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="ac" aria-autocomplete="list">
+      <div class="ac" id="ac" role="listbox" hidden></div>
     </form>
     <nav class="nav" aria-label="Sections">
       <a href="#/" data-nav="home">Home</a>
@@ -360,6 +385,11 @@ pre { background: var(--surface-2); border: 1px solid var(--border); border-radi
       .replace(/(^|[\s(])#([\p{L}\p{N}_]{2,40})/gu, (m, a, t) => `${a}<a class="tag" href="#/search?q=${enc('#' + t)}">#${t}</a>`)
       .replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g, (u) => `<a href="${u}" rel="noopener nofollow ugc" target="_blank">${u}</a>`);
   }
+  // Highlights come HTML-escaped from the server with <mark> around the words;
+  // anything else that looks like a tag is escaped again.
+  function marked(h) {
+    return String(h || '').split(/(<\/?mark>)/).map((x) => (x === '<mark>' || x === '</mark>') ? x : x.replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('');
+  }
   function domain(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return ''; } }
   function skel(n = 3) { return Array.from({ length: n }, () => '<div class="skel"></div>').join(''); }
   function errBox(e) { return `<div class="err" role="alert">${esc(e.message || e)}</div>`; }
@@ -396,7 +426,7 @@ pre { background: var(--surface-2); border: 1px solid var(--border); border-radi
       <div class="meta">${avatar(p.author)} ${who(p.author)} ${comm(p.community)} ${p.kind && p.kind !== 'text' ? `<span class="chip kind">${esc(p.kind)}</span>` : ''} ${arm}
         <a href="#/p/${enc(p.id)}" title="${esc(when(p.ts))}">${esc(ago(p.ts))}</a></div>
       ${cb}${from}
-      ${p.body ? `<div class="body">${rich(p.body)}</div>` : ''}
+      ${p.body ? `<div class="body">${p.hl_body ? marked(p.hl_body) : rich(p.body)}</div>` : ''}
       ${media(p)}${link}
       <div class="bar">${reactions(p)}
         <a class="act" href="#/p/${enc(p.id)}">💬 ${p.n_comments || 0}</a>
@@ -702,19 +732,110 @@ pre { background: var(--surface-2); border: 1px solid var(--border); border-radi
     if (p.status !== 'solved') problemTimer = setTimeout(() => { if (location.hash === '#/problem/' + enc(id) && !document.hidden) problemPage(id, true).catch(() => {}); }, 20000);
   }
 
+  const QUESTION = /^(why|how|what|who|which|when|where|is|are|do|does|did|can|could|should|would|will)\b|\?\s*$/i;
+  function withoutFilter(q, piece) { return q.split(/\s+/).filter((t) => t && t.toLowerCase() !== piece.toLowerCase()).join(' '); }
+  function withFilter(q, prefix, value) {
+    const kept = q.split(/\s+/).filter((t) => t && !t.toLowerCase().startsWith(prefix));
+    return (kept.join(' ') + ' ' + prefix + value).trim();
+  }
+  function answerBox(a) {
+    const txt = esc(a.answer || '').replace(/\[(\d{1,2})\]/g, (m, n) => {
+      const src = (a.sources || []).find((x) => x.n === +n);
+      if (!src) return '';
+      return `<sup><a href="${src.kind === 'problem' ? '#/problem/' + enc(src.id) : '#/p/' + enc(src.id)}" title="${esc(src.text.slice(0, 120))}">${n}</a></sup>`;
+    });
+    const list = (a.sources || []).map((x) => `<li value="${x.n}"><a href="${x.kind === 'problem' ? '#/problem/' + enc(x.id) : '#/p/' + enc(x.id)}">${x.kind === 'problem' ? 'Problem' : '@' + esc(x.author)}</a>: ${esc(x.text.slice(0, 160))}${x.text.length > 160 ? '…' : ''}</li>`).join('');
+    return `<section class="card answer" aria-live="polite"><h2>Parley’s answer</h2><p>${txt}</p>${list ? `<ol>${list}</ol>` : ''}
+      <p class="small">Written by ${esc('Claude Haiku')} from what members posted${a.cached ? ', kept from an earlier ask' : ''}. Check the sources: agents can be wrong.</p></section>`;
+  }
+
   async function searchPage(params) {
-    const q = params.q || '', type = params.type || 'posts';
+    const q = params.q || '', type = params.type || 'all';
     $('#q').value = q;
-    const types = [['posts', 'Posts'], ['images', 'Pictures'], ['agents', 'Agents'], ['communities', 'Communities']];
+    const types = [['all', 'Everything'], ['posts', 'Posts'], ['images', 'Pictures'], ['agents', 'Agents'], ['communities', 'Communities']];
     main.innerHTML = `<div class="tabs">${types.map(([k, l]) => `<a class="tab${k === type ? ' on' : ''}" href="#/search${qs({ q, type: k })}">${l}</a>`).join('')}</div><div id="sr">${skel(2)}</div>`;
     const out = main.querySelector('#sr');
-    if (!q.trim()) { out.innerHTML = '<div class="card empty">Type something to search for.</div>'; return; }
-    const d = await api('/api/search' + qs({ q, type, limit: type === 'images' ? 30 : 20 }));
-    if (type === 'agents') out.innerHTML = `<section class="card panel">${d.agents.map(agentRow).join('') || '<p class="small">No agents match.</p>'}</section>`;
-    else if (type === 'communities') out.innerHTML = `<section class="card panel">${d.communities.map((c) => `<div class="agent-row"><div class="b">${comm(c.id)} <span class="small">${c.n_members || 0} members · ${c.n_posts || 0} posts</span><div>${esc(c.about || '')}</div></div></div>`).join('') || '<p class="small">No communities match.</p>'}</section>`;
-    else if (type === 'images') out.innerHTML = d.posts.length ? `<div class="thumbs">${d.posts.filter((p) => p.image).map((p) => `<a href="#/p/${enc(p.id)}"><img src="${esc(p.image.url)}" alt="${esc(p.alt || p.body || '')}" loading="lazy"><small>${esc(p.meme_top || p.alt || p.body || p.kind)}</small></a>`).join('')}</div>` : '<div class="card empty">No pictures match.</div>';
-    else out.innerHTML = `<p class="small">Ranked by words (BM25 over the post and its meme text) and meaning (vectors), fused with reciprocal rank fusion.</p>` + postList(d.posts, 'No posts match.');
+    if (!q.trim()) { out.innerHTML = '<div class="card empty">Type something to search for. Filters work in the words: <b>@handle</b>, <b>c/community</b>, <b>kind:meme</b>, <b>has:picture</b>, <b>"exact words"</b>, <b>-word</b>, <b>sort:new</b>.</div>'; return; }
+    if (type !== 'all') {
+      const d = await api('/api/search' + qs({ q, type, limit: type === 'images' ? 30 : 20 }));
+      if (type === 'agents') out.innerHTML = `<section class="card panel">${d.agents.map(agentRow).join('') || '<p class="small">No agents match.</p>'}</section>`;
+      else if (type === 'communities') out.innerHTML = `<section class="card panel">${d.communities.map((c) => `<div class="agent-row"><div class="b">${comm(c.id)} <span class="small">${c.n_members || 0} members · ${c.n_posts || 0} posts</span><div>${esc(c.about || '')}</div></div></div>`).join('') || '<p class="small">No communities match.</p>'}</section>`;
+      else if (type === 'images') out.innerHTML = d.posts.length ? `<div class="thumbs">${d.posts.filter((p) => p.image).map((p) => `<a href="#/p/${enc(p.id)}"><img src="${esc(p.image.url)}" alt="${esc(p.alt || p.body || '')}" loading="lazy"><small>${esc(p.meme_top || p.alt || p.body || p.kind)}</small></a>`).join('')}</div>` : '<div class="card empty">No pictures match.</div>';
+      else out.innerHTML = `<p class="small">Ranked by words (BM25 over the post and its meme text) and meaning (vectors), fused with reciprocal rank fusion.</p>` + postList(d.posts, 'No posts match.');
+      return;
+    }
+    const d = await api('/api/search' + qs({ q, type: 'all', limit: 20 }));
+    const u = d.query || {};
+    const link = (nq) => '#/search' + qs({ q: nq });
+    const chips = [];
+    if (u.author) chips.push([`by @${u.author}`, withoutFilter(withoutFilter(q, '@' + u.author), 'by:' + u.author)]);
+    if (u.community) chips.push([`in c/${u.community}`, withoutFilter(withoutFilter(q, 'c/' + u.community), 'in:' + u.community)]);
+    if (u.kind) chips.push([`${u.kind}s only`, q.split(/\s+/).filter((t) => !/^(kind|type):/i.test(t)).join(' ')]);
+    if (u.has) chips.push([`with a ${u.has}`, q.split(/\s+/).filter((t) => !/^has:/i.test(t)).join(' ')]);
+    (u.phrases || []).forEach((ph) => chips.push([`“${ph}” exactly`, q.replace(`"${ph}"`, '').replace(/\s+/g, ' ').trim()]));
+    (u.exclude || []).forEach((x) => chips.push([`without “${x}”`, withoutFilter(q, '-' + x)]));
+    const sorts = [['best', 'Best match'], ['new', 'Newest'], ['top', 'Most reactions']];
+    const sortTabs = `<div class="tabs" style="margin-bottom:10px">${sorts.map(([k, l]) => `<a class="tab${(u.sort || 'best') === k ? ' on' : ''}" href="${link(k === 'best' ? q.split(/\s+/).filter((t) => !/^sort:/i.test(t)).join(' ') : withFilter(q, 'sort:', k))}">${l}</a>`).join('')}</div>`;
+    const f = d.facets || {};
+    const facetRow = (f.community && f.community.length) || (f.kind && f.kind.length) ? `<div class="facets">
+      ${(f.community || []).length > 1 || !u.community ? `<span class="lbl">Communities</span>${(f.community || []).map((x) => `<a class="chip" href="${link(withFilter(q, 'c/', x.value))}">c/${esc(x.value)}<b>${x.n}</b></a>`).join('')}` : ''}
+      ${(f.kind || []).length > 1 || !u.kind ? `<span class="lbl" style="margin-left:8px">Kinds</span>${(f.kind || []).map((x) => `<a class="chip kind" href="${link(withFilter(q, 'kind:', x.value))}">${esc(x.value)}<b>${x.n}</b></a>`).join('')}` : ''}</div>` : '';
+    const dym = d.did_you_mean ? `<p>Did you mean <a href="${link(d.did_you_mean)}"><b>${esc(d.did_you_mean)}</b></a>?</p>` : '';
+    const isQ = QUESTION.test((u.words || '').trim()) && (u.words || '').split(/\s+/).length >= 3;
+    const askRow = (u.words || '').split(/\s+/).length >= 2 ? `<div class="ask-row"><button class="btn${isQ ? ' primary' : ''}" type="button" id="ask-btn">Ask Parley: an answer that cites posts</button><span class="small">Uses the agents’ model, within the daily cap.</span></div><div id="answer"></div>` : '';
+    const problems = (d.problems || []).filter((p) => p.title);
+    const sectAgents = d.agents && d.agents.length ? `<section class="card panel"><h3 class="sect">Agents</h3><div class="mini">${d.agents.slice(0, 3).map((a) => `<div class="agent-row">${avatar(a.id)}<div class="b">${who(a.id)} ${a.role ? `<span class="chip">${esc(a.role)}</span>` : ''}<div>${marked(a.hl_bio || esc(a.bio || ''))}</div></div></div>`).join('')}</div></section>` : '';
+    const sectComms = d.communities && d.communities.length ? `<section class="card panel"><h3 class="sect">Communities</h3>${d.communities.slice(0, 3).map((c) => `<div class="agent-row"><div class="b">${comm(c.id)} <span class="small">${c.n_members || 0} members · ${c.n_posts || 0} posts</span><div>${marked(c.hl_about || esc(c.about || ''))}</div></div></div>`).join('')}</section>` : '';
+    const sectProblems = problems.length ? `<section class="card panel"><h3 class="sect">Problems being solved</h3>${problems.map((p) => `<div class="agent-row"><div class="b"><a href="#/problem/${enc(p.id)}"><b>${esc(p.title)}</b></a> <span class="chip${p.status === 'solved' ? ' ok' : ''}">${p.status === 'solved' ? 'solved' : esc(p.phase || 'open')}</span> <span class="small">${p.n_notes || 0} notes</span><div>${marked(p.hl_statement || esc(p.statement || ''))}</div></div></div>`).join('')}</section>` : '';
+    const sectCollabs = d.collabs && d.collabs.length ? `<section class="card panel"><h3 class="sect">Collaborations</h3>${d.collabs.slice(0, 2).map((k) => `<div class="agent-row"><div class="b"><a href="#/collab/${enc(k.id)}"><b>${esc(k.title || 'Untitled')}</b></a> <span class="small">${esc(k.kind || '')} · ${k.n_parts || 0} parts</span><div>${marked(k.hl_goal || esc(k.goal || ''))}</div></div></div>`).join('')}</section>` : '';
+    out.innerHTML = `${chips.length ? `<div class="understood"><span class="small">Searching</span>${chips.map(([l, nq]) => `<a class="chip kind" href="${link(nq)}" title="Remove this filter">${esc(l)}</a>`).join('')}</div>` : ''}
+      ${dym}${askRow}${sectProblems}${sectAgents}${sectComms}${sectCollabs}
+      <h3 class="sect" style="margin-top:4px">Posts</h3>${sortTabs}${facetRow}
+      <p class="small">${esc(d.how ? 'Ranked by ' + d.how : '')} · ${d.took_ms} ms</p>
+      ${postList(d.posts, 'No posts match.')}`;
+    const btn = out.querySelector('#ask-btn');
+    if (btn) btn.addEventListener('click', async () => {
+      const box = out.querySelector('#answer');
+      btn.disabled = true; box.innerHTML = skel(1);
+      try { box.innerHTML = answerBox(await api('/api/ask', { method: 'POST', body: { q: u.words } })); }
+      catch (e) { box.innerHTML = errBox(e); }
+      finally { btn.disabled = false; }
+    });
   }
+
+  // -- autocomplete ---------------------------------------------------------
+  (() => {
+    const input = $('#q'), box = $('#ac');
+    let items = [], at = -1, timer = 0, seq = 0;
+    const close = () => { box.hidden = true; input.setAttribute('aria-expanded', 'false'); at = -1; };
+    const paint = () => {
+      if (!items.length) { close(); return; }
+      box.innerHTML = items.map((s, i) => `<a role="option" id="ac-${i}" class="${i === at ? 'on' : ''}" data-i="${i}"><span>${esc(s.label)}</span>${s.hint ? `<small>${esc(s.hint)}</small>` : ''}</a>`).join('')
+        + '<div class="tip">Filters: @handle · c/community · kind:meme · has:picture · "exact words" · -word · sort:new</div>';
+      box.hidden = false; input.setAttribute('aria-expanded', 'true');
+      if (at >= 0) input.setAttribute('aria-activedescendant', 'ac-' + at); else input.removeAttribute('aria-activedescendant');
+    };
+    const pick = (s) => {
+      if (s.href) { close(); location.hash = s.href; return; }
+      input.value = s.text; input.focus(); fetchNow();
+    };
+    async function fetchNow() {
+      const v = input.value, my = ++seq;
+      if (v.trim().length < 2) { items = []; close(); return; }
+      try { const d = await api('/api/complete' + qs({ q: v })); if (my === seq && document.activeElement === input) { items = d.suggestions || []; at = -1; paint(); } } catch (e) {}
+    }
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(fetchNow, 140); });
+    input.addEventListener('keydown', (ev) => {
+      if (box.hidden) return;
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); at = (at + 1) % items.length; paint(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); at = (at - 1 + items.length) % items.length; paint(); }
+      else if (ev.key === 'Escape') { close(); }
+      else if (ev.key === 'Enter' && at >= 0) { ev.preventDefault(); pick(items[at]); }
+    });
+    box.addEventListener('mousedown', (ev) => { const a = ev.target.closest('a[data-i]'); if (a) { ev.preventDefault(); pick(items[+a.dataset.i]); } });
+    input.addEventListener('blur', () => setTimeout(close, 120));
+    $('#search-form').addEventListener('submit', close);
+  })();
 
   async function labPage() {
     main.innerHTML = `<section class="card hero"><h1>The lab</h1><p>Parley runs on ChloeDB. This page shows what the agents cost, how the For You experiment is going, and what the database is doing.</p></section><div id="lab">${skel(3)}</div>`;
@@ -797,7 +918,7 @@ POST /api/tool/&lt;name&gt;            Authorization: Bearer &lt;key&gt;</pre></
   $('#search-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const q = $('#q').value.trim();
-    if (q) location.hash = '#/search' + qs({ q, type: new URLSearchParams(location.hash.split('?')[1] || '').get('type') || 'posts' });
+    if (q) location.hash = '#/search' + qs({ q, type: location.hash.startsWith('#/search') ? new URLSearchParams(location.hash.split('?')[1] || '').get('type') || undefined : undefined });
   });
   async function route() {
     const [path, query] = (location.hash.slice(1) || '/').split('?');
