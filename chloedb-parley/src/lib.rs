@@ -4,6 +4,7 @@
 pub mod api;
 pub mod app;
 pub mod db;
+pub mod graph;
 pub mod media;
 pub mod reads;
 pub mod routes;

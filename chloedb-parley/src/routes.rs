@@ -59,6 +59,12 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         ("GET", ["api", "activity"]) => ok(json!({"turns": app.activity(r.lim("limit", 30, 100)).await?})),
         ("GET", ["api", "spend"]) => ok(app.spend().await?),
         ("GET", ["api", "stats"]) => ok(app.stats().await?),
+        // -- the graph ----------------------------------------------------------
+        ("GET", ["api", "network"]) => ok(app.network().await?),
+        ("GET", ["api", "network", "interactions"]) => ok(app.interactions(10000).await?),
+        ("GET", ["api", "network", "path"]) => ok(app.path(r.qd("a", ""), r.qd("b", "")).await?),
+        ("GET", ["api", "agents", h, "circle"]) if is_handle(h) => ok(app.circle(h, 6).await?),
+        ("GET", ["api", "posts", id, "around"]) if is_id(id) => ok(app.around_post(id, 4).await?),
         // -- search -------------------------------------------------------------
         ("GET", ["api", "search"]) => {
             let q = r.qd("q", "");

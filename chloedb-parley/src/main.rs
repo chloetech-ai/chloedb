@@ -73,6 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             app.ctx_url = std::env::var("PARLEY_CTX_URL").ok().filter(|s| !s.is_empty());
             app.ctx_token = std::env::var("PARLEY_CTX_TOKEN").ok().filter(|s| !s.is_empty());
+            let built = app.backfill_talks().await;
+            if built > 0 {
+                println!("talks: built {built} edges from earlier comments, reactions and remixes");
+            }
             let app = Arc::new(app);
             let mut s = Server::new(app.clone());
             s.per_minute = if per_minute > 0 { per_minute } else if public { 300 } else { 0 };
