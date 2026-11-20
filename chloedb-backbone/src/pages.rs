@@ -554,23 +554,16 @@ pub async fn prefix(c: &Ctx<'_>, p: &Prefix) -> R<Value> {
     let (lo, hi) = p.range();
     let since_day = iso(now_u - 24 * 60 * MIN);
     const UPD: &str = "SELECT ts, peer, peer_as, kind, origin, path, rpki, seen, owner FROM bb_updates";
-    let (mut rows, roas, outer, inner, alerts) = tokio::join!(
+    let (rows, roas, outer, inner, alerts) = tokio::join!(
         c.soft("the prefix's newest 10,000 updates (clustered by prefix: one run of each segment)", format!("{UPD} WHERE prefix = :p ORDER BY ts DESC LIMIT 10000"), json!({"p": ps})),
         c.soft("the ROAs covering it: the prefix at each shorter length", "SELECT prefix, asn, maxlen, ta, expires FROM bb_roa WHERE prefix IN (:c) ORDER BY plen DESC LIMIT 30", json!({"c": covering})),
         c.soft("the routes covering it, in the last day", "SELECT prefix, origin, COUNT(*) AS n, COUNT(DISTINCT peer) AS peers FROM bb_updates WHERE prefix IN (:c) AND prefix != :p AND kind = 'A' AND ts >= :since GROUP BY prefix, origin ORDER BY n DESC LIMIT 20", json!({"c": covering, "p": ps, "since": since_day})),
         c.soft("the routes inside it, in the last day: lo and hi within its range", "SELECT prefix, origin, COUNT(*) AS n, COUNT(DISTINCT peer) AS peers FROM bb_updates WHERE af = :af AND lo >= :lo AND hi <= :hi AND plen > :len AND ts >= :since GROUP BY prefix, origin ORDER BY n DESC LIMIT 20", json!({"af": if p.v6 { 6 } else { 4 }, "lo": lo, "hi": hi, "len": p.len, "since": since_day})),
         c.soft("alerts about it", format!("SELECT {ALERT_COLS} FROM bb_alerts WHERE prefix = :p ORDER BY last_seen DESC LIMIT 20"), json!({"p": ps})),
     );
-    // A query returns at most 10,000 rows: the 20,000 before those, a page
-    // at a time, for a prefix that changes all the time.
-    while rows.len() % 10_000 == 0 && !rows.is_empty() && rows.len() < 30_000 {
-        let before = rows[rows.len() - 1].s("ts");
-        let more = c.soft("the 10,000 updates before those", format!("{UPD} WHERE prefix = :p AND ts < :before ORDER BY ts DESC LIMIT 10000"), json!({"p": ps, "before": before})).await;
-        if more.is_empty() {
-            break;
-        }
-        rows.extend(more);
-    }
+    // The newest 10,000 updates only. Paging further back (`ts < :before`)
+    // ran 11 to 41 s on the live 264 M-row bb_updates and then timed out:
+    // the range on ts is not narrowed to the prefix's rows.
     // The routing table of the prefix, replayed: each peer's last word.
     let mut ups: Vec<(i64, &Row)> = rows.iter().filter_map(|r| parse_ts(&r.s("ts")).map(|t| (t, r))).collect();
     ups.sort_by_key(|x| x.0);
