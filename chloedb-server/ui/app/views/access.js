@@ -24,6 +24,8 @@ function onParams(r) { onChange?.(r.params); }
 const can = (scope) => (core.can ? core.can(scope) : true);
 const needs = (scope) => (core.needs ? core.needs(scope) : `needs an ${scope} key`);
 const DAY = 86400000;
+/** Whether key `k` had expired by `ts`: a key that never expires has `expires_ms` null, which is not 0 (WEI-403). */
+export const expiredBy = (k, ts) => !!k?.expires_ms && k.expires_ms < ts;
 
 // ---------------------------------------------------------------- times
 let TZ = "";
@@ -529,7 +531,7 @@ function render(page, r) {
     if (!top || top.n < 3) return;
     const e = top.e, from = [e.addr, clientName(e.client)].filter(Boolean);
     const revoked = revokedKeys().find(keyOf(e));
-    const expired = !revoked && (/\bexpired\b/.test(e.detail || "") || liveKeys().find(keyOf(e))?.expires_ms < e.ts_ms);
+    const expired = !revoked && (/\bexpired\b/.test(e.detail || "") || expiredBy(liveKeys().find(keyOf(e)), e.ts_ms));
     const what = revoked || expired ? [`${top.n} requests refused with the ${revoked ? "revoked" : "expired"} key `, h("b", {}, e.who), ` since ${at(top.first)}`]
       : e.status === 403 && e.actor === "agent" ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` (${agentText(e)}) refused since ${at(top.first)}: beyond what the agent may do alone; it files a change request for a person to approve`]
       : e.status === 403 ? [`${top.n} requests from `, h("b", {}, whoName(e)), ` refused since ${at(top.first)}: they need a wider scope`]

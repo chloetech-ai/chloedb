@@ -1,0 +1,829 @@
+{
+ "at": "2026-11-20T16:12:14Z",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "lines": 3600007,
+ "rate": 1000,
+ "seconds": 3600,
+ "end": "2026-11-20T16:10:00.000000Z",
+ "requests": 1801,
+ "per_request": 2000,
+ "senders": 4,
+ "request_bytes": {
+  "otlp": 1126311108,
+  "loki": 838758520
+ },
+ "raw_bytes": 609936947,
+ "gzip_bytes": 104283647,
+ "truth": {
+  "ip": 1292,
+  "trace": 7,
+  "errors_per_minute": 210,
+  "status_503": 12,
+  "timeout": 6074,
+  "tail": 100
+ },
+ "by_job": {
+  "nginx": 1801051,
+  "app": 1438953,
+  "syslog": 360003
+ },
+ "chloedb-guide": {
+  "config": "guide",
+  "version": "chloedb-server 0.3.9 (built from abfa8a3651)",
+  "load": {
+   "requests": 1801,
+   "retries": 0,
+   "failed": 0,
+   "statuses": {
+    "200": 1801
+   },
+   "first_error": null,
+   "seconds": 112.33,
+   "lines_per_s": 32048
+  },
+  "stored": 3600007,
+  "sent": 3600007,
+  "memory_kb": 1959907,
+  "questions": {
+   "ip": {
+    "sql": "SELECT body FROM logs_edge WHERE body LIKE '%203.0.113.77%' AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts DESC LIMIT 5000",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 49.23,
+    "max_ms": 52.01,
+    "first_ms": 43.34,
+    "runs": 7,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "sql": "SELECT body FROM logs_edge WHERE trace_id = '5b8efff798038103d269b633813fc60c' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 1.91,
+    "max_ms": 2.56,
+    "first_ms": 2.56,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "sql": "SELECT time_bucket('1 minute', ts) AS minute, service, count(*) AS errors FROM logs_edge WHERE severity_number >= 17 AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' GROUP BY minute, service",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 4.65,
+    "max_ms": 5.3,
+    "first_ms": 4.3,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "sql": "SELECT host, count(*) AS n FROM logs_edge WHERE service = 'edge-nginx' AND body LIKE '%\" 503 %' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' GROUP BY host",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 4.36,
+    "max_ms": 43.83,
+    "first_ms": 43.83,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "sql": "SELECT count(*) FROM logs_edge WHERE body ILIKE '%timeout%' AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z'",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 5.44,
+    "max_ms": 19.98,
+    "first_ms": 19.98,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "sql": "SELECT body FROM logs_edge WHERE service = 'checkout' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts DESC LIMIT 100",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 2.03,
+    "max_ms": 3.71,
+    "first_ms": 3.71,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "tables_totals": {
+   "bytes": 1084236864,
+   "docs": 3600007,
+   "failed": 0,
+   "file_bytes": 1438244864,
+   "free_bytes": 355291136,
+   "segments": 30,
+   "tables": 1,
+   "wal_bytes": 1823470
+  },
+  "disk_live_bytes": 1440399571,
+  "give_back": [
+   {
+    "s": 20,
+    "file_bytes": 1438244864,
+    "free_bytes": 355291136
+   },
+   {
+    "s": 40,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 60,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 80,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 100,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 120,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 140,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 160,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 180,
+    "file_bytes": 1644843008,
+    "free_bytes": 566743040
+   },
+   {
+    "s": 200,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 220,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 240,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 260,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 280,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 300,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 320,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   },
+   {
+    "s": 340,
+    "file_bytes": 1230647296,
+    "free_bytes": 152547328
+   }
+  ],
+  "tables_totals_after": {
+   "bytes": 1079404064,
+   "docs": 3600007,
+   "failed": 0,
+   "file_bytes": 1230647296,
+   "free_bytes": 152547328,
+   "segments": 23,
+   "tables": 1,
+   "wal_bytes": 1823470
+  },
+  "disk_stopped_bytes": 1233064040,
+  "files_stopped": {
+   "logs.chloedb": 1230647296,
+   "logs.chloedb-wal": 1835008,
+   "logs.chloedb.logs": 57344,
+   "logs.chloedb.logs-wal": 524288
+  }
+ },
+ "chloedb-otlp": {
+  "config": "otlp",
+  "version": "chloedb-server 0.3.9 (built from abfa8a3651)",
+  "load": {
+   "requests": 1801,
+   "retries": 0,
+   "failed": 0,
+   "statuses": {
+    "200": 1801
+   },
+   "first_error": null,
+   "seconds": 94.61,
+   "lines_per_s": 38051
+  },
+  "stored": 3600007,
+  "sent": 3600007,
+  "memory_kb": 1566247,
+  "questions": {
+   "ip": {
+    "sql": "SELECT body FROM logs_edge WHERE body LIKE '%203.0.113.77%' AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts DESC LIMIT 5000",
+    "default_deadline": {
+     "status": 504,
+     "error_code": "deadline_exceeded"
+    },
+    "p50_ms": 23286.25,
+    "max_ms": 23695.76,
+    "first_ms": 23415.15,
+    "runs": 6,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "sql": "SELECT body FROM logs_edge WHERE trace_id = '5b8efff798038103d269b633813fc60c' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 2.19,
+    "max_ms": 2.65,
+    "first_ms": 2.52,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "sql": "SELECT time_bucket('1 minute', ts) AS minute, service, count(*) AS errors FROM logs_edge WHERE severity_number >= 17 AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' GROUP BY minute, service",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 6.3,
+    "max_ms": 6.71,
+    "first_ms": 6.71,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "sql": "SELECT host, count(*) AS n FROM logs_edge WHERE service = 'edge-nginx' AND body LIKE '%\" 503 %' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' GROUP BY host",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 1676.84,
+    "max_ms": 2119.12,
+    "first_ms": 1634.98,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "sql": "SELECT count(*) FROM logs_edge WHERE body ILIKE '%timeout%' AND ts > '2026-11-20T15:55:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z'",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 588.53,
+    "max_ms": 856.17,
+    "first_ms": 672.2,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "sql": "SELECT body FROM logs_edge WHERE service = 'checkout' AND ts > '2026-11-20T15:10:00.000000Z' AND ts <= '2026-11-20T16:10:00.000000Z' ORDER BY ts DESC LIMIT 100",
+    "default_deadline": {
+     "status": 200,
+     "error_code": null
+    },
+    "p50_ms": 2.37,
+    "max_ms": 5.66,
+    "first_ms": 4.03,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "tables_totals": {
+   "bytes": 476242068,
+   "docs": 3600007,
+   "failed": 0,
+   "file_bytes": 629944320,
+   "free_bytes": 155459584,
+   "segments": 25,
+   "tables": 1,
+   "wal_bytes": 2460090
+  },
+  "disk_live_bytes": 632885352,
+  "give_back": [
+   {
+    "s": 20,
+    "file_bytes": 629944320,
+    "free_bytes": 155459584
+   },
+   {
+    "s": 40,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 60,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 80,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 100,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 120,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 140,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 160,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 180,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 200,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 220,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 240,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 260,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 280,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 300,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 320,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   },
+   {
+    "s": 340,
+    "file_bytes": 540753920,
+    "free_bytes": 66269184
+   }
+  ],
+  "tables_totals_after": {
+   "bytes": 476242068,
+   "docs": 3600007,
+   "failed": 0,
+   "file_bytes": 540753920,
+   "free_bytes": 66269184,
+   "segments": 25,
+   "tables": 1,
+   "wal_bytes": 2460090
+  },
+  "disk_stopped_bytes": 543957096,
+  "files_stopped": {
+   "logs.chloedb": 540753920,
+   "logs.chloedb-wal": 2621440,
+   "logs.chloedb.logs": 57344,
+   "logs.chloedb.logs-wal": 524288
+  }
+ },
+ "loki-snappy": {
+  "config": "snappy",
+  "version": "loki:3.5.5",
+  "load": {
+   "requests": 1801,
+   "retries": 0,
+   "failed": 0,
+   "statuses": {
+    "204": 1801
+   },
+   "first_error": null,
+   "seconds": 15.4,
+   "lines_per_s": 233767
+  },
+  "stored": 3600007,
+  "sent": 3600007,
+  "memory_kb": 1145228,
+  "questions": {
+   "ip": {
+    "logql": "{job=~\".+\"} |= \"203.0.113.77\"",
+    "p50_ms": 1037.78,
+    "max_ms": 1096.38,
+    "first_ms": 1042.08,
+    "runs": 7,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "logql": "{job=\"app\"} |= \"5b8efff798038103d269b633813fc60c\"",
+    "p50_ms": 1640.37,
+    "max_ms": 2429.76,
+    "first_ms": 1629.79,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "logql": "sum by (service) (count_over_time({level=\"ERROR\"}[1m]))",
+    "p50_ms": 73.89,
+    "max_ms": 89.85,
+    "first_ms": 89.85,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "logql": "sum by (host) (count_over_time({job=\"nginx\"} |= \"\\\" 503 \" [1h]))",
+    "p50_ms": 896.07,
+    "max_ms": 962.27,
+    "first_ms": 882.83,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "logql": "sum(count_over_time({job=~\".+\"} |~ \"(?i)timeout\" [15m]))",
+    "p50_ms": 723.21,
+    "max_ms": 831.94,
+    "first_ms": 699.85,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "logql": "{service=\"checkout\"}",
+    "p50_ms": 149.94,
+    "max_ms": 190.94,
+    "first_ms": 149.94,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "disk_before_flush": {
+   "chunks": 174466138,
+   "compactor": 0,
+   "rules": 0,
+   "tsdb-shipper-active": 18542,
+   "tsdb-shipper-cache": 0,
+   "wal": 771522419
+  },
+  "flush_status": 204,
+  "disk": {
+   "chunks": 276991719,
+   "compactor": 0,
+   "rules": 0,
+   "tsdb-shipper-active": 41975,
+   "tsdb-shipper-cache": 0,
+   "wal": 771522419
+  },
+  "questions_after_flush": {
+   "ip": {
+    "logql": "{job=~\".+\"} |= \"203.0.113.77\"",
+    "p50_ms": 1056.98,
+    "max_ms": 1127.07,
+    "first_ms": 1036.62,
+    "runs": 7,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "logql": "{job=\"app\"} |= \"5b8efff798038103d269b633813fc60c\"",
+    "p50_ms": 1681.28,
+    "max_ms": 1787.01,
+    "first_ms": 1787.01,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "logql": "sum by (service) (count_over_time({level=\"ERROR\"}[1m]))",
+    "p50_ms": 57.06,
+    "max_ms": 77.26,
+    "first_ms": 57.06,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "logql": "sum by (host) (count_over_time({job=\"nginx\"} |= \"\\\" 503 \" [1h]))",
+    "p50_ms": 604.99,
+    "max_ms": 725.69,
+    "first_ms": 656.01,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "logql": "sum(count_over_time({job=~\".+\"} |~ \"(?i)timeout\" [15m]))",
+    "p50_ms": 556.14,
+    "max_ms": 678.33,
+    "first_ms": 555.11,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "logql": "{service=\"checkout\"}",
+    "p50_ms": 35.78,
+    "max_ms": 45.64,
+    "first_ms": 39.96,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "log_tail": "\"checkout\\\"}\"\nts=2026-11-20T16:06:51.398476316Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1d092b5028e95a68 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:06:51.55534899Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=2dc822028ec0fb90 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nlevel=error ts=2026-11-20T16:06:51.555561416Z caller=scheduler_processor.go:111 component=querier msg=\"error processing requests from scheduler\" err=\"rpc error: code = Canceled desc = context canceled\" addr=127.0.0.1:9096\nlevel=error ts=2026-11-20T16:06:51.55595685Z caller=scheduler_processor.go:175 component=querier org_id=fake traceID=2dc822028ec0fb90 msg=\"error notifying scheduler about finished query\" err=EOF addr=127.0.0.1:9096\nts=2026-11-20T16:06:51.744848169Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=08229f508e668499 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:06:51.877855338Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1628b43189113c94 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:06:52.001359048Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=64ebfb0d6d84d5e9 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:06:52.14232301Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=5f167abd5e9dad71 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:07:42.027373465Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=0011577b28fb9f1a user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:07:42.07340323Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=2321e4f3d9c29b53 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:07:42.105595743Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=600621ce6ef25aaf user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:07:42.144153804Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=17659f67bf69c179 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:07:42.180334651Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=34aaf71c88fe05e4 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\n"
+ },
+ "loki-zstd": {
+  "config": "zstd",
+  "version": "loki:3.5.5",
+  "load": {
+   "requests": 1801,
+   "retries": 0,
+   "failed": 0,
+   "statuses": {
+    "204": 1801
+   },
+   "first_error": null,
+   "seconds": 18.92,
+   "lines_per_s": 190275
+  },
+  "stored": 3600007,
+  "sent": 3600007,
+  "memory_kb": 1828216,
+  "questions": {
+   "ip": {
+    "logql": "{job=~\".+\"} |= \"203.0.113.77\"",
+    "p50_ms": 1626.56,
+    "max_ms": 1681.52,
+    "first_ms": 1606.85,
+    "runs": 7,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "logql": "{job=\"app\"} |= \"5b8efff798038103d269b633813fc60c\"",
+    "p50_ms": 2004.95,
+    "max_ms": 3498.15,
+    "first_ms": 3086.38,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "logql": "sum by (service) (count_over_time({level=\"ERROR\"}[1m]))",
+    "p50_ms": 74.22,
+    "max_ms": 118.68,
+    "first_ms": 118.68,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "logql": "sum by (host) (count_over_time({job=\"nginx\"} |= \"\\\" 503 \" [1h]))",
+    "p50_ms": 856.1,
+    "max_ms": 931.34,
+    "first_ms": 842.99,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "logql": "sum(count_over_time({job=~\".+\"} |~ \"(?i)timeout\" [15m]))",
+    "p50_ms": 650.22,
+    "max_ms": 800.13,
+    "first_ms": 656.84,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "logql": "{service=\"checkout\"}",
+    "p50_ms": 95.47,
+    "max_ms": 104.57,
+    "first_ms": 104.57,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "disk_before_flush": {
+   "chunks": 148805203,
+   "compactor": 0,
+   "rules": 0,
+   "tsdb-shipper-active": 21797,
+   "tsdb-shipper-cache": 0,
+   "wal": 771354387
+  },
+  "flush_status": 204,
+  "disk": {
+   "chunks": 188851470,
+   "compactor": 0,
+   "rules": 0,
+   "tsdb-shipper-active": 39573,
+   "tsdb-shipper-cache": 0,
+   "wal": 771354387
+  },
+  "questions_after_flush": {
+   "ip": {
+    "logql": "{job=~\".+\"} |= \"203.0.113.77\"",
+    "p50_ms": 1237.34,
+    "max_ms": 1300.23,
+    "first_ms": 1263.32,
+    "runs": 7,
+    "agree": true,
+    "lines": 1292,
+    "want_lines": 1292,
+    "missing": 0,
+    "extra": 0
+   },
+   "trace": {
+    "logql": "{job=\"app\"} |= \"5b8efff798038103d269b633813fc60c\"",
+    "p50_ms": 2012.12,
+    "max_ms": 2149.78,
+    "first_ms": 1912.23,
+    "runs": 7,
+    "agree": true,
+    "lines": 7,
+    "want_lines": 7,
+    "missing": 0,
+    "extra": 0
+   },
+   "errors_per_minute": {
+    "logql": "sum by (service) (count_over_time({level=\"ERROR\"}[1m]))",
+    "p50_ms": 77.32,
+    "max_ms": 89.69,
+    "first_ms": 89.69,
+    "runs": 7,
+    "agree": true,
+    "values": 210,
+    "differ": []
+   },
+   "status_503": {
+    "logql": "sum by (host) (count_over_time({job=\"nginx\"} |= \"\\\" 503 \" [1h]))",
+    "p50_ms": 822.01,
+    "max_ms": 970.44,
+    "first_ms": 921.46,
+    "runs": 7,
+    "agree": true,
+    "values": 12,
+    "differ": []
+   },
+   "timeout": {
+    "logql": "sum(count_over_time({job=~\".+\"} |~ \"(?i)timeout\" [15m]))",
+    "p50_ms": 662.13,
+    "max_ms": 764.94,
+    "first_ms": 661.06,
+    "runs": 7,
+    "agree": true,
+    "got": 6074,
+    "want": 6074
+   },
+   "tail": {
+    "logql": "{service=\"checkout\"}",
+    "p50_ms": 40.71,
+    "max_ms": 46.49,
+    "first_ms": 46.49,
+    "runs": 7,
+    "agree": true,
+    "lines": 100,
+    "want_lines": 100,
+    "missing": 0,
+    "extra": 0
+   }
+  },
+  "log_tail": ":09:07.669426374Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1598c930851ae964 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:09:07.747242812Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=40e90689da70daf8 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:09:07.837651145Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1d06cd49eb925c60 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:09:07.907564242Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=24440531c23ca264 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:09:08.004852014Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=4e040d75333aeca8 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:09:08.106332907Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1a7560ac7d8c30a0 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.530813831Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=51c86516c6d70bea user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.572008218Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=6eed9bbcf3eb92dd user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.615342435Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=0ce7b9a030300fd8 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.658116854Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=71b257ff9c17df2c user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.698318224Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=0035a3a7c341fc33 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.730954298Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=6224ca89b5f48363 user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\nts=2026-11-20T16:10:24.767524284Z caller=spanlogger.go:116 middleware=QueryShard.astMapperware org_id=fake traceID=1a00ca3e5f3e975e user=fake level=warn msg=\"failed mapping AST\" err=\"context canceled\" query=\"{service=\\\"checkout\\\"}\"\n"
+ }
+}

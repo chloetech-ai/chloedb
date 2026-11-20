@@ -299,6 +299,23 @@ impl App {
     /// machine's next pull applies to its copy, as `chloectx sync retire`
     /// does from a machine. The route asks for write on the project's table.
     pub fn memory_retire(&self, project: &str, id: &str, by: &str) -> Answer {
+        let (op, n) = self.retire_op(project, id, by)?;
+        self.cluster.write(vec![op])?;
+        Ok(n)
+    }
+
+    /// `POST /v1/memory/retire/plan {project, id}`: the write that retires
+    /// the note, and the note as retired, without making it (WEI-402): the
+    /// app's own key only reads the projects' tables (as chloectx sync
+    /// copies them), so the command center sends the write to the server
+    /// with the signed-in key, which the server checks for write on the
+    /// project's table.
+    pub fn memory_retire_plan(&self, project: &str, id: &str, by: &str) -> Answer {
+        let (op, n) = self.retire_op(project, id, by)?;
+        Ok(json!({"op": op, "note": n}))
+    }
+
+    fn retire_op(&self, project: &str, id: &str, by: &str) -> std::result::Result<(Json, Json), super::Fail> {
         let (project, id) = (project.trim(), id.trim());
         if project.is_empty() || id.is_empty() {
             return Err(bad("which note? {\"project\": \"owner/name\", \"id\": \"its id\"}"));
@@ -322,12 +339,12 @@ impl App {
             "turn": int_of(row.get(4)), "seq": int_of(row.get(5)), "ts": int_of(row.get(6)), "importance": row.get(7).and_then(|v| v.as_f64()).unwrap_or(0.0),
             "files": str_of(row.get(8)), "content": str_of(row.get(9)), "context": str_of(row.get(10)), "links_json": links, "origin": str_of(row.get(12)),
         });
-        self.cluster.write(vec![json!({"op": "upsert", "table": t, "doc": doc})])?;
+        let op = json!({"op": "upsert", "table": t, "doc": doc});
         let mut row = row.clone();
         row[3] = Value::Str(crate::record::RETIRED.into());
         let mut n = note(&row);
         n["retired_by"] = json!(by);
-        Ok(n)
+        Ok((op, n))
     }
 }
 

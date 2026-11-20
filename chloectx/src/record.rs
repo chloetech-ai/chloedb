@@ -469,8 +469,24 @@ impl Source {
 /// `<first 8 characters of the session>:<seq>`.
 pub fn record_id(session: &str, seq: i64) -> String {
     let s: String = session.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    if session == MANUAL_SESSION {
+        // A person's note has no session of its own, so two machines that
+        // pulled each other's records would both number their next note
+        // alike and one would overwrite the other on the server (ANA-401):
+        // a random part makes the id this machine's.
+        let mut b = [0u8; 3];
+        if std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b)).is_err() {
+            let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+            b = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        }
+        return format!("manual-{:02x}{:02x}{:02x}:{seq}", b[0], b[1], b[2]);
+    }
     format!("{}:{seq}", if s.is_empty() { "x".to_string() } else { s })
 }
+
+/// The session of a note a person keeps with `chloectx remember` outside any
+/// session.
+pub const MANUAL_SESSION: &str = "manual";
 
 /// Columns every query projects, in this order (see [`crate::store::Hit`]).
 pub const COLUMNS: &str = "id, session, kind, tag, turn, seq, ts, importance, files, text, ctx, links";

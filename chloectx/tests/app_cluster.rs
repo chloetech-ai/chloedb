@@ -699,3 +699,68 @@ fn local_stores_through_the_app() {
     // The daemon the app started for the store.
     let _ = chloectx::daemon::request(&store, &project, &json!({"op": "shutdown"}), Duration::from_secs(10));
 }
+
+/// WEI-402: the Retire button of a synced project's note in a server that
+/// asks for keys. The app's own key (made as the server makes it for an app
+/// it starts, `chloectx_mem_*` read only) cannot write the project's table,
+/// so the app planned the write and the page sends it to the server with
+/// the signed-in key, which an admin's is.
+#[test]
+fn an_admin_retires_a_synced_note_though_the_apps_key_only_reads_it() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOECTX_NEED_SERVER").is_none(), "CHLOECTX_NEED_SERVER is set but there is no chloedb-server binary");
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    const ROOT: &str = "root-token-for-the-test";
+    let dir = tempfile::tempdir().unwrap();
+    let http = Http::new();
+    let (cport, aport) = (free_port(), free_port());
+    let coord = format!("http://127.0.0.1:{cport}");
+    let app_url = format!("http://127.0.0.1:{aport}");
+    let keys = dir.path().join("keys.json");
+    let _server = spawn(
+        Command::new(&bin)
+            .args(["--db", &dir.path().join("s.strata").to_string_lossy(), "--listen", &format!("127.0.0.1:{cport}"), "--grpc", "off", "--no-fetch-models", "--keys", &keys.to_string_lossy(), "--token", ROOT])
+            .args(["--app", &format!("chloectx={app_url}")])
+            .env("CHLOEDB_APP_TOKEN", TOKEN),
+    );
+    wait_for("the server", 30, || http.call("GET", &format!("{coord}/v1/health"), None, &[]).0 == 200);
+    let root = format!("Bearer {ROOT}");
+    let project = "acme/ledger";
+    let table = chloectx::sync::table_for(project);
+    assert_eq!(http.call("POST", &format!("{coord}/v1/sql"), Some(&json!({"sql": chloectx::sync::create_for(project)})), &[("authorization", &root)]).0, 200);
+    let doc = json!({"id": format!("{project}:a:1"), "project": project, "rid": "a:1", "session": "s-alice", "kind": "preference", "tag": "", "turn": 1, "seq": 1, "ts": 1_700_000_000_001i64, "importance": 1.0, "files": "", "content": "User preference: always run make lint before a push", "context": "", "links_json": "[]", "origin": "m-alice"});
+    let (s, j) = http.call("POST", &format!("{coord}/v1/write"), Some(&json!({"ops": [{"op": "upsert", "table": table, "doc": doc}]})), &[("authorization", &root)]);
+    assert_eq!(s, 200, "{j}");
+    // The key the server gives the app it starts: the app's grants.
+    let (s, k) = http.call(
+        "POST",
+        &format!("{coord}/v1/admin/keys"),
+        Some(&json!({"name": "app-chloectx", "scope": "admin", "tables": {"ctx_*": "admin", "chloectx_memory": "read", "chloectx_mem_*": "read"}})),
+        &[("authorization", &root)],
+    );
+    assert_eq!(s, 200, "{k}");
+    let app_key = k["key"].as_str().or(k["secret"].as_str()).unwrap_or_else(|| panic!("{k}")).to_string();
+    let _app = spawn(
+        Command::new(env!("CARGO_BIN_EXE_chloectx"))
+            .args(["app", "--server", &coord, "--port", &aport.to_string(), "--embedder", "hash:256", "--token", TOKEN, "--key", &app_key])
+            .current_dir(dir.path())
+            .env_remove("ANTHROPIC_API_KEY"),
+    );
+    wait_for("the app", 60, || http.call("GET", &format!("{app_url}/v1/info"), None, &[("authorization", &format!("Bearer {TOKEN}"))]).0 == 200);
+    // As the command center calls it: through the server, as the admin.
+    let via = format!("{coord}/v1/apps/chloectx");
+    let body = json!({"project": project, "id": "a:1"});
+    // The app writing the table with its own key is refused (as it was).
+    let (s, j) = http.call("POST", &format!("{via}/v1/memory/retire"), Some(&body), &[("authorization", &root)]);
+    assert!(s >= 400, "the app's key only reads the project's table: {s} {j}");
+    // The plan, then the write by the signed-in key.
+    let (s, plan) = http.call("POST", &format!("{via}/v1/memory/retire/plan"), Some(&body), &[("authorization", &root)]);
+    assert_eq!(s, 200, "{plan}");
+    assert_eq!(plan["note"]["tag"], "retired", "{plan}");
+    let (s, j) = http.call("POST", &format!("{coord}/v1/write"), Some(&json!({"ops": [plan["op"]]})), &[("authorization", &root)]);
+    assert_eq!(s, 200, "{j}");
+    let (_, rows) = http.call("POST", &format!("{coord}/v1/query"), Some(&json!({"sql": format!("SELECT tag, origin FROM {table} WHERE rid = 'a:1'")})), &[("authorization", &root)]);
+    assert_eq!((rows["rows"][0][0].as_str(), rows["rows"][0][1].as_str()), (Some("retired"), Some("m-alice")), "{rows}");
+}
