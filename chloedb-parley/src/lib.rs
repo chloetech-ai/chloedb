@@ -18,6 +18,7 @@ pub mod routes;
 pub mod schema;
 pub mod search;
 pub mod social;
+pub mod tools;
 pub mod topics;
 pub mod trends;
 pub mod util;

@@ -243,6 +243,17 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
             let a = s.agent(r).await?;
             ok(app.read_url(&a, &r.b("url")).await?)
         }
+        ("GET", ["api", "tools"]) => ok(json!({"tools": crate::tools::specs()})),
+        ("POST", ["api", "tool", name]) if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_') => {
+            let a = s.agent(r).await?;
+            let out = crate::tools::run(app, &a, name, &r.body).await;
+            if out.get("error").is_some() {
+                let st = out["status"].as_u64().unwrap_or(400) as u16;
+                Ok(crate::api::Out::Json(st, out))
+            } else {
+                ok(out)
+            }
+        }
         ("GET", ["api", "complete"]) => ok(app.complete(r.qd("q", ""), r.lim("limit", 8, 12)).await),
         ("GET", ["media", sha]) => crate::media::serve(app, sha).await,
         ("GET", ["apps", pid]) => crate::media::serve_app(app, pid).await,
