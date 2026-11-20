@@ -926,6 +926,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             if (own_ && name_) asked = { ...asked, value: signed(before, asked?.value, name_) }
             const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine, auto ? '' : who?.name ?? (who && who.role !== 'own' && who.role !== 'full' ? 'someone with a link' : ''))
             // Who took each entry out, for the rule above.
+            const removedHere = []
             if (listed && !out.isError) {
               const now = await apps.kept(app.id, key, who?.owner ?? '').catch(() => null)
               const ids = new Set((Array.isArray(now) ? now : []).map(e => String(e?.id)))
@@ -937,6 +938,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                 // A new version that took an entry out by itself says so on
                 // the screen, so nobody loses it without a word (TOM-2, TOM-6).
                 if (auto && !askedFor) said.push({ field: key, tookOut: entryName(e) })
+                // Taken out by hand here: this page offers Undo beside it (round 10 INES-8).
+                else if (!auto) removedHere.push(entryName(e))
               }
               for (const id of ids) if (gone[id]) { delete gone[id]; changed = true }
               if (changed) await apps.keep(app.id, goneSlot, Object.fromEntries(Object.entries(gone).slice(-2000)), LINKS).catch(() => {})
@@ -960,6 +963,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             const seenNow = own_ && !out.isError && (who.only || who.hide) ? hideIn(partOf(asked?.value, who.only), who.hide) : undefined
             const altered = seenNow !== undefined && JSON.stringify(unsigned(seenNow)) !== JSON.stringify(unsigned(args?.value ?? null))
             if (name === 'app_keep' && !out.isError && (mergedIn || said.length || altered)) out.structuredContent = { ...out.structuredContent, merged: true, value: altered ? seenNow : args.value, ...(said.length ? { said } : {}) }
+            if (name === 'app_keep' && !out.isError && removedHere.length && (!who || who.role === 'own' || who.role === 'full')) out.structuredContent = { ...out.structuredContent, removed: removedHere.slice(0, 5) }
             // The app knows who this link is, so it never asks for a name (P).
             // Its owner, and a link that changes everything, get no who: they
             // may change and take out anything, whoever added it (DEV-2).
@@ -1188,6 +1192,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const states = times.map(t => ({ ...now, ...at(t) }))
           return json(res, {
             now: says(now),
+            // When this version was made: Undo takes back a change to what it
+            // keeps that came after it, before going back a version (round 10 MARCUS-1).
+            versionAt: await apps.versionMade(app.id, app.version),
             moments: times.map((t, i) => {
               named = false
               unnamed = false

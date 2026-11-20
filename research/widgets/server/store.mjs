@@ -310,6 +310,12 @@ export class Apps {
   }
 
   // What an app held before each change, for one owner, newest first.
+  // When the version it is at now was made (none for version 1 made before versions were dated).
+  async versionMade(appId, version) {
+    const [row] = await this.db.get('ia_versions', [`${appId}@${version}`]).catch(() => [])
+    return row?.made ?? 0
+  }
+
   async history(appId, owner = '') {
     const mine = stateId(owner, appId, '')
     const rows = await this.db.query('SELECT id, name, value, at FROM ia_history WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])

@@ -853,13 +853,44 @@ function merged(base, mine, theirs, said) {
 // phone that sends what it kept with no signal before the app is drawn is
 // told too (INES-3).
 const toldLater = {}
+// What it kept, as it was just before its last change: the change to the
+// data goes back, not the app's version (round 10 MARCUS-1, LENA-8).
+async function lastChange(app) {
+  const out = await (await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(() => ({}))
+  const m = (out.moments ?? []).find(m => m.then)
+  return m ? { at: m.at, then: m.then, after: m.at > (out.versionAt ?? 0) + 15000 } : { after: false }
+}
+async function takeBack(w, change) {
+  const done = await (await fetch('/api/restore', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, at: change.at }) })).json().catch(error => ({ error: error.message }))
+  if (done.error) return done.error
+  delete cache[slotOf(w.app.id)]
+  saveOffline()
+  w.ownAt = Date.now()
+  draw(w)
+  return null
+}
+// An entry taken out by hand says so, with Undo beside it (round 10 INES-8).
+function removedNote(w, names) {
+  w.node.querySelector('.removed-note')?.remove()
+  const box = el('offline-note removed-note', `<span>Took out ${names.map(n => `“${esc(n)}”`).join(', ')}.</span> <button class="wbtn" type="button">Undo</button>`, w.node)
+  w.node.querySelector('.wbar').after(box)
+  const timer = setTimeout(() => box.remove(), 20000)
+  box.querySelector('button').onclick = async () => {
+    clearTimeout(timer)
+    box.querySelector('button').disabled = true
+    const change = await lastChange(w.app)
+    const failed = change.at ? await takeBack(w, change) : 'Nothing to undo.'
+    box.innerHTML = esc(failed ?? `Brought back ${names.map(n => `“${n}”`).join(', ')}.`)
+    setTimeout(() => box.remove(), 8000)
+  }
+}
 function conflictNote(id, said) {
   const show = v => (typeof v === 'string' ? `“${v}”` : JSON.stringify(v))
   const text = !said.length && toldLater[id] ? toldLater[id] : said.slice(0, 3).map(c =>
     c.twice != null ? `${show(c.twice)} was already added on the other phone, so it is in ${String(c.field)} once`
     : c.gone != null ? `${show(c.gone)} was taken out on the other phone, so what was changed in it here was not kept`
     : c.stayedOut != null ? `${show(c.stayedOut)} was taken out on another phone, so it stays out`
-    : c.tookOut != null ? `This version took out ${show(c.tookOut)}: Undo change brings it back`
+    : c.tookOut != null ? `This version took out ${show(c.tookOut)}: Earlier versions (in ⋯) brings it back`
     : c.notes ? `Two notes were written on ${show(String(c.field).split('/').slice(-2, -1)[0] ?? c.field)} at once: both are kept (${show(c.both)})`
     : c.both != null ? `${show(c.both)} was added on both phones with something different: both are kept, check which is right`
     : `${show(String(c.field))} was changed on both phones: kept ${show(c.theirs)}, saved first; ${show(c.mine)} was not kept`).join('; ')
@@ -1055,6 +1086,7 @@ async function keptCallNow(w, params) {
     if (params.name === 'app_keep' && cache[slot] && String(a.key) in cache[slot] && !String(a.key).startsWith('view:')) payload.base = cache[slot][String(a.key)]
     const result = await viaServer(payload)
     const sc = result.structuredContent ?? {}
+    if (params.name === 'app_keep' && sc.removed?.length) removedNote(w, sc.removed)
     if (params.name === 'app_keep' && sc.merged) {
       if (sc.said?.length) conflictNote(w.app.id, sc.said)
       // What it keeps now has the others' in it: drawn again from there.
@@ -1412,7 +1444,7 @@ function bar(w) {
   // What was found is shared as an answer kept as it is, with its notes (PRIYA-1).
   const share = guest || limited(app.id) || isPrivate(app.id) ? '' : answer && !w.keptAs ? `<button class="wbtn share" type="button" title="Keep this answer as it is, with your notes, and get links to it">${ICON.share}Keep and share</button>` : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] ? 'Shared' : 'Share'}</button>`
   const more = `<button class="wbtn more" type="button" title="Download what it keeps, or make it private" aria-label="More">${ICON.more}</button>`
-  const changes = guest || limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.version > 1 ? `<button class="wbtn undo" type="button" title="Back to version ${app.version - 1}">${ICON.undo}Undo change</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
+  const changes = guest || limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.saved || app.version > 1 ? `<button class="wbtn undo" type="button" title="Undo the last change">${ICON.undo}Undo</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
   acts.innerHTML = `${keep}${share}${changes}${more}`
   const changer = w.node.querySelector('.changer')
   acts.querySelector('.keep')?.addEventListener('click', async () => {
@@ -1642,23 +1674,47 @@ function bar(w) {
     w.newer = out.newer
     w.how = 'changed'
     w.payload.html = out.html
+    // An answer's version brings what it was filled with: drawn from that (round 10 PRIYA-3).
+    if (out.app?.args && w.payload.args) w.payload.args = out.app.args
     stale(w)
     draw(w)
     bar(w)
   }
   // Undo asks first and says what it did: it sat next to Change, and a
   // slip went back a version without a word (round 9 PRIYA-5).
-  acts.querySelector('.undo')?.addEventListener('click', e => {
+  // Undo takes back the last change: to what it keeps when that came after
+  // the app's last version (a move, a take-out, a lookup's notes), else the
+  // version itself (round 10 MARCUS-1, LENA-8).
+  acts.querySelector('.undo')?.addEventListener('click', async e => {
     const button = e.currentTarget
-    if (button.dataset.sure) return step('undo').then(() => {
-      const box = el('offline-note undo-note', esc(`Back to version ${w.app.version}. Redo brings the change back.`), w.node)
+    const note = text => {
+      w.node.querySelector('.undo-note')?.remove()
+      const box = el('offline-note undo-note', esc(text), w.node)
       w.node.querySelector('.wbar').after(box)
       setTimeout(() => box.remove(), 20000)
-    })
-    button.dataset.sure = '1'
-    button.lastChild.textContent = `Undo: back to version ${w.app.version - 1}?`
+    }
+    if (button.dataset.sure === 'data') {
+      const change = w.undoing
+      delete button.dataset.sure
+      const failed = await takeBack(w, change)
+      return note(failed ?? `Took back: ${change.then}. Earlier versions (in ⋯) has every moment it kept.`)
+    }
+    if (button.dataset.sure === 'version') return step('undo').then(() => note(`Back to version ${w.app.version}. Redo brings the change back.`))
+    const change = await lastChange(w.app)
+    if (change.after) {
+      w.undoing = change
+      button.dataset.sure = 'data'
+      button.lastChild.textContent = `Undo: ${change.then.slice(0, 60)}?`
+    } else if (w.app.version > 1) {
+      button.dataset.sure = 'version'
+      button.lastChild.textContent = `Undo: back to version ${w.app.version - 1} of the app?`
+    } else {
+      button.lastChild.textContent = 'Nothing to undo'
+      setTimeout(() => { if (button.isConnected) button.lastChild.textContent = 'Undo' }, 3000)
+      return
+    }
     button.classList.add('sure')
-    setTimeout(() => { if (button.isConnected) { delete button.dataset.sure; button.classList.remove('sure'); button.lastChild.textContent = 'Undo change' } }, 5000)
+    setTimeout(() => { if (button.isConnected) { delete button.dataset.sure; button.classList.remove('sure'); button.lastChild.textContent = 'Undo' } }, 6000)
   })
   acts.querySelector('.redo')?.addEventListener('click', () => step('redo'))
   changer.onsubmit = async e => {

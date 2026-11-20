@@ -1002,3 +1002,30 @@ test('open phones keep up: a new version is told with what changed, and a stoppe
   const kept = await post('/api/call', { app: app.id, me: `s-${femi.token}`, name: 'app_kept', arguments: { all: true } })
   assert.equal(kept.isError, true)
 })
+
+test('Undo takes back the last change to what an app keeps, after its version; a hand take-out is said with Undo (AE: round 10 MARCUS-1, LENA-8, INES-8)', { skip }, async () => {
+  const me = 'e'.repeat(32)
+  const app = await chat.apps.put({ name: 'Crew week', about: 'Jobs.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('jobs'), args: { request: 'jobs' }, saved: true }, 'made by hand')
+  const call = (name, args, who = me) => post('/api/call', { app: app.id, me: who, name, arguments: args })
+  const jobs = [{ id: 'j1', job: 'Johnson', day: 'Mon' }, { id: 'j2', job: 'Garcia', day: 'Thu' }]
+  await call('app_keep', { key: 'jobs', value: jobs })
+  // The version it is at is dated: a change kept later than it is the one Undo takes back.
+  await new Promise(r => setTimeout(r, 20))
+  const moved = [{ ...jobs[0], day: 'Tue' }, jobs[1]]
+  const kept = await call('app_keep', { key: 'jobs', value: moved })
+  assert.equal(kept.structuredContent?.removed, undefined, 'a move takes nothing out')
+  const hist = await post('/api/history', { app: app.id, me, self: me })
+  assert.equal(typeof hist.versionAt, 'number')
+  const last = hist.moments.find(m => m.then)
+  assert.match(last.then, /Johnson day Mon to Tue/)
+  await post('/api/restore', { app: app.id, me, self: me, at: last.at })
+  assert.equal((await call('app_kept', { key: 'jobs' })).structuredContent.value[0].day, 'Mon', 'the move is taken back, not the app')
+  assert.equal((await chat.apps.get(app.id)).version, 1)
+  // Taking an entry out by hand is said to the page that did it, for its Undo.
+  const out = await call('app_keep', { key: 'jobs', value: [jobs[0]] })
+  assert.match(String(out.structuredContent?.removed), /^Garcia/)
+  // A link that only adds and ticks gets no such Undo.
+  const share = await post('/api/share', { app: app.id, me })
+  const helper = await call('app_keep', { key: 'jobs', value: [jobs[0], { id: 'j3', job: 'Baker' }] }, `s-${share.helper}`)
+  assert.equal(helper.structuredContent?.removed, undefined)
+})
