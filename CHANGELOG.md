@@ -24,7 +24,9 @@ changes collect under "Unreleased".
   answers from the rows it finds, citing them as `[1]`, `[2]` with the
   rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
   with `table=`). The server's model downloads take `HF_ENDPOINT`, a
-  mirror of Hugging Face, as the packages' do.
+  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
+  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
+  without it sent requests to `.../messages`).
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000

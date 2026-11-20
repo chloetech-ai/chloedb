@@ -324,9 +324,12 @@ class Search:
         model = model or os.environ.get("CHLOEDB_ASK_MODEL") or "anthropic/claude-haiku-5-5"
         if "'" in model:
             raise ValueError(f"model {model!r} has a quote in it")
-        sql = f"SELECT llm('{model}', :i, :q, :c, max_tokens => {int(max_tokens)}) AS answer FROM {quote(s['table'])} LIMIT 1"
+        # llm() answers for each row a query returns, and reads one of them:
+        # one row of the table, whose first field it is given and ignores.
+        first = quote(s["fields"][0]["name"])
+        sql = f"SELECT {first}, llm('{model}', :i, :q, :c, max_tokens => {int(max_tokens)}) AS answer FROM {quote(s['table'])} LIMIT 1"
         try:
-            answer = self.query(sql, {"i": instructions, "q": "Question: " + question, "c": "Rows:\n" + context}).scalar()
+            answer = self.query(sql, {"i": instructions, "q": "Question: " + question, "c": "Rows:\n" + context}).column("answer")[0]
         except ChloeDBError as e:
             m = str(e)
             if "API_KEY" in m or "api key" in m.lower() or "x-api-key" in m.lower():
