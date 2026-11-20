@@ -11,6 +11,16 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **What a second onboarding round found.** A server given `--listen`
+  whose gRPC default (7701) is taken takes gRPC beside its HTTP port
+  instead of stopping. A database `chloedb-server grow` made a shard of,
+  started on its own, warns that it answers with that shard's rows only
+  and gives the command that starts the whole cluster. A column of an
+  OpenSearch index kept in its documents is suggested as `_source.<name>`,
+  with its fix; the MCP `import` tool reads data that starts with `{` or
+  `[` as JSON without a `format`; `/v1/query` refusing a write points to
+  `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
+  table's search by words and meaning no longer reads "1–20 of 4 rows".
 - **Graph walks and recommenders run through a coordinator.** `REACHABLE`,
   `PATH`, `hops()` and `ppr()` over an `EDGES` column or an edge table are
   walked by the coordinator, a round of reads by key over every shard per

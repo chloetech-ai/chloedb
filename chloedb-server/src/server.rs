@@ -521,6 +521,21 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         svc.keep_slots_in(path)?;
         if let Some((m, shard)) = svc.slots() {
             tracing::info!(epoch = m.epoch, shard, of = m.shards(), "holds slots");
+            // A database `chloedb-server grow` made a shard of, started on
+            // its own (an old command, a service unit): it answers with its
+            // own slots' rows only, which looks like rows were lost.
+            if let Some(db) = o.db.as_ref().filter(|_| std::env::var_os("CHLOEDB_GROWN").is_none() && o.shards.is_empty()) {
+                let mut dir = db.clone().into_os_string();
+                dir.push(".cluster");
+                if Path::new(&dir).join("cluster.json").exists() {
+                    tracing::warn!(
+                        "{} is shard {shard} of the {} shards that `chloedb-server grow` made, started on its own: it answers with that shard's rows only. Start the whole cluster with: chloedb-server grow --db {}",
+                        db.display(),
+                        m.shards(),
+                        db.display()
+                    );
+                }
+            }
         }
     }
     if let Some(c) = o.kube_cluster.as_deref().filter(|_| !o.shards.is_empty()) {

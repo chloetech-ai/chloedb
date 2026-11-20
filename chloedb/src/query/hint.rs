@@ -54,7 +54,13 @@ pub fn listing<S: AsRef<str>>(names: &[S], max: usize) -> String {
 /// It starts with "no such column", which clients look for.
 pub fn no_column(schema: &Schema, name: &str) -> String {
     let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
-    format!("no such column: {name} in {}{}; its columns are {}", schema.table, did_you_mean(name, names.iter().copied()), listing(&names, 30))
+    let mut like = did_you_mean(name, names.iter().copied());
+    // An index made through the OpenSearch API keeps its keyword fields
+    // in its documents, `_source`, and not as columns.
+    if like.is_empty() && names.contains(&"_source") && !name.starts_with('_') {
+        like = format!(" (did you mean _source.{name}?)");
+    }
+    format!("no such column: {name} in {}{like}; its columns are {}", schema.table, listing(&names, 30))
 }
 
 /// Whether table `name` is one ChloeDB keeps for itself: the first table

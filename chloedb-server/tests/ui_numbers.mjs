@@ -751,6 +751,7 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.equal(tableView.searchSql(tk, { q: "x", fields: [], vec: emb, mode: "meaning" }).count, null, "by meaning every row is ranked: nothing to count");
   assert.equal(tableView.matchLine({ mode: "words", matched: 7436, exact: 5022, rows: 20000, n: 20, offset: 20 }), "21–40 of 7,436 rows that have the words (5,022 with the words as typed, the others with a word a letter or two from one)");
   assert.equal(tableView.matchLine({ mode: "both", matched: 1, exact: 1, rows: 9, n: 1 }), "1–1 of 1 row that has the words, those with every word first, then by words and meaning");
+  assert.equal(tableView.matchLine({ mode: "both", matched: 4, exact: 4, rows: 30, n: 20 }), "1–20: the 4 rows that have the words first, then the closest by meaning");
   assert.match(tableView.matchLine({ mode: "meaning", rows: 20000, n: 20 }), /^1–20 · by meaning, every one of the 20,000 rows is ranked/);
   // GRACE-403: the Data tab's CSV of a filtered list reads every row its
   // WHERE keeps (no LIMIT), not the 50 on screen.

@@ -131,6 +131,9 @@ export function matchLine({ mode, matched, exact, rows, n, offset = 0 }) {
   if (mode === "meaning") return `${shown} · by meaning, every one of the ${fmt.n(rows)} rows is ranked, the closest first`;
   if (matched == null) return n ? `${shown}` : "";
   const typos = exact != null && exact < matched ? ` (${fmt.n(exact)} with the words as typed, the others with a word a letter or two from one)` : "";
+  // Words and meaning: the page holds rows without the words too, so it
+  // can show more rows than have them ("1–20 of 4" read as a mistake).
+  if (mode === "both" && offset + n > matched) return `${shown}: the ${matched === 1 ? "row that has" : `${fmt.n(matched)} rows that have`} the words first${typos}, then the closest by meaning`;
   return `${shown} of ${fmt.n(matched)} ${matched === 1 ? "row that has" : "rows that have"} the words${typos}${mode === "both" ? ", those with every word first, then by words and meaning" : ""}`;
 }
 

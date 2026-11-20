@@ -2,6 +2,8 @@
 
 This page runs ChloeDB as a production-shaped cluster on machines of your own, without Kubernetes: two shards, each held by three copies that elect their primary among themselves, a coordinator in front of them, a token that the servers send each other and API keys for clients. It then checks the cluster's health, loads and searches rows, kills a primary and watches the failover, writes checkpoints, and upgrades the cluster one server at a time while it serves.
 
+To make a database you already serve into shards on one machine, one command does it: `chloedb-server grow --db shop.chloedb --shards 3` ([grow](../chloedb/server.md#sharding-one-coordinator-many-shards)). This page builds a cluster with copies of each shard, which a production cluster needs.
+
 Everything starts on one machine, on loopback, so that each command runs as written. On virtual machines each copy is a machine of its own (or a systemd unit), and the addresses are theirs. On Kubernetes the operator does all of this for you ([on Kubernetes](../chloedb/server.md#on-kubernetes)).
 
 <!-- run: needs chloedb-server -->

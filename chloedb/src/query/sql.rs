@@ -278,7 +278,7 @@ pub fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     match parse_one(sql_text)? {
         sql::Statement::Query(q) => Ok(q),
         sql::Statement::ShowTables { .. } => Err(err("SHOW TABLES runs as a statement, not as a query: POST /v1/sql (db.sql in code) answers it, and GET /v1/tables lists the tables with their columns")),
-        _ => Err(err("only SELECT is supported")),
+        _ => Err(err("only SELECT is supported by a query: POST /v1/sql (db.sql in code) runs every statement, writes and DDL included")),
     }
 }
 

@@ -2164,14 +2164,27 @@ async fn take(addr: &str, flag: &str) -> tokio::net::TcpListener {
 /// chloedb-server (` by another chloedb-server, at http://...`). `None`:
 /// the default is free, or was chosen, or no pair is free in ten tries.
 async fn free_defaults(listen: &str, grpc: &str, listen_defaulted: bool, grpc_defaulted: bool) -> Option<(String, Option<String>, String)> {
-    // A server given --listen is placed by someone (a cluster's shard,
-    // whose coordinator dials the addresses it was told): it stops rather
-    // than moves.
-    if !listen_defaulted {
-        return None;
-    }
     let free = |addr: String| async move { tokio::net::TcpListener::bind(&addr).await.is_ok() };
     let grpc_moves = grpc_defaulted && grpc != "off";
+    // A server given --listen is placed by someone (a cluster's shard,
+    // whose coordinator dials the addresses it was told): its HTTP address
+    // stops rather than moves. The gRPC port it was not given is another
+    // matter: two servers started with their own --listen would otherwise
+    // both want 7701, and the second one stop. It goes beside the HTTP port.
+    if !listen_defaulted {
+        if !grpc_moves || free(grpc.to_string()).await {
+            return None;
+        }
+        let (host, port) = listen.rsplit_once(':')?;
+        let (port, ghost) = (port.parse::<u16>().ok()?, grpc.rsplit_once(':').map_or(host, |(h, _)| h));
+        for k in 1..=10u16 {
+            let g = format!("{ghost}:{}", port.checked_add(k)?);
+            if g != listen && free(g.clone()).await {
+                return Some((listen.to_string(), Some(g.clone()), format!("{grpc} (gRPC) is in use, so this server takes gRPC on {g}, beside its --listen (give --grpc to choose)")));
+            }
+        }
+        return None;
+    }
     let http_free = free(listen.to_string()).await;
     let grpc_free = !grpc_moves || free(grpc.to_string()).await;
     if http_free && grpc_free {
