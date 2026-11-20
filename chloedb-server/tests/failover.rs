@@ -508,12 +508,29 @@ async fn copies_removed_while_down_do_not_depose_the_primary_when_they_return() 
     assert_eq!((got["p0000000"], got["p0000001"], got["p0000002"]), (100, 101, 102), "the writes A took alone are kept");
 }
 
-/// `sold` of product `i` on server `n` itself, read on it over HTTP.
+/// `sold` of product `i` on server `n` itself, read on it over HTTP
+/// (`None`: it has no such row). A copy may refuse reads for a moment
+/// after an election or a restart (a replica that has not yet heard from
+/// its primary, a primary that has not yet heard a majority, as
+/// a server's `capability` says), so a refused read is asked again for up
+/// to 10 s, and then fails with what the server answered.
 async fn sold_on(n: &Node, i: usize) -> Option<i64> {
     let http = chloedb_server::http_client().timeout(Duration::from_secs(5)).build().unwrap();
-    let r = http.post(format!("http://127.0.0.1:{}/v1/query", n.http)).json(&json!({"sql": format!("SELECT sold FROM products WHERE id = 'p{i:07}'")})).send().await.ok()?;
-    let j: Json = r.json().await.ok()?;
-    j["rows"][0][0].as_i64()
+    let t0 = Instant::now();
+    loop {
+        let said = match http.post(format!("http://127.0.0.1:{}/v1/query", n.http)).json(&json!({"sql": format!("SELECT sold FROM products WHERE id = 'p{i:07}'")})).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<Json>().await {
+                Ok(j) => return j["rows"][0][0].as_i64(),
+                Err(e) => format!("an answer that is not JSON: {e}"),
+            },
+            Ok(r) => format!("{}: {}", r.status(), r.text().await.unwrap_or_default()),
+            Err(e) => format!("no answer: {e}"),
+        };
+        if t0.elapsed() > Duration::from_secs(10) {
+            panic!("{} refused the read of p{i:07} for 10 s: {said}\n{}", n.url(), n.logs());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// An `add` of 1 to `sold` of product `i`: applied twice, it shows.

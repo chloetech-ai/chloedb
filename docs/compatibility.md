@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.8 but the early
+(November 2026, every crate and package at version 0.3.9 but the early
 Workbench, `chloedb-workbench`, at 0.1.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
@@ -106,7 +106,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.8; `chloedb-workbench` its own, 0.1.0),
+version of the last release (0.3.9; `chloedb-workbench` its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.
 
@@ -173,6 +173,18 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   shards (`x-chloedb-postgres-follower`), and a server of 0.3.8 refuses
   other writes to a table a follower follows, so behind a 0.3.7
   coordinator a 0.3.8 shard can refuse the follower's own writes.
+  0.3.9 keeps the shard protocol at 21 and adds the plan feature
+  `sql_functions` (`substr`, `trim`, `ltrim`, `rtrim`, `replace`, `floor`,
+  `ceil`, `date_diff` and `STRING_AGG`, with `STRING_AGG`'s separator as a
+  new field of the plan's aggregate): a 0.3.8 shard refuses a query that
+  uses one by name, and refuses `hash()` in a ranking, so upgrade the
+  shards before using them. Otherwise 0.3.8 and 0.3.9 mix in either
+  order. A 0.3.9 coordinator keeps its alert rules, audit log and Timeline
+  on its shards' copies; a copy of 0.3.8 keeps nothing of them, so they
+  survive the coordinator's restart once its shards run 0.3.9. The
+  OpenSearch API's aliases move to a table of their own
+  (`opensearch_aliases`) at the first alias change: a database taken back
+  to 0.3.8 after that sees its aliases as they were before the change.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -266,6 +278,7 @@ the crawler and Sheets are, but carries no promise of its own):
 - `chloedb-gh`, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;
 - `chloedb-sound`, free sounds searched by how they sound, with the moments inside long recordings;
 - `chloedb-backbone`, the internet's routing from public data: what is wrong now, where, and how it connects;
+- `chloedb-earth`, California and Chile from orbit: fires as GOES sees them, places by how they look, their twins across the equator and how they changed;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `chloedb-experiments`, A/B tests of rankings on simulated users, and rankings valued on the log of another, checked against the users' truth;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;

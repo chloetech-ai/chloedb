@@ -57,7 +57,7 @@ How it differs from `chloectx install --user`:
 Both use the same stores, one per project. A project with its own `chloectx install` keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and `chloectx install --user`, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; `chloectx doctor` warns, and `chloectx uninstall --user` leaves only the plugin. Doctor shows the plugin:
 
 ```console
-  ok    plugin: chloectx@chloedb 0.3.8, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.8/scripts/chloectx-launch)
+  ok    plugin: chloectx@chloedb 0.3.9, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.9/scripts/chloectx-launch)
   ok    MCP server: the plugin's, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)
 ```
 
@@ -139,7 +139,7 @@ chloectx doctor
 
 ```console
 $ chloectx doctor
-ChloeCtx 0.3.8 for /home/you/code/app
+ChloeCtx 0.3.9 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    version: built from 1847ac7072, up to date with origin/main
   ok    Claude Code CLI: 2.1.326 (Claude Code) (/home/you/.local/bin/claude)

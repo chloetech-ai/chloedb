@@ -106,6 +106,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
@@ -115,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">ChloeCtx</span>
       <h1>Install ChloeCtx on your machine</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/setup.md">docs/chloectx/setup.md</a>.</p>
-      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
+      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#what-you-need">What you need</a></li><li><a href="#as-a-claude-code-plugin">As a Claude Code plugin</a></li><li><a href="#prebuilt">Prebuilt</a></li><li><a href="#install-in-one-command-from-source">Install in one command, from source</a></li><li><a href="#or-let-your-agent-do-it">Or let your agent do it</a></li><li><a href="#or-step-by-step">Or step by step</a></li><li><a href="#check-it">Check it</a></li><li><a href="#try-it-for-real">Try it for real</a></li><li><a href="#explore-your-stores-chloectx-ui">Explore your stores: chloectx ui</a></li><li><a href="#where-everything-lives">Where everything lives</a></li><li><a href="#other-environments">Other environments</a></li><li><a href="#for-a-team">For a team</a></li><li><a href="#upgrade-and-remove">Upgrade and remove</a></li><li><a href="#keep-the-stores-tidy-chloectx-stores-and-chloectx-prune">Keep the stores tidy: chloectx stores and chloectx prune</a></li><li><a href="#chloectx-was-called-engram">ChloeCtx was called Engram</a></li><li><a href="#troubleshooting">Troubleshooting</a></li></ol></details>
     <div class="doc-body">
@@ -219,7 +220,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <p>Both use the same stores, one per project. A project with its own <code>chloectx install</code> keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and <code>chloectx install --user</code>, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; <code>chloectx doctor</code> warns, and <code>chloectx uninstall --user</code> leaves only the plugin. Doctor shows the plugin:</p>
-<pre data-lang="sh">  ok    plugin: chloectx@chloedb 0.3.8, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.8/scripts/chloectx-launch)
+<pre data-lang="sh">  ok    plugin: chloectx@chloedb 0.3.9, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.9/scripts/chloectx-launch)
   ok    MCP server: the plugin&#x27;s, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)</pre>
 <div class="doc-table"><table>
 <thead>
@@ -333,7 +334,7 @@ chloectx doctor</pre>
 <p><code>chloectx install --user</code> merges eleven hooks and a permission for the memory tools into <code>~/.claude/settings.json</code> and registers the MCP server at user scope with <code>claude mcp add-json</code>. Each run saves the previous <code>settings.json</code> next to it as <code>settings.json.chloectx-&lt;time&gt;.bak</code>, and so does <code>chloectx uninstall --user</code>; nothing deletes these backups, so remove the old ones once you are happy. A project install backs up the project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code> the same way, when it changes them. It adds those two files to the repository's <code>.git/info/exclude</code>, since they hold this machine's paths, but not the <code>.bak</code> files next to them: <code>git status</code> shows them (as <code>?? .claude/</code>). Delete them, and do not commit them. Every settings file is written to a file beside it and renamed into place, so an interrupted install leaves the old file whole, and its keys stay in the order they were. A project with its own <code>chloectx install</code> keeps using that one; the user-level hooks step aside there, so nothing is recorded twice.</p>
 <h2 id="check-it">Check it<a class="anchor" href="#check-it" aria-label="Link to this section">#</a></h2>
 <pre data-lang="sh">$ chloectx doctor
-ChloeCtx 0.3.8 for /home/you/code/app
+ChloeCtx 0.3.9 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    version: built from 1847ac7072, up to date with origin/main
   ok    Claude Code CLI: 2.1.326 (Claude Code) (/home/you/.local/bin/claude)

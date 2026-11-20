@@ -105,7 +105,7 @@ from .ngrams import next_items
 from .result import ArrowResult, Result
 
 # The package's version: pyproject.toml's (a test checks they agree).
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 
 __all__ = [
     "__version__",
@@ -181,6 +181,7 @@ __all__ = [
     "ngrams",
     "next_items",
     "upgrade",
+    "fetch_model",
     "Frame",
     "GroupBy",
     "concat",
@@ -205,6 +206,17 @@ def upgrade(path: str | os.PathLike) -> tuple[str, int, int] | None:
     copied, rows copied)."""
     r = _strata.upgrade(os.fspath(path))
     return None if r is None else (os.fspath(r[0]), r[1], r[2])
+
+
+def fetch_model(name: str, models: str | os.PathLike | None = None) -> str:
+    """Download embedding model `name` (one ChloeDB knows, such as
+    ``potion-retrieval-32M``) into `models` (default: ``$CHLOEDB_MODELS``,
+    else ``~/.local/share/chloedb/models``), at its pinned revision with
+    each file checked against its SHA-256. Returns its directory. Opening a
+    database whose schema names the model downloads it by itself (unless
+    ``CHLOEDB_FETCH_MODELS=0``); this is for doing it ahead, say in a
+    Docker build. ``python -m chloedb fetch-model NAME`` does the same."""
+    return os.fspath(_strata.fetch_model(name, None if models is None else os.fspath(models)))
 
 
 # Options a `Client` takes by keyword that a database in this process has
