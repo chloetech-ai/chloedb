@@ -465,6 +465,24 @@ async fn every_page_against_a_real_server() {
     }
     db.upsert("ea_sky", skies).await.unwrap();
 
+    // The climate of a row of California's places, each warmer than the
+    // last, a place's 2071-2100 its neighbour's today two along; and of
+    // Chile's, colder, whose 2071-2100 is like California's today.
+    let mut climate = Vec::new();
+    for p in places.all.iter().filter(|p| p.id.starts_with("ca00") || p.id.starts_with("cl00")) {
+        let c: f64 = p.id[4..].parse().unwrap();
+        let (base, shift) = if p.region == "chile" { (-12.0, 13.0) } else { (0.0, 2.0) };
+        let now = vec![(base + c) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let later = vec![(base + c + shift) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        climate.push(json!({"id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "town": format!("{}-{}", p.town, c),
+            "t_mean": 15.0 + c, "t_mean_70": 17.0 + c, "t_hot": 30.0 + c, "t_hot_70": 33.5 + c, "t_hot_70_lo": 32.0 + c, "t_hot_70_hi": 35.0 + c,
+            "t_cold": 5.0, "t_cold_70": 7.0, "t_cold_70_lo": 6.0, "t_cold_70_hi": 8.0, "rain": 400.0, "rain_70": 340.0, "rain_70_lo": 300.0, "rain_70_hi": 420.0,
+            "rain_cv": 90.0, "rain_cv_70": 95.0, "rain_summer": 10.0, "rain_summer_70": 8.0, "kg": "Csb", "kg_70": if c >= 6.0 { "Csa" } else { "Csb" }, "kg_70_agree": 4,
+            "analog": "", "analog_region": p.region, "analog_town": "", "analog_km": 6.5, "analog_d": if c >= 10.0 { 2.5 } else { 0.0 }, "novel": c >= 10.0, "moved": 0.2,
+            "clim": now, "clim70": later}));
+    }
+    db.upsert("ea_climate", climate).await.unwrap();
+
     // Public, as at earth.chloetech.ai: the page and its reads for anyone.
     let pub_port = free_port();
     let open = format!("http://127.0.0.1:{pub_port}");
@@ -557,6 +575,28 @@ async fn every_page_against_a_real_server() {
     assert_eq!(s, 400);
     let place = ok(&http, &base, "/v1/place/ca0000").await;
     assert_eq!(place["sky"]["good_nights"], 1, "{place}");
+
+    // The climate in 2071-2100: the map, and a place's future found today.
+    assert_eq!(place["climate"]["t_hot_70"], 33.5, "{place}");
+    assert!(place["climate"].get("clim").is_none(), "no vectors on the page: {place}");
+    let (s, map) = get(&http, &format!("{open}/v1/future?region=california"), None).await;
+    assert_eq!(s, 200, "{map}");
+    assert_eq!(map["n"], 12, "{map}");
+    assert_eq!(map["hot"][0], 35, "{map}");
+    assert_eq!(map["class_changed"], 6, "{map}");
+    assert_eq!(map["novel_n"], 2, "{map}");
+    let (s, f) = get(&http, &format!("{open}/v1/future/place/ca0003"), None).await;
+    assert_eq!(s, 200, "{f}");
+    assert_eq!(f["like_later"][0]["id"], "ca0005", "its 2071-2100 is two along today: {f}");
+    assert_eq!(f["goes_to"][0]["id"], "ca0001", "and its today is two back's later: {f}");
+    assert!(f["like_later"][0]["d"].as_f64().unwrap() < 0.01, "{f}");
+    assert!(f["like_later"].as_array().unwrap().iter().all(|p| p["id"] != "ca0003"), "not itself: {f}");
+    let (_, all) = get(&http, &format!("{open}/v1/future/place/cl0000"), None).await;
+    let (_, mine) = get(&http, &format!("{open}/v1/future/place/cl0000?scope=region"), None).await;
+    assert_eq!(all["like_later"][0]["id"], "ca0001", "Chile's 2071-2100 is California's today: {all}");
+    assert_eq!(mine["like_later"][0]["id"], "cl0003", "or nearest it within Chile: {mine}");
+    let (s, _) = get(&http, &format!("{open}/v1/future/place/nowhere"), None).await;
+    assert_eq!(s, 404);
 
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;

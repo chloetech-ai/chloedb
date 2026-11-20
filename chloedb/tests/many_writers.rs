@@ -178,11 +178,78 @@ fn which_sql_writes_may_share_a_transaction() {
     assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 2);
     assert_eq!(int(&db, "SELECT count(*) FROM docs WHERE id = 'b'"), 0);
     // Writes that may not share one are refused, and none runs.
-    assert!(db.write_prepared_group(&[&a, &a]).is_err());
+    let narrowed = p("UPDATE docs SET n = 0 WHERE id = 'a' AND n > 1");
+    assert!(db.write_prepared_group(&[&a, &narrowed]).is_err());
     assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 2);
     // One that fails fails them all.
     assert!(db.write_prepared_group(&[&a, &c]).is_err());
     assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 2);
+    // UPDATEs by key alone of one key share one: each reads the row as
+    // the one before left it, so a hot counter takes many + 1s a commit.
+    let price = p("UPDATE docs SET n = 10 WHERE id = 'a'");
+    assert_eq!(db.write_prepared_group(&[&a, &a, &price, &a]).unwrap().0, [1, 1, 1, 1]);
+    assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 11);
+    // But not after an insert or delete of the key in the same group.
+    let ins = p("INSERT INTO docs (id, n) VALUES ('q', 1)");
+    let q = p("UPDATE docs SET n = n + 1 WHERE id = 'q'");
+    assert_eq!(admit(&["INSERT INTO docs (id, n) VALUES ('q', 1)", "UPDATE docs SET n = n + 1 WHERE id = 'q'"]), [true, false]);
+    assert_eq!(admit(&["UPDATE docs SET n = n + 1 WHERE id = 'q'", "DELETE FROM docs WHERE id = 'q'"]), [true, false]);
+    assert!(db.write_prepared_group(&[&ins, &q]).is_err());
+}
+
+/// UPDATE ... WHERE key = :k, which reads the row by its key alone
+/// (no scan, no plan of the filter), answers as the general path does: a
+/// missing key writes nothing, NULL + 1 is 1, an expired row is not
+/// there, a key of the wrong type goes the general way, and a sum that
+/// overflows fails.
+#[test]
+fn updates_by_key_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), DbOptions::default());
+    sql(&db, "INSERT INTO docs (id, body, n) VALUES ('a', 'x', NULL), ('b', 'y', 5)", &[]).unwrap();
+    let k = |k: &str| vec![("k", Value::Str(k.into()))];
+    assert_eq!(sql(&db, "UPDATE docs SET n = n + 1 WHERE id = :k", &k("a")).unwrap(), 1);
+    assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 1);
+    assert_eq!(sql(&db, "UPDATE docs SET n = n - 2 WHERE id = :k", &k("b")).unwrap(), 1);
+    assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'b'"), 3);
+    assert_eq!(sql(&db, "UPDATE docs SET n = n + 1 WHERE id = :k", &k("missing")).unwrap(), 0);
+    assert_eq!(int(&db, "SELECT count(*) FROM docs"), 2);
+    // Set and add in one statement, and the same text again with other
+    // parameters (it is parsed once).
+    for (i, key) in ["a", "b", "a"].iter().enumerate() {
+        let p = [("k", Value::Str(key.to_string())), ("v", Value::Str(format!("body {i}")))];
+        assert_eq!(sql(&db, "UPDATE docs SET body = :v, n = n + 10 WHERE id = :k", &p).unwrap(), 1);
+    }
+    assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 21);
+    assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'b'"), 13);
+    let body = db.query("SELECT body FROM docs WHERE id = 'a'", &Params::new()).unwrap().rows[0][0].clone();
+    assert_eq!(body, Value::Str("body 2".into()));
+    // A key of another type: the general path, which refuses it.
+    let e = sql(&db, "UPDATE docs SET n = n + 1 WHERE id = 7", &[]).unwrap_err().to_string();
+    assert!(e.contains("KEYWORD"), "{e}");
+    // An int key.
+    sql(&db, "INSERT INTO other (id, n) VALUES (1, 9223372036854775806)", &[]).unwrap();
+    assert_eq!(sql(&db, "UPDATE other SET n = n + 1 WHERE id = :k", &[("k", Value::Int(1))]).unwrap(), 1);
+    let e = sql(&db, "UPDATE other SET n = n + 1 WHERE id = :k", &[("k", Value::Int(1))]).unwrap_err().to_string();
+    assert!(e.contains("overflow"), "{e}");
+    assert_eq!(int(&db, "SELECT n FROM other WHERE id = 1"), i64::MAX);
+    // A deleted row is not there.
+    sql(&db, "DELETE FROM docs WHERE id = 'b'", &[]).unwrap();
+    assert_eq!(sql(&db, "UPDATE docs SET n = n + 1 WHERE id = :k", &k("b")).unwrap(), 0);
+    assert_eq!(int(&db, "SELECT count(*) FROM docs WHERE id = 'b'"), 0);
+}
+
+/// An expired row (`expire_by`) is not updated by key: the fast path
+/// finds no row, as a read would.
+#[test]
+fn an_expired_row_is_not_updated_by_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), DbOptions::default());
+    db.sql("CREATE TABLE sessions (id KEYWORD PRIMARY KEY, hits INT, until TIMESTAMP) OPTIONS(expire_by = 'until')", &Params::new()).unwrap();
+    sql(&db, "INSERT INTO sessions (id, hits, until) VALUES ('old', 1, '2001-01-01T00:00:00Z'), ('new', 1, '2999-01-01T00:00:00Z')", &[]).unwrap();
+    assert_eq!(sql(&db, "UPDATE sessions SET hits = hits + 1 WHERE id = 'old'", &[]).unwrap(), 0);
+    assert_eq!(sql(&db, "UPDATE sessions SET hits = hits + 1 WHERE id = 'new'", &[]).unwrap(), 1);
+    assert_eq!(int(&db, "SELECT hits FROM sessions WHERE id = 'new'"), 2);
 }
 
 /// `begin` waits up to `write_wait` while another write holds the

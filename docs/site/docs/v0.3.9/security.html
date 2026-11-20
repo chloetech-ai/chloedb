@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Security model · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write.…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/security.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html" aria-current="page">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Security model</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/security.md">docs/chloedb/security.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#before-a-server-leaves-your-machine">Before a server leaves your machine</a></li><li><a href="#listeners">Listeners</a></li><li><a href="#credentials">Credentials</a></li><li><a href="#api-keys-and-scopes">API keys and scopes</a></li><li><a href="#browsers">Browsers</a></li><li><a href="#tls">TLS</a></li><li><a href="#apps">Apps</a></li><li><a href="#requests-the-server-makes">Requests the server makes</a></li><li><a href="#data-at-rest">Data at rest</a></li><li><a href="#logs">Logs</a></li><li><a href="#chloectx">ChloeCtx</a></li><li><a href="#what-it-does-not-do">What it does not do</a></li></ol></details>
+    <div class="doc-body">
+
+<p>This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in <a href="server.html#security">the server's security section</a>. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/SECURITY.md">SECURITY.md</a>.</p>
+<h2 id="before-a-server-leaves-your-machine">Before a server leaves your machine<a class="anchor" href="#before-a-server-leaves-your-machine" aria-label="Link to this section">#</a></h2>
+<p>A server on one machine for one person needs nothing: it listens on loopback only. Before it listens anywhere else:</p>
+<ol>
+<li>Give it <code>--token</code> (or <code>$CHLOEDB_TOKEN</code>) and keep that token for the people who run it. Give clients <a href="#api-keys-and-scopes">API keys</a> of the scope they need, limited to their tables where they are an app's.</li>
+<li>In a cluster, give every server, coordinators included, the same <code>--cluster-token</code> (<code>$CHLOEDB_CLUSTER_TOKEN</code>), and no client.</li>
+<li>Serve TLS (<code>--tls-cert</code>, <code>--tls-key</code>), or keep the servers on a private network: without TLS a token or a key crosses the network as plain text.</li>
+<li>Let only the cluster's own servers, its clients and its monitoring reach the HTTP and gRPC ports.</li>
+<li>Start the servers with <code>umask 077</code>, or keep their folders readable by their user alone (<a href="#data-at-rest">data at rest</a>), and keep the files that hold the tokens (a systemd unit's <code>EnvironmentFile</code>) mode 0600.</li>
+<li>Pass <code>--start-apps off</code> on a server that should run no app (<a href="#apps">apps</a>).</li>
+</ol>
+<p><a href="operate-cluster.html">Operate a cluster</a> does all of this for a cluster on one machine.</p>
+<h2 id="listeners">Listeners<a class="anchor" href="#listeners" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>listener</th>
+<th>default</th>
+<th>flag</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HTTP (the API, the command center, <code>/metrics</code>)</td>
+<td><code>127.0.0.1:7700</code></td>
+<td><code>--listen</code></td>
+</tr>
+<tr>
+<td>gRPC (clients, and the calls between a cluster's servers)</td>
+<td><code>127.0.0.1:7701</code></td>
+<td><code>--grpc</code>, <code>off</code> for none</td>
+</tr>
+<tr>
+<td>OpenSearch's REST API</td>
+<td>off</td>
+<td><code>--opensearch-listen</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>A server with no token, no cluster token and no API key is <strong>open</strong>: every request is its admin's. An open server refuses to start on an address reachable from elsewhere (<code>0.0.0.0</code>, a LAN address): "0.0.0.0:7700 is reachable beyond this machine: set --token (or $CHLOEDB_TOKEN), make an API key, or pass --no-token to serve it open". <code>--no-token</code> serves it open anyway, for a network you trust as a whole. A token, a cluster token or an API key each close the server. The key a server makes for each <a href="#apps">app it starts</a> does not.</p>
+<p>Once the server is closed, every route needs <code>Authorization: Bearer &lt;token or key&gt;</code>, except these, which answer anyone:</p>
+<ul>
+<li>the command center's files (<code>/</code>, <code>/classic</code>, <code>/ui/*</code>), which hold no data: the page asks for a key before it reads anything;</li>
+<li>the probes <code>/livez</code>, <code>/readyz</code> and <code>/v1/health</code>, for load balancers and orchestrators. Every server, alone, a shard or a coordinator, answers <code>/v1/health</code> with <code>{status}</code> alone to a request without a credential it takes (none, or a wrong one).</li>
+</ul>
+<p>Every gRPC call needs a credential, and the OpenSearch listener takes the same token and keys, as a Bearer token or as the password of Basic authentication.</p>
+<h2 id="credentials">Credentials<a class="anchor" href="#credentials" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>credential</th>
+<th>who holds it</th>
+<th>what it may do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--token</code></td>
+<td>the people who run the server</td>
+<td>everything over HTTP and gRPC, with the admin scope. On a server without a cluster token it is also the cluster's token</td>
+</tr>
+<tr>
+<td><code>--cluster-token</code></td>
+<td>every server of a cluster, never a client</td>
+<td>the calls between servers (<code>Replicate</code>, <code>Restore</code>, <code>Verify</code>, <code>Slots</code>, <code>Configure</code>, the slot moves, <code>Keys</code>, <code>Feed</code>, <code>FeedKeys</code>), which no API key may make, and everything the token may</td>
+</tr>
+<tr>
+<td>an API key (<code>sk_&lt;id&gt;_&lt;secret&gt;</code>)</td>
+<td>a client, an agent, an app</td>
+<td>what its scope or role allows, on every table or on the tables it is limited to</td>
+</tr>
+<tr>
+<td>a Google sign-in session</td>
+<td>a person in the command center</td>
+<td>the scope the allow list gives their address, as long as it gives it</td>
+</tr>
+<tr>
+<td>an app's token</td>
+<td>chloedb-server, when it sends a request on to an app</td>
+<td>the app's own API</td>
+</tr>
+</tbody>
+</table></div>
+<p>Tokens are compared in constant time. A server keeps no key's secret: the keys file (<code>--keys</code>, by default <code>DB.keys.json</code> beside the database, mode 0600) holds each key's name, scope, grants and the SHA-256 of its secret, and the ids of the keys revoked. The servers of a cluster share their keys every 5 seconds over <code>Keys</code>, with the cluster token, so a key made on any coordinator works on every shard, and a key revoked anywhere is revoked everywhere within a round (<a href="server.html#security">keys across a cluster</a>).</p>
+<p>The calls between servers take the cluster token and nothing else. A client holding the <code>--token</code> or an admin key cannot ship writes to a replica, move slots or reconfigure a copy, nor make a server send the cluster token to an address of its choosing: adding a shard or a copy, and a promotion that names copies outside its shard, need the cluster token.</p>
+<h2 id="api-keys-and-scopes">API keys and scopes<a class="anchor" href="#api-keys-and-scopes" aria-label="Link to this section">#</a></h2>
+<p>Make keys in the command center (<strong>Access and audit</strong>) or with <code>POST /v1/admin/keys</code>, which answers the secret once. A key may expire (<code>expires_days</code>, or <code>expires_minutes</code>, 5 at least), is rotated with a grace period during which both secrets work, and is revoked at once. <a href="server.html#security">The server's security section</a> lists every route each scope reaches.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>scope</th>
+<th>may</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>feed</code></td>
+<td>read the <a href="server.html#the-feed-changes-for-another-cluster-to-follow">feed</a> of every table, with every row as it is written, and <code>POST /v1/feed/keys</code>, the keys and digests of any table's rows; <code>/v1/health</code> and <code>/v1/whoami</code>. It is for a cluster that follows this one: it reaches few routes, but what it reads is all of the data</td>
+</tr>
+<tr>
+<td><code>read</code></td>
+<td>queries, explain, embed, schemas, health, metrics and the series, and the feed</td>
+</tr>
+<tr>
+<td><code>write</code></td>
+<td>that, and rows: <code>/v1/write</code>, <code>/v1/import</code>, <code>/v1/stream</code>, <code>INSERT</code>, <code>UPDATE</code> and <code>DELETE</code>, OpenTelemetry logs</td>
+</tr>
+<tr>
+<td><code>admin</code></td>
+<td>that, and changing the server: tables, rank profiles, keys, checkpoints, promotion, alert rules; the running queries, the logs and the audit log, which show other clients' SQL; <code>/v1/export</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>What a request does is checked as well as its route: a SQL statement by its kind (a <code>CREATE TABLE</code> or a <code>DROP</code> needs <code>admin</code>, whichever route sends it), a write plan needs <code>write</code>.</p>
+<p><strong>Keys limited to tables.</strong> <code>POST /v1/admin/keys {"name": "crawler", "tables": {"crawl_*": "admin", "docs": "read"}}</code> makes a key whose grants each name a table, a prefix and <code>*</code>, or <code>*</code>, with a scope. Such a key never has the server's own admin (keys, shards, functions, settings, the logs and the audit log), it may call only the routes that check the tables they touch, and gRPC and MCP refuse it. A statement is read with ChloeDB's own parser and checked against every table it names; what its names cannot show (<code>llm()</code>, a table function that is not a stored one, a name in parts) is refused. Such a key sees its own tables alone in <code>/v1/health</code> and <code>/v1/cluster</code> (their rows, and no shard's or copy's <code>docs</code>), and an error for a table that does not exist names only the tables it sees (<code>no such table: a_ghost; the tables the key "tenant-a" sees are a_notes</code>). Presets (<code>analyst</code>, <code>oncall</code>, <code>ml-app</code>, <code>app-owner</code>) make the keys of common jobs.</p>
+<p><strong>Multi-tenant isolation.</strong> Isolation between tenants in one server or cluster is keys limited to tables: give each tenant a prefix (<code>a_*</code>, <code>b_*</code>) and a key whose grants name only it, and its statements, searches and writes reach its tables alone (<a href="server.html#security">the server's security section</a> lists every route such a key reaches). Such a key is refused by the <a href="opensearch.html">OpenSearch API</a>, gRPC and MCP. It isolates tables, not the cluster: it still reads the cluster's shape in <code>/v1/cluster</code> (each copy, with its address) and the alerts that fire (<code>GET /v1/alerts</code>), so hand these keys to your own apps and services, and put a customer who must not see your topology or your incidents behind an app of yours. The <a href="tenants.html">tenants</a> of <code>--tenants</code>, databases kept whole in an object store, are an experiment in storage, not a way to isolate customers.</p>
+<p><strong>Keys a key makes.</strong> A key with the admin scope on some tables may make keys within its own grants (<code>POST /v1/keys/own</code>), which expire when it does and stop working when it is revoked. An app engine gives each of its apps a key this way.</p>
+<p><strong>Agents.</strong> Give an agent a key of role <code>propose</code> (it reads the server's views and files change requests) or <code>ops</code> (that, and the bounded actions: a contain rule, a query cancelled, an alert silenced, each with a reason), rather than an admin key. Whatever its key, an agent's request that loses data or costs money (tier 3: a <code>DROP TABLE</code>, a <code>DELETE</code> of every row, a promotion, a key revoked) is refused with <code>change_request_required</code>: it files a change request, which a person approves with their own key, and an agent's approval is refused. A key an agent makes is an agent's too: it acts for the person its maker acts for, expires no later than its maker and stays within its maker's statement budget; asking for <code>"agent": false</code> or for another person is refused with <code>change_request_required</code>, and an agent rotates only agents' keys. The audit log names an agent's requests <code>actor: "agent"</code> (<a href="server.html#agents-and-administration">agents and administration</a>).</p>
+<p><strong>Model calls.</strong> Each key may make <code>--model-calls-per-key-day</code> calls (10,000) a day to a hosted model with the server's own credentials; the token, the cluster token and an open server are not counted.</p>
+<h2 id="browsers">Browsers<a class="anchor" href="#browsers" aria-label="Link to this section">#</a></h2>
+<p>A server on your laptop is reachable by every page your browser opens. Three rules keep those pages out:</p>
+<ul>
+<li><strong>Host names.</strong> On loopback the server answers only to <code>localhost</code>, <code>127.0.0.1</code> and <code>::1</code>, and the names <code>--allow-host</code> adds, so a page that points its own name at 127.0.0.1 (DNS rebinding) gets 403. On another address it answers to every name unless <code>--allow-host</code> lists them, and its credential guards it.</li>
+<li><strong>Origins.</strong> Any request but <code>GET</code> and <code>HEAD</code> (reads by <code>POST /v1/query</code> and <code>/v1/sql</code> included) that carries an <code>Origin</code> other than the server's own gets 403: "a page from http://evil.example cannot change this server". The server sends no CORS headers, so a browser's preflight (<code>OPTIONS</code>) never gets a permission: it is answered 405, or 401 on a server with a token. Clients outside a browser send no <code>Origin</code>, and pass. A web app's page therefore calls a route of the app's own, which queries ChloeDB (<a href="javascript.html#why-a-page-cannot-call-chloedb-server">why a page cannot call chloedb-server</a>).</li>
+<li><strong>Content types.</strong> A route that takes JSON refuses a body without <code>application/json</code> (415), and <code>/v1/import</code> refuses the types a page may send to another site without asking first (<code>text/plain</code>, forms, none).</li>
+</ul>
+<p>Every answer carries <code>X-Content-Type-Options: nosniff</code>, <code>X-Frame-Options: SAMEORIGIN</code>, <code>Referrer-Policy: same-origin</code> and <code>Content-Security-Policy: frame-ancestors 'self'; base-uri 'self'; object-src 'none'</code>, unless its route sets its own. A stored file (<code>GET /v1/media/&lt;sha256&gt;</code>) is served as an image, a sound, a video or a PDF, or else as a download, with a sandboxing policy, so a writer's HTML or SVG never runs on the server's origin.</p>
+<p>The command center keeps a key you paste in the tab's session storage, which ends with the tab. Paste it in the sign-in dialog rather than opening <code>/?token=...</code>: the page drops the token from its address at once, but the first address is in the browser's history and in the log of any proxy between you and the server. A person signed in with Google holds no key at all: their session is a cookie the page's scripts cannot read (<code>__Host-chloedb-session</code>, <code>Secure</code>, <code>HttpOnly</code>, <code>SameSite=Strict</code>), lasting 12 hours unused and 7 days at most, and the allow list is checked again on every request (<a href="server.html#security">sign in with Google</a>).</p>
+<h2 id="tls">TLS<a class="anchor" href="#tls" aria-label="Link to this section">#</a></h2>
+<p><code>--tls-cert FILE --tls-key FILE</code> (PEM) serve HTTP and gRPC over TLS, with rustls. A coordinator reaches <code>https://</code> shards over TLS, trusting the public roots and <code>--shard-ca FILE</code>. There is no mutual TLS: the servers of a cluster know each other by the cluster token. Behind a proxy that ends TLS, the hop from the proxy to the server is plain HTTP unless the server serves TLS too.</p>
+<h2 id="apps">Apps<a class="anchor" href="#apps" aria-label="Link to this section">#</a></h2>
+<p>An app is a program of its own (the crawler, Sheets, ChloeCtx, network operations, the app engine) that the command center shows as a view (<a href="server.html#apps">apps</a>).</p>
+<ul>
+<li><strong>Calls to an app</strong> go through the server: <code>/v1/apps/&lt;name&gt;/...</code> checks the caller's key first (read scope for <code>GET</code> and <code>HEAD</code>, admin for the rest), then sends the request on with the app's own token in place of the key, and tells the app who called (<code>x-chloedb-principal</code>, <code>x-chloedb-scope</code>, and <code>x-chloedb-tables</code> for a key limited to tables). Give each app a token of its own (<code>--app-token-dir</code>, <code>CHLOEDB_APP_TOKEN_&lt;NAME&gt;</code>), so that one app cannot call another as the server.</li>
+<li><strong>An app's view runs in the command center's page</strong>, with the signed-in person's key, as the server's own pages do: name only apps you trust on a server's command line.</li>
+<li><strong>An app that checks its callers</strong> runs a caller's statements as the caller: it sends its own token with <code>x-chloedb-as-tables</code> set to the caller's grants, and the server narrows the token to them, never wider than the token itself.</li>
+<li><strong>Apps the server starts.</strong> With <code>--start-apps auto</code>, the default, a server of its own or a coordinator starts the crawler, Sheets and ChloeCtx when their programs are installed beside its own, as an install puts them. Each listens on a loopback port the server holds, takes requests only with a token the server makes at each start, and calls the server back with a key limited to its own tables (named <code>app:&lt;name&gt;</code>), kept in memory and never in the keys file. Its environment is the server's with every credential taken out. A replica, a shard, a pod the Kubernetes operator runs and a server over TLS start none (<a href="server.html#apps-the-server-starts">apps the server starts</a>). An app started this way makes its tables in the database (ChloeCtx's <code>ctx_*</code>), and ChloeCtx downloads its embedding model; <code>--start-apps off</code> starts none.</li>
+<li><strong>ChloeCtx as an app, by hand.</strong> <code>chloectx app</code> refuses to start without <code>--token</code> on any address, loopback too, unless <code>--insecure</code> says otherwise; on loopback without a token it answers only requests whose <code>Host</code> is this machine (<code>127.0.0.1</code>, <code>localhost</code>, <code>[::1]</code>). Give it a token wherever you run it (<a href="chloectx-app.html">ChloeCtx as an app</a>).</li>
+</ul>
+<h2 id="requests-the-server-makes">Requests the server makes<a class="anchor" href="#requests-the-server-makes" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Connectors</strong> reach the public internet only, unless a connector's config says <code>"allow_internal": true</code>; cloud metadata addresses are refused even then. Their credentials go to the origin of their <code>url</code> alone, and a redirect to another origin fails the run (<a href="connectors.html#what-a-connector-reaches">what a connector reaches</a>). Their secrets are kept in <code>DB.connectors.json</code>, mode 0600, and a push connector's key writes its table and reads nothing (<a href="connectors.html#keys">keys</a>).</li>
+<li><strong>Alert routes</strong> post to the public internet only, unless a route says <code>"allow_internal": true</code> (the command center's "Inside this network"), which lets it reach a private or loopback address; a link-local one (cloud metadata) is refused even then. The URL is checked when routes are saved and every address it resolves to when a message is sent, and a redirect to another origin is not followed: a route posts to its own origin alone, and a redirect fails the send. The webhook of <code>--alert-webhook</code>, set by whoever starts the server, may be inside the network (<a href="server.html#alerts">routes</a>).</li>
+<li><strong>Hub connections</strong> (the command center's other clusters) may be inside the network, as a cluster usually is, but never at a link-local address, and follow no redirect to another origin: a cluster's key goes to the address it was added with alone.</li>
+<li><strong>Media fields</strong> read a URL or a file only when <code>--media-fetch</code> lists it; nothing is fetched by default (<a href="server.html#media-fields">media fields</a>).</li>
+<li><strong>Models</strong> are names: a query names a model in <code>--models</code> or a provider's, never a path, and an <code>endpoint.json</code> names only a provider's key variable or a <code>CHLOEDB_MODEL_KEY_*</code> one.</li>
+<li><strong>Cloud credentials and the hub.</strong> The command center's cloud view keeps the AWS and DigitalOcean credentials it saves in <code>DB.aws.json</code> and <code>DB.digitalocean.json</code>, mode 0600; the hub keeps other clusters' keys in the macOS Keychain or the Secret Service where there is one, else in <code>DB.hub-keys.json</code>, mode 0600.</li>
+</ul>
+<h2 id="data-at-rest">Data at rest<a class="anchor" href="#data-at-rest" aria-label="Link to this section">#</a></h2>
+<p>ChloeDB does not encrypt its files: use the encryption of the disk or the volume (LUKS, FileVault, an encrypted cloud volume) where the data needs it.</p>
+<p>The database, its <code>-wal</code>, the log store (<code>DB.logs</code>), the audit log file (<code>--audit-log</code>) and checkpoints are made with the server's umask, so under the common 022 anyone on the machine may read them. The keys file, connector secrets, the cloud view's credentials and the hub's keys are mode 0600 whatever the umask. Start the server with <code>umask 077</code> (systemd: <code>UMask=0077</code>) and every file it makes is its user's alone, or keep its folder mode 0700.</p>
+<p>A checkpoint (<code>--backup-dir</code>) holds every row of the database: keep it as you keep the database. Beside it are the keys file as it was (<code>NAME.keys.json</code>, mode 0600: the keys' names, scopes and the SHA-256 of their secrets, never a secret) and the shard's cluster map (<code>NAME.slots</code>), which <a href="server.html#restoring-a-checkpoint"><code>chloedb-server restore</code></a> puts back.</p>
+<h2 id="logs">Logs<a class="anchor" href="#logs" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>The log store</strong> (<code>--log-store</code>, by default <code>DB.logs</code> beside the database; <code>off</code> keeps none; a coordinator keeps none unless given one) keeps the server's log lines and the queries it answered for 7 days (<code>--log-retain</code>), up to 1 GiB (<code>--log-store-mb</code>). It keeps every slow and failed query, and up to 200 others a second (<code>--log-queries</code>).</li>
+<li><strong>Queries' values.</strong> The running and finished queries, and the log store, keep each query's parameters with their values. <code>--redact-params</code> (<code>CHLOEDB_REDACT_PARAMS</code>) keeps only their types. A value written into the SQL text is part of the statement and kept with it: pass anything secret as a parameter.</li>
+<li><strong>Credentials.</strong> A token or a key is not written to the log, the log store or the audit log, a wrong one included; the log and the audit log name a key by its name and id, and the token as <code>root token</code> (the log) or <code>token</code> (the audit log).</li>
+<li><strong>The audit log</strong> keeps every change (a request that needs the admin scope and changes something), every note and every refused request, the latest 2,000 in memory and every one in <code>--audit-log FILE</code> and the log store's <code>audit</code> table: who (the key's name and id), the route, the status, the client's address, the reason given, and what changed, before and after. Reads are not audited, nor writes of rows, by <code>/v1/write</code> or by SQL, except those the command center sends (<a href="server.html#security">audit log</a>). Behind a proxy, <code>--trust-proxy</code> names the proxies whose <code>X-Forwarded-For</code> the audit log believes.</li>
+</ul>
+<h2 id="chloectx">ChloeCtx<a class="anchor" href="#chloectx" aria-label="Link to this section">#</a></h2>
+<p>ChloeCtx's stores hold transcripts of your Claude Code sessions, which may contain anything the sessions saw.</p>
+<ul>
+<li><strong>The stores.</strong> Each project's store is a folder under <code>~/.local/share/chloectx/projects/</code> (or <code>~/.local/share/engram/projects/</code> on a machine from before the rename), made mode 0700.</li>
+<li><strong>The daemon's socket.</strong> A project's daemon listens on a Unix socket in its store's folder (<code>engram.sock</code>), which only you can open. When that path is too long for a socket, it uses a folder of yours alone: <code>$XDG_RUNTIME_DIR</code>, then <code>/tmp/engram-&lt;uid&gt;</code>, then <code>~/.cache/chloectx</code>, each only if it is a real folder owned by you that no one else may write to; a folder someone else made is refused.</li>
+<li><strong>The inspector</strong> (<code>chloectx ui</code>) listens on 127.0.0.1 by default, and every request needs the random 128-bit token in the address it prints, which the page moves into a cookie (<code>HttpOnly</code>, <code>SameSite=Strict</code>) on its first load. It offers the daemon's read operations and two changes: forgetting records (every knowledge card and record has a <strong>Forget…</strong> button, which lists what would go before it deletes anything) and starting an upgrade; both need the page's own header and origin, so another page or a script without them cannot ask for either. Its page runs only its own script (a <code>Content-Security-Policy</code> by hash, <code>frame-ancestors 'none'</code>), so text from a store cannot run as a script. Started on another address it warns that anyone who can reach it and has the token can read every store, and it serves plain HTTP: forward the port over SSH instead (<a href="chloectx-inspector.html">the live inspector</a>).</li>
+<li><strong>Redaction.</strong> ChloeCtx replaces keys, tokens, private keys, passwords in URLs and headers, and values assigned to names such as <code>DB_PASSWORD</code> with markers before it stores or syncs anything; a password written in prose is not caught. Treat a store like your shell history (<a href="chloectx.html#where-it-keeps-what-it-stores">where it keeps what it stores</a>).</li>
+</ul>
+<h2 id="what-it-does-not-do">What it does not do<a class="anchor" href="#what-it-does-not-do" aria-label="Link to this section">#</a></h2>
+<ul>
+<li>Encrypt data at rest.</li>
+<li>Mutual TLS between the servers or with clients.</li>
+<li>Limit the rate of requests per key or per client address.</li>
+<li>Keep a separate log of reads and of clients' writes of rows.</li>
+<li>Sign release archives with a key of its own: from 0.3.8 each carries GitHub's build provenance and an SBOM, signed with Sigstore by the workflow that built it, beside its <code>.sha256</code>, and PyPI's packages carry attestations (<a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/SECURITY.md#checking-what-you-download">SECURITY.md</a> says how to check them).</li>
+</ul>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/security.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="runbooks.html">← Runbooks</a><a href="sqlite.html">SQLite in and out →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
