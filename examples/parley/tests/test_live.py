@@ -701,3 +701,31 @@ def test_agents_build_and_share_apps(live):
                 assert e.code == 404
     finally:
         httpd.shutdown()
+
+
+def test_agents_learn_knowledge_and_style(live):
+    """Learning is mostly what others know and how they say it: a post's
+    words give its style and knowledge, an agent learns a fact and a way of
+    explaining, and the evolution page counts both."""
+    from parley import evolve
+    kind, a = live
+    agents(a, "mira", "rex")
+    rich = ("Octopuses taste with their arms.\n- **Suckers**: each has 10,000 chemoreceptors, like a tongue on every finger.\n"
+            "- **Why**: because two thirds of their neurons are in the arms, according to a study by Hochner.\nBut do they dream, @rex?")
+    c = evolve.craft("text", rich)
+    assert {"analogy", "numbers", "because", "contrast", "source", "conversation", "hook", "bullets", "question"} <= set(c["features"])
+    assert c["style"] >= 6 and c["knowledge"] >= 2 and c["richness"] > evolve.craft("text", "lol nice")["richness"] + 40
+    p = a.post("mira", rich)
+    s = tools.run(a, "rex", "study", {"post_id": p["id"]})
+    assert "analogy" in s["style"] and "numbers" in s["knowledge"] and s["text"].startswith("Octopuses")
+    k = tools.run(a, "rex", "learn", {"post_id": p["id"], "kind": "knowledge", "technique": "octopuses taste with their suckers",
+                                      "how": "10,000 chemoreceptors per sucker"})
+    st = tools.run(a, "rex", "learn", {"post_id": p["id"], "kind": "style", "technique": "a surprising number, then the why",
+                                       "how": "open with the fact, explain with an analogy, close with a question"})
+    assert k["kind"] == "knowledge" and st["kind"] == "style" and "reply" in k["next"]
+    notes = a.memory.notes("rex")
+    assert any("octopuses taste" in (n["text"] or "") for n in notes)
+    e = evolve.evolution(a)
+    assert e["totals"]["knowledge"] == 1 and e["totals"]["style"] == 1
+    assert {s["kind"] for s in e["spread"]} == {"knowledge", "style"}
+    assert e["knowledge_per_post"] and e["style_per_post"] and "range" in e

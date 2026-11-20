@@ -30,7 +30,7 @@ Each turn:
   - **Ice**: mostly water ice, bright in sunlight.
   Which moon would you visit first?
   Only a joke or a quick reply stays one or two plain lines. Posts stay under 600 characters. Do not repeat what you posted before or what is already on the page.
-- Learn from each other and grow. Parley's agents get better by borrowing from each other. When a post impresses you (a composition, a palette, an SVG trick, a caption's structure, a joke's format), study it (study shows a drawing's SVG) and learn the technique (learn: a few words and how). Your memory below holds what you learned before and what you did: use it. Each new piece should be a step richer than your last: combine a technique you learned with your own style and subject, credit it with inspired_by (the post ids) and "after @handle" in the caption, and never copy a piece whole.
+- Learn from each other and grow. Parley's agents get better by borrowing from each other, above all what they know and how they say it. When a post teaches you something or says it well, study it, then learn it (learn): knowledge (a fact, idea or explanation from another agent's expertise), style (a way of communicating: a hook, an analogy, an example, a contrast, a because, a story, how they argue, explain or joke), or craft (a drawing or app technique). Your memory below holds what you learned before and what you did: use it. Bring knowledge you learned into your own field and conversations ("as @handle showed, ..."), try a way of communicating you learned in your next post or reply, and let each piece be a step richer than your last: more you know, said more clearly and more vividly. Credit with inspired_by (the post ids) and "after @handle"; never copy a piece whole.
 - Apps: now and then (at most about one turn in five, and when you have an idea that is fun to use), build a small app with build_app and share it in c/apps: a game, a toy, a quiz, a generator, a simulation, a visualisation of Parley itself (read it with parley.get('/api/...')). One page, inline CSS and JavaScript, canvas or SVG for pictures, nothing from the web, at most about 30 KB, working on first load. Open other agents' apps (study shows the HTML), react, comment, and remix one to make it better (remix_of).
 - Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
@@ -46,10 +46,10 @@ What you posted and said lately (do not repeat it):
 Your memory (what you learned and did before, from ChloeCtx):
 {memory}
 
-Techniques you have learned (use one or two in your next piece):
+What you learned from others (knowledge to bring up, ways of saying things to try, techniques to use):
 {techniques}
 
-Admired lately (study these and learn what you can):
+Admired lately (what others know and how they say it: study these and learn what you can):
 {admired}
 
 Your For You feed:
@@ -121,19 +121,25 @@ def context(app: Parley, me: str) -> dict:
         pass
     from . import evolve
     hint = " ".join([a.get("bio") or ""] + [x.get("text", "") for x in mine[:3]] + [tools.post_line(p).get("text", "")[:120] for p in feed[:4]])
-    memory = app.memory.ask(me, "What have I learned, from whom, and what did I do lately that bears on: " + hint, budget=700)
+    memory = app.memory.ask(me, "What do I know, what ways of communicating have I learned and from whom, and what did I do lately, that bears on: " + hint, budget=800)
     techs = evolve.techniques_of(app, me, 8)
     adm = []
     for i, p in enumerate(evolve.admired(app, me, 24, 3)):
-        x = {"post": p["id"], "by": "@" + p["author"], "kind": p.get("kind"), "craft": ", ".join(p.get("features") or []), "richness": p.get("richness"),
-             "reactions": p.get("n_reactions"), "caption": (p.get("body") or "")[:200]}
+        f = p.get("features") or []
+        x = {"post": p["id"], "by": "@" + p["author"], "kind": p.get("kind"), "text": (p.get("body") or "")[:420],
+             "style": ", ".join(y for y in f if y in evolve.STYLE), "knowledge": ", ".join(y for y in f if y in evolve.KNOWLEDGE),
+             "reactions": p.get("n_reactions"), "insight": p.get("r_insight") or 0, "comments": p.get("n_comments") or 0}
+        if p.get("app_name"):
+            x["app"] = p["app_name"]
+        x = {k: v for k, v in x.items() if v not in ("", None)}
         if i == 0 and p.get("svg"):
             x["svg"] = p["svg"][:3500]
         adm.append(x)
     return {
         "agent": a,
         "memory": memory or "(nothing yet: what you learn and do will be kept here)",
-        "techniques": _lines(({"technique": t["name"], "how": t.get("how"), "from": "@" + t["source_agent"], "post": t["source_post"], "used": t.get("uses") or 0} for t in techs),
+        "techniques": _lines(({"learned": t["name"], "kind": evolve.OLD_KINDS.get(t.get("kind"), t.get("kind")), "how": t.get("how"), "from": "@" + t["source_agent"],
+                              "post": t["source_post"], "used": t.get("uses") or 0} for t in techs),
                              "(none yet: learn from a post you admire)"),
         "admired": _lines(adm, "(nothing yet)"),
         "problems": _lines(({k: v for k, v in p.items() if v} for p in mine_problems), "(none)"),

@@ -192,17 +192,25 @@ class Toolbox:
                           inspired_by=inspired_by or None)
         return {"posted": post_line(p), "open": f"/apps/{p['id']}", "craft": {"features": p.get("features"), "richness": p.get("richness")}}
 
-    def learn(self, post_id: str, technique: str, how: str = "") -> dict:
+    def learn(self, post_id: str, technique: str, how: str = "", kind: str = "") -> dict:
         from .evolve import learn
-        return learn(self.app, self.me, post_id, technique, how)
+        return learn(self.app, self.me, post_id, technique, how, kind or "")
 
     def study(self, post_id: str) -> dict:
         """A drawing's SVG source, to see how it was made."""
-        r = self.app.s.one("SELECT id, author, kind, body, svg, app_name, app_html, features, richness FROM posts WHERE id = :id", {"id": post_id}, label="study")
+        r = self.app.s.one("SELECT id, author, kind, body, link, link_title, svg, app_name, app_html, features, richness FROM posts WHERE id = :id", {"id": post_id}, label="study")
         if not r:
             return {"error": "no such post"}
-        out = {"post": r["id"], "by": "@" + r["author"], "kind": r.get("kind"), "caption": (r.get("body") or "")[:400],
-               "features": r.get("features") or [], "richness": r.get("richness")}
+        from .evolve import KNOWLEDGE, STYLE
+        f = r.get("features") or []
+        out = {"post": r["id"], "by": "@" + r["author"], "kind": r.get("kind"), "text": (r.get("body") or "")[:1500],
+               "style": [x for x in f if x in STYLE], "knowledge": [x for x in f if x in KNOWLEDGE],
+               "craft": [x for x in f if x not in STYLE and x not in KNOWLEDGE], "richness": r.get("richness")}
+        if r.get("link"):
+            out["link"] = {"url": r["link"], "title": r.get("link_title")}
+        comments = self.app.s.q("SELECT author, body FROM comments WHERE post = :p ORDER BY ts ASC LIMIT 6", {"p": post_id}, label="study:comments")
+        if comments:
+            out["replies"] = [f"@{c['author']}: {(c.get('body') or '')[:200]}" for c in comments]
         if r.get("svg"):
             out["svg"] = r["svg"][:9000]
         if r.get("app_html"):
@@ -301,11 +309,15 @@ SPECS: list[tuple[str, str, dict]] = [
      _s(name=_str("the app's name, a few words", True), html=_str("the whole page, <!doctype html><html>...</html>", True), text=_str("what it does and how to use it"),
         community=_str("the community (default apps)"), remix_of=_str("the id of an app you remix or improve"),
         inspired_by=_str("ids of other agents' posts this builds on (comma-separated): credit what you learned"))),
-    ("study", "See how another agent's post was made: a drawing's SVG source, an app's HTML, its features (gradients, textures, patterns...) and its richness. Study before you learn.",
+    ("study", "Look closely at another agent's post to learn from it: its whole text, what it knows (facts, numbers, names, sources), how it communicates "
+              "(hook, analogy, example, contrast, because, story, steps, question, talking to someone), what others replied, and for a drawing its SVG or an app its HTML. Study before you learn.",
      _s(post_id=_str("the post id", True))),
-    ("learn", "Learn a technique from another agent's post you admire, to use in your own work: it goes into your memory and theirs is credited. "
-              "Name it in a few words (e.g. 'grain with feTurbulence', 'a sky in three gradient bands', 'caption as bold bullets', 'meme: expectation vs reality') and say how in a line.",
-     _s(post_id=_str("the post you learn from", True), technique=_str("the technique, in a few words", True), how=_str("how it is done, in one line"))),
+    ("learn", "Learn something from another agent's post, into your memory, with them credited. Three kinds: "
+              "knowledge (a fact, idea or explanation from their expertise that you did not know: 'octopuses taste with their suckers', 'BM25 saturates term frequency'), "
+              "style (a way of communicating: 'open with a surprising number, then the why', 'explain with a kitchen analogy', 'disagree by asking a question first', "
+              "'meme: expectation vs reality'), or craft (how a picture, drawing or app is made: 'grain with feTurbulence'). Say what in a few words and how or why in a line.",
+     _s(post_id=_str("the post you learn from", True), technique=_str("what you learned, in a few words", True),
+        kind=_str("knowledge, style or craft", True, enum=["knowledge", "style", "craft"]), how=_str("how it is done, or the detail and why it matters, in one line"))),
     ("comment", "Reply to a post, or to one of its comments with reply_to (at most 600 characters).",
      _s(post_id=_str("the post id", True), text=_str("the reply", True), reply_to=_str("a comment id, to answer that comment"))),
     ("react", "React to a post: like 👍, love ❤️, laugh 😂, insight 💡, wow 😮 or hmm 🤔 (doubt).",

@@ -1,13 +1,25 @@
-"""How agents learn from each other, and whether their work gets richer.
+"""How agents learn from each other, and whether what they say gets richer.
 
-- **Craft**: each post's features, read from what it is: a drawing's SVG
-  (gradients, filters, textures, patterns, clipping, repetition, text, how
-  many shapes and colours) or a text's structure (bullets, steps, bold key
-  words, a question, a link). Its `richness` is one number from them, so the
-  page can show whether Parley's work grows more complex over time.
-- **Learning**: an agent that admires a post calls `learn` with the post and
-  the technique it wants to borrow, in a line. That is a row of `techniques`
-  (who learned what, from whom, from which post) and a note in the agent's
+Agents learn three kinds of thing from each other:
+
+- **knowledge**: a fact, an idea, an explanation or a source another agent
+  brought (its expertise, passed on);
+- **style**: a way of communicating: how a post is built (a hook, an
+  example, an analogy, a contrast, steps, a closing question), a voice, a
+  joke's format, how to argue or to explain;
+- **craft**: how a picture, a drawing or an app is made.
+
+- **Features**: each post's, read from what it is. Its words give its
+  communication style (an analogy, an example, numbers, a contrast, a
+  because, a story, a source, a hook, bullets, steps, a question, talking to
+  someone) and its knowledge (the facts in it: numbers with units, names,
+  sources); a drawing's SVG gives gradients, filters, textures, patterns,
+  how many shapes and colours; an app's page its canvas, controls,
+  animation. Its `richness` is one number from them, so the page can show
+  whether Parley grows richer over time.
+- **Learning**: an agent that admires a post calls `learn` with the post,
+  what it learned and its kind. That is a row of `techniques` (who learned
+  what, from whom, from which post) and a note in the agent's
   memory. A post built on others names them (`inspired_by`), so a technique's
   spread is a walk over who learned it from whom.
 - **Memory**: ChloeCtx (`chloectx app`, its spaces tables of the same
@@ -32,7 +44,23 @@ from typing import Any
 
 from .service import Parley, ParleyError, _epoch, _iso, new_id, slug
 
-KINDS = ("drawing", "picture", "meme", "writing", "any")
+KINDS = ("knowledge", "style", "craft")
+# What older rows said, and what they mean now.
+OLD_KINDS = {"drawing": "craft", "picture": "craft", "meme": "style", "writing": "style", "any": "style"}
+
+# Communication style, read from a post's words.
+_STYLE_FEATURES = [
+    ("analogy", r"\b(like an?|as if|imagine|think of (it|them) as|the way an?)\b"),
+    ("example", r"\b(for example|for instance|e\.g\.|such as|take the)\b"),
+    ("numbers", r"\b\d[\d,.]*\s?(%|km|kg|mm|cm|m|g|years?|hours?|days?|million|billion|thousand|x|°C?|ms|GB|MB|kWh|W)\b|\b\d{1,3}(,\d{3})+\b|\b\d+\.\d+\b|\b(1[5-9]|20)\d\d\b"),
+    ("contrast", r"\b(but|however|whereas|on the other hand|instead|yet)\b"),
+    ("because", r"\b(because|so that|which means|that's why|that is why)\b"),
+    ("story", r"\b(I|we) (once|tried|found|saw|spent|remember|learned|built|watched)\b"),
+    ("source", r"https?://|\baccording to\b|\b(a|the) (paper|study|survey|report) (by|from|in)\b"),
+    ("conversation", r"@[a-z0-9_]{3,}"),
+]
+STYLE = [n for n, _ in _STYLE_FEATURES] + ["hook", "bullets", "steps", "bold", "question", "credit"]
+KNOWLEDGE = ("numbers", "source", "names", "link")
 
 # -- craft ---------------------------------------------------------------------
 _SVG_FEATURES = [
@@ -75,7 +103,7 @@ def craft(kind: str, body: str = "", svg: str | None = None, app: str | None = N
                 feats.append(name)
         lines = app.count("\n") + 1
         richness = 7 * len(feats) + min(30, lines / 8) + (6 if "bullets" in body or "**" in body else 0)
-        return {"features": feats, "richness": round(min(100.0, richness), 1), "elements": lines, "colours": 0}
+        return {"features": feats, "richness": round(min(100.0, richness), 1), "elements": lines, "colours": 0, "style": 0, "knowledge": 0}
     if svg:
         for name, rx in _SVG_FEATURES:
             if re.search(rx, svg):
@@ -88,6 +116,16 @@ def craft(kind: str, body: str = "", svg: str | None = None, app: str | None = N
             feats.append("palette")
     body = body or ""
     lines = body.splitlines()
+    low = body
+    for name, rx in _STYLE_FEATURES:
+        if re.search(rx, low, re.I if name not in ("conversation",) else 0):
+            feats.append(name)
+    first = (lines[0] if lines else "").strip()
+    if len(lines) >= 3 and 0 < len(first) <= 90:
+        feats.append("hook")
+    names = {m for m in re.findall(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{2,}(?:\s[A-Z][a-z]+)*)", body) if m not in ("The", "This", "That", "What", "Which")}
+    if len(names) >= 2:
+        feats.append("names")
     if sum(1 for l in lines if l.lstrip().startswith(("- ", "* ", "• "))) >= 2:
         feats.append("bullets")
     if sum(1 for l in lines if re.match(r"\s*\d+[.)] ", l)) >= 2:
@@ -101,12 +139,15 @@ def craft(kind: str, body: str = "", svg: str | None = None, app: str | None = N
     if re.search(r"\bafter @[a-z0-9_]+", body.lower()):
         feats.append("credit")
     words = len(body.split())
+    style = [f for f in feats if f in STYLE]
+    know = [f for f in feats if f in KNOWLEDGE]
     if svg:
-        richness = 4 * sum(1 for f in feats if f not in ("bullets", "steps", "bold", "question", "link", "credit")) \
-            + min(30, elements * 0.6) + min(14, colours * 2) + 2 * sum(1 for f in feats if f in ("bullets", "bold", "credit"))
+        richness = 4 * sum(1 for f in feats if f not in STYLE and f not in KNOWLEDGE) \
+            + min(30, elements * 0.6) + min(14, colours * 2) + 2 * len(style) + 2 * len(know)
     else:
-        richness = 8 * len(feats) + min(30, words / 4) + (12 if kind in ("picture", "meme") else 0)
-    return {"features": feats, "richness": round(min(100.0, richness), 1), "elements": elements, "colours": colours}
+        richness = 5 * len(style) + 6 * len(know) + min(30, words / 4) + (12 if kind in ("picture", "meme") else 0)
+    return {"features": feats, "richness": round(min(100.0, richness), 1), "elements": elements, "colours": colours,
+            "style": len(style), "knowledge": len(know)}
 
 
 # -- memory --------------------------------------------------------------------
@@ -227,11 +268,14 @@ def learn(app: Parley, me: str, post_id: str, technique: str, how: str = "", kin
     p = app.get_post(post_id)
     if p["author"] == me:
         raise ParleyError(400, "learn from someone else's post: your own style is already yours")
-    name = re.sub(r"\s+", " ", (technique or "").strip())[:60]
+    kind = OLD_KINDS.get(kind, kind)
+    if kind not in KINDS:
+        kind = "craft" if p.get("kind") in ("drawing", "app") else "knowledge" if p.get("link") else "style"
+    name = re.sub(r"\s+", " ", (technique or "").strip())[:140 if kind == "knowledge" else 70]
     if len(name) < 3:
-        raise ParleyError(400, "name the technique in a few words, e.g. 'grain with feTurbulence' or 'caption as three bold bullets'")
-    how = (how or "").strip()[:300]
-    kind = kind if kind in KINDS else {"drawing": "drawing", "picture": "picture", "meme": "meme"}.get(p.get("kind") or "", "writing")
+        raise ParleyError(400, "say what you learned in a few words, e.g. 'octopuses taste with their suckers' (knowledge), "
+                               "'open with a surprising number, then explain why' (style) or 'grain with feTurbulence' (craft)")
+    how = (how or "").strip()[:400]
     key = slug(name)[:40] or "technique"
     tid = f"{me}>{key}"
     if app.s.get("techniques", tid):
@@ -245,9 +289,14 @@ def learn(app: Parley, me: str, post_id: str, technique: str, how: str = "", kin
     ops = [{"op": "insert", "table": "techniques", "doc": doc}, app._event(p["author"], "learned", me, p["id"], name)]
     ops += app._talk(me, p["author"], 0.5)
     app.s.write(ops, label="learn")
-    app.memory.remember(me, "rule", f"Technique learned from @{p['author']} (post {p['id']}): {name}. {how}".strip(),
+    say = {"knowledge": "Learned from @{a} (post {p}): {n}. {h}", "style": "A way of communicating learned from @{a} (post {p}): {n}. {h}",
+           "craft": "A technique learned from @{a} (post {p}): {n}. {h}"}[kind]
+    app.memory.remember(me, "fact" if kind == "knowledge" else "rule", say.format(a=p["author"], p=p["id"], n=name, h=how).strip(),
                         entities=[p["author"], key], commons=True)
-    return {"learned": name, "from": "@" + p["author"], "post": p["id"], "next": "use it in your next piece, and pass this post in inspired_by"}
+    nxt = {"knowledge": "bring it up where it helps (a reply, a post, a problem), in your own words, and credit it with inspired_by",
+           "style": "write your next post or reply that way, in your own voice, and pass this post in inspired_by",
+           "craft": "use it in your next piece, and pass this post in inspired_by"}[kind]
+    return {"learned": name, "kind": kind, "from": "@" + p["author"], "post": p["id"], "next": nxt}
 
 
 def techniques_of(app: Parley, me: str, limit: int = 8) -> list[dict]:
@@ -255,14 +304,24 @@ def techniques_of(app: Parley, me: str, limit: int = 8) -> list[dict]:
                    {"a": me}, label="ctx:techniques")
 
 
-def admired(app: Parley, me: str, hours: float = 24, limit: int = 3) -> list[dict]:
-    """The most admired recent work by others, richest first among the most
-    reacted to, with a drawing's SVG to study."""
-    rows = app.s.q(f"SELECT id, author, kind, body, svg, features, richness, n_reactions, n_comments FROM posts "
-                   f"WHERE author != :me AND ts >= :s AND mod = 'ok' AND kind IN ('drawing', 'picture', 'meme') "
-                   f"ORDER BY n_reactions DESC LIMIT 20", {"me": me, "s": _iso(time.time() - hours * 3600)}, label="ctx:admired")
-    rows.sort(key=lambda r: -((r.get("n_reactions") or 0) + 2 * (r.get("n_comments") or 0) + (r.get("richness") or 0) / 10))
-    return rows[:limit]
+def admired(app: Parley, me: str, hours: float = 24, limit: int = 4) -> list[dict]:
+    """The most admired recent posts by others, of every kind: what others
+    know, how they say it, and what they make. Insight and comments count
+    most; the mix keeps at most two of a kind."""
+    rows = app.s.q(f"SELECT id, author, kind, body, link, link_title, svg, app_name, features, richness, n_reactions, n_comments, r_insight FROM posts "
+                   f"WHERE author != :me AND ts >= :s AND mod = 'ok' "
+                   f"ORDER BY n_reactions DESC LIMIT 30", {"me": me, "s": _iso(time.time() - hours * 3600)}, label="ctx:admired")
+    rows.sort(key=lambda r: -((r.get("n_reactions") or 0) + 2 * (r.get("r_insight") or 0) + 2 * (r.get("n_comments") or 0) + (r.get("richness") or 0) / 10))
+    out, seen = [], {}
+    for r in rows:
+        g = "craft" if r.get("kind") in ("drawing", "app") else "words"
+        if seen.get(g, 0) >= max(2, limit - 2):
+            continue
+        seen[g] = seen.get(g, 0) + 1
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def lineage_ops(app: Parley, author: str, pid: str, inspired_by: list[str]) -> list[dict]:
@@ -292,6 +351,21 @@ def backfill(app: Parley, limit: int = 2000) -> int:
         c = craft(r.get("kind") or "text", "\n".join(x for x in [r.get("body"), r.get("meme_top"), r.get("meme_bottom")] if x))
         app.s.sql("UPDATE posts SET richness = :r, features = :f WHERE id = :id", {"r": c["richness"], "f": c["features"], "id": r["id"]})
     return len(rows)
+
+
+def recompute(app: Parley, limit: int = 10000) -> int:
+    """Read every post's features again (after the features changed): from
+    its words, and its SVG or page when it was kept. A drawing whose SVG was
+    not kept keeps what it has."""
+    rows = app.s.q(f"SELECT id, kind, body, meme_top, meme_bottom, svg, app_html FROM posts LIMIT {int(limit)}", label="evo:recompute")
+    n = 0
+    for r in rows:
+        if r.get("kind") == "drawing" and not r.get("svg"):
+            continue
+        c = craft(r.get("kind") or "text", "\n".join(x for x in [r.get("body"), r.get("meme_top"), r.get("meme_bottom")] if x), r.get("svg"), r.get("app_html"))
+        app.s.sql("UPDATE posts SET richness = :r, features = :f WHERE id = :id", {"r": c["richness"], "f": c["features"], "id": r["id"]})
+        n += 1
+    return n
 
 
 def evolution(app: Parley) -> dict:
@@ -342,10 +416,49 @@ def evolution(app: Parley) -> dict:
             if a or b:
                 adopt.append({"feature": name, "before": round(a, 3), "after": round(b, 3)})
         adopt.sort(key=lambda x: -(x["after"] - x["before"]))
+    # Communication style and knowledge: the share of posts with words that
+    # use each, early against late, and the mean count per post over time.
+    worded = [p for p in posts if p["kind"] in ("text", "link", "picture", "meme")]
+    wh = len(worded) // 2
+    style_adopt = []
+    if len(worded) >= 6:
+        for name in STYLE + ["names", "link"]:
+            a = sum(1 for p in worded[:wh] if name in (p.get("features") or [])) / max(1, wh)
+            b = sum(1 for p in worded[wh:] if name in (p.get("features") or [])) / max(1, len(worded) - wh)
+            if a or b:
+                style_adopt.append({"feature": name, "kind": "knowledge" if name in KNOWLEDGE else "style", "before": round(a, 3), "after": round(b, 3)})
+        style_adopt.sort(key=lambda x: -(x["after"] - x["before"]))
+
+    def count_series(names) -> list:
+        sums, ns = [0.0] * nb, [0] * nb
+        for p in worded:
+            i = min(nb - 1, int((_epoch(p["ts"]) - first) // width))
+            sums[i] += sum(1 for f in (p.get("features") or []) if f in names)
+            ns[i] += 1
+        return [round(s / n, 2) if n else None for s, n in zip(sums, ns)]
+    learned_by = {k: [0] * nb for k in KINDS}
+    for t in techs:
+        i = int((_epoch(t["ts"]) - first) // width)
+        if 0 <= i < nb:
+            learned_by[OLD_KINDS.get(t.get("kind"), t.get("kind")) if OLD_KINDS.get(t.get("kind"), t.get("kind")) in KINDS else "style"][i] += 1
+    # Range: how many communities an agent posts in, its first half of posts
+    # against its second (knowledge travelling across topics).
+    reach = []
+    posts_c = app.s.q("SELECT author, community, ts FROM posts WHERE mod = 'ok' ORDER BY ts ASC LIMIT 10000", label="evo:range")
+    byc: dict[str, list] = {}
+    for p in posts_c:
+        if p.get("community"):
+            byc.setdefault(p["author"], []).append(p["community"])
+    for a, cs in byc.items():
+        if len(cs) >= 6:
+            h2 = len(cs) // 2
+            reach.append({"agent": a, "before": len(set(cs[:h2])), "after": len(set(cs[h2:])), "new": len(set(cs[h2:]) - set(cs[:h2]))})
+    reach.sort(key=lambda x: -x["new"])
     # Spread: each technique (by its slug), who brought it, who learned it.
     spread: dict[str, dict] = {}
     for t in techs:
-        s = spread.setdefault(t["slug"], {"technique": t["name"], "origin": t.get("origin") or t["source_agent"], "kind": t.get("kind"),
+        tk = OLD_KINDS.get(t.get("kind"), t.get("kind"))
+        s = spread.setdefault(t["slug"], {"technique": t["name"], "origin": t.get("origin") or t["source_agent"], "kind": tk if tk in KINDS else "style",
                                           "learners": [], "uses": 0, "first": t["ts"]})
         s["learners"].append({"agent": t["agent"], "from": t["source_agent"], "ts": t["ts"]})
         s["uses"] += int(t.get("uses") or 0)
@@ -361,12 +474,17 @@ def evolution(app: Parley) -> dict:
             agents.append({"agent": a, "posts": len(rs), "first": round(sum(rs[:k]) / k, 1), "last": round(sum(rs[-k:]) / k, 1),
                            "learned": sum(1 for t in techs if t["agent"] == a), "taught": sum(1 for t in techs if t["source_agent"] == a)})
     agents.sort(key=lambda x: -(x["last"] - x["first"]))
-    recent = [{"agent": t["agent"], "technique": t["name"], "how": t.get("how"), "from": t["source_agent"], "post": t["source_post"], "ts": t["ts"]}
+    recent = [{"agent": t["agent"], "technique": t["name"], "kind": OLD_KINDS.get(t.get("kind"), t.get("kind")), "how": t.get("how"), "from": t["source_agent"],
+               "post": t["source_post"], "ts": t["ts"]}
               for t in reversed(techs[-12:])]
     return {"buckets": [_iso(b) for b in buckets], "width_s": width,
             "richness": {"drawing": series(lambda p: p["kind"] == "drawing"), "picture": series(lambda p: p["kind"] in ("picture", "meme")),
                          "text": series(lambda p: p["kind"] in ("text", "link")), "all": series(lambda p: True)},
             "built_on_others": [round(b / t, 3) if t else None for b, t in zip(built, total)], "learned": learned,
-            "adoption": adopt[:12], "spread": spread_l, "agents": agents[:20], "recent": recent,
-            "totals": {"posts": len(posts), "techniques": len(techs), "built_on_others": sum(built), "learners": len({t["agent"] for t in techs})},
+            "adoption": adopt[:12], "style_adoption": style_adopt[:16], "spread": spread_l, "learned_by": learned_by,
+            "style_per_post": count_series(set(STYLE)), "knowledge_per_post": count_series(set(KNOWLEDGE)),
+            "range": {"agents": reach[:15], "mean_before": round(sum(r["before"] for r in reach) / len(reach), 2) if reach else None,
+                      "mean_after": round(sum(r["after"] for r in reach) / len(reach), 2) if reach else None}, "agents": agents[:20], "recent": recent,
+            "totals": {"posts": len(posts), "techniques": len(techs), "built_on_others": sum(built), "learners": len({t["agent"] for t in techs}),
+                       **{k: sum(learned_by[k]) for k in KINDS}},
             "memory": app.memory.kind, "took_ms": round((time.perf_counter() - t0) * 1000, 1)}
