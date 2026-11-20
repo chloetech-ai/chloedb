@@ -637,6 +637,73 @@ fn short_str(s: &str) -> String {
 /// primary key is `key` when given (`""` for none), else a column named
 /// `id` whose values are all there and all different.
 pub fn create_for(table: &str, data: &[u8], format: Format, key: Option<&str>) -> Result<String> {
+    create_for_with(table, data, format, key, None)
+}
+
+/// The model a table made from a file's rows searches by meaning with
+/// ([`create_for_with`]): fast, run inside ChloeDB by every build, and the
+/// one ChloeCtx uses, so that a machine with either has it already.
+pub const MEANING_MODEL: &str = "potion-retrieval-32M";
+
+/// [`create_for`], and when `meaning` names a model and the rows have prose
+/// (`TEXT` columns), a vector field `emb` (`meaning` when a column is
+/// named `emb`) embedded from that prose by the model, so that the table
+/// searches by meaning as well as by words from its first row
+/// ([`MEANING_MODEL`] is the one to give).
+pub fn create_for_with(table: &str, data: &[u8], format: Format, key: Option<&str>, meaning: Option<&str>) -> Result<String> {
+    let (columns, rows) = sample_columns(data, format)?;
+    create_sql(table, &columns, rows, key, meaning)
+}
+
+/// The names of the columns of rows in `format` (a CSV file's header, the
+/// keys of its first thousand objects), in the order they first appear.
+pub fn columns_of(data: &[u8], format: Format) -> Result<Vec<String>> {
+    Ok(sample_columns(data, format)?.0.into_iter().map(|(n, _)| n).collect())
+}
+
+/// The schema [`create_for_with`] makes for the rows: a table named
+/// `table` from their columns and values, to create a database or a table
+/// with.
+pub fn schema_for(table: &str, data: &[u8], format: Format, key: Option<&str>, meaning: Option<&str>) -> Result<Schema> {
+    let sql = create_for_with(table, data, format, key, meaning)?;
+    match crate::query::sql::bind_command(&sql, &[], &crate::query::Params::default())? {
+        crate::query::sql::Command::CreateTable { schema, .. } => Ok(schema),
+        _ => Err(Error::Schema(format!("no table could be made from the rows ({sql})"))),
+    }
+}
+
+/// A table name made of a file's name: `movies.csv` is `movies`, `My
+/// Data-2024.jsonl` is `my_data_2024`, and one that starts with a digit
+/// gets `t_` before it (the command center's import names tables so).
+pub fn table_name_of(path: &Path) -> String {
+    let stem = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let stem = stem.split('.').next().unwrap_or("");
+    let mut name = String::new();
+    for c in stem.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            name.push(c);
+        } else if !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+    let name = name.trim_matches('_').to_string();
+    match name.chars().next() {
+        None => "imported".into(),
+        Some(c) if c.is_ascii_digit() => format!("t_{name}"),
+        Some(_) => name,
+    }
+}
+
+/// Column names whose text is prose even when short: titles, names,
+/// summaries, notes.
+fn is_prose_name(n: &str) -> bool {
+    const PROSE: &[&str] = &["title", "name", "subject", "headline", "summary", "note", "notes", "description", "comment", "body", "text", "caption"];
+    PROSE.iter().any(|p| n.eq_ignore_ascii_case(p))
+}
+
+/// Each column's name and its first values, as JSON, and how many rows
+/// were read for them.
+fn sample_columns(data: &[u8], format: Format) -> Result<(Vec<(String, Vec<Json>)>, usize)> {
     const SAMPLE: usize = 1000;
     // Each column's name and its first values, as JSON.
     let mut columns: Vec<(String, Vec<Json>)> = Vec::new();
@@ -692,6 +759,11 @@ pub fn create_for(table: &str, data: &[u8], format: Format, key: Option<&str>) -
     if columns.is_empty() {
         return Err(Error::Schema("the rows name no columns".into()));
     }
+    Ok((columns, rows))
+}
+
+/// [`create_for`]'s statement from the sampled columns.
+fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Option<&str>, meaning: Option<&str>) -> Result<String> {
     let present = |vs: &[Json]| vs.iter().filter(|v| !v.is_null()).cloned().collect::<Vec<_>>();
     let type_of = |vs: &[Json]| -> &'static str {
         let vs = present(vs);
@@ -728,17 +800,37 @@ pub fn create_for(table: &str, data: &[u8], format: Format, key: Option<&str>) -
         }).map(|(n, _)| n.clone()),
     };
     let name = |n: &str| if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit()) { n.to_string() } else { crate::query::sql::quoted(n) };
-    let fields: Vec<String> = columns
+    let mut prose = Vec::new();
+    let mut fields: Vec<String> = columns
         .iter()
         .map(|(n, vs)| {
             let mut ty = type_of(vs);
+            // A title or a name of a few words is still prose that people
+            // search by its words (the command center's import reads it so).
+            if ty == "KEYWORD" && is_prose_name(n) && vs.iter().any(|v| v.as_str().is_some_and(|s| s.trim().contains(char::is_whitespace))) {
+                ty = "TEXT";
+            }
             if key.as_deref() == Some(n.as_str()) {
                 ty = if ty == "INT" { "INT" } else { "KEYWORD" };
                 return format!("{} {ty} PRIMARY KEY", name(n));
             }
+            if ty == "TEXT" {
+                prose.push(n.as_str());
+            }
             format!("{} {ty}", name(n))
         })
         .collect();
+    // Meaning: one vector of the row's prose, named so as not to take a
+    // column's name. A name the option's list cannot hold (a comma in it)
+    // is left out of it.
+    let embed: Vec<&str> = prose.iter().copied().filter(|n| !n.contains([',', '\'', '"'])).collect();
+    if let (Some(model), false) = (meaning, embed.is_empty()) {
+        let taken = |c: &str| columns.iter().any(|(n, _)| n.eq_ignore_ascii_case(c));
+        let field = ["emb", "meaning", "emb_meaning"].into_iter().find(|c| !taken(c));
+        if let Some(field) = field {
+            fields.push(format!("{field} VECTOR OPTIONS(embed = '{}', model = '{}')", embed.join(", "), model.replace('\'', "''")));
+        }
+    }
     Ok(format!("CREATE TABLE IF NOT EXISTS {} ({})", name(table), fields.join(", ")))
 }
 
@@ -750,11 +842,36 @@ mod create_for_tests {
     fn a_table_for_a_csv_file() {
         let csv = "id,title,category,price,stock,in_stock,added\ng-1,Trail Running Shoes,shoes,89.5,12,true,2026-01-02\ng-2,Rain Jacket,jackets,120,3,false,2026-02-03\ng-3,Wool Socks,socks,9.99,40,true,2026-03-04\n";
         let sql = create_for("gear", csv.as_bytes(), Format::Csv, None).unwrap();
-        assert_eq!(sql, "CREATE TABLE IF NOT EXISTS gear (id KEYWORD PRIMARY KEY, title KEYWORD, category KEYWORD, price FLOAT, stock INT, in_stock BOOL, added TIMESTAMP)");
+        assert_eq!(sql, "CREATE TABLE IF NOT EXISTS gear (id KEYWORD PRIMARY KEY, title TEXT, category KEYWORD, price FLOAT, stock INT, in_stock BOOL, added TIMESTAMP)");
         let sql = create_for("gear", b"n,note\n1,a long note of words\n2,another note with words\n", Format::Csv, Some("n")).unwrap();
         assert_eq!(sql, "CREATE TABLE IF NOT EXISTS gear (n INT PRIMARY KEY, note TEXT)");
         let sql = create_for("t", br#"[{"id": 1, "tags": ["a"], "my col": "x"}, {"id": 1}]"#, Format::Json, None).unwrap();
         assert_eq!(sql, r#"CREATE TABLE IF NOT EXISTS t (id INT, "my col" KEYWORD, tags JSON)"#);
         assert!(create_for("t", b"a,,b\n1,2,3\n", Format::Csv, None).is_err());
+    }
+
+    #[test]
+    fn a_file_names_its_table_and_its_columns() {
+        let csv = b"id,title,overview,year,rating,genre\n1,The Matrix,A hacker learns the world is a simulation,1999,8.7,scifi\n2,Up,An old man ties balloons to his house,2009,8.3,animation\n";
+        assert_eq!(columns_of(csv, Format::Csv).unwrap(), ["id", "title", "overview", "year", "rating", "genre"]);
+        let s = schema_for("movies", csv, Format::Csv, None, None).unwrap();
+        assert_eq!(s.table, "movies");
+        assert_eq!(crate::query::ddl::create_sql(&s).split_whitespace().collect::<Vec<_>>().join(" "), "CREATE TABLE movies ( id INT PRIMARY KEY, title TEXT, overview TEXT, year INT, rating FLOAT, genre KEYWORD );");
+        // With meaning: a vector of the prose, by the model named.
+        let s = schema_for("movies", csv, Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        let emb = s.fields.iter().find(|f| f.name == "emb").expect("an embedded field");
+        let spec = emb.embed.as_ref().expect("embedded");
+        assert_eq!((spec.model.as_str(), spec.from.clone()), (MEANING_MODEL, vec!["title".to_string(), "overview".to_string()]));
+        assert!(matches!(emb.ty, crate::schema::FieldType::Vector { dim: 512, .. }), "{:?}", emb.ty);
+        // No prose, no vector; a column named emb keeps its name.
+        let sql = create_for_with("n", b"id,score\n1,2\n", Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        assert!(!sql.contains("VECTOR"), "{sql}");
+        let sql = create_for_with("n", b"id,emb,note\n1,x,a long note of words\n", Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        assert!(sql.ends_with("meaning VECTOR OPTIONS(embed = 'note', model = 'potion-retrieval-32M'))"), "{sql}");
+        assert_eq!(columns_of(b"{\"a\": 1}\n{\"b\": 2, \"a\": 3}\n", Format::Jsonl).unwrap(), ["a", "b"]);
+        assert_eq!(table_name_of(Path::new("data/movies.csv")), "movies");
+        assert_eq!(table_name_of(Path::new("My Data-2024.v2.jsonl")), "my_data_2024");
+        assert_eq!(table_name_of(Path::new("2024 orders.csv")), "t_2024_orders");
+        assert_eq!(table_name_of(Path::new(".csv")), "imported");
     }
 }

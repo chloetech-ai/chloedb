@@ -525,6 +525,10 @@ impl Default for Slo {
     }
 }
 
+/// Why a replica takes no write from a client: also what a copy elected
+/// primary says until its predecessor's lease ends ([`crate::coord::shard_state`]).
+pub const REPLICA_NO_WRITES: &str = "a replica takes no writes from clients";
+
 /// Where a server runs: its name if given (`--node-name`), the machine
 /// and zone (`CHLOEDB_NODE` or `NODE_NAME`, `CHLOEDB_ZONE`), and its image
 /// (`CHLOEDB_IMAGE`, which the operator sets; its digest when it pins one,
@@ -589,6 +593,11 @@ pub struct Service {
     pub identity: Identity,
     pub slo: Slo,
     pub place: Place,
+    /// The address clients reach this server's HTTP API at (`--peer-url`,
+    /// else its pod's address or `--listen`), which its health gives so
+    /// that a coordinator can tell shard-aware clients where each shard's
+    /// primary is (`GET /v1/cluster/route`).
+    pub http_url: std::sync::OnceLock<String>,
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
@@ -904,6 +913,7 @@ impl Service {
             identity: Identity::default(),
             slo: Slo::default(),
             place: Place::from_env(None),
+            http_url: std::sync::OnceLock::new(),
             trusted_proxies: Vec::new(),
             apps: Default::default(),
             tenants: None,
@@ -2331,6 +2341,33 @@ impl Service {
         tokio::task::spawn_blocking(move || wait_for_writer(deadline, || Ok(db.storage().vacuum()?))).await.map_err(ApiError::internal)?
     }
 
+    /// Writes the rows in memory into segments and merges each table's
+    /// segments into as few as [`chloedb::storage::MergePolicy::compact`]
+    /// allows, dropping their deleted rows and old versions; reads and
+    /// writes go on meanwhile. What the merge did, as JSON.
+    pub async fn optimize(&self) -> Result<Json, ApiError> {
+        let db = self.admin_db()?;
+        let started = Instant::now();
+        let deadline = started + self.max_timeout;
+        let stats = tokio::task::spawn_blocking(move || {
+            wait_for_writer(deadline, || {
+                let s = db.storage();
+                s.flush()?;
+                Ok(s.merge(&chloedb::storage::MergePolicy::compact())?)
+            })
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        Ok(json!({
+            "merges": stats.merges,
+            "segments_merged": stats.segments_in,
+            "docs_merged": stats.docs_merged,
+            "docs_dropped": stats.docs_dropped,
+            "bytes_written": stats.bytes_written,
+            "took_ms": (started.elapsed().as_secs_f64() * 1e4).round() / 10.0,
+        }))
+    }
+
     pub(crate) fn admin_db(&self) -> Result<Arc<Db>, ApiError> {
         self.local_db().cloned().ok_or_else(|| ApiError::bad("a coordinator has no database of its own: ask each shard server"))
     }
@@ -2629,6 +2666,49 @@ impl Service {
         Ok(r?)
     }
 
+    /// The plan of a query, INSERT, UPDATE or DELETE `sql`, made and not run
+    /// (a write's, with the plan of the query that picks its rows), and the
+    /// line that says how a write picks them.
+    pub async fn explain_plan(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<(Plan, Option<String>), ApiError> {
+        let word = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase();
+        if !matches!(word.as_str(), "insert" | "update" | "delete") {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        }
+        let Some(w) = self.bound(|tables| chloedb::query::sql::write_plan(sql, tables, params)).await? else {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        };
+        let note = w.note.clone();
+        match w.pick.clone() {
+            Some((query, p)) => {
+                let picked = self.plan_for_explain(&query, &p, timeout_ms, budget).await?;
+                Ok((w.picking(picked), note))
+            }
+            None => Ok((w.plan(), note)),
+        }
+    }
+
+    /// `EXPLAIN <statement>` over `/v1/sql`: the plan as rows of text (one
+    /// row of JSON with `FORMAT JSON`), as an embedded database answers it.
+    async fn explain_rows(self: &Arc<Self>, sql: &str, json: bool, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let (inner, _) = chloedb::query::sql::explained(sql)?.ok_or_else(|| ApiError::bad("query error: EXPLAIN takes a statement"))?;
+        let (plan, note) = self.explain_plan(&inner, params, timeout_ms, budget).await?;
+        let rows = match json {
+            true => vec![vec![Value::Str(plan.to_json_text()?)]],
+            false => {
+                let catalog = self.catalog();
+                let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                let mut lines = plan.explain(&tables);
+                if let Some(n) = note {
+                    lines.insert(1.min(lines.len()), n);
+                }
+                lines.into_iter().map(|l| vec![Value::Str(l)]).collect()
+            }
+        };
+        let rs = ResultSet { columns: vec!["plan".into()], rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+        Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "explain", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
     /// The plan of read `sql` for `POST /v1/explain`, made as a query's
     /// is ([`Self::plan_read`]): on a blocking thread when it may take
     /// long, stopped at the request's deadline (`timeout_ms`, 0: the
@@ -2649,6 +2729,52 @@ impl Service {
         let (out, r) = profile::expand(q, &|t, n| self.rank_profile(t, n)).ok()??;
         let table = crate::scoped::named_tables(sql).into_iter().next()?;
         Some(((table, out.to_string()), r))
+    }
+
+    /// `req`'s query with the stored functions it calls, and then the rank
+    /// profile it ranks by, written out ([`chloedb::query::function::expand`],
+    /// [`profile::expand`]), when the text written out holds a step the
+    /// server takes before the engine plans and the query's own text does
+    /// not: understood words ([`chloedb::query::understand`]), an expanded
+    /// ranking ([`chloedb::query::prf`]), a blend ([`chloedb::query::blend`])
+    /// or, in a function's body, text where a vector goes
+    /// ([`chloedb::query::embed_sql`]; a profile's own texts are embedded
+    /// where it is planned, [`Self::bound_read`]). The engine writes the
+    /// calls out as it plans, past those steps; `None` for any other query.
+    fn written_calls(&self, req: &QueryReq) -> Option<String> {
+        use chloedb::query::{blend, embed_sql, prf, understand};
+        let rewritten = |s: &str| understand::may_understand(s) || prf::may_expand(s);
+        let taken = |s: &str| rewritten(s) || blend::may_blend(s) || embed_sql::may_embed_with(s, &req.params);
+        let functions = self.functions();
+        let profiled = contains_word(&req.sql, "rank_profile");
+        if functions.is_empty() && !profiled {
+            return None;
+        }
+        let statements = chloedb::query::parse::parse(&req.sql).ok()?;
+        let [sqlparser::ast::Statement::Query(q)] = statements.as_slice() else { return None };
+        let mut out = (**q).clone();
+        let mut written = None;
+        let mut called = false;
+        if let Ok(Some((x, _))) = chloedb::query::function::expand(&out, &functions) {
+            let x = blend_selected(x);
+            let text = x.to_string();
+            if taken(&text) && !taken(&req.sql) {
+                written = Some(text);
+            }
+            (out, called) = (x, true);
+        }
+        // A profile a function's body ranks by is written out for its texts
+        // too, which a query's own profile has embedded where it is planned.
+        if profiled || (called && contains_word(&out.to_string(), "rank_profile")) {
+            if let Ok(Some((x, _))) = profile::expand(&out, &|t, n| self.rank_profile(t, n)) {
+                let text = x.to_string();
+                let needs = |s: &str| if called { taken(s) } else { rewritten(s) };
+                if needs(&text) && !needs(&req.sql) {
+                    written = Some(text);
+                }
+            }
+        }
+        written
     }
 
     /// Query `sql` with the texts it gives where vectors go embedded
@@ -3425,8 +3551,9 @@ impl Service {
                     let step: Result<Option<Answer>, ApiError> = async {
                         let Some(next) = p.next_query()? else { return Ok(None) };
                         let mut sub = req.clone();
-                        // As text that reads back as the very query.
-                        sub.sql = next.sql()?;
+                        // As text that reads back as the very query, kept
+                        // out of the answer cache: its key is the PACK's.
+                        (sub.sql, sub.cache_key) = (next.sql()?, None);
                         sub.params = next.params;
                         (sub.snapshot, sub.hold, sub.release) = (lease, local && lease == 0, false);
                         // What is left of the statement's time, not a
@@ -3493,6 +3620,17 @@ impl Service {
                     a.took_ms += t0.elapsed().as_secs_f64() * 1e3;
                     return Ok(a);
                 }
+            }
+        }
+        // A stored function or rank profile whose body holds a step taken
+        // here, before the engine plans (understood words, an expanded
+        // ranking, a blend, text where a vector goes): written out first,
+        // so that the steps below see it, as they see a query's own.
+        if req.plan.is_none() && !req.shard {
+            if let Some(sql) = self.written_calls(&req) {
+                let mut second = req.clone();
+                second.sql = sql;
+                return Box::pin(self.dispatch(second)).await;
             }
         }
         // Understood words (`bm25(.., understand => 'boost')`,
@@ -3635,7 +3773,9 @@ impl Service {
             let schemas: Vec<&chloedb::Schema> = catalog.iter().map(|s| s.as_ref()).collect();
             for f in x.feedback(&schemas)? {
                 let mut fr = req.clone();
-                (fr.sql, fr.scroll, fr.hold) = (f.to_string(), None, false);
+                // Not the query's answer: kept out of the answer cache,
+                // whose key is the query's text, not this one's.
+                (fr.sql, fr.scroll, fr.hold, fr.cache_key) = (f.to_string(), None, false, None);
                 rows.push(Box::pin(self.dispatch(fr)).await?.rs);
             }
             let analyzers = x
@@ -4418,6 +4558,7 @@ impl Service {
                         steps::around(&mut rs.stats.steps, te, started, ended, back);
                         (rs, Vec::new())
                     })
+                    .map_err(ApiError::from)
                 })
             }
             Backend::Cluster(c) => {
@@ -4435,6 +4576,10 @@ impl Service {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
+                    // A shard's refusal as it was (503 when every copy of a
+                    // shard failed, 504, 429), not as the statement's own
+                    // mistake, a 400 (KENJI-405): clients retry the first.
+                    let mut failed: Option<ApiError> = None;
                     // The shards run the leaves; DataFusion or the operators
                     // run the rest here, on this server's cores.
                     let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, engine, threads, ..ExecOptions::default() };
@@ -4448,7 +4593,13 @@ impl Service {
                         // DataFusion takes Arrow columns past `over` rows.
                         let arrow = (over != usize::MAX).then_some(over);
                         let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, arrow, ..Default::default() };
-                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| chloedb::Error::Query(e.message))?;
+                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| {
+                            let m = chloedb::Error::Query(e.message.clone());
+                            if e.status != 400 {
+                                failed = Some(e);
+                            }
+                            m
+                        })?;
                         for s in std::mem::take(&mut m.missing) {
                             if !missing.contains(&s) {
                                 missing.push(s);
@@ -4456,14 +4607,18 @@ impl Service {
                         }
                         Ok(m.leaf())
                     }, &checks);
-                    rs.map(|rs| (rs, missing))
+                    rs.map(|rs| (rs, missing)).map_err(|e| match failed.take() {
+                        // The engine passed the shard's error on (perhaps with context).
+                        Some(f) if e.to_string().contains(&f.message) => f,
+                        _ => ApiError::from(e),
+                    })
                 }))
                 .await
             }
         };
         drop(cancel);
         match r {
-            Ok(r) => r.map_err(ApiError::from),
+            Ok(r) => r,
             Err(e) => Err(ApiError::internal(e)),
         }
     }
@@ -4691,6 +4846,38 @@ impl Service {
         idem::forget_expired(db, chloedb::timestamp::now(), Instant::now() + self.timeout)
     }
 
+    /// Gives the database file's free space back to the file system by
+    /// itself ([`chloedb::storage::Database::trim`]), when the free pages
+    /// of its file (what a `DROP TABLE`, a retention that expired rows or a
+    /// merge left) come to `min_free` bytes and a sixteenth of the file:
+    /// a server that takes writes runs it every [`TRIM_EVERY`]
+    /// ([`crate::server::spawn_trimmer`]), so a table under retention
+    /// reaches a steady file size without `POST /v1/admin/vacuum`. It never
+    /// makes the file grow (the vacuum's lift is left to a person), waits
+    /// at most a second for the writer and moves segments for at most
+    /// [`TRIM_BUDGET`] while it holds it, so writes wait briefly (the next
+    /// run moves the rest). Not a replica. Returns the bytes the file
+    /// shrank by.
+    pub fn trim_due(&self, min_free: u64) -> Result<u64, ApiError> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() {
+            return Ok(0);
+        }
+        // Pages a commit freed are reusable two commits on (and a live
+        // snapshot holds them longer): they count, as the trim's own commits
+        // make them free. A server that only appends to its log between
+        // flushes commits no version that would.
+        let f = db.storage().file_stats();
+        let free = (f.free_pages + f.pending_pages) * chloedb::storage::pager::PAGE as u64;
+        if free < min_free || free * 16 < f.file_bytes {
+            return Ok(0);
+        }
+        let _by = self.admit_write()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let db = db.clone();
+        wait_for_writer(deadline, || Ok(db.storage().trim(TRIM_BUDGET)?))
+    }
+
     /// Rows of table `table` (the first without one) by primary key,
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
@@ -4897,6 +5084,11 @@ impl Service {
             }
             return Ok(SqlAnswer::Written { w: total, took_ms: t0.elapsed().as_secs_f64() * 1e3 });
         }
+        // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` (SAM-8): the
+        // SELECT as a query, then its rows' write.
+        if let Some(st) = chloedb::query::from_select::parse_statement(sql, params)? {
+            return self.from_select(who, st, sql, params, after, timeout_ms, key, budget).await;
+        }
         let command = self.bound(|tables| bind_command(sql, tables, params)).await?;
         if let Command::Function(f) = &command {
             // How a coordinator numbers a function's versions alike on
@@ -4924,6 +5116,9 @@ impl Service {
         if let Command::Write { table, .. } = &command {
             self.may_write_followed([table.as_str()]).await?;
         }
+        // Nor may its columns be dropped or renamed here, or the table
+        // dropped (ROSA-401).
+        self.may_change_followed(&command).await?;
         // A dictionary's derived field on a coordinator: each shard would
         // tag its rows from its own slice of the dictionary's table, not
         // from the dictionary the preview shows (audit 4, X-C2).
@@ -4944,7 +5139,7 @@ impl Service {
                 let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), budget, ..Default::default() }).await?;
                 return Ok(SqlAnswer::Rows(a));
             }
-            Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
+            Command::Explain { json } => return self.explain_rows(sql, json, params, timeout_ms, budget).await,
             // ONB-16: the tables' names, as GET /v1/tables lists them for
             // this key (a coordinator's from what its shards hold).
             Command::ShowTables => {
@@ -5012,6 +5207,109 @@ impl Service {
             (Backend::Cluster(_), false) if limited => self.limited_write(sql, params, key).await,
             (Backend::Cluster(c), false) => c.sql(sql, params, key).await,
         };
+        let w = self.wrote(r, t0, Some(sql))?;
+        Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
+    }
+
+    /// `INSERT ... SELECT` or `CREATE TABLE ... AS SELECT` `st` (of text
+    /// `sql`, [`chloedb::query::from_select`]) as `who`: its SELECT as a
+    /// query of this server or cluster with no row window (`own_read`);
+    /// for `CREATE TABLE`, the table its rows make, made as a `CREATE TABLE`
+    /// statement is; then the rows. On one server they are one write, one
+    /// transaction; through a coordinator they go as `INSERT`s of
+    /// [`chloedb::query::from_select::BATCH`] rows, each a write of its own.
+    /// A table made for rows that could not be written is dropped.
+    #[allow(clippy::too_many_arguments)]
+    async fn from_select(self: &Arc<Self>, who: &Principal, st: chloedb::query::from_select::Statement, sql: &str, params: &Params, after: After, timeout_ms: u64, key: Option<String>, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let table = st.table().to_string();
+        match st.creates() {
+            true => {
+                who.may(Scope::Admin, "CREATE TABLE ... AS SELECT")?;
+                if who.limited() {
+                    who.may_table(Scope::Admin, &table, "CREATE TABLE")?;
+                }
+            }
+            false => {
+                who.may(Scope::Write, "a write statement")?;
+                if who.limited() {
+                    who.may_table(Scope::Write, &table, "a write")?;
+                }
+            }
+        }
+        if who.limited() {
+            crate::scoped::check_statement(who, &st.query_sql(), &Command::Query, &self.table_names(), &self.functions())?;
+        }
+        crate::connectors::may_change(&table, "a statement")?;
+        crate::autopilot::may_change(who.root || who.limited() || who.scope >= Scope::Admin, &table, "a statement")?;
+        if after != After::Any {
+            return Err(ApiError::bad(FOR_READS));
+        }
+        let mut exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        if !exists && !st.creates() && self.learn_tables(false).await {
+            exists = self.catalog().iter().any(|s| s.table.eq_ignore_ascii_case(&table));
+        }
+        match (st.creates(), exists) {
+            (true, true) if st.if_not_exists() => return Ok(SqlAnswer::Written { w: Written::default(), took_ms: t0.elapsed().as_secs_f64() * 1e3 }),
+            (true, true) => return Err(ApiError::bad(format!("query error: table {table} already exists: DROP TABLE {table} first, or CREATE TABLE IF NOT EXISTS"))),
+            (false, false) => {
+                let names = self.table_names();
+                return Err(ApiError::bad(format!("query error: {}", chloedb::query::hint::no_table(&table, names.iter().map(String::as_str)))));
+            }
+            (false, true) => self.may_write_followed([table.as_str()]).await?,
+            (true, false) => keys::note(obs::truncate(sql, 500).into_owned()),
+        }
+        // A coordinator places rows by the table's key: a table without
+        // one could be made, but none of its rows written.
+        if matches!(self.backend, Backend::Cluster(_)) && !st.places_rows() {
+            return Err(ApiError::bad(format!("query error: {}", st.unplaced())));
+        }
+        // Every shard's rows, or none: a write of some of them would be wrong.
+        let read = self.query(QueryReq { sql: st.query_sql(), params: params.clone(), timeout_ms, own_read: true, partial: Some(false), who: Some(who.clone()), budget, ..Default::default() }).await?;
+        let rs = read.rs;
+        if st.creates() {
+            let catalog = self.catalog();
+            let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+            let schema = st.table_for(&rs, &tables)?;
+            self.ddl(&chloedb::query::ddl::create_sql(&schema), &Params::new(), timeout_ms, &who.name).await?;
+            self.learn_tables(true).await;
+        }
+        let r = match &self.backend {
+            // No rows: nothing to write.
+            _ if rs.rows.is_empty() => Ok(Written::default()),
+            Backend::Local(db) => {
+                let key = key.map(|k| (k, statement_hash(sql, params, None)));
+                let (st, p) = (st.clone(), params.clone());
+                self.write_local(db, move |db: &Db| db.prepare_selected(&st, &p, rs), timeout_ms, key).await
+            }
+            Backend::Cluster(_) => {
+                let mut total = Written::default();
+                let mut r = Ok(());
+                for (statement, p) in st.inserts(&rs)? {
+                    match Box::pin(self.sql_in(who, &statement, &p, After::Any, timeout_ms, None, None)).await {
+                        Ok(SqlAnswer::Written { w, .. }) => {
+                            total.rows += w.rows;
+                            total.skipped += w.skipped;
+                            if w.seq_no.is_some() {
+                                (total.seq_no, total.seq_term) = (w.seq_no, w.seq_term);
+                            }
+                            total.seq_nos.extend(w.seq_nos);
+                            total.seq_terms.extend(w.seq_terms);
+                        }
+                        Ok(SqlAnswer::Rows(_)) => {}
+                        Err(e) => {
+                            r = Err(e);
+                            break;
+                        }
+                    }
+                }
+                r.map(|()| total)
+            }
+        };
+        if r.is_err() && st.creates() {
+            let _ = self.ddl(&format!("DROP TABLE IF EXISTS {}", ident(&table)), &Params::new(), timeout_ms, &who.name).await;
+            self.learn_tables(true).await;
+        }
         let w = self.wrote(r, t0, Some(sql))?;
         Ok(SqlAnswer::Written { w, took_ms: t0.elapsed().as_secs_f64() * 1e3 })
     }
@@ -5352,6 +5650,12 @@ impl Service {
             // Waiting as a write does (5 s) held the part out of the queue;
             // answering 503 would send a coordinator looking for another
             // primary.
+            // A MEDIA value is resolved (its file fetched or decoded, and
+            // kept) as the write runs, not to check it: the check takes a
+            // stand-in of the value's kind, so that the rest of the
+            // operation is checked as the write will find it.
+            let mut ops = ops;
+            media_stand_ins(&db, &mut ops);
             match validate_into(&db, &ops, epoch) {
                 Err(e) if e.status == 503 => Ok(()),
                 r => r,
@@ -5655,9 +5959,60 @@ impl Service {
     /// its copy, and stops once it leaves the publication or the slot is
     /// dropped (`--drop-slot`).
     pub async fn may_write_followed<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Result<(), ApiError> {
+        let Some((t, by)) = self.followed_by(tables).await else { return Ok(()) };
+        Err(ApiError {
+            code: Some("followed_table"),
+            status: 409,
+            message: format!(
+                "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+            ),
+        })
+    }
+
+    /// Refuses (409, `followed_table`) a `DROP TABLE` of a table a
+    /// Postgres follower follows, and an `ALTER TABLE` of one that drops or
+    /// renames a column the follower writes (any but one ChloeDB derives,
+    /// as an embedded vector), unless the follower sends it (ROSA-401,
+    /// ROSA-305): the follower would stop on the table, or write the
+    /// column again without the values it held. Adding a column stays
+    /// allowed.
+    pub async fn may_change_followed(&self, command: &Command) -> Result<(), ApiError> {
+        let (tables, what): (Vec<String>, String) = match command {
+            Command::DropTable { tables, .. } => (tables.clone(), "DROP TABLE".into()),
+            Command::AlterTable { table, alters } => {
+                let schema = match table {
+                    Some(t) => self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(t)),
+                    None => self.default_table().ok(),
+                };
+                let Some(schema) = schema else { return Ok(()) };
+                let derived = |c: &str| schema.field_index(c).is_some_and(|i| schema.fields[i].derive.is_some());
+                let Some(a) = alters.iter().find(|a| !matches!(a, Alter::AddField(_)) && !derived(a.column())) else { return Ok(()) };
+                let what = match a {
+                    Alter::DropField(c) => format!("ALTER TABLE ... DROP COLUMN {c}"),
+                    Alter::RenameField { from, to } => format!("ALTER TABLE ... RENAME COLUMN {from} TO {to}"),
+                    Alter::AddField(_) => unreachable!("adding a column is allowed"),
+                };
+                (vec![schema.table.clone()], what)
+            }
+            _ => return Ok(()),
+        };
+        let Some((t, by)) = self.followed_by(tables.iter().map(String::as_str)).await else { return Ok(()) };
+        Err(ApiError {
+            code: Some("followed_table"),
+            status: 409,
+            message: format!(
+                "nothing was changed: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which writes its columns as Postgres has them; after {what} the follower would stop on the table, or write the column again without the values it held. Change the table in Postgres (the follower adds a column Postgres adds, and follows a column Postgres renames or drops); ADD COLUMN here stays allowed. To change it here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+            ),
+        })
+    }
+
+    /// The first of `tables` that a Postgres follower follows, and that
+    /// follower's name, unless the request is that follower's own
+    /// ([`POSTGRES_FOLLOWER_HEADER`]).
+    async fn followed_by<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Option<(String, String)> {
         let tables: Vec<&str> = tables.into_iter().collect();
         if tables.is_empty() {
-            return Ok(());
+            return None;
         }
         let (cached, fresh) = match &*self.followed.lock().unwrap_or_else(|e| e.into_inner()) {
             Some((at, f)) => (Some(f.clone()), at.elapsed() < FOLLOWED_EVERY),
@@ -5681,7 +6036,7 @@ impl Service {
             }
         };
         if followed.is_empty() {
-            return Ok(());
+            return None;
         }
         let me = postgres_follower();
         for t in tables {
@@ -5689,15 +6044,9 @@ impl Service {
             if me.as_deref() == Some(by.as_str()) {
                 continue;
             }
-            return Err(ApiError {
-                code: Some("followed_table"),
-                status: 409,
-                message: format!(
-                    "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
-                ),
-            });
+            return Some((t.to_string(), by.clone()));
         }
-        Ok(())
+        None
     }
 
     /// Each stream source's offset for the slots moving from this shard,
@@ -6356,6 +6705,10 @@ impl Service {
         let lags = self.follow_lags();
         if !lags.is_empty() {
             g.insert("follow_lag_s", lags.iter().map(|l| l.lag_s).fold(0.0, f64::max));
+            // The tables Postgres followers hold (the alert follow-table-held's).
+            if lags.iter().any(|l| l.kind == "postgres") {
+                g.insert("follow_tables_held", lags.iter().map(|l| l.tables.iter().filter(|t| t.held).count() as f64).sum());
+            }
             if lags.iter().any(|l| l.behind.is_some()) {
                 g.insert("follow_behind", lags.iter().filter_map(|l| l.behind).fold(0.0, f64::max));
             }
@@ -6532,7 +6885,7 @@ impl Service {
                     true => Ok(()),
                     false => Err("this replica serves no reads while it catches up with its primary, or has not heard from it".into()),
                 },
-                Err("a replica takes no writes from clients".into()),
+                Err(REPLICA_NO_WRITES.into()),
             ),
         };
         let writes = match self.failing() {
@@ -6664,6 +7017,7 @@ impl Service {
             // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
             "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
+            "http_url": self.http_url.get(),
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
             "cluster": self.identity.json(),
@@ -6746,6 +7100,25 @@ impl Service {
                     family("chloedb_follow_up", "1 while a follow process writing through this server says it follows (or copies, or catches up), and said so within the last 10 s; 0 while it retries, failed or is silent.", |l| Some(if l.up { 1.0 } else { 0.0 })),
                     family("chloedb_follow_behind_transactions", "Transactions of the source a cluster's follow process writing through this server has not applied, over the source's shards.", |l| l.behind),
                     family("chloedb_follow_behind_bytes", "Bytes of Postgres's WAL a Postgres follower writing through this server has not confirmed: Postgres's position (pg_current_wal_lsn()) less the follower's, as it last said.", |l| l.behind_bytes),
+                    family("chloedb_follow_tables_held", "Tables a Postgres follower writing through this server holds: each failed (a value or a change ChloeDB refused, a key it cannot make), so it stopped following it and tries it again while the others go on.", |l| (l.kind == "postgres").then(|| l.tables.iter().filter(|t| t.held).count() as f64)),
+                    family("chloedb_follow_last_error_timestamp_seconds", "When a follow process writing through this server last met an error (a table's, or its own), in seconds since the epoch.", |l| l.last_error_s),
+                ]
+                .into_iter()
+                .filter(|f| !f.values.is_empty()),
+            );
+            // Per table a Postgres follower follows or holds (ROSA-406).
+            let per_table = |f: &dyn Fn(&crate::service::feed::FollowTable) -> Option<f64>| -> Vec<(String, f64)> {
+                lags.iter().flat_map(|l| l.tables.iter().filter_map(move |t| Some((format!("{},table=\"{}\"", label(l), metrics::esc(&t.table)), f(t)?)))).collect()
+            };
+            let errors: Vec<(String, f64)> = lags
+                .iter()
+                .flat_map(|l| l.tables.iter().filter(|t| t.held).map(move |t| (format!("{},table=\"{}\",error=\"{}\"", label(l), metrics::esc(&t.table), metrics::esc(&t.error.clone().unwrap_or_default().chars().take(200).collect::<String>())), 1.0)))
+                .collect();
+            more.extend(
+                [
+                    Family { name: "chloedb_follow_table_up", ty: "gauge", help: "1 while a Postgres follower writing through this server follows the table, 0 while it holds it (it failed: chloedb_follow_table_error_info says why).", values: per_table(&|t| Some(if t.held { 0.0 } else { 1.0 })) },
+                    Family { name: "chloedb_follow_table_lag_seconds", ty: "gauge", help: "How far behind Postgres a table a Postgres follower writing through this server follows is: the follower's lag, and while the table is held, since it was held if longer.", values: per_table(&|t| Some(t.lag_s)) },
+                    Family { name: "chloedb_follow_table_error_info", ty: "gauge", help: "1 per table a Postgres follower writing through this server holds, with the error that holds it (its first 200 characters).", values: errors },
                 ]
                 .into_iter()
                 .filter(|f| !f.values.is_empty()),
@@ -7697,6 +8070,15 @@ pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }
 
+/// How often a server looks for free space in its file to give back ([`Service::trim_due`]).
+pub const TRIM_EVERY: Duration = Duration::from_secs(300);
+
+/// The free space [`Service::trim_due`] waits for: below it, the file keeps it for the writes to come.
+pub const TRIM_MIN_FREE: u64 = 64 << 20;
+
+/// How long [`Service::trim_due`] moves segments for while it holds the writer.
+pub const TRIM_BUDGET: Duration = Duration::from_secs(2);
+
 /// Runs `write` until it gets the writer or `deadline` passes: Strata
 /// answers `Busy` (503) rather than queueing while another write, or a
 /// background merge's commit, holds it. A busy write has changed nothing.
@@ -7828,6 +8210,54 @@ fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u6
     }
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
+}
+
+/// Each MEDIA value that `ops` give as a write may (a `uri` to fetch, a
+/// file's bytes as base64 `data`) replaced by a stored value of its kind
+/// that names no file, for [`Service::validate_ops`]: applied as given, a
+/// value the write would resolve first was refused ("unknown field
+/// `data`"), and every write through a coordinator that spans shards,
+/// which checks each shard's part first, failed when it carried a
+/// picture. A value that is not one a write may give is left as it is,
+/// and refused by the check as by the write.
+fn media_stand_ins(db: &Db, ops: &mut [Json]) {
+    let catalog = db.catalog();
+    if !catalog.iter().any(|t| t.fields.iter().any(|f| f.media.is_some())) {
+        return;
+    }
+    let first = default_of(&catalog).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
+    for op in ops.iter_mut() {
+        if !matches!(op.get("op").and_then(Json::as_str), Some("insert" | "insert_if_absent" | "upsert" | "upsert_if_newer" | "add")) {
+            continue;
+        }
+        let Ok(table) = op_table(op, &first).map(str::to_string) else { continue };
+        let Some(schema) = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(&table)) else { continue };
+        let Some(doc) = op.get_mut("doc").and_then(Json::as_object_mut) else { continue };
+        for f in schema.fields.iter() {
+            let Some(kind) = f.media else { continue };
+            let Some(v) = doc.get_mut(&f.name) else { continue };
+            if v.is_null() {
+                continue;
+            }
+            let Ok(text) = chloedb::media::input_text(v) else { continue };
+            if chloedb::media::Media::parse(&text).is_ok() {
+                continue;
+            }
+            let given: Json = serde_json::from_str(&text).unwrap_or(Json::Null);
+            let mime = given["mime"].as_str().filter(|m| m.contains('/') && kind.accepts(m)).map(str::to_string).unwrap_or_else(|| {
+                match kind {
+                    chloedb::media::MediaKind::Image => "image/png",
+                    chloedb::media::MediaKind::Audio => "audio/mpeg",
+                    chloedb::media::MediaKind::Video => "video/mp4",
+                    chloedb::media::MediaKind::Pdf => "application/pdf",
+                    chloedb::media::MediaKind::Any => "application/octet-stream",
+                }
+                .to_string()
+            });
+            let uri = given["uri"].as_str().unwrap_or("data:").to_string();
+            *v = json!({"uri": uri, "sha256": "0".repeat(64), "mime": mime, "bytes": 0});
+        }
+    }
 }
 
 /// [`Service::validate_ops`]: each of `ops` applied in turn in one
@@ -8680,6 +9110,34 @@ fn param_table(given: Option<&str>, named: &[String], order: &[String], who: &Pr
 }
 
 /// Whether `text` holds `word`, in any case.
+/// `SELECT cols FROM (SELECT * FROM blend(..) [LIMIT k]) [AS x] [LIMIT n]`,
+/// a function whose body reads a blend called for some of its columns, as
+/// the one query `SELECT cols FROM blend(..) LIMIT n` (or k) that reads
+/// the blend itself ([`chloedb::query::blend`], whose call is the whole
+/// query); any other query as it is.
+fn blend_selected(q: sqlparser::ast::Query) -> sqlparser::ast::Query {
+    use sqlparser::ast::{SetExpr, TableFactor};
+    let SetExpr::Select(outer) = q.body.as_ref() else { return q };
+    let plain = q.with.is_none() && q.order_by.is_none() && outer.selection.is_none() && outer.having.is_none() && outer.distinct.is_none()
+        && matches!(&outer.group_by, sqlparser::ast::GroupByExpr::Expressions(es, _) if es.is_empty());
+    let [from] = outer.from.as_slice() else { return q };
+    let (true, true, TableFactor::Derived { subquery, lateral: false, .. }) = (plain, from.joins.is_empty(), &from.relation) else { return q };
+    let SetExpr::Select(inner) = subquery.body.as_ref() else { return q };
+    let all = matches!(inner.projection.as_slice(), [sqlparser::ast::SelectItem::Wildcard(_)]);
+    let reads_blend = matches!(inner.from.as_slice(), [f] if f.joins.is_empty() && matches!(&f.relation, TableFactor::Table { name, args: Some(_), .. } if name.to_string().eq_ignore_ascii_case("blend")));
+    if !all || !reads_blend || inner.selection.is_some() || subquery.order_by.is_some() {
+        return q;
+    }
+    let mut out = (**subquery).clone();
+    if let SetExpr::Select(s) = out.body.as_mut() {
+        s.projection = outer.projection.clone();
+    }
+    if q.limit_clause.is_some() {
+        out.limit_clause = q.limit_clause.clone();
+    }
+    out
+}
+
 fn contains_word(text: &str, word: &str) -> bool {
     text.as_bytes().windows(word.len()).any(|w| w.eq_ignore_ascii_case(word.as_bytes()))
 }

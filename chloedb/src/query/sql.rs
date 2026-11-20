@@ -182,8 +182,6 @@ pub enum Conflict {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Assign {
     Value(Value),
-    /// `field = field + x` (or `- x`): an INT or a FLOAT, integers exact.
-    Add(Value),
     /// `field = excluded.g`, in `ON CONFLICT DO UPDATE`: field `g` of the
     /// document the INSERT proposed.
     Excluded(usize),
@@ -191,9 +189,36 @@ pub enum Assign {
     /// UPDATE`, of `excluded.g`), computed for each row by the plan IR's
     /// evaluator ([`crate::query::ir::eval`]) and stored as the field's
     /// type: a whole FLOAT fits an INT, and one value a multi-valued field.
-    /// NULL in gives NULL out, as in SQL; only `field + number` counts a
-    /// NULL as zero.
+    /// NULL in gives NULL out, as in SQL, in every expression (`n + 1`,
+    /// `1 + n` and `n * 2` alike).
     Expr(crate::query::ir::Expr),
+}
+
+impl Assign {
+    /// The fields this assignment reads when a keyed update sets numbers in
+    /// place (`price = :p`, `n = n + 1`, `n = n * 2 - m`): none for a value,
+    /// and those of an expression made only of single-valued stored
+    /// numbers, number literals and arithmetic. `None` for any other
+    /// assignment, which the general path runs.
+    pub(crate) fn reads_in_place(&self, schema: &Schema) -> Option<Vec<usize>> {
+        use crate::query::ir::Expr as E;
+        match self {
+            Assign::Value(_) => Some(Vec::new()),
+            Assign::Excluded(_) => None,
+            Assign::Expr(e) => {
+                let (mut ok, mut fields) = (true, Vec::new());
+                e.visit(&mut |x| match x {
+                    E::Field(f) => match schema.fields.get(*f as usize) {
+                        Some(field) if matches!(field.ty, FieldType::Int | FieldType::Float) && !field.multi && field.generated_from.is_empty() => fields.push(*f as usize),
+                        _ => ok = false,
+                    },
+                    E::Lit(Value::Int(_) | Value::Float(_)) | E::Arith { .. } | E::Neg(_) => {}
+                    _ => ok = false,
+                });
+                ok.then_some(fields)
+            }
+        }
+    }
 }
 
 /// A bound statement ([`bind_command`]).
@@ -257,6 +282,20 @@ pub fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     }
 }
 
+/// [`parse_query`] of one of the constant texts the binder fills in
+/// (`SELECT * FROM t`, `SELECT 1 FROM t`): parsed once, then cloned, so
+/// that an UPDATE or DELETE does not tokenize them each time it binds.
+fn template(sql_text: &'static str) -> Result<Box<sql::Query>> {
+    static PARSED: std::sync::OnceLock<std::sync::Mutex<HashMap<&'static str, Box<sql::Query>>>> = std::sync::OnceLock::new();
+    let held = PARSED.get_or_init(Default::default);
+    if let Some(q) = held.lock().unwrap_or_else(|e| e.into_inner()).get(sql_text) {
+        return Ok(q.clone());
+    }
+    let q = parse_query(sql_text)?;
+    held.lock().unwrap_or_else(|e| e.into_inner()).insert(sql_text, q.clone());
+    Ok(q)
+}
+
 /// A SELECT as [`parse_query_cached`] keeps it.
 pub(crate) struct Parsed {
     pub query: sql::Query,
@@ -305,6 +344,85 @@ pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Op
     }
 }
 
+/// The most UPDATE texts [`bind_command_cached`] keeps parsed; past it
+/// the cache starts again empty.
+const PARSED_UPDATES: usize = 512;
+
+/// [`bind_command`], with an `UPDATE`'s text parsed once and kept: an
+/// application sends the same statement with other parameters each time
+/// (`UPDATE t SET price = :p WHERE id = :k`), and parsing is most of what
+/// binding one costs. The parsed statement is bound to `tables` and
+/// `params` anew each call, so a table altered since binds as it is now.
+/// Any other statement is [`bind_command`]'s, whose other statements
+/// (functions, rank profiles, `PACK`) never start with `UPDATE`.
+pub fn bind_command_cached(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Command> {
+    let update = sql_text.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("UPDATE"));
+    if !update || super::pack::may_pack(sql_text) {
+        return bind_command(sql_text, tables, params);
+    }
+    static PARSED: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Arc<sql::Statement>>>> = std::sync::OnceLock::new();
+    let cache = PARSED.get_or_init(Default::default);
+    let kept = cache.lock().unwrap_or_else(|e| e.into_inner()).get(sql_text).cloned();
+    let stmt = match kept {
+        Some(s) => s,
+        None => {
+            let s = Arc::new(parse_one(sql_text)?);
+            let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if c.len() >= PARSED_UPDATES {
+                c.clear();
+            }
+            c.insert(sql_text.to_string(), s.clone());
+            s
+        }
+    };
+    if let Some(c) = keyed_update_bound(&stmt, tables, params) {
+        return Ok(c);
+    }
+    bind_statement(&stmt, tables, params)
+}
+
+/// An `UPDATE t SET <numbers> WHERE <key> = <value>` bound without the
+/// `SELECT *` the general path binds for its rows: the write runs by key
+/// ([`crate::db::Db`]'s keyed update reads its row in the transaction), so
+/// its query is only its filter, the same `Pred` the general path's
+/// binder makes of the WHERE. `None` for any other statement, and for one
+/// whose WHERE or SET the binder refuses, which [`bind_statement`] binds
+/// (and refuses) as before. EXPLAIN binds through [`bind_statement`], so
+/// it shows the general path's plan.
+fn keyed_update_bound(stmt: &sql::Statement, tables: &[&Schema], params: &Params) -> Option<Command> {
+    let sql::Statement::Update { table: t, assignments, from: None, selection: Some(selection), returning: None, or: None, limit: None } = stmt else { return None };
+    if !t.joins.is_empty() || matches!(&t.relation, sql::TableFactor::Table { alias: Some(_), .. }) {
+        return None;
+    }
+    // `key = value`, a column against a value or a parameter.
+    let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = selection else { return None };
+    let plain = |e: &Expr| matches!(e, Expr::Value(_));
+    if !(matches!(**left, Expr::Identifier(_)) && plain(right) || matches!(**right, Expr::Identifier(_)) && plain(left)) {
+        return None;
+    }
+    let n = table_name(plain_table(&t.relation, "UPDATE").ok()?);
+    let schema = tables.iter().copied().find(|s| s.table.eq_ignore_ascii_case(&n))?;
+    let pk = schema.primary_key?;
+    let binder = Binder::new(schema, params);
+    let sets = binder.assignments(assignments, None, false).ok()?;
+    let in_place = sets.iter().all(|(f, a)| matches!(schema.fields[*f].ty, FieldType::Int | FieldType::Float) && !schema.fields[*f].multi && a.reads_in_place(schema).is_some());
+    if sets.is_empty() || !in_place {
+        return None;
+    }
+    let filter = binder.pred(selection).ok()?;
+    let keyed = match (&filter, &schema.fields[pk].ty) {
+        (Pred::In { field, values }, FieldType::Keyword) => *field == pk && matches!(values.as_slice(), [Value::Str(_)]),
+        (Pred::In { field, values }, FieldType::Int) => *field == pk && matches!(values.as_slice(), [Value::Int(_)]),
+        (Pred::IntRange { field, lo, hi }, FieldType::Int) => *field == pk && lo == hi,
+        _ => false,
+    };
+    if !keyed {
+        return None;
+    }
+    let select = Select { projection: Vec::new(), filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), exprs: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types: Vec::new(), guard: None, per: None };
+    Some(Command::Write { table: schema.table.clone(), write: Write::Update { select, sets, pick: None } })
+}
+
 /// Parses and binds one statement of a database whose tables are `tables`:
 /// a SELECT (bound when it runs), an INSERT, UPDATE or DELETE of one of
 /// them, `CREATE TABLE` or `DROP TABLE`, `CREATE RANK PROFILE` or `DROP
@@ -331,6 +449,59 @@ pub fn bind_command(sql_text: &str, tables: &[&Schema], params: &Params) -> Resu
         });
     }
     bind_statement(&parse_one(sql_text)?, tables, params)
+}
+
+/// The statement an `EXPLAIN` explains, as SQL text, and whether it asked
+/// for `FORMAT JSON`; `None` for any other statement.
+pub fn explained(sql_text: &str) -> Result<Option<(String, bool)>> {
+    if !sql_text.trim_start().get(..7).is_some_and(|w| w.eq_ignore_ascii_case("explain")) {
+        return Ok(None);
+    }
+    let sql::Statement::Explain { statement, .. } = parse_one(sql_text)? else { return Ok(None) };
+    let json = matches!(bind_command(sql_text, &[], &Params::new()), Ok(Command::Explain { json: true }));
+    Ok(Some((statement.to_string(), json)))
+}
+
+/// What `EXPLAIN` shows of an INSERT, UPDATE or DELETE: its plan, and the
+/// query that picks its rows, which a caller plans as a read and puts in
+/// with [`WritePlan::picking`].
+pub struct WritePlan {
+    plan: ir::Plan,
+    /// The query that picks the rows, with its parameters.
+    pub pick: Option<(String, Params)>,
+    /// How the rows are picked, as a line of the plan.
+    pub note: Option<String>,
+}
+
+impl WritePlan {
+    /// The plan, its rows the ones `picked` (the plan of [`Self::pick`]'s query) finds.
+    pub fn picking(mut self, picked: ir::Plan) -> ir::Plan {
+        if let ir::Node::Update { input, .. } | ir::Node::Delete { input, .. } = &mut self.plan.root {
+            *input = Box::new(picked.root);
+        }
+        ir::Plan::new(self.plan.root)
+    }
+
+    /// The plan, when the write picks no rows.
+    pub fn plan(self) -> ir::Plan {
+        self.plan
+    }
+}
+
+/// The plan of `sql_text` when it is an INSERT, UPDATE or DELETE of one of
+/// `tables`, bound and not run; `None` for a query (a read explains
+/// itself), an error for what `EXPLAIN` does not take.
+pub fn write_plan(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Option<WritePlan>> {
+    match bind_command(sql_text, tables, params)? {
+        Command::Query => Ok(None),
+        Command::Write { table, write } => {
+            let schema = tables.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
+            let pick = write.pick().map(|p| (p.query.to_string(), p.params.clone()));
+            let note = write.pick().map(|p| format!("  picks its rows by key under the writer lock, as the write runs, with {}", p.sql()));
+            Ok(Some(WritePlan { plan: ir::Plan::of_write(schema, &write), pick, note }))
+        }
+        _ => Err(err("EXPLAIN shows the plan of a SELECT, INSERT, UPDATE or DELETE")),
+    }
 }
 
 /// [`bind_command`] of a parsed statement.
@@ -496,11 +667,59 @@ fn plain_table<'t>(t: &'t sql::TableFactor, what: &str) -> Result<&'t sql::Objec
     }
 }
 
-/// Binds an INSERT into `schema`'s table.
-/// Why `INSERT ... SELECT` is refused, and what to write (SAM-208).
-const INSERT_SELECT: &str = "INSERT ... SELECT is not supported (but from chunks_of): run the SELECT, then write the rows it returns with INSERT ... VALUES, or through Db::upsert or POST /v1/write";
+/// Why an `INSERT ... SELECT` is not bound here: it runs as a statement of
+/// its own ([`crate::query::from_select`]), its SELECT first.
+const INSERT_SELECT: &str = "INSERT ... SELECT runs as a statement of its own (Db::sql, POST /v1/sql), not as a prepared write: its SELECT runs first, then its rows are written";
 
+/// Binds an INSERT into `schema`'s table.
 fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> {
+    let (b, conflict, named) = insert_into(ins, schema, params)?;
+    let values = match ins.source.as_deref() {
+        Some(q) if no_clauses(q).is_none() => match q.body.as_ref() {
+            sql::SetExpr::Values(v) => v,
+            _ => return Err(err(INSERT_SELECT)),
+        },
+        Some(q) if !matches!(q.body.as_ref(), sql::SetExpr::Values(_)) => return Err(err(INSERT_SELECT)),
+        Some(q) => return Err(err(format!("INSERT ... VALUES takes no {}", no_clauses(q).unwrap_or_default()))),
+        None => return Err(err("INSERT needs VALUES")),
+    };
+    // Columns the statement leaves out take their defaults.
+    let start = schema.defaults(b.now)?;
+    let mut docs = Vec::with_capacity(values.rows.len());
+    for row in &values.rows {
+        let cols = insert_columns(schema, named.as_deref(), row.len(), "values")?;
+        let mut doc = start.clone();
+        for (&f, e) in cols.iter().zip(row) {
+            doc[f] = b.write_value(f, e)?;
+        }
+        docs.push(doc);
+    }
+    Ok(Write::Insert { docs, conflict })
+}
+
+/// Binds `INSERT ... SELECT` `ins` into `schema`'s table, of the rows its
+/// SELECT returned, `width` values each: a row's values go to the columns
+/// the statement names, in order, or to the table's columns in order, as
+/// VALUES' do; each value as `SET` gives it ([`assigned`]: a whole FLOAT
+/// into an INT, a number into a KEYWORD as its text, NULL as NULL).
+pub(crate) fn insert_rows(ins: &sql::Insert, schema: &Schema, params: &Params, width: usize, rows: Vec<Vec<Value>>) -> Result<Write> {
+    let (b, conflict, named) = insert_into(ins, schema, params)?;
+    let cols = insert_columns(schema, named.as_deref(), width, "columns in its SELECT")?;
+    let start = schema.defaults(b.now)?;
+    let mut docs = Vec::with_capacity(rows.len());
+    for (n, row) in rows.into_iter().enumerate() {
+        let mut doc = start.clone();
+        for (&f, v) in cols.iter().zip(row) {
+            doc[f] = assigned(&schema.fields[f], v).map_err(|e| e.within(&format!("row {} of the SELECT", n + 1)))?;
+        }
+        docs.push(doc);
+    }
+    Ok(Write::Insert { docs, conflict })
+}
+
+/// What an INSERT's clauses say, whatever gives its rows: the binder of
+/// its values, what a key that is taken does, and the columns it names.
+fn insert_into<'a>(ins: &sql::Insert, schema: &'a Schema, params: &'a Params) -> Result<(Binder<'a>, Conflict, Option<Vec<usize>>)> {
     let sql::Insert {
         or,
         ignore,
@@ -509,7 +728,7 @@ fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> 
         table_alias,
         columns,
         overwrite,
-        source,
+        source: _,
         assignments,
         partitioned,
         after_columns,
@@ -567,55 +786,38 @@ fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> 
     } else {
         Some(columns.iter().map(|c| schema.field_index(&c.value).ok_or_else(|| err(hint::no_column(schema, &c.value)))).collect::<Result<_>>()?)
     };
-    // Without a column list, a row gives every column in order, or every
-    // column but those the table makes itself (generated text, embedded
-    // vectors, text derived from media).
+    Ok((b, conflict, named))
+}
+
+/// The columns a row of `n` values of an INSERT goes to (`what` they are,
+/// for a message): those it names (`named`), or without a list every
+/// column in order, or every column but those the table makes itself
+/// (generated text, embedded vectors, text derived from media).
+fn insert_columns(schema: &Schema, named: Option<&[usize]>, n: usize, what: &str) -> Result<Vec<usize>> {
     let all: Vec<usize> = (0..schema.fields.len()).collect();
     let written: Vec<usize> = all.iter().copied().filter(|&i| {
         let f = &schema.fields[i];
         f.generated_from.is_empty() && f.embed.is_none() && f.derive.is_none()
     }).collect();
-    let cols_for = |n: usize| -> Result<&[usize]> {
-        match &named {
-            Some(c) if c.len() == n => Ok(c),
-            Some(c) => Err(err(format!("{n} values for {} named columns ({}): give one value per column named", c.len(), c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ")))),
-            None if n == all.len() => Ok(&all),
-            None if n == written.len() => Ok(&written),
-            None => {
-                let names = |c: &[usize]| c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ");
-                let made = if written.len() < all.len() { format!(", or {} without the ones it makes itself ({})", written.len(), names(&all.iter().copied().filter(|i| !written.contains(i)).collect::<Vec<_>>())) } else { String::new() };
-                Err(err(format!(
-                    "{n} values for {}, which takes {} in order ({}){made}: give a value for each, or name the columns the values are for, INSERT INTO {} ({}) VALUES (...)",
-                    schema.table,
-                    all.len(),
-                    names(&all),
-                    schema.table,
-                    names(&written[..written.len().min(3)])
-                )))
-            }
+    let names = |c: &[usize]| c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ");
+    match named {
+        Some(c) if c.len() == n => Ok(c.to_vec()),
+        Some(c) => Err(err(format!("{n} {what} for {} named columns ({}): give one value per column named", c.len(), names(c)))),
+        None if n == all.len() => Ok(all),
+        None if n == written.len() => Ok(written),
+        None => {
+            let made = if written.len() < all.len() { format!(", or {} without the ones it makes itself ({})", written.len(), names(&all.iter().copied().filter(|i| !written.contains(i)).collect::<Vec<_>>())) } else { String::new() };
+            Err(err(format!(
+                "{n} {what} for {}, which takes {} in order ({}){made}: give a value for each, or name the columns the values are for, INSERT INTO {} ({}) {}",
+                schema.table,
+                all.len(),
+                names(&all),
+                schema.table,
+                names(&written[..written.len().min(3)]),
+                if what == "values" { "VALUES (...)" } else { "SELECT ..." }
+            )))
         }
-    };
-    let values = match source.as_deref() {
-        Some(q) if no_clauses(q).is_none() => match q.body.as_ref() {
-            sql::SetExpr::Values(v) => v,
-            _ => return Err(err(INSERT_SELECT)),
-        },
-        Some(q) if !matches!(q.body.as_ref(), sql::SetExpr::Values(_)) => return Err(err(INSERT_SELECT)),
-        Some(q) => return Err(err(format!("INSERT ... VALUES takes no {}", no_clauses(q).unwrap_or_default()))),
-        None => return Err(err("INSERT needs VALUES")),
-    };
-    // Columns the statement leaves out take their defaults.
-    let start = schema.defaults(b.now)?;
-    let mut docs = Vec::with_capacity(values.rows.len());
-    for row in &values.rows {
-        let cols = cols_for(row.len())?;
-        let mut doc = start.clone();
-        for (&f, e) in cols.iter().zip(row) {
-            doc[f] = b.write_value(f, e)?;
-        }
-        docs.push(doc);
     }
-    Ok(Write::Insert { docs, conflict })
 }
 
 /// The first clause of `q` other than its body: `WITH`, `ORDER BY`,
@@ -665,7 +867,7 @@ pub(crate) fn unsupported_query_clause(
 /// are bound, never printed and parsed again: printed, `- -1` is `--1`, a
 /// comment, and a column named `order` is a keyword.
 fn selecting(schema: &Schema, params: &Params, table: &sql::TableFactor, selection: &Option<Expr>, order_by: &[sql::OrderByExpr], limit: &Option<Expr>) -> Result<Select> {
-    let mut q = parse_query("SELECT * FROM t")?;
+    let mut q = template("SELECT * FROM t")?;
     let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("a SELECT of every field")) };
     s.from[0].relation = table.clone();
     s.selection = selection.clone();
@@ -696,7 +898,7 @@ fn selecting_or_picking(schema: &Schema, params: &Params, table: &sql::TableFact
         sql::TableFactor::Table { alias: Some(a), .. } => Expr::CompoundIdentifier(vec![a.name.clone(), sql::Ident::with_quote('"', schema.fields[pk].name.clone())]),
         _ => Expr::Identifier(sql::Ident::with_quote('"', schema.fields[pk].name.clone())),
     };
-    let mut q = parse_query("SELECT 1 FROM t")?;
+    let mut q = template("SELECT 1 FROM t")?;
     let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("a SELECT of the keys")) };
     s.projection = vec![sql::SelectItem::UnnamedExpr(key)];
     s.from[0].relation = table.clone();
@@ -810,6 +1012,10 @@ pub(crate) fn assigned(field: &Field, v: Value) -> Result<Value> {
         (FieldType::Int, Value::Float(x)) if field.logical.is_none() => {
             if x.fract() == 0.0 && x.abs() < 9.2e18 {
                 Ok(Value::Int(x as i64))
+            } else if x.fract() == 0.0 || !x.is_finite() {
+                // Integer arithmetic past i64 gives a FLOAT ([`ir::eval`]);
+                // stored in an INT it overflows, as in Postgres.
+                Err(err(format!("{} is INT, and {x} overflows it: an INT holds -9223372036854775808 to 9223372036854775807", field.name)))
             } else {
                 Err(err(format!("{} is INT, and {x} is not an integer it holds", field.name)))
             }
@@ -1864,7 +2070,7 @@ impl<'a> Binder<'a> {
                 if group.contains(&f) {
                     Ok(Projection::Field(f))
                 } else {
-                    Err(err(format!("{e}: use a group field or an aggregate")))
+                    Err(err(format!("{e} must be in GROUP BY or inside an aggregate (COUNT, SUM, AVG, MIN, MAX)")))
                 }
             }
         }
@@ -1895,17 +2101,26 @@ impl<'a> Binder<'a> {
                 if *negated { Having::Not(Box::new(h)) } else { h }
             }
             Expr::BinaryOp { left, op, right } => {
-                let (what, lit, op) = match self.group_value(left, proj, group) {
-                    Ok(w) => (w, right, op.clone()),
-                    Err(_) => {
-                        let flipped = match op {
-                            Lt => Gt,
-                            LtEq => GtEq,
-                            Gt => Lt,
-                            GtEq => LtEq,
-                            o => o.clone(),
-                        };
-                        (self.group_value(right, proj, group)?, left, flipped)
+                let flip = |op: &BinaryOperator| match op {
+                    Lt => Gt,
+                    LtEq => GtEq,
+                    Gt => Lt,
+                    GtEq => LtEq,
+                    o => o.clone(),
+                };
+                // The value is on the side that is no column: a number
+                // there is a value, never the position of an output
+                // column (`HAVING n > 5`, `HAVING total > 10`).
+                let (what, lit, op) = if matches!(**left, Expr::Value(_)) {
+                    (self.group_value(right, proj, group)?, left, flip(op))
+                } else {
+                    match self.group_value(left, proj, group) {
+                        Ok(w) => (w, right, op.clone()),
+                        Err(e) if matches!(**right, Expr::Value(_)) => return Err(e),
+                        Err(e) => match self.group_value(right, proj, group) {
+                            Ok(w) => (w, left, flip(op)),
+                            Err(_) => return Err(e),
+                        },
                     }
                 };
                 let v = match self.typed_source(&what) {
@@ -2638,6 +2853,10 @@ impl<'a> Binder<'a> {
                 };
                 if *negated { Pred::Not(Box::new(p)) } else { p }
             }
+            Expr::Like { any: true, .. } | Expr::ILike { any: true, .. } => {
+                let k = if matches!(e, Expr::ILike { .. }) { "ILIKE" } else { "LIKE" };
+                return Err(err(format!("{k} ANY is not supported: write one {k} per pattern, joined with OR ({k} with a single pattern works on this field)")));
+            }
             Expr::ILike { .. } => return Err(err("ILIKE cannot use a KEYWORD field's index: store the value lowercased and use LIKE")),
             Expr::Function(func) if fname(func) == "prefix" => {
                 let (args, opts) = self.args(func)?;
@@ -2838,7 +3057,7 @@ impl<'a> Binder<'a> {
         use BinaryOperator::*;
         let written = op.clone();
         // Normalise to `field op literal`.
-        let (field_e, lit_e, op) = if self.field_of(left).is_ok() {
+        let (field_e, lit_e, op) = if self.is_column(left) {
             (left, right, op.clone())
         } else {
             let flipped = match op {
@@ -2850,13 +3069,13 @@ impl<'a> Binder<'a> {
             };
             (right, left, flipped)
         };
-        if self.field_of(field_e).is_err() {
+        if !self.is_column(field_e) {
             return Err(self.not_comparable(left, &written, right));
         }
         let f = self.field_of(field_e)?;
         let ty = &self.schema.fields[f].ty;
         let name = &self.schema.fields[f].name;
-        if self.field_of(lit_e).is_ok() {
+        if self.is_column(lit_e) {
             return Err(self.not_comparable(left, &written, right));
         }
         if matches!(self.literal(lit_e), Ok(Value::Null)) {
@@ -2937,6 +3156,12 @@ impl<'a> Binder<'a> {
             }
         }
         Ok((pos, named))
+    }
+
+    /// Whether `e` names a column ([`Binder::field_of`] takes it): only a
+    /// name can, so anything else is answered without the error's words.
+    fn is_column(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) && self.field_of(e).is_ok()
     }
 
     fn field_of(&self, e: &Expr) -> Result<usize> {
@@ -3279,6 +3504,13 @@ impl<'a> Binder<'a> {
                 }
             });
         }
+        let mut aggregate = false;
+        for side in [left, right] {
+            super::compound::walk(side, &mut |x| aggregate |= matches!(x, Expr::Function(f) if f.over.is_none() && super::compound::AGGREGATES.contains(&fname(f).as_str())));
+        }
+        if aggregate {
+            return err(format!("{cond}: an aggregate is not allowed in WHERE, which filters rows before they are grouped: use HAVING (SELECT k, COUNT(*) FROM t GROUP BY k HAVING COUNT(*) > 1)"));
+        }
         if cols.is_empty() {
             return err(format!("{cond} compares no column of {}: a condition tests a column (price > 10) or an expression of columns (lower(brand) = 'acme')", self.schema.table));
         }
@@ -3321,7 +3553,7 @@ impl<'a> Binder<'a> {
 
     /// A finite numeric literal or parameter, an integer kept exact.
     fn num_literal(&self, e: &Expr) -> Result<Value> {
-        if self.field_of(e).is_err() {
+        if !self.is_column(e) {
             match self.literal(e) {
                 Ok(v @ Value::Int(_)) => return Ok(v),
                 Ok(Value::Float(x)) if x.is_finite() => return Ok(Value::Float(x)),
@@ -3448,19 +3680,6 @@ impl<'a> Binder<'a> {
                 return Err(err(format!("{} is set twice", fld.name)));
             }
             let assign = match &a.value {
-                Expr::BinaryOp { left, op: op @ (BinaryOperator::Plus | BinaryOperator::Minus), right } if matches!(self.set_ref(left, alias, excluded), Some(Ok(ir::Expr::Field(g))) if g as usize == f) && self.num_literal(right).is_ok() => {
-                    if !matches!(fld.ty, FieldType::Int | FieldType::Float) || fld.logical.is_some() {
-                        return Err(err(format!("{} is not numeric", fld.name)));
-                    }
-                    if fld.multi {
-                        return Err(err(format!("{} holds a list: SET it to a list", fld.name)));
-                    }
-                    Assign::Add(match (self.num_literal(right)?, op) {
-                        (x, BinaryOperator::Plus) => x,
-                        (Value::Int(x), _) => x.checked_neg().map_or(Value::Float(-(x as f64)), Value::Int),
-                        (x, _) => Value::Float(-x.as_f64().unwrap_or(0.0)),
-                    })
-                }
                 Expr::CompoundIdentifier(ids) if excluded && ids.len() == 2 && ids[0].value.eq_ignore_ascii_case("excluded") => {
                     let g = self.schema.field_index(&ids[1].value).ok_or_else(|| err(hint::no_column(self.schema, &ids[1].value)))?;
                     let src = &self.schema.fields[g];
@@ -3505,6 +3724,32 @@ impl<'a> Binder<'a> {
     /// ([`crate::query::ir::Plan::to_write`]). `not_value` is the error of
     /// `e` as a value.
     fn set_expr(&self, e: &Expr, alias: Option<&str>, excluded: bool, not_value: Error) -> Result<Assign> {
+        // A number added to a column that holds no single number (`title +
+        // 1`, `1 + done`, `due - 1`) names that column, in either order,
+        // rather than failing on the first row's value.
+        let mut bad = None;
+        super::compound::walk(e, &mut |x| {
+            let Expr::BinaryOp { left, op, right } = x else { return };
+            if bad.is_some() || !matches!(op, BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo) {
+                return;
+            }
+            for (col, other) in [(left, right), (right, left)] {
+                if self.num_literal(other).is_err() {
+                    continue;
+                }
+                if let Some(Ok(ir::Expr::Field(g) | ir::Expr::Excluded(g))) = self.set_ref(col, alias, excluded) {
+                    let fld = &self.schema.fields[g as usize];
+                    if fld.multi {
+                        bad = Some(format!("{x}: {} holds a list, not a number: SET it to a list", fld.name));
+                    } else if !matches!(fld.ty, FieldType::Int | FieldType::Float) || fld.logical.is_some() {
+                        bad = Some(format!("{x}: {} is {} {} field, not numeric", fld.name, a_or_an(fld.type_name()), fld.type_name()));
+                    }
+                }
+            }
+        });
+        if let Some(m) = bad {
+            return Err(err(m));
+        }
         match super::compound::compile(e, self.params, &|x| self.set_ref(x, alias, excluded), &[]) {
             Ok(ir::Expr::Lit(_)) => Err(not_value),
             Ok(x) => Ok(Assign::Expr(x)),
@@ -4200,6 +4445,47 @@ mod tests {
         // A negated comparison also needs the value (NULL != 'c00' is not true).
         assert!(matches!(&ps[1], Pred::And(qs) if matches!(qs[..], [Pred::Present { field: 5 }, Pred::Not(_)])), "{:?}", ps[1]);
     }
+
+    /// A keyed UPDATE bound by its WHERE alone binds as the general path
+    /// does, but for the `SELECT *` it does not need; anything else is
+    /// left to the general path.
+    #[test]
+    fn a_keyed_update_binds_as_the_general_path_does() {
+        let s = Schema::from_json(r#"{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}, {"name": "price", "type": "float"}, {"name": "name", "type": "keyword"}]}"#).unwrap();
+        let si = Schema::from_json(r#"{"table": "u", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "n", "type": "int"}]}"#).unwrap();
+        let tables = [&s, &si];
+        let p = Params::new().set("k", Value::Str("a".into())).set("p", Value::Float(2.5)).set("i", Value::Int(7)).set("d", Value::Int(3));
+        for text in [
+            "UPDATE t SET n = n + 1 WHERE id = :k",
+            "UPDATE t SET n = n - :d, price = :p WHERE id = :k",
+            "UPDATE t SET price = :i WHERE 'a' = id",
+            "UPDATE t SET n = :d WHERE id = 'b'",
+            "UPDATE T SET N = N + 1 WHERE ID = :k",
+            "UPDATE u SET n = n + 1 WHERE id = :i",
+            "UPDATE u SET n = 2 WHERE id = 9",
+            "UPDATE t SET n = n * 2, price = price - n WHERE id = :k",
+        ] {
+            let stmt = parse_one(text).unwrap();
+            let Some(Command::Write { table, write: Write::Update { select, sets, pick: None } }) = keyed_update_bound(&stmt, &tables, &p) else { panic!("{text} is keyed") };
+            let Command::Write { table: t2, write: Write::Update { select: s2, sets: sets2, pick: None } } = bind_statement(&stmt, &tables, &p).unwrap() else { panic!("{text}") };
+            assert_eq!((table, &select.filter, &sets), (t2, &s2.filter, &sets2), "{text}");
+            let general = Select { projection: Vec::new(), types: Vec::new(), ..s2 };
+            assert_eq!(select, general, "{text}");
+        }
+        for text in [
+            "UPDATE t SET name = 'x' WHERE id = :k",
+            "UPDATE t SET n = n + 1 WHERE id = :k AND n > 2",
+            "UPDATE t SET n = n + 1 WHERE n = 3",
+            "UPDATE t SET n = n + 1 WHERE id IN ('a', 'b')",
+            "UPDATE t AS x SET n = n + 1 WHERE id = :k",
+            "UPDATE t SET n = abs(n) WHERE id = :k",
+            "UPDATE t SET n = n + 1 WHERE id = 7",
+            "UPDATE t SET id = 'b' WHERE id = :k",
+            "UPDATE u SET n = n + 1 WHERE id = '9'",
+        ] {
+            assert!(keyed_update_bound(&parse_one(text).unwrap(), &tables, &p).is_none(), "{text}");
+        }
+    }
 }
 
 /// The type a `CAST(x AS type)` makes: what the row evaluator can turn a
@@ -4289,4 +4575,5 @@ pub(crate) fn cast_value(v: Value, to: CastTo) -> Result<Value> {
         },
         (v, _) => return Err(refused(&v, &format!("{} has no {} value", hint::kind_of(&v), to.name()))),
     })
+
 }

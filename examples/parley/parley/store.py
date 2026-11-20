@@ -9,7 +9,9 @@ follow graph itself, and the service walks it hop by hop when it cannot.
 """
 from __future__ import annotations
 
+import contextvars
 import os
+import math
 import threading
 import time
 import urllib.request
@@ -18,6 +20,31 @@ from typing import Any, Iterable
 import chloedb
 
 from . import schema
+
+# The statements one request ran, for the page's "SQL" drawer: the API sets
+# a list here at the start of a request and returns it with the answer.
+TRACE: contextvars.ContextVar[list | None] = contextvars.ContextVar("parley_trace", default=None)
+
+
+def _shown(v: Any) -> Any:
+    """A parameter as the drawer shows it: vectors and long text cut short."""
+    if isinstance(v, list) and len(v) > 8 and all(isinstance(x, (int, float)) for x in v[:8]):
+        return f"[{len(v)} numbers]"
+    if isinstance(v, list):
+        return [_shown(x) for x in v[:12]] + ([f"… {len(v) - 12} more"] if len(v) > 12 else [])
+    if isinstance(v, dict):
+        return {k: _shown(x) for k, x in v.items()}
+    if isinstance(v, str) and len(v) > 240:
+        return v[:240] + "…"
+    return v
+
+
+def _record(label: str, sql: str, params: dict | None, t0: float, rows: int | None) -> None:
+    trace = TRACE.get()
+    if trace is None or len(trace) >= 200:
+        return
+    trace.append({"label": label, "sql": sql.strip(), "params": _shown(params or {}),
+                  "ms": round((time.perf_counter() - t0) * 1000, 2), "rows": rows})
 
 
 class Store:
@@ -39,9 +66,11 @@ class Store:
                 self.db = chloedb.open(target, **kw)
             else:
                 self.db = chloedb.open(target, schema=schema.META, **kw)
-        # A coordinator refuses graph queries before asking any shard.
+        # A coordinator refuses graph queries and recommenders before asking
+        # any shard.
         self.graph_in_db = self.role != "coordinator"
         self.vision = bool(vision)
+        self.recommender = False
 
     # -- schema -----------------------------------------------------------
     def ensure_schema(self) -> list[str]:
@@ -55,6 +84,23 @@ class Store:
             if name not in have:
                 self.db.sql(stmt)
                 made.append(name)
+        for stmt in schema.MIGRATIONS:
+            try:
+                self.db.sql(stmt)
+            except Exception:
+                pass  # an older server without IF NOT EXISTS: the column is there or added below
+        # The feed's recommender counts engagements as they are written; one
+        # database only. Without it the experiment's second arm is the first.
+        if self.graph_in_db:
+            if "taste_counts" in have:
+                self.recommender = True
+            else:
+                try:
+                    self.db.sql(schema.RECOMMENDER)
+                    self.recommender = True
+                    made.append("recommender taste")
+                except Exception:
+                    self.recommender = False
         return made
 
     def tables(self) -> list[dict]:
@@ -69,6 +115,7 @@ class Store:
         res = self.db.query(sql, params or {})
         rows = [dict(r) for r in res]
         self._time(label or sql.split()[0], t0)
+        _record(label or sql.split()[0], sql, params, t0, len(rows))
         return rows
 
     def one(self, sql: str, params: dict | None = None, **kw) -> dict | None:
@@ -83,13 +130,17 @@ class Store:
         t0 = time.perf_counter()
         row = self.db.get(key, table=table)
         self._time(f"get:{table}", t0)
+        _record(f"get:{table}", f"SELECT * FROM {table} WHERE id = :key  -- a lookup by key", {"key": key}, t0, 1 if row else 0)
         return row
 
     def get_many(self, table: str, keys: Iterable[str]) -> list[dict | None]:
         keys = list(keys)
         if not keys:
             return []
-        return list(self.db.get_many(keys, table=table))
+        t0 = time.perf_counter()
+        rows = list(self.db.get_many(keys, table=table))
+        _record(f"get:{table}", f"SELECT * FROM {table} WHERE id IN (:keys)  -- lookups by key, one call", {"keys": keys}, t0, sum(1 for r in rows if r))
+        return rows
 
     # -- writes -----------------------------------------------------------
     def write(self, ops: list[dict], *, label: str = "write") -> int:
@@ -106,10 +157,28 @@ class Store:
                 # Some shards took their part: send the rest, once.
                 n = self.db.write(ops, idempotency_key=answer["idempotency_key"])
         self._time(label, t0)
+        if TRACE.get() is not None:
+            kinds: dict[str, int] = {}
+            for o in ops:
+                k = f"{o.get('op', 'put')} {o.get('table', '')}".strip()
+                kinds[k] = kinds.get(k, 0) + 1
+            _record(label, "-- one atomic write\n" + "\n".join(f"{k.upper()} ({n} {'row' if n == 1 else 'rows'})" for k, n in kinds.items()), None, t0, n if isinstance(n, int) else None)
         return n
 
     def sql(self, stmt: str, params: dict | None = None) -> Any:
         return self.db.sql(stmt, params or {})
+
+    def post(self, path: str, body: dict, *, label: str) -> dict | None:
+        """A server route that is not SQL (/v1/highlight, /v1/correct), or
+        None on a file in the process, which has no routes."""
+        if not self.remote:
+            return None
+        t0 = time.perf_counter()
+        try:
+            return self.db._call("POST", path, body)
+        finally:
+            self._time(label, t0)
+            _record(label, f"POST {path}", body, t0, None)
 
     def embed(self, text: str, field: str | None = None, table: str | None = None) -> list[float]:
         return self.db.embed(text, field=field, table=table)
@@ -153,11 +222,13 @@ class Store:
         with self.lock:
             for k, xs in self.timings.items():
                 s = sorted(xs)
-                out[k] = {"n": len(s), "p50_ms": round(s[len(s) // 2], 2), "p95_ms": round(s[int(len(s) * 0.95) - 1 if len(s) > 1 else 0], 2)}
+                at = lambda q: s[min(len(s) - 1, max(0, math.ceil(q * len(s)) - 1))]  # nearest rank
+                out[k] = {"n": len(s), "p50_ms": round(at(0.5), 2), "p95_ms": round(at(0.95), 2)}
         return out
 
     def describe(self) -> dict:
-        return {"target": self.target, "role": self.role, "graph_in_db": self.graph_in_db, "vision": self.vision}
+        return {"target": self.target, "role": self.role, "graph_in_db": self.graph_in_db, "vision": self.vision,
+                "recommender": self.recommender}
 
 
 def _create_meta_sql() -> str:

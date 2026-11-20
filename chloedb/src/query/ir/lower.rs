@@ -351,7 +351,6 @@ impl Lower<'_> {
     fn set(&self, f: usize, a: &Assign) -> Set {
         let value = match a {
             Assign::Value(v) => self.lit(f, v),
-            Assign::Add(v) => Expr::Arith { op: super::ArithOp::Add, left: Box::new(Expr::Field(f as u32)), right: Box::new(Expr::Lit(v.clone())) },
             Assign::Excluded(g) => Expr::Excluded(*g as u32),
             Assign::Expr(e) => e.clone(),
         };

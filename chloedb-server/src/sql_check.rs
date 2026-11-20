@@ -25,6 +25,29 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
     };
     let catalog = svc.catalog();
     let tables: Vec<&chloedb::Schema> = catalog.iter().map(|t| &**t).collect();
+    // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT`: its SELECT is
+    // planned, and its table looked for (SAM-8).
+    match chloedb::query::from_select::parse_statement(sql, params) {
+        Err(e) => return answer("unknown", Err(e.into())),
+        Ok(Some(st)) => {
+            let kind = if st.creates() { "ddl" } else { "write" };
+            let there = tables.iter().any(|t| t.table.eq_ignore_ascii_case(st.table()));
+            let r = match (st.creates(), there) {
+                (true, true) if !st.if_not_exists() => Err(ApiError::bad(format!("query error: table {} already exists", st.table()))),
+                (false, false) => Err(ApiError::bad(format!("query error: {}", chloedb::query::hint::no_table(st.table(), tables.iter().map(|t| t.table.as_str()))))),
+                (true, false) if cluster && !st.places_rows() => Err(ApiError::bad(format!("query error: {}", st.unplaced()))),
+                _ => {
+                    let profiles = |t: &str, n: &str| svc.rank_profile(t, n);
+                    chloedb::query::compound::plan_read_calling(&st.query_sql(), &tables, params, &profiles, &svc.functions()).map_err(ApiError::from).map(|_| match cluster {
+                        true => vec![format!("runs its SELECT through the coordinator, then writes the rows as INSERTs of {} rows each: each is a write of its own, not one transaction", chloedb::query::from_select::BATCH)],
+                        false => Vec::new(),
+                    })
+                }
+            };
+            return answer(kind, r);
+        }
+        Ok(None) => {}
+    }
     let command = match bind_command(sql, &tables, params) {
         Ok(c) => c,
         Err(e) => return answer("unknown", Err(e.into())),
@@ -48,7 +71,7 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
             });
             answer("query", r)
         }
-        Command::Explain { .. } => answer("explain", Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain"))),
+        Command::Explain { .. } => answer("explain", Ok(Vec::new())),
         Command::ShowTables => answer("query", Ok(Vec::new())),
         Command::AlterTable { alters, .. } if cluster && alters.iter().any(|a| matches!(a, Alter::DropField(_))) => {
             answer("ddl", Err(ApiError::bad("ALTER TABLE ... DROP COLUMN does not run through a coordinator yet (its plans name columns by place); ADD COLUMN and RENAME COLUMN do")))

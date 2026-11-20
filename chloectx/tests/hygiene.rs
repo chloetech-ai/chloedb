@@ -55,12 +55,14 @@ fn snapshot_names(d: &Arc<Daemon>) -> Vec<(String, bool)> {
 #[test]
 fn a_forgotten_record_is_in_no_snapshot_taken_after_the_forget() {
     // N-F2: the next snapshot used to copy the segment the record was still in.
+    // The marker is no secret in a shape redaction knows (LENA-401 redacts
+    // "the password is V"), so that it reaches the store and its snapshots.
     let store = tempfile::tempdir().unwrap();
     config(store.path(), r#", "receipts": {"snapshots": {"min_interval_secs": 0}}"#);
     let d = Arc::new(Daemon::open(store.path(), "/proj").unwrap());
-    let secret = ok(call(&d, json!({"op": "remember", "kind": "fact", "text": "The staging database password is quokka-zebra-7731 for the payments cluster."})))["id"].as_str().unwrap().to_string();
+    let secret = ok(call(&d, json!({"op": "remember", "kind": "fact", "text": "The staging database codename is quokka-zebra-7731 for the payments cluster."})))["id"].as_str().unwrap().to_string();
     ok(call(&d, json!({"op": "remember", "kind": "decision", "text": "Payments retries back off exponentially, capped at five seconds."})));
-    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "What is the staging database password for the payments cluster?"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "What is the staging database codename for the payments cluster?"}));
     assert!(!files_holding(&store.path().join("snapshots"), "quokka-zebra-7731").is_empty(), "the first snapshot holds the record");
 
     let f = ok(call(&d, json!({"op": "forget", "id": secret})));
@@ -315,7 +317,7 @@ fn a_forget_rewrites_only_the_segments_that_held_the_record_and_leaves_its_text_
     ok(call(&d, json!({"op": "forget", "id": old})));
     let after_first = segment_ids(&d);
     // A second segment holds the secret.
-    let secret = ok(call(&d, json!({"op": "remember", "kind": "fact", "text": "The staging database password is quokka-zebra-7731 for the payments cluster."})))["id"].as_str().unwrap().to_string();
+    let secret = ok(call(&d, json!({"op": "remember", "kind": "fact", "text": "The staging database codename is quokka-zebra-7731 for the payments cluster."})))["id"].as_str().unwrap().to_string();
     ok(call(&d, json!({"op": "remember", "kind": "note", "text": "The deploy window is Tuesday afternoons."})));
     db.storage().flush().unwrap();
     // A third, after it, with a deleted row too.
@@ -323,7 +325,7 @@ fn a_forget_rewrites_only_the_segments_that_held_the_record_and_leaves_its_text_
     ok(call(&d, json!({"op": "remember", "kind": "note", "text": "Lint runs before tests."})));
     db.storage().flush().unwrap();
     assert!(d.store.delete(&other).unwrap());
-    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "What is the staging database password for the payments cluster?"}));
+    hook(&d, "UserPromptSubmit", json!({"session_id": "s1", "prompt": "What is the staging database codename for the payments cluster?"}));
     assert!(!files_holding(store.path(), "quokka-zebra-7731").is_empty());
     let before = segment_ids(&d);
 

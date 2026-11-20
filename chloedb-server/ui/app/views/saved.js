@@ -8,7 +8,7 @@
 // `useFromCode` and `saveSearch` serve the other pages: a table's search
 // (views/table.js) and the query builder save from there.
 
-import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, modal, confirm, gate, can, sqlBlock, seg, store, at } from "../core.js";
+import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, modal, confirm, gate, can, sqlBlock, seg, store, at, isOpenServer } from "../core.js";
 import { isProduction } from "../data.js";
 import { grid, answerStats } from "../results.js";
 
@@ -87,10 +87,13 @@ export function useFromCode({ sql, params = {}, tool = null }) {
   const body = js({ sql, params });
   const pyParams = Object.keys(params).length ? `, ${JSON.stringify(params, null, 0).replace(/\btrue\b/g, "True").replace(/\bfalse\b/g, "False").replace(/\bnull\b/g, "None")}` : "";
   const jsParams = Object.keys(params).length ? `, ${JSON.stringify(params)}` : "";
+  // A server open on this machine takes no key: its code sends none, so
+  // that it runs as pasted.
+  const open = isOpenServer();
   const tabs = [
-    ["curl", "curl", `curl -s ${origin()}/v1/query \\\n  -H "authorization: Bearer $CHLOEDB_TOKEN" \\\n  -H 'content-type: application/json' \\\n  -d '${body.replace(/'/g, "'\\''")}'`],
-    ["python", "Python", `import chloedb  # pip install chloedb\n\ndb = chloedb.connect("${origin()}")  # the key from $CHLOEDB_TOKEN\nrows = db.query(${js(sql)}${pyParams}).rows`],
-    ["js", "JavaScript", `import { connect } from "chloedb/client";  // npm install chloedb\n\nconst db = connect("${origin()}", { token: process.env.CHLOEDB_TOKEN });\nconst { rows } = await db.query(${js(sql)}${jsParams});`],
+    ["curl", "curl", `curl -s ${origin()}/v1/query \\\n${open ? "" : `  -H "authorization: Bearer $CHLOEDB_TOKEN" \\\n`}  -H 'content-type: application/json' \\\n  -d '${body.replace(/'/g, "'\\''")}'`],
+    ["python", "Python", `import chloedb  # pip install chloedb\n\ndb = chloedb.connect("${origin()}")${open ? "" : "  # the key from $CHLOEDB_TOKEN"}\nrows = db.query(${js(sql)}${pyParams}).rows`],
+    ["js", "JavaScript", `import { connect } from "chloedb/client";  // npm install chloedb\n\nconst db = connect("${origin()}"${open ? "" : ", { token: process.env.CHLOEDB_TOKEN }"});\nconst { rows } = await db.query(${js(sql)}${jsParams});`],
   ];
   if (tool) tabs.push(["mcp", "Agent (MCP)", `# Claude Code: the server's MCP endpoint, with a read key\nclaude mcp add --transport http chloedb ${origin()}/v1/mcp \\\n  --header "Authorization: Bearer $CHLOEDB_TOKEN"\n\n# The agent then has the tool ${tool}, with these arguments:\n${JSON.stringify(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, v && v.embed != null ? v.embed : v])), null, 2)}`]);
   let pick = store.get("code.tab", "curl");
@@ -181,7 +184,9 @@ function render(page, r) {
     if (name) return detail(name);
     const cur = (f) => f.versions.find((v) => v.version === f.current) || {};
     // A blend is a stored function too; Labs → Blending shows it.
-    const live = list.filter((f) => f.current != null && !/^'blend:/.test(cur(f).body || ""));
+    // A template's design is a stored function too; the Query designer opens it.
+    const live = list.filter((f) => f.current != null && !/^'(blend|template):/.test(cur(f).body || ""));
+    const designs = new Set(list.filter((f) => f.current != null && /^'template:/.test(cur(f).body || "")).map((f) => f.name.replace(/_template$/, "")));
     const tablesFns = live.filter((f) => cur(f).kind === "table"), scalars = live.filter((f) => cur(f).kind !== "table");
     if (!tablesFns.length && !scalars.length) {
       clear(body, card({ body: empty("bookmark", "No saved searches yet", "Search one of your tables, then Save: the search becomes a function, an endpoint and an agent's tool.", h("a", { class: "btn primary", href: "#/table" }, icon("search"), "Search a table")) }));
@@ -191,7 +196,7 @@ function render(page, r) {
       const v = cur(f);
       const u = use?.(f.name), reads = readsOf(v.sql || v.body);
       return h("a", { class: "saved-row", href: `#/saved/${encodeURIComponent(f.name)}` },
-        h("div", { class: "grow", style: { minWidth: 0 } }, h("div", {}, h("b", { class: "mono" }, f.name), h("span", { class: "small muted" }, ` · version ${f.current}${f.versions.length > 1 ? ` of ${f.versions.length}` : ""}${reads.length ? ` · reads ${reads.join(", ")}` : ""}`)),
+        h("div", { class: "grow", style: { minWidth: 0 } }, h("div", {}, h("b", { class: "mono" }, f.name), designs.has(f.name) ? h("span", { class: "badge accent", title: "Designed stage by stage in the Query designer" }, "template") : null, h("span", { class: "small muted" }, ` · version ${f.current}${f.versions.length > 1 ? ` of ${f.versions.length}` : ""}${reads.length ? ` · reads ${reads.join(", ")}` : ""}`)),
           h("div", { class: "small dim" }, v.description || h("i", {}, "No description: agents see only its signature")),
           h("div", { class: "small muted mono ellipsis" }, v.signature)),
         u ? h("div", { class: "saved-use small", title: "over the last 15 minutes" }, h("div", {}, h("b", {}, fmt.n(u.calls)), " calls"), h("div", { class: u.errors ? "bad" : "muted" }, `${fmt.n(u.errors)} failed`), h("div", { class: "muted" }, u.p99 != null ? `p99 ${fmt.ms(u.p99)}` : "")) : null,
@@ -279,7 +284,7 @@ function render(page, r) {
     }
     clear(body,
       h("div", { class: "row" }, h("a", { class: "btn ghost sm", href: "#/saved" }, icon("left"), "All saved searches")),
-      card({ title: h("span", { class: "mono" }, name), sub: v.description || "no description", tools: [h("button", { class: "btn sm", onclick: () => copy(callSql(Object.fromEntries(params.map((p) => [p.name, 1]))), "SQL copied") }, icon("copy"), "Copy the call"), gate(h("button", { class: "btn sm danger", onclick: drop }, icon("trash"), "Remove"), "admin")],
+      card({ title: h("span", { class: "mono" }, name), sub: v.description || "no description", tools: [list.some((x) => x.name === `${name}_template` && x.current != null) ? h("a", { class: "btn sm", href: `#/designer?template=${encodeURIComponent(name)}`, title: "Its design, stage by stage" }, icon("stages"), "Open in Query designer") : null, h("button", { class: "btn sm", onclick: () => copy(callSql(Object.fromEntries(params.map((p) => [p.name, 1]))), "SQL copied") }, icon("copy"), "Copy the call"), gate(h("button", { class: "btn sm danger", onclick: drop }, icon("trash"), "Remove"), "admin")],
         body: h("div", { class: "stack" }, h("div", { class: "small muted mono" }, v.signature), form, h("div", { class: "row" }, h("button", { class: "btn primary", onclick: run }, icon("play"), "Try it")), out) }),
       usageCard(),
       card({ title: "Use it", sub: "the same search from anywhere", body: codeBox }),

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,13 +118,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Start</span>
       <h1>Quickstart: a first search in five minutes</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#in-one-minute">In one minute</a></li><li><a href="#1-install-the-server">Install the server</a></li><li><a href="#2-start-it">Start it</a></li><li><a href="#3-make-a-table-and-fill-it">Make a table and fill it</a></li><li><a href="#4-search">Search</a></li><li><a href="#5-open-the-command-center">Open the command center</a></li><li><a href="#chloedb-from-python-with-no-server">ChloeDB from Python, with no server</a></li><li><a href="#chloedb-in-docker">ChloeDB in Docker</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
 
 <p>This page takes you from nothing to a full-text search with SQL in about five minutes, with nothing to compile. You install ChloeDB's server, make a table, put a few rows in it, search them, and open the command center in a browser. The last section does the same from Python, with the database inside your process and no server at all.</p>
 <p>You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer), and <code>curl</code>. On Windows, use WSL 2 or Docker.</p>
+<h2 id="in-one-minute">In one minute<a class="anchor" href="#in-one-minute" aria-label="Link to this section">#</a></h2>
+<p><span class="since unreleased">since 0.3.10 (unreleased)</span> Two commands: install, then start a server with a demo catalogue of 20,000 products.</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh</pre>
+<pre data-lang="sh">chloedb-server --demo</pre>
+<p>It makes <code>demo.chloedb</code> in the current directory and says, once it is ready, where to open it and what to try:</p>
+<pre data-lang="text" data-title="Output">  ChloeDB 0.3.9 is ready: demo.chloedb, 1 table (products), 20,000 rows
+
+    Open        http://127.0.0.1:7700
+    Query       curl -s http://127.0.0.1:7700/v1/sql -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;sql&quot;: &quot;SELECT * FROM products LIMIT 3&quot;}&#x27;
+    Load a file curl -s &#x27;http://127.0.0.1:7700/v1/import?table=NAME&#x27; -H &#x27;content-type: text/csv&#x27; --data-binary @FILE.csv
+    Stop        Ctrl+C (the next start opens it as it was)</pre>
+<p>Your own data needs no schema. Drop a CSV, JSON, Parquet or SQLite file on <strong>Import</strong> in the command center, or send it with the <code>Load a file</code> line above (<code>?table=movies</code> makes the table <code>movies</code> from the file's columns), or load it before you start the server:</p>
+<pre data-lang="sh">chloedb-server import movies.csv --db movies.chloedb    # makes the table movies from the file&#x27;s columns
+chloedb-server --db movies.chloedb</pre>
+<p><code>chloedb-server</code> with no <code>--db</code> serves <code>chloedb.chloedb</code> in the current directory, made empty on the first start. The rest of this page goes step by step, with the choices each step has.</p>
 <h2 id="1-install-the-server">1. Install the server<a class="anchor" href="#1-install-the-server" aria-label="Link to this section">#</a></h2>
 <p>Pick one. Each gives you a <code>chloedb-server</code> program, prebuilt (a download of about 50 MB), in under a minute.</p>
 <p><strong>The install script</strong> puts it in <code>~/.local/bin</code> (it says what to add to your <code>PATH</code> if that folder is not on it yet). It checks the download against the release's SHA-256 and, where <a href="https://cli.github.com">GitHub's CLI</a> (<code>gh</code>) is installed, its build provenance (releases from 0.3.8: that this repository's release workflow built it), and changes nothing else. <a href="../../install.sh">Read it</a> first if you like.</p>
@@ -234,7 +251,7 @@ db.close()
 EOF</pre>
 <pre data-lang="text" data-title="Output" class="output">[[&#x27;b3&#x27;, &#x27;Dragons of the northern rivers&#x27;]]
 [[&#x27;b1&#x27;, &#x27;The river and the dragon&#x27;], [&#x27;b3&#x27;, &#x27;Dragons of the northern rivers&#x27;]]</pre>
-<p><code>chloedb.open</code> creates the database the first time and opens it after; one process at a time may open it to write. The same methods talk to a server: <code>chloedb.connect("http://127.0.0.1:7700")</code> in place of <code>chloedb.open(...)</code>. <a href="python.html">Python</a> goes on from here, and <a href="search-page.html">Build a search page</a> makes a search box with typos, highlights and filters from these pieces.</p>
+<p><code>chloedb.open</code> creates the database the first time and opens it after; one process at a time may open it to write. <span class="since unreleased">since 0.3.10 (unreleased)</span> A schema with an embedded vector field that names a model ChloeDB knows (<code>"embed": {"from": ["title"], "model": "potion-retrieval-32M"}</code>) works on a new machine as written: the first open downloads the model once (about 130 MB, each file checked against its pinned SHA-256) and says so; <code>CHLOEDB_FETCH_MODELS=0</code> turns that off. The same methods talk to a server: <code>chloedb.connect("http://127.0.0.1:7700")</code> in place of <code>chloedb.open(...)</code>. <a href="python.html">Python</a> goes on from here, and <a href="search-page.html">Build a search page</a> makes a search box with typos, highlights and filters from these pieces.</p>
 <h2 id="chloedb-in-docker">ChloeDB in Docker<a class="anchor" href="#chloedb-in-docker" aria-label="Link to this section">#</a></h2>
 <p>The image <code>ghcr.io/chloetech-ai/chloedb-server</code> (Linux, x86-64 and arm64) keeps its database in <code>/data</code>: mount a volume there to keep it. Inside a container the server listens on all of the container's interfaces, which it allows only with a token, so pick one. Publishing the port on <code>127.0.0.1</code> keeps it to this machine.</p>
 <pre data-lang="sh">docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \

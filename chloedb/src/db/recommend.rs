@@ -111,10 +111,13 @@ impl Db {
                 crate::query::sql::ident(&def.events),
                 u32::MAX
             );
-            let rs = self.query_at(&snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?;
-            let mut evs: Vec<(String, String, Option<i64>)> = rs
+            // The rows the query answers go once the events are read from
+            // them, and the events once counted: CREATE holds what it
+            // counts in memory until it commits (NADIA-401).
+            let mut evs: Vec<(String, String, Option<i64>)> = self
+                .query_at(&snap, &sql, &Params::new(), &ExecOptions { max_rows: None, ..opts.clone() })?
                 .rows
-                .iter()
+                .into_iter()
                 .filter_map(|r| match (&r[0], &r[1]) {
                     (Value::Null, _) | (_, Value::Null) => None,
                     (u, i) => Some((text(u), text(i), time(&r[2]))),
@@ -139,6 +142,16 @@ impl Db {
             r.map(|_| (n_events, n_users))
         })();
         self.refresh_feeds();
+        // The counts go from the memtable into a segment now rather than
+        // when a flusher gets to them, and what the count held is given
+        // back: glibc would keep most of it in the arena of the thread
+        // that ran it (NADIA-401: 3 GB resident after counting 300,000
+        // events). A flush that fails here is the flusher's to retry; the
+        // counts are committed.
+        if made.is_ok() {
+            let _ = self.storage.flush();
+        }
+        crate::storage::release_freed_memory();
         let (n_events, n_users) = match made {
             Ok(m) => m,
             Err(e) => {

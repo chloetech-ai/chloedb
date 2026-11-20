@@ -179,6 +179,8 @@ chloedb_replica_behind{replica="http://127.0.0.1:7723"} 0
 
 Scrape the coordinator and each copy as targets of their own, with the key in Prometheus's `authorization.credentials_file`. The coordinator's `/metrics` has its view of the cluster, a series a shard, the state its built-in alerts judge: `chloedb_cluster_copies`, `chloedb_cluster_copies_up` and `chloedb_cluster_copies_down`, `chloedb_cluster_copies_in_sync`, `chloedb_cluster_shard_majority` and `chloedb_cluster_shard_primary` (1 or 0), `chloedb_cluster_shard_term`, `chloedb_cluster_primary_changes_total` (its failovers and handovers), and `chloedb_cluster_copy_up{shard, copy, url, role}` a copy. A copy's own series carry no shard label: its `chloedb_copy_info{shard, node, role} 1` says which shard it serves, to join on, or add the label in the scrape config. `chloedb_docs` and `chloedb_segments` count every table of a copy's database (`chloedb_docs` is `/v1/health`'s `rows`), and `chloedb_table_docs{table}` each one. The coordinator's alerts go to a webhook, PagerDuty or Opsgenie ([alerts](../chloedb/server.md#alerts)); `--alert-webhook URL` sends them all to one URL.
 
+To page from Prometheus instead, or as well, start from the kit in [`chloedb-server/deploy/monitoring`](https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/deploy/monitoring): `prometheus.yml` scrapes this page's coordinator and six copies with the key in a file, `chloedb-rules.yml` holds an alerting rule for each of the servers' built-in alerts (the same conditions and defaults, each with its runbook as `runbook_url` and the copy's `--node-name` in the copy-down alert), plus one for a target Prometheus cannot scrape, which sees a coordinator that is down, and `grafana-dashboard.json` is a dashboard to import (Dashboards, New, Import), its data source asked for on import. Check the rules with `promtool check rules chloedb-rules.yml` after changing a threshold or the disk rules' mount point.
+
 ## Load and search
 
 Making a table takes the admin token, and runs on every shard:
@@ -251,7 +253,11 @@ Until shard 0 has a new primary, about two seconds here, its writes are refused 
  "docs": "https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover"}
 ```
 
-The loop above sends it again, with the same idempotency key, until a new primary takes it. Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (`--write-acks all`, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.
+The loop above sends it again, with the same idempotency key, until a new primary takes it.
+
+A primary that freezes rather than dies (a stopped process, a long pause, a disk that hangs) stalls a write longer than a kill does. Its copies elect another one within about two seconds as before, but the elected copy takes writes only once the old primary's lease has run out (about two seconds more with `--failover-after-ms 2000`), and a write sent meanwhile is held rather than refused: in a drill on this page's cluster, with the primary stopped by `kill -STOP` under a steady writer, one write was held 6.8 s and then answered 200, and none failed. For those few seconds the coordinator shows the new primary as taking no writes. Leave it alone: it is waiting out the lease, and restarting it while the old primary is still frozen leaves the shard one copy of three, with no majority and no writes until a second copy answers.
+
+Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (`--write-acks all`, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.
 
 The coordinator now sees `s0a` down and another copy as shard 0's primary:
 
@@ -260,7 +266,7 @@ python3 cluster.py
 ```
 
 ```text output
-shard 0: degraded, 2 of 3 copies answer (127.0.0.1:7721 down); the shard serves reads and takes writes; one more copy down stops its reads and writes; primary s0...
+shard 0: degraded, 2 of 3 copies answer (s0a down); the shard serves reads and takes writes; one more copy down stops its reads and writes; primary s0...
   s0a    down
 ...
 shard 1: ok, 3 of 3 copies answer; primary s1a

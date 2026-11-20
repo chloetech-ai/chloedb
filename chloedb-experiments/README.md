@@ -73,6 +73,19 @@ query's share of the traffic) and their judged rows (`query`, `doc`,
 | `POST /v1/live/<id>/try`, `/try/open`, `/try/done` | search the site as a visitor in the run, open a result, say it answered |
 | `POST /v1/live/<id>/cohorts` | every metric by one or two attributes (`by`), over the users the run has seen so far |
 
+The home is experiments on real sites ([below](#an-experiment-from-a-question-to-a-decision));
+the simulator's experiments are in the **Practice lab** (`#/lab`), where the
+truth is known. Its report reads the metrics that decide (success rate,
+clicks per search, dwell time, and the guardrails abandonment and query
+time's 95th percentile) apart from the diagnostics (satisfied clicks,
+first-row clicks, searches per session and the mean query time), which
+have no better direction and stay out of the q values. A sample ratio
+mismatch (p below 0.001) makes the call invalid. A live run that stopped
+once decided is read by its always-valid interval and p value, since a
+fixed one is too narrow after an early stop. Cohorts start with an
+interaction test, Cochran's Q over the cells, before each cell's own
+interval.
+
 Sites and experiments are rows of the server (`exp_sites`,
 `exp_experiments`); a served run's rank log and events are tables of their
 own (`exp_log_<id>`, `exp_events_<id>`), dropped with it. The page is
@@ -252,10 +265,129 @@ steps:
    arms, and each need opens the arms' sessions side by side, step by
    step.
 
+### An experiment: from a question to a decision
+
+The app's home lists experiments on real sites by what they need: a
+decision, running, gathering evidence, decided. **New experiment** takes a
+hypothesis, a site, a control (the site as it is by default) and a
+treatment, each a set of the site's knobs and named from the knobs it
+changes, the guardrails (query time's 95th percentile no more than 10%
+slower, no regressed need) and the smallest difference worth finding.
+The experiment's page climbs four steps, each dearer than the last, and
+any can be skipped:
+
+1. **Side by side.** The busiest logged searches (or the study's), each
+   shown by both arms, with how much of the first page changed.
+2. **Judged queries.** The judge grades every row either arm shows for
+   them, once, on a different model than the agents by default (Claude
+   Opus 5.5), and the arms are compared by nDCG need by need: the
+   difference, its interval, the needs that regressed and the known rows
+   lost, with what the queries could detect.
+3. **Simulated users.** A study of the two arms (above).
+4. **Real visitors.** When the site takes it (chloedb-hn's
+   [interleaving](../docs/chloedb/hn.md#interleaving-two-arms-on-real-visitors-searches)),
+   a share of its real searches shows both arms in one list drafted by
+   team draft, and a click counts for the arm that placed the row. The
+   report gives the preference (wins less losses over searches) with its
+   interval, the always-valid p value, the coin's balance, each arm's
+   p95 and p99 time, the searches where an arm failed or found nothing,
+   what the searches so far can detect and the days still needed. It
+   starts only when you press it, and stops when you stop it.
+
+The rule declared up front then says **ship**, **don't ship**, **not yet**,
+**a trade-off** (the treatment wins but a guardrail failed), **flat** or
+**invalid** (the coin was unbalanced), with each reason, and the decision
+box records the call (ship, don't ship, iterate) with a note, and whether
+it overrode the rule. Below it the report has every metric with its
+difference, 95% interval, p value and n; a chart over days or over the
+units as they came, cumulative or per period, with its interval; and every
+attribute (device, need kind, query length, how often the query is asked,
+the test's period, day) as chips that filter and as groups, each with
+Benjamini-Hochberg q values over the groups and Cochran's Q on whether the
+effect differs between them.
+
+The real visitors' metrics: the preference; stories opened; which arm's
+story was opened first; the rank each arm's own list gave what was opened
+(the mean reciprocal rank, 0 where the arm did not have it); searches
+where an arm found nothing, or failed; search time; and as diagnostics the
+age and the number of sites of each arm's top 10, and the age of what was
+opened. Some metrics are read on one list per search, so they cannot be
+paired: seconds to the first story opened, searches with nothing opened,
+the next page asked for and the same browser searching again in other
+words within a minute. Those count each search for the arm that led its
+draft, which a fair coin picks, and compare the two sides by Welch's
+test. The last two need the site's anonymous browser id. The judged
+queries' metrics: nDCG@10, the known item on the first page and its
+reciprocal rank, precision@5, ERR@10, the share of rows the judge graded,
+and search time. A study's arms add the searches, seconds and cost of a
+need found.
+
+| route | what |
+|---|---|
+| `GET /v1/trials`, `POST /v1/trials` | the experiments; a spec makes one |
+| `GET /v1/trials/<id>`, `DELETE /v1/trials/<id>` | one, with its steps, its units and the rule's call |
+| `POST /v1/trials/<id>/judged` | judge the queries (`brain`, `judge_model`, `budget`, at most $5) |
+| `POST /v1/trials/<id>/study` | start the study of its two arms |
+| `POST /v1/trials/<id>/online`, `/online/stop` | start (`share`) or stop the interleaving on real visitors |
+| `POST /v1/trials/<id>/decide` | record the call (`ship`, `dont_ship`, `iterate`) and a note |
+| `POST /v1/trials/<id>/stop` | stop what it runs |
+
+Experiments are rows of `exp_trials`.
+
+### Tune: the relevance autopilot on a site's knobs
+
+A finished study is also a workload: every need, the searches its agents
+typed for it on any arm, and the grades the study kept. **Tune its knobs**
+(on the study's page) runs the method of ChloeDB's
+[relevance autopilot](../docs/chloedb/query-language.md#the-relevance-autopilot)
+on a site that takes experiments, through its experiment search, so it
+works on an app whose ranking is made of knobs rather than a rank profile,
+and through a coordinator:
+
+1. **A split.** A third of the needs, picked by a seeded hash of each, is
+   held out of the search.
+2. **The search.** Coordinate ascent (Metzler and Croft, 2007) over the
+   site's numbers (every `number` and `int` knob, or `keys`): each is tried
+   at half and twice its value (a number at 0 at a tenth and a third of its
+   range, an integer one less and one more), and a value is kept when the
+   training needs' mean nDCG@k rises, for `rounds` rounds or until no step
+   helps. A need's score is the mean nDCG of its queries' pages over its
+   grades; every page is fetched once, two at a time.
+3. **Holes.** Rows the site as it is or the proposal shows on a held-out
+   topical need that no one graded go to the judge, within `budget`, and
+   are kept in `exp_judged` with the study's.
+4. **The proof**, on the held-out needs alone: nDCG@k before and after,
+   the needs made better and worse, the sign test, a bootstrap interval of
+   the gain and the site's 95th percentile per search. `better` when more
+   needs are better than worse, the sign test says so at 0.05 and the
+   interval is above 0; `worse` the other way; `too few` under 3 needs.
+5. **Prove it with people.** The proposal is a set of knobs, so it becomes
+   an arm: the page opens a study of Proposed against the site as it is on
+   a persona set the tune never saw (it asks for new people otherwise,
+   since proving on the needs it was fitted to would count the fit as a
+   gain).
+
+6. **On real people's searches.** When the site logs its page's
+   searches with an exploring policy (its description has `log`;
+   chloedb-hn's [`--explore-share`](../docs/chloedb/hn.md#exploring-the-pages-searches-logged)),
+   the tune reads the last 30 days (`GET /v1/experiment/log`, at most
+   600), turns each search into an impression with the policy's exact
+   chances ([`policy.rs`](src/policy.rs)), and values the logged
+   ranking, the site as it is and the proposal on what people opened:
+   naive, SNIPS, SNIIPS, SNRIPS and cascade doubly robust, each with its
+   effective number of searches, and the share of each ranking's places
+   the log could have shown. An estimate on fewer than 400 effective
+   searches is shown as not trusted.
+
+Nothing is written to the site. A tune is a row of `exp_tunes`, one at a
+time, at most 4,000 searches.
+
 Its API:
 
 | route | what |
 |---|---|
+| `GET /v1/tunes`, `POST /v1/tunes` | the tunes; a spec (`study`, `source`, `base`, `keys`, `k`, `rounds`, `seed`, `judge`, `brain`, `judge_model`, `budget`) starts one |
+| `GET /v1/tunes/<id>`, `POST /v1/tunes/<id>/stop` | a tune with its steps and report; stop it (the proof runs on what it found) |
 | `GET /v1/real` | the sources, each with its knobs and presets, or why it takes no experiments |
 | `POST /v1/real/<source>/search`, `GET /v1/real/<source>/item/<id>` | a search with knobs (`q`, `knobs`, `per`), as an arm sees it; one row's text |
 | `GET /v1/personas`, `POST /v1/personas` | the people written so far; write more from a source (`source`, `count`, `needs`, `brain`), in the background |

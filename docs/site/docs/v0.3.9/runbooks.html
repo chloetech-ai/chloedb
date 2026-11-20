@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Runbooks · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="What to do when an alert fires or the fleet view names a problem, written for an operator and for an agent alike. Each runbook names the alerts (GET /v1/alerts) and fleet problems (GET /v1/health/fleet, each…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/runbooks.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html" aria-current="page">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Runbooks</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
+    <div class="doc-body">
+
+<p>What to do when an alert fires or the fleet view names a problem, written
+for an operator and for an agent alike. Each runbook names the alerts
+(<code>GET /v1/alerts</code>) and fleet problems (<code>GET /v1/health/fleet</code>, each
+problem's <code>id</code>) it is for, then the steps: what to read first, what an
+<code>ops</code> key may do alone (tier 1), and what needs a person's approval (tier
+2 and 3, filed as a change request with <code>POST /v1/admin/changes</code>). The
+tiers are explained in <a href="server.html#agents-and-administration">chloedb-server</a>.</p>
+<p>The server compiles this page in: <code>GET /v1/catalog</code> lists the routes the
+steps name, the MCP tool <code>runbook</code> finds a runbook by an alert's or a
+problem's id (<code>runbook {"for": "copy-down"}</code>), and each fleet problem's
+<code>next.runbook</code> names the one to read. The last section, on upgrading
+servers outside Kubernetes, is for no alert.</p>
+<h2 id="queries-are-slow">Queries are slow<a class="anchor" href="#queries-are-slow" aria-label="Link to this section">#</a></h2>
+<p>For: <code>p99</code>, <code>p99-jump</code>, <code>p99_recovered</code></p>
+<ol>
+<li>Read where the time goes: <code>GET /v1/queries/slow</code> (tool <code>queries</code>,
+   <code>which: slow</code>) and <code>GET /v1/queries/stats</code> group the slowest statements
+   by their fingerprint; <code>GET /v1/load</code> shows each server's CPU and queue.</li>
+<li>Read what changed around the jump: <code>GET /v1/events?from=&lt;ms&gt;</code> (tool
+   <code>events</code>): a plan applied, a primary changed, a copy down, a rollout.</li>
+<li>One statement or one key holding the cores (tier 1, an <code>ops</code> key with a
+   reason): limit it with a contain rule, <code>POST /v1/admin/contain
+   {"match": {"fingerprint": "..."}, "action": "limit", "concurrency": 2}</code>
+   (tool <code>contain</code>); an agent's rule lasts an hour at most.</li>
+<li>One query running for minutes (tier 1): cancel it, <code>DELETE
+   /v1/queries/&lt;id&gt;</code> (tool <code>cancel_query</code>).</li>
+<li>The cluster is short of CPU for its load (tier 2): plan more copies or
+   shards, <code>POST /v1/admin/plan</code> (tool <code>plan_reshape</code>), and file the plan as
+   a change request.</li>
+</ol>
+<h2 id="searches-fail">Searches fail<a class="anchor" href="#searches-fail" aria-label="Link to this section">#</a></h2>
+<p>For: <code>errors</code>, <code>availability</code>, <code>5xx</code>, <code>error_ratio</code>, <code>error_ratio_recovered</code>, <code>partial-answers</code>, <code>key-failing</code></p>
+<ol>
+<li>Read which statements fail and where: <code>GET /v1/queries/recent?outcome=error</code>
+   and <code>GET /v1/logs?level=error</code> (tools <code>queries</code>, <code>logs</code>). Each error
+   answer carries an <code>error_code</code> (<code>GET /v1/catalog</code> lists them): <code>query_invalid</code>
+   and <code>table_not_found</code> are a client's, <code>unavailable</code> and <code>internal</code> the
+   cluster's.</li>
+<li>Errors of one client (<code>key-failing</code>): tell the key's owner; nothing to
+   change on the server.</li>
+<li>Shards that do not answer (<code>partial-answers</code>, <code>unavailable</code>): follow
+   "A copy is down" below.</li>
+<li>Errors after a change: read <code>GET /v1/events</code> and <code>GET /v1/admin/audit</code>
+   for what changed, and file the change that undoes it (each dry run's
+   <code>undo</code> says which) as a change request.</li>
+</ol>
+<h2 id="queries-are-refused">Queries are refused<a class="anchor" href="#queries-are-refused" aria-label="Link to this section">#</a></h2>
+<p>For: <code>rejected</code>, <code>query-memory</code>, <code>key-flood</code>, <code>contained</code></p>
+<ol>
+<li>Read what is refused and why: <code>GET /v1/queries</code> (running now, grouped
+   by key and statement) and <code>GET /v1/admin/contain</code> (the contain rules in
+   force; tool <code>contain_rules</code>). An answer refused by a contain rule has
+   code <code>contained</code>.</li>
+<li>One key crowds out the others (tier 1): limit the key, <code>POST
+   /v1/admin/contain {"match": {"key": "..."}, "action": "limit",
+   "concurrency": 4}</code>, and tell its owner.</li>
+<li>A contain rule that refuses too much (tier 1): remove it, <code>DELETE
+   /v1/admin/contain/&lt;id&gt;</code> (tool <code>remove_contain</code>).</li>
+<li>The load is real and lasting (tier 2): raise <code>--max-concurrent</code> or
+   <code>--query-memory-mb</code> in the spec (<code>POST /v1/admin/kube/plan</code>, then a
+   change request), or add copies.</li>
+</ol>
+<h2 id="a-copy-is-down">A copy is down<a class="anchor" href="#a-copy-is-down" aria-label="Link to this section">#</a></h2>
+<p>For: <code>copy-down</code>, <code>copy-silent</code>, <code>under-replicated</code>, <code>shard-no-majority</code>, <code>copies</code>, <code>shards</code>, <code>coordinators_gone</code></p>
+<ol>
+<li>Read which copy, since when, and what else happened: <code>GET
+   /v1/health/fleet</code> (tool <code>health</code>), then <code>GET /v1/events?kind=copy_down,primary_changed</code>
+   and the copy's own lines from the log stores, <code>POST /v1/logs/query
+   {"sql": "SELECT ts, level, message FROM logs WHERE node = '&lt;copy name&gt;' ORDER BY ts DESC LIMIT 200"}</code>
+   (on a coordinator it searches every copy's store; <code>GET /v1/logs</code> has
+   the coordinator's own lines only).</li>
+<li>A copy that restarts by itself (a pod killed for memory, a rollout):
+   wait for it, <code>GET /v1/events?after=&lt;id&gt;&amp;wait_s=30</code> answers as soon as
+   its next event comes. Silence the alert meanwhile (tier 1, two hours at
+   most for an agent): <code>POST /v1/alerts/copy-down/silence {"minutes": 30, "reason": "s1-0 restarting"}</code>
+   (tool <code>silence_alert</code>; the server refuses a silence without a <code>reason</code>).</li>
+<li>A copy that does not come back (tier 2): replace it. <code>POST
+   /v1/admin/plan {"shards": [{"shard": &lt;i&gt;, "copies": [...]}]}</code>, the
+   gRPC URLs the shard keeps with the dead copy left out and its
+   replacement in, plans the repair (Cluster: Plan the repair, in the
+   command center); file the plan as a change request. A plan that adds a
+   server is applied with the cluster's token, which the coordinator
+   sends to it (403 <code>cluster_token_required</code> with the admin token or a
+   key): on machines of your own, a person runs <code>chloedb-server admin
+   --key "$CHLOEDB_CLUSTER_TOKEN" call POST /v1/admin/plan/apply @plan.json</code>
+   with the same body; on Kubernetes the operator adds copies itself.</li>
+<li>A shard with no majority takes no writes, and its copies cannot elect
+   a primary. Its searches go on while a replica that is up serves reads
+   (the shard's state is <code>no_writes</code>); when the copy left is its primary,
+   it serves no reads either (<code>no_reads</code>), since with failover a primary
+   serves reads only while a majority of its copies answer. Bring a copy
+   back, or remove the dead one (tier 2 for a replica, <code>DELETE
+   /v1/admin/shards/&lt;i&gt;/replicas</code>; promoting by force is tier 3 and a
+   person's alone).</li>
+</ol>
+<h2 id="a-replica-is-behind">A replica is behind<a class="anchor" href="#a-replica-is-behind" aria-label="Link to this section">#</a></h2>
+<p>For: <code>replica-behind</code>, <code>out-of-sync</code>, <code>replica-reads</code>, <code>lag</code>, <code>follow-behind</code></p>
+<ol>
+<li>Read how far behind and why: the primary's <code>GET /v1/health</code>
+   (<code>replication.replicas</code>: each replica's <code>seq_no</code>, how many
+   transactions it is <code>behind</code>, and whether it is <code>in_sync</code>; on
+   <code>/metrics</code>, <code>chloedb_replica_behind</code>), and <code>GET /v1/load</code> (the
+   primary's write rate, the replica's disk and CPU). <code>GET /v1/cluster</code>
+   says each copy's role and whether it serves reads; its <code>txn</code> counts the
+   transactions of each process since it started, so it does not compare
+   two copies. <code>GET /v1/admin/follow</code> for a follower cluster, Data &gt; Connectors
+   (<code>followers</code> in <code>GET /v1/admin/connectors</code>) for a Postgres follower.</li>
+<li>A replica catching up after a restart: wait, with <code>GET
+   /v1/events?after=&lt;id&gt;&amp;wait_s=30</code>, and silence the alert for the while
+   (tier 1).</li>
+<li>A replica out of sync must not become the primary: do not promote it.
+   Replace it (tier 2: a plan and a change request) if it does not catch
+   up.</li>
+</ol>
+<h2 id="the-disk-is-filling">The disk is filling<a class="anchor" href="#the-disk-is-filling" aria-label="Link to this section">#</a></h2>
+<p>For: <code>disk-full</code>, <code>disk-critical</code>, <code>disk-filling</code>, <code>disk</code></p>
+<ol>
+<li>Read which tables grow: <code>GET /v1/tables</code> and <code>GET /v1/load</code> (each
+   copy's disk).</li>
+<li>Old rows a table keeps for a set time: a table made with a retention
+   (<code>retain</code>) drops them on its own. A table's retention is set when it is
+   made and cannot be changed (<code>ALTER TABLE ... SET (retain = ...)</code> is
+   refused): for a table made without one, or with too long a one, make a
+   new table with the retention, move the writers to it, and drop the old
+   one once its rows are no longer needed (tier 2 and 3, change requests).</li>
+<li>More room (tier 2): add disk in the spec (<code>POST /v1/admin/kube/plan</code>),
+   or add a shard and move slots to it (<code>POST /v1/admin/plan</code>), each filed
+   as a change request.</li>
+<li>Deleted rows still on disk: <code>POST /v1/admin/vacuum</code> frees them for good
+   (tier 3: it loses old versions, and is a person's alone). It needs room
+   first: the file grows while it runs, by what lies above its first free
+   gap, which is written twice (in a persona study, a 1.4 GB file reached
+   2.5 GB before it shrank to 1.1 GB, and the process's memory 3 GB), so on
+   a disk that is nearly full, free room another way first. Pages a
+   statement freed become reusable two commits later: a vacuum straight
+   after a <code>DROP TABLE</code> can free nothing, and the next one frees them.</li>
+</ol>
+<h2 id="writes-fail-or-queue">Writes fail or queue<a class="anchor" href="#writes-fail-or-queue" aria-label="Link to this section">#</a></h2>
+<p>For: <code>failing</code>, <code>flush-failing</code>, <code>merge-failing</code>, <code>write-queue</code>, <code>write-p99</code>, <code>write_error_ratio</code></p>
+<ol>
+<li>Read the server's lines: <code>GET /v1/logs?level=error</code> on the server
+   itself (a full disk, an I/O error), or through a coordinator, every
+   copy's: <code>POST /v1/logs/query {"sql": "SELECT ts, node, message FROM logs WHERE level = 'error' ORDER BY ts DESC LIMIT 100"}</code>.</li>
+<li>A database that refuses writes (<code>failing</code>) on a primary: with
+   <code>--failover-after-ms</code> it hands its shard over to a replica in sync by
+   itself; without it, hand the primary over first (tier 3, <code>POST
+   /v1/admin/shards/&lt;i&gt;/promote</code>, a person's). Then fix the cause and
+   restart the server.</li>
+<li>Slow writes with <code>--write-acks all</code>: a replica or its link is slow;
+   follow "A replica is behind".</li>
+</ol>
+<h2 id="data-damaged-on-disk">Data damaged on disk<a class="anchor" href="#data-damaged-on-disk" aria-label="Link to this section">#</a></h2>
+<p>For: <code>damaged</code></p>
+<ol>
+<li>Read which copy and which segments: <code>GET /v1/health/fleet</code> and <code>GET
+   /v1/events?kind=damaged</code>.</li>
+<li>Verify again (tier 1): <code>POST /v1/admin/verify</code>, which on a coordinator
+   has every shard's primary compare its replicas (one shard: <code>POST
+   /v1/admin/copies/verify {"url": "&lt;copy&gt;"}</code>).</li>
+<li>Replace the copy (tier 2): plan the repair and file it as a change
+   request; never make the damaged copy the primary.</li>
+</ol>
+<h2 id="a-shards-primary-changed">A shard's primary changed<a class="anchor" href="#a-shards-primary-changed" aria-label="Link to this section">#</a></h2>
+<p>For: <code>primary-changed</code></p>
+<ol>
+<li>Read why: <code>GET /v1/events?kind=primary_changed,copy_down</code> and the old
+   primary's lines (<code>POST /v1/logs/query {"sql": "SELECT ts, level, message FROM logs WHERE node = '&lt;copy name&gt;' ORDER BY ts DESC LIMIT 200"}</code>).</li>
+<li>Nothing to do when the old primary is back as a replica in sync; it
+   resolves ten minutes after the last change. A handover asked by hand
+   fires it too. Otherwise follow "A copy is down".</li>
+</ol>
+<h2 id="a-rollout-is-held">A rollout is held<a class="anchor" href="#a-rollout-is-held" aria-label="Link to this section">#</a></h2>
+<p>For: <code>rollout</code>, <code>held</code></p>
+<ol>
+<li>Read what the gate saw: <code>GET /v1/kube</code> (the operator's status and
+   the gate's reason) and <code>GET /v1/events</code>.</li>
+<li>When the reason is understood and the change is wanted (tier 2): <code>POST
+   /v1/admin/kube/resume</code>, filed as a change request; otherwise roll back
+   (<code>POST /v1/admin/kube {"rollback": &lt;the version before&gt;}</code>), also a
+   change request.</li>
+</ol>
+<h2 id="restore-from-checkpoints">Restore from checkpoints<a class="anchor" href="#restore-from-checkpoints" aria-label="Link to this section">#</a></h2>
+<p>For: <code>restore</code>, <code>lost-data</code>, <code>bad-write</code></p>
+<p>Rows were deleted or overwritten by mistake, or a shard's copies all lost
+their disks, and the cluster has to go back to its checkpoints. Restoring
+is a person's alone (tier 3): it stops the cluster and takes back every
+write since the checkpoint. These steps are for servers you start
+yourself (by hand, from systemd, in a container); on Kubernetes the
+operator keeps its pods running and has no restore step yet.</p>
+<ol>
+<li>Have checkpoints of every shard from one cluster map: <code>POST
+   /v1/admin/checkpoint {"name": "nightly"}</code> on the coordinator writes
+   one on each shard's primary, into its <code>--backup-dir</code>, with the shard's
+   cluster map (<code>nightly.slots</code>) and the cluster's API keys
+   (<code>nightly.keys.json</code>) beside it, and answers the <code>slot_epoch</code> they are
+   of. Copy the three files of each shard off the machine. A checkpoint
+   of one copy is <code>POST /v1/admin/copies/checkpoint {"url": "...",
+   "name": "..."}</code>. <code>GET /v1/admin/checkpoints</code> lists every copy's, each
+   shard's newest, and under <code>complete</code> the names on every shard under
+   one cluster map: the sets you can go back to.</li>
+<li>Read what you are going back to: each shard's checkpoint names its
+   shard and epoch (<code>nightly.slots</code>), and <code>GET /v1/cluster</code> gives the
+   epoch now (<code>slot_epoch</code>). Slots moved since the checkpoint when the
+   two differ: then restore every shard, never one alone, or rows would
+   be in two shards or in none.</li>
+<li>Stop the coordinator and every copy of the shards you restore.</li>
+<li>On each copy, put its shard's checkpoint in place of its database:
+   <code>chloedb-server restore --from /backups/nightly --db /data/shop.chloedb</code>
+   (with <code>--keys FILE</code> when the server has <code>--keys FILE</code>). It checks the
+   checkpoint before it changes anything, moves the database's own files
+   aside into <code>/data/shop.chloedb.before-restore-&lt;time&gt;/</code>, puts the
+   shard's map beside it and merges the keys in (keys revoked since stay
+   revoked). It refuses while a server has the database open and when
+   the checkpoint is of another shard than the copy's. A copy on an empty
+   disk is restored the same way, or started empty: its primary sends it
+   every row, and the coordinator gives it the cluster map.</li>
+<li>Start each copy with the flags it had (<code>--replicas</code> on the shard's
+   primary, <code>--replica</code> on the others, the same <code>--cluster-token</code> and
+   <code>--seq-no</code>), then the coordinator with its <code>--shards</code>.</li>
+<li>Check before you let writes in: <code>GET /v1/health</code> on the coordinator,
+   and <code>GET /v1/cluster</code>, where each copy of a shard says the same
+   <code>slot_epoch</code> and the same <code>seq_no</code>, its replicas in sync, and the
+   shards' rows add up to the checkpoint's (<code>SELECT count(*)</code> through the
+   coordinator). The files moved aside can go once it does.</li>
+</ol>
+<h2 id="upgrades-outside-kubernetes">Upgrades outside Kubernetes<a class="anchor" href="#upgrades-outside-kubernetes" aria-label="Link to this section">#</a></h2>
+<p>On Kubernetes the operator rolls a new version through the cluster
+(<a href="server.html#upgrades">upgrades</a>). On machines of your own, upgrade one
+server at a time, waiting after each until the cluster is well again:</p>
+<ol>
+<li>In each shard, its replicas, one at a time: stop it with SIGTERM,
+   start it on the new binary without <code>--replicas</code> or <code>--replica</code> (it
+   takes up the part its <code>&lt;db&gt;.replication</code> keeps), and wait until its
+   own <code>GET /v1/health</code> says <code>replication.serves_reads</code> and <code>GET
+   /v1/cluster</code> says every shard <code>ok</code>. A replica must not be older than
+   its primary.</li>
+<li>Then hand the shard over to an upgraded replica (tier 3, a person's:
+   <code>POST /v1/admin/shards/&lt;i&gt;/promote {"url": "&lt;its gRPC URL&gt;"}</code>), and
+   upgrade the old primary, now a replica, as the others.</li>
+<li>The coordinators last, one at a time, each with <code>--drain-ms</code> behind
+   a load balancer.</li>
+</ol>
+<p><a href="operate-cluster.html#upgrade-one-server-at-a-time">Operate a cluster</a>
+runs this on one machine, and <a href="compatibility.html#a-cluster-of-mixed-versions">versions and
+compatibility</a> says what a
+cluster of mixed versions serves.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/runbooks.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="cluster-limits.html">← Cluster limits</a><a href="security.html">Security model →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

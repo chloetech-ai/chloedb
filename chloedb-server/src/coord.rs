@@ -1358,6 +1358,25 @@ pub fn elect_by_hand(down: &[String], up: &[String]) -> String {
     format!("bring {} back, or, if {them} {is} gone for good, make {} the primary by hand (forced: too few copies answer to vote)", or(down), or(up))
 }
 
+/// A copy as people name it: the `--node-name` it said (what it last said,
+/// while it is down), else its short name ([`copy_short`]: its address, on
+/// machines of your own: OLU-402). A pod the operator runs keeps its short
+/// name (`s1-0`), which its pod's name only lengthens. The command center
+/// (`core.copyName`) and cc name copies by the same rule.
+pub fn shown(r: &Json) -> String {
+    let short = r["short"].as_str();
+    let pod = short.is_some_and(is_pod_short);
+    let name = r["name"].as_str().map(str::trim).filter(|n| !n.is_empty() && !pod);
+    name.or(short).or(r["url"].as_str()).unwrap_or("?").to_string()
+}
+
+/// Whether a short name is the form [`copy_short`] gives a pod the
+/// operator runs: `s<shard>-<ordinal>`.
+pub fn is_pod_short(s: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    s.strip_prefix('s').and_then(|r| r.split_once('-')).is_some_and(|(a, b)| digits(a) && digits(b))
+}
+
 /// What shard `shard` (`i`, as [`Coordinator::cluster`] lists it, with its
 /// copies) can do, from what its copies said: `state` "ok", "degraded" (a
 /// copy down, still serving), "no_reads", "no_writes" or "down", with
@@ -1369,8 +1388,8 @@ pub fn shard_state(i: usize, shard: &mut Json) {
     let copies = shard["replicas"].as_array().cloned().unwrap_or_default();
     let n = copies.len();
     let up: Vec<&Json> = copies.iter().filter(|r| r["status"] != "down").collect();
-    let down: Vec<String> = copies.iter().filter(|r| r["status"] == "down").map(|r| r["short"].as_str().unwrap_or("?").to_string()).collect();
-    let up_names: Vec<String> = up.iter().map(|r| r["short"].as_str().unwrap_or("?").to_string()).collect();
+    let down: Vec<String> = copies.iter().filter(|r| r["status"] == "down").map(shown).collect();
+    let up_names: Vec<String> = up.iter().map(|r| shown(r)).collect();
     let cap = |r: &Json, k: &str| r["detail"]["capability"][k].as_bool();
     // The copy taking writes: of those answering that say they are the
     // primary, the newest term's.
@@ -1385,6 +1404,12 @@ pub fn shard_state(i: usize, shard: &mut Json) {
         None => roleless,
     };
     let answering = format!("{} of {n} {} {}", up.len(), if n == 1 { "copy" } else { "copies" }, if up.len() == 1 { "answers" } else { "answer" });
+    // The copy elected primary that has not taken the shard's writes yet:
+    // it still answers as a replica while the old primary's lease runs out
+    // (OLU-401). Writes are held, not failing, and restarting it would
+    // cost the shard its majority.
+    let promoting = !writes && failover && primary.is_some_and(|p| p["detail"]["capability"]["no_writes"].as_str() == Some(crate::service::REPLICA_NO_WRITES));
+    let window_ms = copies.iter().filter_map(|r| r["detail"]["capability"]["failover_after_ms"].as_u64()).max().unwrap_or(0);
     let (state, why) = if up.is_empty() {
         ("down", format!("None of its {n} {} answers: the shard serves no reads and takes no writes", if n == 1 { "copy" } else { "copies" }))
     } else if !reads {
@@ -1397,6 +1422,7 @@ pub fn shard_state(i: usize, shard: &mut Json) {
         ("no_reads", format!("{answering}: {because}"))
     } else if !writes {
         let because = match primary {
+            Some(p) if promoting => format!("{} was just elected primary and takes writes within seconds, once the old primary's lease runs out; do not restart it", shown(p)),
             Some(p) => p["detail"]["capability"]["no_writes"].as_str().map_or("the primary takes no writes".into(), |w| format!("the primary takes no writes: {w}")),
             // An election needs a majority of the copies to vote.
             None if failover && !majority => format!("no copy takes writes, and {}: {}", cannot_elect(n, up.len()), elect_by_hand(&down, &up_names)),
@@ -1407,9 +1433,15 @@ pub fn shard_state(i: usize, shard: &mut Json) {
     } else if !down.is_empty() {
         let warn = if failover && (up.len() - 1) * 2 <= n { "; one more copy down stops its reads and writes" } else { "" };
         ("degraded", format!("{answering} ({} down); the shard serves reads and takes writes{warn}", down.join(", ")))
+    } else if failover && n == 2 {
+        // KENJI-405: a pair answers in full and still survives no loss.
+        ("ok", format!("{answering}; with failover on, losing either copy stops its reads and writes: give it a third copy"))
     } else {
         ("ok", format!("{answering}"))
     };
+    // How many more copies it can lose and still serve reads and take
+    // writes (with failover on, a majority must answer); 0 for a pair.
+    shard["can_lose"] = if failover { json!(up.len().saturating_sub(n / 2 + 1)) } else { Json::Null };
     shard["state"] = json!(state);
     shard["status"] = json!(match state {
         "ok" => "ok",
@@ -1420,6 +1452,10 @@ pub fn shard_state(i: usize, shard: &mut Json) {
     shard["takes_writes"] = json!(writes);
     shard["majority"] = json!(majority);
     shard["failover"] = json!(failover);
+    // A failover under way (no primary yet, or the elected one not taking
+    // writes yet) and how long a silent primary is given (OLU-401, OLU-303).
+    shard["electing"] = json!(state == "no_writes" && failover && majority && (primary.is_none() || promoting));
+    shard["failover_window_ms"] = if failover { json!(window_ms) } else { Json::Null };
     shard["primary"] = primary.map_or(Json::Null, |p| p["url"].clone());
     shard["why"] = json!(why);
     shard["shard"] = json!(i);
@@ -1600,6 +1636,16 @@ fn try_elsewhere(s: &tonic::Status) -> bool {
                 | Code::Unimplemented
                 | Code::ResourceExhausted
         )
+}
+
+/// Whether a call failed on its way to or from the copy, not with the
+/// copy's own answer: tonic gives a failure of the connection (refused,
+/// broken mid-call, its request dropped) as Unavailable, Unknown or
+/// Cancelled, and always with its cause as the status's source, which a
+/// status the copy sent never has. Unknown is never a ChloeDB server's own
+/// (its failures are Internal): an answer that was not gRPC.
+fn unreached(s: &tonic::Status) -> bool {
+    std::error::Error::source(s).is_some() || s.code() == Code::Unknown
 }
 
 /// How a call to a replica ended, for what is kept of the replica
@@ -1827,6 +1873,51 @@ impl Coordinator {
     pub fn replica_clients(&self) -> Vec<(usize, String, Client)> {
         let t = self.topo();
         t.replicas.iter().enumerate().flat_map(|(i, rs)| rs.iter().map(move |r| (i, r.url.clone(), r.client.clone()))).collect()
+    }
+
+    /// Where a shard-aware client sends each row (`GET /v1/cluster/route`):
+    /// the slot map it routes by, and each shard's primary, by its gRPC
+    /// URL and the HTTP URL its health gives (`--peer-url`, else its pod's
+    /// address or `--listen`). A client that writes to the primaries
+    /// itself skips this coordinator and, for a batch it splits by shard,
+    /// the round that checks a write spanning shards; each shard still
+    /// refuses a row of a slot it does not hold (400, or 409 while a slot
+    /// moves), and its primary takes writes alone, so a client that reads
+    /// this again after such a refusal, or after a 503 from a copy that
+    /// is no longer the primary, writes where the coordinator would.
+    pub async fn route(&self) -> Result<Json, ApiError> {
+        let t = self.topo();
+        let Some(map) = t.slots.clone() else {
+            return Err(ApiError { code: None, status: 409, message: "this cluster routes writes by the hash before slots, which has no map to give: write through the coordinator".into() });
+        };
+        let asks = (0..t.replicas.len()).map(|i| {
+            let t = &t;
+            async move {
+                let k = self.primary(t, i).await?.unwrap_or(0);
+                let r = &t.replicas[i][k];
+                let http = match tokio::time::timeout(Duration::from_secs(2), r.client.clone().health(tonic::Request::new(pb::Empty {}))).await {
+                    Ok(Ok(h)) => serde_json::from_str::<Json>(&h.into_inner().detail).ok().and_then(|d| d["http_url"].as_str().map(str::to_string)),
+                    _ => None,
+                };
+                Ok::<Json, ApiError>(json!({"shard": i, "primary": r.url, "primary_http": http}))
+            }
+        });
+        let shards = join_all(asks).await.into_iter().collect::<Result<Vec<Json>, ApiError>>()?;
+        Ok(json!({"epoch": map.epoch, "map": map.to_json(), "shards": shards, "moving": map.moving().is_some()}))
+    }
+
+    /// The tables every shard's primary holds alike, or `None` when one
+    /// did not answer within 5 s or they differ: what a write is checked
+    /// against when the catalog ([`Self::catalog`], every replica's) lacks
+    /// a table a primary has created but a replica has not applied yet.
+    async fn primaries_catalog(&self, t: &Topology) -> Option<Vec<Arc<Schema>>> {
+        let asks = (0..t.replicas.len()).map(|i| async move {
+            let k = self.primary(t, i).await.ok()?.unwrap_or(0);
+            let mut c = t.replicas[i].get(k)?.client.clone();
+            Some(tokio::time::timeout(Duration::from_secs(5), c.schema(pb::Empty {})).await.ok()?.ok()?.into_inner())
+        });
+        let answers: Vec<pb::SchemaResponse> = join_all(asks).await.into_iter().collect::<Option<_>>()?;
+        common_tables(&answers).ok()
     }
 
     /// The cluster map it routes by (`None` while writes go by the hash
@@ -2253,7 +2344,16 @@ impl Coordinator {
                             asked_at.push(Instant::now());
                             hedge_at = Instant::now() + hedge_after(next);
                         } else if pending.is_empty() {
+                            // The last copy was not reached (its connection
+                            // broke or was refused), whatever code the client
+                            // gave that: the shard did not answer, and the read
+                            // is 503, which clients send again (KENJI-405). A
+                            // read only: a write cut off may be applied.
+                            let unreached = unreached(&s);
                             let mut e = self.named(&t.replicas[i][r].url, s);
+                            if unreached {
+                                e.status = 503;
+                            }
                             if order.len() > 1 {
                                 e.message = format!("every replica of shard {i} failed; the last: {}", e.message);
                             }
@@ -3830,8 +3930,14 @@ impl Coordinator {
                     // deep body needs, and stopped at a deadline.
                     let opts = chloedb::query::exec::ExecOptions { deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(10)), ..Default::default() };
                     let functions = self.functions();
-                    chloedb::query::budget::guarded(&f.def.body, &opts, |_| chloedb::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &functions))
-                        .map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    // A body that reads a blend is checked when it runs;
+                    // one that gives text where vectors go plans as a call
+                    // would, embedded.
+                    let checked = function::body_to_check(&f.def, &refs, &params, &profile).map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    if let Some((body, params)) = checked {
+                        chloedb::query::budget::guarded(&body, &opts, |_| chloedb::query::compound::plan_read_calling(&body, &refs, &params, &profile, &functions))
+                            .map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    }
                 }
                 Some(Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) })
             }
@@ -3931,6 +4037,15 @@ impl Coordinator {
         if ops.iter().any(|op| op_schema(&catalog, op).is_err()) && self.refresh(false).await {
             catalog = self.catalog();
         }
+        // Still missing: with `--write-acks primary` (or `majority`) a
+        // replica may not have applied a CREATE TABLE its primary has, and
+        // the catalog is what every replica holds alike. A write goes to
+        // the primaries, so it is checked against the tables they hold.
+        if ops.iter().any(|op| op_schema(&catalog, op).is_err()) {
+            if let Some(held) = self.primaries_catalog(t).await {
+                catalog = held;
+            }
+        }
         let mut by_shard: BTreeMap<usize, Vec<Json>> = BTreeMap::new();
         // Where each shard's operations are in the request.
         let mut places: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -4015,6 +4130,11 @@ impl Coordinator {
         let mut catalog = self.catalog();
         if ops.iter().any(|op| !is_mark(op) && op_schema(&catalog, op).is_err()) && self.refresh(false).await {
             catalog = self.catalog();
+        }
+        if ops.iter().any(|op| !is_mark(op) && op_schema(&catalog, op).is_err()) {
+            if let Some(held) = self.primaries_catalog(&t).await {
+                catalog = held;
+            }
         }
         // By table: each insert's key, the shard it goes to, and its place.
         let mut by_table: BTreeMap<String, (Arc<Schema>, Vec<(Value, usize, usize)>)> = BTreeMap::new();
@@ -4649,8 +4769,15 @@ impl Coordinator {
         } else {
             "degraded"
         };
+        // What the layout cannot survive while every copy answers
+        // (KENJI-405): monitoring that reads only this answer is told too.
+        let warnings: Vec<Json> = shards
+            .iter()
+            .filter(|s| s["state"] == "ok" && s["can_lose"] == 0 && s["replicas"].as_array().is_some_and(|r| r.len() == 2))
+            .map(|s| json!({"shard": s["shard"], "id": "survives_no_loss", "text": format!("shard {} has 2 copies: with failover on, losing either stops its reads and writes; give it a third copy", s["shard"])}))
+            .collect();
         json!({
-            "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
+            "role": "coordinator", "status": status, "at_ms": wall, "shards": shards, "warnings": warnings, "slot_epoch": t.epoch(), "slot_count": crate::slots::SLOTS,
             "protocol": t.protocol(), "retries": self.retries.load(Ordering::Relaxed), "hedges": self.hedges.load(Ordering::Relaxed),
             "hedge_ms": self.opts.hedge.as_millis() as u64,
             "route": self.opts.route.name(), "hedge_adaptive": self.opts.hedge_adaptive, "prefer_caught_up": self.opts.prefer_caught_up,
@@ -5342,6 +5469,58 @@ async fn configure_with(c: &mut Client, url: &str, r: pb::ConfigureRequest) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KENJI-405: a call the connection failed is told from a copy's own
+    /// answer by its source, whatever code tonic gave it.
+    #[test]
+    fn a_broken_connection_is_unreached_whatever_its_code() {
+        let io = |k| Box::new(std::io::Error::new(k, "gone")) as Box<dyn std::error::Error + Send + Sync>;
+        let broken = tonic::Status::from_error(io(std::io::ErrorKind::ConnectionReset));
+        assert!(unreached(&broken), "{broken:?}");
+        let mut cancelled = tonic::Status::cancelled("operation was canceled");
+        cancelled.set_source(std::sync::Arc::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "dropped")));
+        assert!(unreached(&cancelled));
+        assert!(unreached(&tonic::Status::unknown("an answer that was not gRPC")));
+        // What a copy answers itself, as headers: reached.
+        for s in [tonic::Status::internal("I/O error: disk"), tonic::Status::unavailable("this replica serves no reads"), tonic::Status::cancelled("the request was cancelled")] {
+            assert!(!unreached(&s), "{s:?}");
+        }
+    }
+
+    /// OLU-401, OLU-303, OLU-402: the copy just elected primary still says
+    /// "a replica takes no writes" while the old primary's lease runs out.
+    /// The shard is electing, not broken, and its copies are named as
+    /// their servers are (`--node-name`).
+    #[test]
+    fn a_new_primary_waiting_for_the_lease_is_electing_not_broken() {
+        let copy = |short: &str, name: Option<&str>, up: bool, primary: bool, no_writes: Option<&str>| {
+            let mut r = json!({"short": short, "url": format!("http://{short}"), "name": name, "status": if up { "ok" } else { "down" }, "role": if primary { "primary" } else { "replica" }, "takes_writes": up && primary, "term": 2,
+                "detail": {"capability": {"serves_reads": true, "takes_writes": no_writes.is_none(), "failover_after_ms": 2000}}});
+            if let Some(w) = no_writes {
+                r["detail"]["capability"]["no_writes"] = json!(w);
+            }
+            r
+        };
+        let mut shard = json!({"replicas": [
+            copy("127.0.0.1:17754", Some("s1a"), false, false, None),
+            copy("127.0.0.1:17755", Some("s1b"), true, false, Some(crate::service::REPLICA_NO_WRITES)),
+            copy("127.0.0.1:17756", Some("s1c"), true, true, Some(crate::service::REPLICA_NO_WRITES)),
+        ]});
+        shard_state(1, &mut shard);
+        assert_eq!(shard["state"], "no_writes");
+        assert_eq!(shard["electing"], true, "{shard}");
+        assert_eq!(shard["failover_window_ms"], 2000);
+        let why = shard["why"].as_str().unwrap();
+        assert!(why.contains("s1c was just elected primary") && why.contains("do not restart it") && !why.contains("127.0.0.1"), "{why}");
+        // A primary that cannot write for another reason is not electing.
+        let mut shard = json!({"replicas": [copy("a", None, true, true, Some("a write failed partway")), copy("b", None, true, false, None), copy("c", None, true, false, None)]});
+        shard_state(0, &mut shard);
+        assert_eq!((shard["state"].as_str(), shard["electing"].as_bool()), (Some("no_writes"), Some(false)), "{shard}");
+        // No primary yet, with a majority and failover: electing too.
+        let mut shard = json!({"replicas": [copy("a", Some("s0a"), false, false, None), copy("b", Some("s0b"), true, false, Some(crate::service::REPLICA_NO_WRITES)), copy("c", Some("s0c"), true, false, Some(crate::service::REPLICA_NO_WRITES))]});
+        shard_state(0, &mut shard);
+        assert_eq!(shard["electing"], true, "{shard}");
+    }
 
     /// OLU-302: a copy replaced while it was down stays in the list a
     /// coordinator was first started on. It answers nothing, so it is left

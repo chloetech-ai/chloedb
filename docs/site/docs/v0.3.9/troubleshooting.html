@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Troubleshooting · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="The errors people meet first with ChloeDB, each with its message as the program prints it, what it means and what to do. Search this page for a few words of your message. These are the messages of release 0.3.8.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/troubleshooting.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html" aria-current="page">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Start</span>
+      <h1>Troubleshooting</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/troubleshooting.md">docs/chloedb/troubleshooting.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#installing">Installing</a></li><li><a href="#opening-a-database">Opening a database</a></li><li><a href="#models-and-vectors">Models and vectors</a></li><li><a href="#running-a-server">Running a server</a></li><li><a href="#chloectx">ChloeCtx</a></li></ol></details>
+    <div class="doc-body">
+
+<p>The errors people meet first with ChloeDB, each with its message as the program prints it, what it means and what to do. Search this page for a few words of your message. These are the messages of release 0.3.8.</p>
+<p><code>chloedb-server doctor</code> checks this machine for the usual causes at once: its version against the latest release, the Python package, the models folder, port 7700 and glibc. It changes nothing, prints a <code>fix:</code> line under each check that is not <code>ok</code>, and exits 1 when one fails:</p>
+<pre data-lang="text" data-title="Output">$ chloedb-server doctor --offline
+ok   version: chloedb-server 0.3.9 (the latest release was not looked up)
+ok   python package: chloedb 0.3.9
+warn models: no models in /home/me/.local/share/chloedb/models: a table whose vectors ChloeDB embeds needs its model
+       fix: chloedb-server fetch-model potion-retrieval-32M   (into /home/me/.local/share/chloedb/models)
+ok   port: 7700 is free (the guides&#x27; servers listen there)
+ok   glibc: 2.39: the prebuilt programs and wheels run here</pre>
+<p>Without <code>--offline</code> it also asks GitHub which release is the latest, and says so when it cannot. <code>--python</code> names the interpreter whose package it checks (<code>python3</code> by default), <code>--models</code> the folder and <code>--port</code> the port.</p>
+<h2 id="installing">Installing<a class="anchor" href="#installing" aria-label="Link to this section">#</a></h2>
+<h3 id="the-install-script-stops-could-not-tell-which-chloedb-server-release-is-the-newest">The install script stops: <code>could not tell which chloedb-server release is the newest</code><a class="anchor" href="#the-install-script-stops-could-not-tell-which-chloedb-server-release-is-the-newest" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">chloedb install: could not tell which chloedb-server release is the newest:
+  https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
+  https://github.com/chloetech-ai/chloedb/releases/latest: The requested URL returned error: 403
+  https://chloetech-ai.github.io/chloedb/site/versions.json: The requested URL returned error: 403
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v&lt;version&gt;; 0.3.9 was the newest when this script was written):
+  curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=&lt;version&gt; sh</pre>
+<p>Without <code>CHLOEDB_VERSION</code>, the script asks which release is the newest, in turn: GitHub's API (<code>api.github.com</code>), then the address <code>github.com/chloetech-ai/chloedb/releases/latest</code> leads to, then this website's <code>versions.json</code>, and it says which one answered. It stops as above when none did, with each address and what it said: a proxy or firewall that blocks those addresses, or no network. A proxy that blocks only <code>api.github.com</code>, or an address that has used up GitHub's 60 requests an hour for clients without an account (a shared office or school network, a CI runner), no longer stops it. Copies of the script from before 18 November 2026, when it learned the other two, stop at the API instead, with these lines:</p>
+<pre data-lang="text" data-title="Output">curl: (22) The requested URL returned error: 403
+chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)</pre>
+<p>In either case, name the version, and the script downloads it without asking. The archives come from <code>github.com</code>'s downloads, which often still work where the other addresses are refused. The variable goes after the pipe, where <code>sh</code> reads it; in front of <code>curl</code> it reaches only <code>curl</code>, and the script fails the same way. The last line the script prints is the command to run, with your <code>--with</code> and <code>CHLOEDB_INSTALL_DIR</code> kept:</p>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh</pre>
+<p>Or install the same server from PyPI, which asks GitHub nothing: <code>pipx install chloedb-server</code>, <code>uv tool install chloedb-server</code>, <code>pip install chloedb-server</code> in a virtualenv, or <code>uvx chloedb-server</code> to run it without installing it (macOS 11+, and Linux with glibc 2.34 or later). The <a href="quickstart.html#1-install-the-server">quickstart</a> has the other ways, by hand included.</p>
+<h3 id="the-install-scripts-other-messages">The install script's other messages<a class="anchor" href="#the-install-scripts-other-messages" aria-label="Link to this section">#</a></h3>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>message</th>
+<th>what to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>the prebuilt server needs glibc 2.35 or later (Ubuntu 22.04, Debian 12), and this machine has 2.31: ...</code></td>
+<td>the prebuilt archives need a newer Linux; the PyPI wheels need glibc 2.34; use the Docker image (<code>ghcr.io/chloetech-ai/chloedb-server</code>), or build from source</td>
+</tr>
+<tr>
+<td><code>this Linux has no glibc (Alpine and other musl systems): ...</code></td>
+<td>use the Docker image, or build from source</td>
+</tr>
+<tr>
+<td><code>Windows has no prebuilt server yet: run this inside WSL 2, or use Docker ...</code></td>
+<td>run the script inside WSL 2</td>
+</tr>
+<tr>
+<td><code>could not download https://github.com/.../chloedb-server-v0.3.9/... (is 0.3.9 a released version, and does it have chloedb-server? ...)</code></td>
+<td><code>CHLOEDB_VERSION</code> names a version that has no release, or <code>--with</code> a program that release does not have: see the <a href="https://github.com/chloetech-ai/chloedb/releases">releases</a></td>
+</tr>
+<tr>
+<td><code>/home/me/.local/bin is not on your PATH. To add it, put this line in your shell's profile (~/.zshrc, ~/.bashrc): ...</code></td>
+<td>not an error: the server is installed; add the line it prints, then open a new terminal</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="chloedb-server-command-not-found"><code>chloedb-server: command not found</code><a class="anchor" href="#chloedb-server-command-not-found" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">bash: chloedb-server: command not found</pre>
+<p>The folder the server was installed into is not on your <code>PATH</code>: <code>~/.local/bin</code> for the install script (it printed the line to add to your shell's profile), the virtualenv's <code>bin</code> for pip (activate it: <code>. .venv/bin/activate</code>), or <code>pipx ensurepath</code> for pipx. Until then, run it by its path, <code>~/.local/bin/chloedb-server</code>.</p>
+<h3 id="modulenotfounderror-no-module-named-chloedb"><code>ModuleNotFoundError: No module named 'chloedb'</code><a class="anchor" href="#modulenotfounderror-no-module-named-chloedb" aria-label="Link to this section">#</a></h3>
+<p>The Python that runs your script is not the one <code>chloedb</code> was installed into: activate the virtualenv (<code>. .venv/bin/activate</code>), or install it with that interpreter, <code>python3 -m pip install chloedb</code>. <code>chloedb-server doctor --python PATH</code> checks a given interpreter.</p>
+<h3 id="importerror-this-is-chloedb-003-a-placeholder-"><code>ImportError: This is chloedb 0.0.3, a placeholder ...</code><a class="anchor" href="#importerror-this-is-chloedb-003-a-placeholder-" aria-label="Link to this section">#</a></h3>
+<p>pip installed the placeholder that held the name on PyPI, which it falls back to when ChloeDB has no wheel for this platform or this Python. The wheels are for CPython 3.10 or later on macOS 11 or later and on Linux x86-64 and aarch64 with glibc 2.28 or later. Check <code>python3 --version</code>; elsewhere (Windows outside WSL 2, Alpine, an older Python) <a href="python.html#from-source">build from source</a>. On a machine the wheels cover, <code>pip install --upgrade chloedb</code> replaces an old placeholder.</p>
+<h2 id="opening-a-database">Opening a database<a class="anchor" href="#opening-a-database" aria-label="Link to this section">#</a></h2>
+<h3 id="busy-the-database-is-open-elsewhere"><code>busy: the database is open elsewhere</code><a class="anchor" href="#busy-the-database-is-open-elsewhere" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">chloedb._native.BusyError: busy: the database is open elsewhere: process 3541 (python app.py), the parent of this process, has it open for writing. ...
+ERROR chloedb_server: open recipes.chloedb: busy: the database is open elsewhere: process 2210 (python load.py) has it open for writing, and one process writes a database at a time. ...</pre>
+<p>One process at a time can open a database to write it, and the file is open to write already: in another process (a script still running, a chloedb-server serving it, the second process of Flask's debug reloader, another web worker), or in this process, by an earlier <code>open</code> of the same path that was not closed (a module imported twice, a notebook cell run again, a hot reload in Next.js). <span class="since">since 0.3.8</span> The message goes on to say which, from the process id the writer keeps beside the file (<code>this process has it open for writing already</code>, <code>process N, the parent of this process</code> for a reloader, or <code>process N has it open</code>, with its command on Linux), and what to do; Python and JavaScript add the fix in their own words. Before 0.3.8 it stopped at <code>the database is open elsewhere</code>.</p>
+<ul>
+<li>In one process, open the database once and share it; close it before opening it again. In JavaScript, keep it on <code>globalThis</code> (<code>globalThis.db ??= await open(path)</code>) so that a hot reload finds it.</li>
+<li>Under a reloader (Flask's debug mode, Django's runserver, <code>uvicorn --reload</code>), open it when a request first needs it rather than at import, or run without the reloader.</li>
+<li>To read it from other processes while one writes, open it read-only there: <code>chloedb.open(path, read_only=True)</code> in Python, <code>Database.open(path, { readOnly: true })</code> in JavaScript.</li>
+<li>To write from several processes, serve the file with <code>chloedb-server --db path</code> and use the server's clients (<code>chloedb.connect(url)</code>), as <a href="search-page.html">Build a search page</a> does.</li>
+<li><code>chloedb-server --db path</code> stops with the second line above while a script has the file open: stop the script first, or let it use the server too.</li>
+</ul>
+<p><a href="python.html#busyerror-busy-the-database-is-open-elsewhere">Python's common errors</a> has more on each case.</p>
+<h3 id="corrupt-database-no-valid-meta-slot"><code>corrupt database: no valid meta slot</code><a class="anchor" href="#corrupt-database-no-valid-meta-slot" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">_chloedb.ChloeDBError: corrupt database: no valid meta slot
+ERROR chloedb_server: open recipes.jsonl: corrupt database: no valid meta slot</pre>
+<p>Most often the file is not a ChloeDB database at all: a JSON Lines file, a CSV or a SQLite database given where a database was expected. ChloeDB leaves that file as it was, but makes an empty <code>&lt;file&gt;-readers</code> folder beside it, which you can delete. To load such a file's rows, give it to a database: <code>db.import_file(path)</code> (JSON Lines, JSON, CSV, TSV), <code>db.import_sqlite(path)</code> or <code>db.import_parquet(path)</code> in Python, <code>POST /v1/import</code> or the command center's import on a server (<a href="server.html#loading-rows">loading rows</a>). A ChloeDB database that is really damaged says which file and what is damaged, and how to recover (<a href="python.html#backing-up-and-damaged-files">damaged files</a>).</p>
+<h3 id="does-not-exist-pass-a-schema-to-create-it"><code>does not exist: pass a schema to create it</code><a class="anchor" href="#does-not-exist-pass-a-schema-to-create-it" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">_chloedb.ChloeDBError: books.chloedb does not exist: pass a schema to create it
+ERROR chloedb_server: rec.chloedb does not exist: pass --schema (a JSON file, or the JSON) to create it</pre>
+<p>The first is <code>chloedb.open(path)</code> without a schema where no database is: a misspelt path, or a script started from another folder (a relative path is read from the current directory). Give the right path, or the schema to create it. The second is <code>chloedb-server import --db new.chloedb rows.jsonl</code>: a JSON Lines, JSON or CSV file does not say its types, so a new database needs <code>--schema</code>; a SQLite or Parquet file creates its tables itself. Or create the table first (<code>CREATE TABLE</code>, from Python or on a server) and import into it: <code>chloedb-server import</code> adds the rows to the database's first table, or <code>--table</code>. A running server takes files through <code>POST /v1/import</code> and the command center's <strong>Import a file</strong>, which proposes the types from the file's values.</p>
+<h2 id="models-and-vectors">Models and vectors<a class="anchor" href="#models-and-vectors" aria-label="Link to this section">#</a></h2>
+<h3 id="model-potion-retrieval-32m-no-modelsafetensors-fetch-it-first"><code>model potion-retrieval-32M: no .../model.safetensors (fetch it first)</code><a class="anchor" href="#model-potion-retrieval-32m-no-modelsafetensors-fetch-it-first" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">{&#x27;emb&#x27;: &#x27;schema error: model potion-retrieval-32M: no /home/me/.local/share/chloedb/models/potion-retrieval-32M/model.safetensors (fetch it first)&#x27;}</pre>
+<p>A vector field names an embedding model that is not in the models folder. Python's <code>db.embed_errors</code> says so (above), a server's <code>GET /v1/schema</code> says it as each embedded field's <code>error</code>, with <code>"loaded": false</code>, and <code>GET /v1/models</code> lists what would open. Meanwhile the writes and queries that need the model fail:</p>
+<pre data-lang="text" data-title="Output">chloedb._native.BadRequestError: schema error: notes.emb is embedded by model potion-retrieval-32M, which is not open: the row would be written without its vector, which similarity() never finds. ...
+chloedb._native.BadRequestError: query error: no embedded field has its model open
+parameter :v: no table has a field this server can embed text for; pass a vector</pre>
+<p>Fetch it once: <code>chloedb-server fetch-model potion-retrieval-32M</code> (about 130 MB). The models folder is <code>$CHLOEDB_MODELS</code> when that is set, else <code>~/.local/share/chloedb/models</code> (<code>~/.local/share/strata/models</code> on a machine that has that folder from before the rename); a server takes <code>--models DIR</code>, Python <code>chloedb.open(..., models=DIR)</code> and JavaScript the <code>models</code> option. Open the database again after fetching it; a running server opens a model fetched through it (its <strong>Models</strong> page, or <code>POST /v1/admin/models/fetch</code>). A server fetches a model it knows by itself when a table names it (unless it runs with <code>--no-fetch-models</code>, for a machine that cannot reach huggingface.co), and fills in the vectors of the rows written meanwhile; the error shows until the download ends, and <code>GET /v1/schema</code> then says <code>"loaded": true</code>. <span class="since">since 0.3.8</span> Meanwhile each embedded field in <code>GET /v1/schema</code> and <code>GET /v1/tables</code> says how its model's download goes, as <code>fetch</code> (<code>queued</code>, <code>running</code> with <code>bytes</code> of <code>size</code>, <code>done</code>, or <code>failed</code> with its <code>error</code>), and the command center's <strong>Add meaning</strong> shows it (<code>Downloading the model potion-retrieval-32M: 40.9 MB of 125 MB…</code>) and offers the Meaning search once it ends.</p>
+<h3 id="a-bert-model-such-as-bge-small-does-not-run">A BERT model such as bge-small does not run<a class="anchor" href="#a-bert-model-such-as-bge-small-does-not-run" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">ERROR chloedb_server: schema error: model bge-small-en-v1.5 is a BERT model: build with the `bert` feature</pre>
+<p>The prebuilt programs (the install script's archives, the PyPI wheels, the npm package and the Docker image) are built without the <code>bert</code> feature, so the BERT models ChloeDB knows do not run in them: <code>bge-small-en-v1.5</code>, <code>snowflake-arctic-embed-m-v1.5</code>, the ColBERT model <code>answerai-colbert-small-v1</code>, and the cross-encoders <code>ms-marco-MiniLM-L-6-v2</code> and <code>bge-reranker-base</code>. <code>chloedb-server fetch-model bge-small-en-v1.5</code> downloads the model (about 133 MB) and then stops with the message above, and a table that names one lists it in Python's <code>db.embed_errors</code>, which refuses the writes that need it, while a server stores those rows without their vectors. Models of images, sound and ONNX exports need the <code>vision</code>, <code>audio</code> and <code>onnx</code> features, also left out of the prebuilt programs. <span class="since">since 0.3.8</span> <code>chloedb-server doctor</code> warns about each model in the models folder that its build cannot run, and names the feature. What to do instead:</p>
+<ul>
+<li><strong>A model that runs in every build</strong>: <code>potion-retrieval-32M</code> (Model2Vec, 512 dimensions, the one the guides use) or the smaller <code>potion-base-8M</code>, and their int8 copies (<a href="server.html#embedded-vector-fields">embedded vector fields</a>).</li>
+<li><strong>A hosted model</strong>: <code>openai/text-embedding-3-small</code>, <code>cohere/embed-v4.0</code>, <code>voyage/voyage-3.5</code>, or <code>ollama/nomic-embed-text</code> from an Ollama on your own machine, with no key (<a href="server.html#hosted-models">hosted models</a>). The prebuilt programs call them.</li>
+<li><strong>Your own vectors</strong>: make them with any library (fastembed, sentence-transformers) and write them into a <code>VECTOR</code> field with its <code>dim</code> and no <code>embed</code>, then pass the query's vector the same way (<code>ORDER BY similarity(emb, :v)</code>, with <code>v</code> a list of floats or a numpy array).</li>
+<li><strong>A build from source with the feature</strong>: <code>cargo build --release --bin chloedb-server --features bert</code> in <code>chloedb-server/</code> (<code>--features accelerate</code> on a Mac), or <code>MATURIN_PEP517_ARGS="--features bert" pip install ./chloedb-py</code> for Python (<a href="python.html#from-source">from source</a>).</li>
+</ul>
+<h2 id="running-a-server">Running a server<a class="anchor" href="#running-a-server" aria-label="Link to this section">#</a></h2>
+<h3 id="the-address-is-in-use"><code>the address is in use</code><a class="anchor" href="#the-address-is-in-use" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">ERROR chloedb_server: listen on 127.0.0.1:7700: the address is in use, by another chloedb-server or another program (lsof -i :7700 names it): stop it, or give --listen another port
+ERROR chloedb_server: listen on 127.0.0.1:7701: the address is in use, by another chloedb-server or another program (lsof -i :7701 names it): stop it, or give --grpc another port</pre>
+<p>Another program has the port: often a chloedb-server started earlier and still running. <code>lsof -i :7700</code> names it. A server listens on two ports, HTTP on 7700 and gRPC on 7701, so a second server on the same machine needs both moved: <code>--listen 127.0.0.1:7710 --grpc 127.0.0.1:7711</code>, or <code>--grpc off</code> when nothing uses gRPC.</p>
+<h3 id="is-reachable-beyond-this-machine-set---token"><code>is reachable beyond this machine: set --token</code><a class="anchor" href="#is-reachable-beyond-this-machine-set---token" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">ERROR chloedb_server: 0.0.0.0:7700 is reachable beyond this machine: set --token (or $CHLOEDB_TOKEN), make an API key, or pass --no-token to serve it open</pre>
+<p>A server that listens on an address other machines can reach (<code>0.0.0.0</code>, a LAN address, inside a container) must have a token or an API key, so that nobody else can change it. Give it <code>--token</code> (or <code>$CHLOEDB_TOKEN</code>) and send the token from every client, or listen on <code>127.0.0.1</code> (<a href="server.html#security">security</a>).</p>
+<h3 id="401-missing-or-wrong-token"><code>401</code>: <code>missing or wrong token</code><a class="anchor" href="#401-missing-or-wrong-token" aria-label="Link to this section">#</a></h3>
+<pre data-lang="text" data-title="Output">{&quot;error&quot;:&quot;missing or wrong token&quot;,&quot;error_code&quot;:&quot;unauthenticated&quot;,&quot;hint&quot;:&quot;send Authorization: Bearer &lt;key&gt;; a key that expired or was revoked needs a new one&quot;,...}</pre>
+<p>The server has a token or API keys, and the request sent none, or one it does not know. Send it as <code>Authorization: Bearer &lt;key&gt;</code>: <code>curl -H 'authorization: Bearer ...'</code>, <code>chloedb.connect(url, token=...)</code> in Python and <code>connect(url, { token })</code> in JavaScript, or set <code>$CHLOEDB_TOKEN</code>, which both clients read. Python raises it as <code>UnauthorizedError: missing or wrong token (HTTP 401)</code>. A key that is known but may not do what was asked gets 403 instead, naming the scope it needs: <code>a write statement needs a key with the write scope; "page" has read</code>.</p>
+<h3 id="a-page-from-httplocalhost3000-cannot-change-this-server"><code>a page from http://localhost:3000 cannot change this server</code><a class="anchor" href="#a-page-from-httplocalhost3000-cannot-change-this-server" aria-label="Link to this section">#</a></h3>
+<p>A browser page of another origin called the server directly, and chloedb-server refuses those (403), reads included: call it from your app's own server code instead, or serve the page from the server's own origin (<a href="javascript.html">JavaScript in a browser</a>).</p>
+<h3 id="urlerror-urlopen-error-errno-111-connection-refused"><code>URLError: &lt;urlopen error [Errno 111] Connection refused&gt;</code><a class="anchor" href="#urlerror-urlopen-error-errno-111-connection-refused" aria-label="Link to this section">#</a></h3>
+<p>A Python client found no server at its URL: start the server, or check the address and port its log printed (<code>HTTP and UI on http://127.0.0.1:7700/</code>). It is an <code>OSError</code>, not a <code>ChloeDBError</code> (<a href="python.html#urlerror-urlopen-error-errno-111-connection-refused">Python's common errors</a>).</p>
+<h2 id="chloectx">ChloeCtx<a class="anchor" href="#chloectx" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx doctor</code> prints a line per check, <code>ok</code>, <code>warn</code> or <code>FAIL</code>, and each <code>FAIL</code> line says how to fix it: <a href="chloectx-setup.html#troubleshooting">Install ChloeCtx</a> goes through them.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/troubleshooting.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="build-an-app.html">← Build an app on the HTTP API</a><a href="search.html">Search guide →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

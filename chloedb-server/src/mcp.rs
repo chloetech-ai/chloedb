@@ -78,7 +78,10 @@ enum Act {
     Runbook { query: String },
     /// `import`: rows as text, sent to `POST /v1/import` with their
     /// content type.
-    Import { path: String, content_type: &'static str, data: Vec<u8>, create: Option<String> },
+    /// `create`: the statements that make the table, with a vector of its
+    /// prose to search by meaning and without, for a server that has or
+    /// fetches the model and one that does not.
+    Import { path: String, content_type: &'static str, data: Vec<u8>, create: Option<(String, String)> },
 }
 
 /// What a tool keeps of a route's answer.
@@ -259,6 +262,7 @@ const TOOLS: &[Tool] = &[
             "empty": {"type": "string", "enum": ["default", "null", "text"], "description": "what an empty CSV cell is: the field's DEFAULT (the default), NULL, or empty text"},
             "strict": {"type": "boolean", "description": "refuse a column the table does not have, rather than skip it"},
             "create": {"type": "boolean", "description": "make the table from the rows when there is none (needs an admin key)"},
+            "meaning": {"type": "boolean", "description": "with create: give the table's prose a vector to search by meaning (default true; the server downloads its model once)"},
             "key": {"type": "string", "description": "with create: the column that is the primary key (default a column named id; \"\" for none)"}
         }, "required": ["table"]}),
         read_only: false,
@@ -729,7 +733,13 @@ fn import_act(a: &Json) -> Result<Act, Failed> {
     let create = match a.get("create").and_then(|v| v.as_bool()) {
         Some(true) => {
             let f = chloedb::ingest::Format::parse(format).ok_or_else(|| Failed::Arguments(format!("format is csv, tsv, jsonl or json, not {format:?}")))?;
-            Some(chloedb::ingest::create_for(table, &data, f, opt_s(a, "key")).map_err(|e| Failed::Arguments(format!("no table could be made from the rows: {e}")))?)
+            let made = |meaning| chloedb::ingest::create_for_with(table, &data, f, opt_s(a, "key"), meaning).map_err(|e| Failed::Arguments(format!("no table could be made from the rows: {e}")));
+            let plain = made(None)?;
+            let meaning = match a.get("meaning").and_then(|v| v.as_bool()) {
+                Some(false) => plain.clone(),
+                _ => made(Some(chloedb::ingest::MEANING_MODEL))?,
+            };
+            Some((meaning, plain))
         }
         _ => None,
     };
@@ -982,6 +992,10 @@ async fn call(svc: &std::sync::Arc<Service>, router: Option<&Router>, caller: &C
         }
         Act::Import { path, content_type, data, create } => {
             let router = router.ok_or_else(|| Failed::Call("the server is still starting".into()))?;
+            // Meaning, where this server has its model or fetches it.
+            let model = chloedb::ingest::MEANING_MODEL;
+            let meaning = svc.fetch_models || chloedb::embed::to_fetch(model, &svc.models_dir()).is_none();
+            let create = create.map(|(with, without)| if meaning { with } else { without });
             let made = match &create {
                 Some(sql) => Some(forward(router, caller, Method::POST, "/v1/sql", Some(json!({"sql": sql}))).await.map_err(|e| Failed::Call(format!("{e} (the import would make the table with {sql})")))?),
                 None => None,

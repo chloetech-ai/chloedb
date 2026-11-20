@@ -1146,6 +1146,33 @@ impl DocFilter for KeptSet {
     }
 }
 
+/// A range or a list of a numeric field that some rows of the segment
+/// have values of written in place ([`Updates`]), checked per document:
+/// the written value when there is one, else the column's. A lookup per
+/// candidate, where the corrected set (`Executor::patch`) reads every value
+/// written in the segment: a counts table that each event adds to (a
+/// recommender's) would otherwise answer slower with each write until its
+/// segments merge.
+struct Patched {
+    column: ProbeNode,
+    updates: Arc<Updates>,
+    field: usize,
+    keep: Box<dyn Fn(&Value) -> bool + Send + Sync>,
+    card: usize,
+}
+
+impl DocFilter for Patched {
+    fn contains(&self, d: DocId) -> bool {
+        match self.updates.get(self.field, d) {
+            Some(v) => (self.keep)(v),
+            None => self.column.contains(d),
+        }
+    }
+    fn cardinality(&self) -> usize {
+        self.card
+    }
+}
+
 /// The longest predicate the filter cache keeps, written out (a long IN
 /// list is seldom repeated).
 const MAX_CACHE_KEY: usize = 4096;
@@ -2861,12 +2888,23 @@ impl<'a> Executor<'a> {
             Pred::True => ProbeNode::Const(true),
             Pred::False => ProbeNode::Const(false),
             Pred::Match { .. } => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
-            // Multi-valued fields are probed through their postings, fields
-            // with values written in place through the corrected set.
-            Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. }
-                if self.schema.fields[*field].multi || self.updates(s, *field).is_some() =>
-            {
+            // Multi-valued fields are probed through their postings.
+            Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } if self.schema.fields[*field].multi => {
                 ProbeNode::Leaf(Box::new(self.materialize(s, p)?))
+            }
+            // A field with values written in place: each candidate's
+            // written value, else its column's. The corrected set would
+            // read every value written in the segment, for every query,
+            // which grows with each write until the segment is merged.
+            Pred::Range { field, .. } | Pred::IntRange { field, .. } | Pred::In { field, .. } if self.updates(s, *field).is_some() => {
+                let updates = s.view.updates.clone().expect("updates of the field");
+                let keep: Box<dyn Fn(&Value) -> bool + Send + Sync> = match p.clone() {
+                    Pred::Range { lo, hi, .. } => Box::new(move |v: &Value| v.as_f64().is_some_and(|x| lo <= x && x <= hi)),
+                    Pred::IntRange { lo, hi, .. } => Box::new(move |v: &Value| int_in(v, lo, hi)),
+                    Pred::In { values, .. } => Box::new(move |v: &Value| values.iter().any(|x| num_eq(v, x))),
+                    _ => unreachable!("a range or a list"),
+                };
+                ProbeNode::Leaf(Box::new(Patched { column: self.column_probe(s, p)?, updates, field: *field, keep, card: s.r.n_docs as usize }))
             }
             Pred::Present { .. } | Pred::Path { .. } | Pred::Like { .. } => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
             Pred::Prefix { field, .. } if self.schema.fields[*field].multi => ProbeNode::Leaf(Box::new(self.materialize(s, p)?)),
@@ -2874,6 +2912,26 @@ impl<'a> Executor<'a> {
                 let runs = self.prefix_runs(s, *field, prefix, *edits)?;
                 ProbeNode::Leaf(Box::new(self.keyword(s, *field)?.filter_prefix(&runs)))
             }
+            Pred::Range { .. } | Pred::IntRange { .. } | Pred::In { .. } => self.column_probe(s, p)?,
+            Pred::Graph { id } => ProbeNode::Leaf(Box::new(self.graph_set(*id, s.ord, s.r.n_docs))),
+            Pred::Sub(_) => return Err(unresolved()),
+            Pred::Not(c) => ProbeNode::Not(Box::new(self.compile_probe(s, c)?)),
+            Pred::Or(cs) => ProbeNode::Or(cs.iter().map(|c| self.compile_probe(s, c)).collect::<Result<_>>()?),
+            Pred::AtLeast { need, items } => ProbeNode::AtLeast(*need, items.iter().map(|c| self.compile_probe(s, c)).collect::<Result<_>>()?),
+            Pred::And(cs) => {
+                let est = SegEst { ex: self, s, params: None, local_sel: None };
+                let planner = self.planner(&est);
+                let mut ordered: Vec<(f64, &Pred)> = cs.iter().map(|c| (planner.estimate(c).card, c)).collect();
+                ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
+                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.probe_kept(s, c)).collect::<Result<_>>()?)
+            }
+        })
+    }
+
+    /// The probe of a range or a list by the field's column (or keyword
+    /// index) alone, values written in place aside.
+    fn column_probe(&self, s: &Seg<'a>, p: &Pred) -> Result<ProbeNode> {
+        Ok(match p {
             Pred::Range { field, lo, hi } => ProbeNode::Leaf(Box::new(self.numeric(s, *field)?.col().filter(*lo, *hi))),
             Pred::IntRange { field, lo, hi } => {
                 let col = self.numeric(s, *field)?.col();
@@ -2893,18 +2951,7 @@ impl<'a> Executor<'a> {
                     ProbeNode::Or(values.iter().map(|v| ProbeNode::Leaf(Box::new(col.filter_keys(value_keys(col, v))))).collect())
                 }
             },
-            Pred::Graph { id } => ProbeNode::Leaf(Box::new(self.graph_set(*id, s.ord, s.r.n_docs))),
-            Pred::Sub(_) => return Err(unresolved()),
-            Pred::Not(c) => ProbeNode::Not(Box::new(self.compile_probe(s, c)?)),
-            Pred::Or(cs) => ProbeNode::Or(cs.iter().map(|c| self.compile_probe(s, c)).collect::<Result<_>>()?),
-            Pred::AtLeast { need, items } => ProbeNode::AtLeast(*need, items.iter().map(|c| self.compile_probe(s, c)).collect::<Result<_>>()?),
-            Pred::And(cs) => {
-                let est = SegEst { ex: self, s, params: None, local_sel: None };
-                let planner = self.planner(&est);
-                let mut ordered: Vec<(f64, &Pred)> = cs.iter().map(|c| (planner.estimate(c).card, c)).collect();
-                ordered.sort_by(|a, b| a.0.total_cmp(&b.0));
-                ProbeNode::And(ordered.into_iter().map(|(_, c)| self.probe_kept(s, c)).collect::<Result<_>>()?)
-            }
+            _ => unreachable!("a range or a list"),
         })
     }
 

@@ -29,6 +29,35 @@ pub async fn create(db: &Strata) -> Result<Vec<String>> {
             Err(e) => return Err(anyhow!("{name}: {e}")),
         }
     }
+    // Tables made before a column was added: the column, once.
+    if have.iter().any(|t| t == "ea_fires") && db.query("SELECT perimeter FROM ea_fires LIMIT 1", json!({})).await.is_err() {
+        if let Err(e) = db.sql("ALTER TABLE ea_fires ADD COLUMN perimeter KEYWORD").await {
+            let m = e.to_string();
+            if !m.contains("exist") && !m.contains("duplicate") {
+                tracing::warn!(error = %m, "ea_fires.perimeter");
+            }
+        }
+    }
+    if have.iter().any(|t| t == "ea_places") && db.query("SELECT sub_km FROM ea_places LIMIT 1", json!({})).await.is_err() {
+        for (c, t) in schema::LAND_COLUMNS {
+            if let Err(e) = db.sql(&format!("ALTER TABLE ea_places ADD COLUMN {c} {t}")).await {
+                let m = e.to_string();
+                if !m.contains("exist") && !m.contains("duplicate") {
+                    tracing::warn!(error = %m, column = c, "ea_places");
+                }
+            }
+        }
+    }
+    for col in ["sky", "change"] {
+        if have.iter().any(|t| t == "ea_watches") && db.query(&format!("SELECT {col} FROM ea_watches LIMIT 1"), json!({})).await.is_err() {
+            if let Err(e) = db.sql(&format!("ALTER TABLE ea_watches ADD COLUMN {col} BOOL")).await {
+                let m = e.to_string();
+                if !m.contains("exist") && !m.contains("duplicate") {
+                    tracing::warn!(error = %m, column = col, "ea_watches");
+                }
+            }
+        }
+    }
     // The rules and the words when their tables are new or empty (a run
     // stopped between making a table and writing its rows).
     let empty = |t: &'static str| async move { db.query(&format!("SELECT COUNT(*) AS n FROM {t}"), json!({})).await.ok().and_then(|r| r.first().map(|x| crate::strata::RowExt::i(x, "n"))).unwrap_or(0) == 0 };
@@ -83,7 +112,7 @@ pub async fn words(db: &Strata) -> Result<()> {
 }
 
 /// The files `load` reads, in order: `<dir>/<table>*.jsonl`.
-pub const ORDER: [&str; 3] = ["ea_places", "ea_years", "ea_changes"];
+pub const ORDER: [&str; 6] = ["ea_places", "ea_years", "ea_changes", "ea_perimeters", "ea_burns", "ea_climate"];
 
 /// Loads `dir/<table>*.jsonl` for each table in `only` (all when empty).
 pub async fn run(db: &Strata, dir: &Path, only: &[String], chunk_mb: usize) -> Result<u64> {

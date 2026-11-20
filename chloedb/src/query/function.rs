@@ -813,6 +813,47 @@ pub fn sample_params(def: &Definition) -> Option<super::Params> {
     Some(params)
 }
 
+/// Table function `def`'s body as its check plans it, with `params` its
+/// parameters' samples ([`sample_params`]): `None` for a body that reads
+/// a blend, which is checked when it runs ([`super::blend`]); otherwise
+/// the body with the texts it gives where a field's vectors go given as
+/// vectors of the field's size, as a server embeds them before a call
+/// plans ([`super::embed_sql`]), and the parameters to plan it with.
+pub fn body_to_check(def: &Definition, catalog: &[&crate::Schema], params: &super::Params, profile_of: &dyn Fn(&str, &str) -> Option<crate::storage::RankProfile>) -> Result<Option<(String, super::Params)>> {
+    use super::embed_sql::{self, Request};
+    if super::blend::table_call_sql(&def.body, params)?.is_some() {
+        return Ok(None);
+    }
+    // A body ranked by a profile whose ranking gives text where vectors
+    // go is checked written out, as a call of it is embedded.
+    let mut body = def.body.clone();
+    if embed_sql::may_embed_with(&body, params) || body.to_ascii_lowercase().contains("rank_profile") {
+        if let Ok(p) = super::sql::parse_query(&body) {
+            if let Ok(Some((x, _))) = super::profile::expand(&p, profile_of) {
+                let written = x.to_string();
+                if embed_sql::may_embed_with(&written, params) {
+                    body = written;
+                }
+            }
+        }
+    }
+    let mut given = std::collections::HashMap::new();
+    for r in embed_sql::requests(&body, catalog, params)? {
+        let Request::Field { table, field, .. } = &r else { continue };
+        let f = catalog.iter().find(|s| s.table.eq_ignore_ascii_case(table)).and_then(|s| s.field(field));
+        if let Some(f) = f {
+            if let crate::schema::FieldType::Vector { dim, .. } = f.ty {
+                let v = Value::Vector(vec![1.0f32; dim].into());
+                given.insert(r, if f.multi { Value::List(vec![v]) } else { v });
+            }
+        }
+    }
+    Ok(Some(match embed_sql::written(&body, catalog, params, &given) {
+        Ok(Some(w)) => w,
+        _ => (def.body.clone(), params.clone()),
+    }))
+}
+
 /// A value of type `ty` (a stored function's parameter's), to plan its
 /// body with; `None` for a VECTOR of no stated size.
 fn sample_of(ty: &str) -> Option<Value> {

@@ -3,7 +3,7 @@
 //! made gives back the statement it was made of; a plan from elsewhere is
 //! checked against the schema as the binder checks SQL.
 
-use super::{err, Agg, ArithOp, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
+use super::{err, Agg, CmpOp, Expr, Func, Graph, GraphKind, Node, NormKind, OnConflict, Plan};
 use crate::error::Result;
 use crate::query::logical::{self, AggFn, Col, GraphQuery, Having, OrderBy, PathCol, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak, TimeCol, TimeOf, Vectors, CROSS_ENCODER_FIRST};
 use crate::query::rank::Rank;
@@ -998,18 +998,6 @@ impl<'a> Raise<'a> {
         let fld = &self.schema.fields[f];
         let a = match &s.value {
             Expr::Lit(v) => Assign::Value(self.stored(f, v.clone())?),
-            // A counter: `f = f + number` counts a NULL as zero.
-            Expr::Arith { op: op @ (ArithOp::Add | ArithOp::Sub), left, right } if **left == Expr::Field(f as u32) && matches!(**right, Expr::Lit(_)) => {
-                if !matches!(fld.ty, FieldType::Int | FieldType::Float) || fld.logical.is_some() || fld.multi {
-                    return Err(err(format!("{} is not a single numeric field", fld.name)));
-                }
-                match (op, self.lit(right)?) {
-                    (ArithOp::Add, v @ (Value::Int(_) | Value::Float(_))) => Assign::Add(v),
-                    (ArithOp::Sub, Value::Int(x)) => Assign::Add(x.checked_neg().map_or(Value::Float(-(x as f64)), Value::Int)),
-                    (ArithOp::Sub, Value::Float(x)) => Assign::Add(Value::Float(-x)),
-                    (_, v) => return Err(err(format!("{} adds a number, not {v:?}", fld.name))),
-                }
-            }
             Expr::Excluded(g) if excluded => {
                 let g = self.field(*g)?;
                 let src = &self.schema.fields[g];

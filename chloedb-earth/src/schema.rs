@@ -20,6 +20,15 @@ pub const SHAPE2_DIM: usize = crate::fires::SHAPE2_DIM;
 pub const SHAPE1_DIM: usize = crate::fires::SHAPE1_DIM;
 
 /// (table, CREATE TABLE statement, what it holds).
+/// The Land finder's columns of ea_places (tools/land.py): the nearest
+/// substation, power line and main road, the solar farms on and near it,
+/// and how much of it is protected.
+pub const LAND_COLUMNS: [(&str, &str); 13] = [
+    ("sub_km", "FLOAT"), ("sub_kv", "FLOAT"), ("sub_name", "KEYWORD"), ("line_km", "FLOAT"), ("line_kv", "FLOAT"),
+    ("road_km", "FLOAT"), ("road_name", "KEYWORD"), ("solar", "FLOAT"), ("solar_km", "FLOAT"), ("solar_name", "KEYWORD"),
+    ("protected", "FLOAT"), ("protected_strict", "FLOAT"), ("protected_name", "KEYWORD"),
+];
+
 pub fn tables() -> Vec<(&'static str, String, &'static str)> {
     vec![
         ("ea_places", format!("CREATE TABLE IF NOT EXISTS ea_places (
@@ -32,8 +41,9 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   climate KEYWORD, climate_group KEYWORD, mine FLOAT, crop KEYWORD, crop_pct FLOAT,
   fire_years INT[], fire_px INT, last_fire INT,
   words TEXT OPTIONS(analyzer = 'english'), about TEXT OPTIONS(analyzer = 'english'),
-  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM})
-) OPTIONS(cluster_by = 'region')"), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL) and fire years (FIRMS)"),
+  twin KEYWORD, twin_sim FLOAT, twin_score FLOAT, look VECTOR({LOOK_DIM}),
+  {LAND}
+) OPTIONS(cluster_by = 'region')", LAND = LAND_COLUMNS.iter().map(|(c, t)| format!("{c} {t}")).collect::<Vec<_>>().join(", ")), "Places: Major TOM's fragments of Sentinel-2 (3.84 km a side), each with its SigLIP vector, its land cover (WorldCover), terrain (Copernicus DEM), people (GHSL), climate (Koppen-Geiger), mines, crops (CDL), fire years (FIRMS), and for the Land finder the grid, roads and solar farms around it (OpenStreetMap) and its protected land (PAD-US, OpenStreetMap)"),
         ("ea_words", format!("CREATE TABLE IF NOT EXISTS ea_words (
   id KEYWORD PRIMARY KEY, text TEXT, kind KEYWORD,
   emb VECTOR({LOOK_DIM}) OPTIONS(embed = 'text', model = '{LOOK_MODEL}')
@@ -64,9 +74,18 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   area_km2 FLOAT, spread_km FLOAT, hours FLOAT,
   people5 INT, trees FLOAT, shrubs FLOAT, grass FLOAT, built FLOAT, slope FLOAT, elev INT, climate KEYWORD,
   burned_before INT, gust FLOAT, wind FLOAT, wind_dir FLOAT, rh FLOAT,
-  first KEYWORD OPTIONS(indexed = false), outlook_km2 FLOAT, outlook_lo FLOAT, outlook_hi FLOAT,
+  perimeter KEYWORD, first KEYWORD OPTIONS(indexed = false), outlook_km2 FLOAT, outlook_lo FLOAT, outlook_hi FLOAT,
   shape VECTOR({SHAPE_DIM}), shape2 VECTOR({SHAPE2_DIM}), shape1 VECTOR({SHAPE1_DIM})
 )"), "Fires: a region's fire pixels grouped in space and time, with how big and fast they got, what they burned on, the weather at their start, and their first hours as a vector (shape) for finding the fires that began like them"),
+        ("ea_perimeters", "CREATE TABLE IF NOT EXISTS ea_perimeters (
+  id KEYWORD PRIMARY KEY, source KEYWORD, name TEXT OPTIONS(analyzer = 'simple'), complex KEYWORD, year INT,
+  alarm TIMESTAMP, contained TIMESTAMP, acres FLOAT, km2 FLOAT, cause KEYWORD, agency KEYWORD, unit KEYWORD, inc KEYWORD,
+  lat FLOAT, lon FLOAT, s FLOAT, n FLOAT, w FLOAT, e FLOAT, shape KEYWORD OPTIONS(indexed = false)
+)".to_string(), "Fire perimeters: CAL FIRE's outlines of every fire since 1878, with name, dates, acres and cause"),
+        ("ea_burns", "CREATE TABLE IF NOT EXISTS ea_burns (
+  id KEYWORD PRIMARY KEY, place KEYWORD, perimeter KEYWORD, region KEYWORD, name KEYWORD, year INT,
+  alarm TIMESTAMP, acres FLOAT, share FLOAT, cause KEYWORD
+) OPTIONS(cluster_by = 'place')".to_string(), "Which fire burned which place, and the share of the square inside its perimeter"),
         ("ea_rules", "CREATE TABLE IF NOT EXISTS ea_rules (
   id KEYWORD PRIMARY KEY, title KEYWORD, severity KEYWORD, sql KEYWORD OPTIONS(indexed = false),
   about KEYWORD OPTIONS(indexed = false), enabled BOOL, last_run TIMESTAMP, last_ms FLOAT, last_rows INT
@@ -80,6 +99,29 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, region KEYWORD, window KEYWORD, hours FLOAT, fires INT,
   covered FLOAT, base_covered FLOAT, width FLOAT, base_width FLOAT, error FLOAT, base_error FLOAT, spearman FLOAT, at TIMESTAMP
 )".to_string(), "How well the fires like each one foretold its size: each fire watched from its start, matched only against fires out before that moment"),
+        ("ea_sky", "CREATE TABLE IF NOT EXISTS ea_sky (
+  id KEYWORD PRIMARY KEY, region KEYWORD, lat FLOAT, lon FLOAT, town KEYWORD, t TIMESTAMP,
+  clear FLOAT, smoke FLOAT, sun FLOAT, day_end INT, days INT[], nights INT[],
+  dsum FLOAT, dn INT, nsum FLOAT, nn INT, clear_days FLOAT, clear_nights FLOAT, good_days INT, good_nights INT
+) OPTIONS(cluster_by = 'region')".to_string(), "Clear sky: each place's sky in GOES's last scan (the share of its pixels clear, and with smoke), and its last 30 days and nights, each the share of its daylight or dark scans that were clear"),
+        ("ea_climate", "CREATE TABLE IF NOT EXISTS ea_climate (
+  id KEYWORD PRIMARY KEY, region KEYWORD, lat FLOAT, lon FLOAT, town KEYWORD,
+  t_mean FLOAT, t_mean_70 FLOAT, t_hot FLOAT, t_hot_70 FLOAT, t_hot_70_lo FLOAT, t_hot_70_hi FLOAT,
+  t_cold FLOAT, t_cold_70 FLOAT, t_cold_70_lo FLOAT, t_cold_70_hi FLOAT,
+  rain FLOAT, rain_70 FLOAT, rain_70_lo FLOAT, rain_70_hi FLOAT, rain_cv FLOAT, rain_cv_70 FLOAT, rain_summer FLOAT, rain_summer_70 FLOAT,
+  kg KEYWORD, kg_70 KEYWORD, kg_70_agree INT,
+  analog KEYWORD, analog_region KEYWORD, analog_town KEYWORD, analog_km FLOAT, analog_d FLOAT, novel BOOL, moved FLOAT,
+  clim VECTOR(6), clim70 VECTOR(6)
+) OPTIONS(cluster_by = 'region')".to_string(), "In 2070: each place's climate for 1981-2010 and, from five CMIP6 models under SSP3-7.0, for 2071-2100 (CHELSA 2.1), each also a vector of six standardised numbers, and the place whose climate today is nearest its future one"),
+        ("ea_watches", "CREATE TABLE IF NOT EXISTS ea_watches (
+  id KEYWORD PRIMARY KEY, watcher KEYWORD, name KEYWORD OPTIONS(indexed = false), lat FLOAT, lon FLOAT, km FLOAT,
+  region KEYWORD, closer BOOL, power BOOL, sky BOOL, change BOOL, place KEYWORD, created TIMESTAMP
+) OPTIONS(cluster_by = 'watcher')".to_string(), "Fire watch: places people keep an eye on, each a point, a name and the distance it asks about, owned by a browser's random key"),
+        ("ea_watch_alerts", "CREATE TABLE IF NOT EXISTS ea_watch_alerts (
+  id KEYWORD PRIMARY KEY, watch KEYWORD, watcher KEYWORD, region KEYWORD, kind KEYWORD, t TIMESTAMP, sent TIMESTAMP,
+  title KEYWORD OPTIONS(indexed = false), body KEYWORD OPTIONS(indexed = false),
+  km FLOAT, dir KEYWORD, fire KEYWORD, lat FLOAT, lon FLOAT, name KEYWORD OPTIONS(indexed = false)
+) OPTIONS(cluster_by = 'watcher')".to_string(), "What fire watch raised: one row per watch, fire and kind (within the distance, within 5 km, over the place, past 1,000 MW, 2 km closer in an hour)"),
         ("ea_feed", "CREATE TABLE IF NOT EXISTS ea_feed (
   id KEYWORD PRIMARY KEY, kind KEYWORD, at TIMESTAMP, rows INT, note KEYWORD OPTIONS(indexed = false)
 )".to_string(), "Where each feed stands: the last scan read, and when"),

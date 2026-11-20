@@ -3,9 +3,10 @@
 //! here (`/app.json`, `/ui/view.js`) and sends the app's token with each
 //! call. Without `--public` every route but `/healthz` needs the token.
 //! With it the app also serves its page at `/` to anyone, and the page's
-//! reads without the token (and its one POST, a picture to search by, of
-//! at most a few megabytes): so many a minute from one address, and so
-//! many at once. Nothing runs SQL a reader writes.
+//! reads without the token (and its POSTs: a picture to search by, of at
+//! most a few megabytes, and a browser's own fire watches, each under the
+//! browser's random key): so many a minute from one address, and so many
+//! at once. Nothing runs SQL a reader writes.
 //!
 //! Every answer carries `queries`: the SQL it ran, each with its rows and
 //! time, which the page shows behind its "SQL" button.
@@ -50,6 +51,16 @@ pub struct Service {
     pub layers: Mutex<HashMap<(String, String), Arc<String>>>,
     /// Where the places' yearly pictures are (tools/years.py fetch).
     pub chips: Option<std::path::PathBuf>,
+    /// Where the replays' pictures of the sky are (tools/frames.py).
+    pub frames: Option<std::path::PathBuf>,
+    /// Fire watch's example, worked out once.
+    pub example: Mutex<Option<Value>>,
+    /// Each region's skies (ea_sky), read every two minutes.
+    pub sky: tokio::sync::RwLock<HashMap<&'static str, Arc<crate::sky::Mem>>>,
+    /// Each region's map of its climate in 2071-2100 (ea_climate), read once.
+    pub future: tokio::sync::RwLock<HashMap<&'static str, Arc<String>>>,
+    /// Each region's solar farms' mean look, for the Land finder.
+    pub solar_looks: crate::land::Looks,
 }
 
 pub type Shared = Arc<Service>;
@@ -91,6 +102,7 @@ pub struct Opts {
     pub at_once: usize,
     pub rules: bool,
     pub chips: Option<std::path::PathBuf>,
+    pub frames: Option<std::path::PathBuf>,
 }
 
 const REGIONS: [&str; 2] = ["california", "chile"];
@@ -110,6 +122,11 @@ pub async fn serve(o: Opts) -> Result<()> {
         live: REGIONS.into_iter().map(|r| (r, Mutex::new(None))).collect(),
         layers: Mutex::new(HashMap::new()),
         chips: o.chips,
+        frames: o.frames,
+        example: Mutex::new(None),
+        sky: tokio::sync::RwLock::new(HashMap::new()),
+        future: tokio::sync::RwLock::new(HashMap::new()),
+        solar_looks: tokio::sync::RwLock::new(HashMap::new()),
     });
     {
         let svc = svc.clone();
@@ -117,6 +134,10 @@ pub async fn serve(o: Opts) -> Result<()> {
         tokio::spawn(async move {
             let mut read_at: Option<Instant> = None;
             let mut rules_at: Option<Instant> = None;
+            let mut names_at: Option<Instant> = None;
+            let mut watch_at: Option<Instant> = None;
+            let mut watched: HashMap<&'static str, i64> = HashMap::new();
+            let mut sky_at: Option<Instant> = None;
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || svc.places.read().await.is_empty() {
                     match Places::read(&svc.db).await {
@@ -136,6 +157,42 @@ pub async fn serve(o: Opts) -> Result<()> {
                     match crate::rules::run_once(&svc.db).await {
                         Ok(v) => tracing::info!(open = %v["open"], secs = t0.elapsed().as_secs_f32(), "rules"),
                         Err(e) => tracing::warn!(error = %e, "rules"),
+                    }
+                }
+                if run_rules && names_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    names_at = Some(Instant::now());
+                    match crate::names::run(&svc.db).await {
+                        Ok(n) => tracing::info!(fires = n, "fires named"),
+                        Err(e) => tracing::warn!(error = %e, "names"),
+                    }
+                }
+                // The skies, once the places are there.
+                if sky_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) && !svc.places.read().await.is_empty() {
+                    sky_at = Some(Instant::now());
+                    let places = svc.places.read().await.clone();
+                    for r in REGIONS {
+                        match crate::sky::read(&svc.db, &places, r).await {
+                            Ok(m) => {
+                                svc.sky.write().await.insert(r, Arc::new(m));
+                            }
+                            Err(e) => tracing::warn!(region = r, error = %e, "sky"),
+                        }
+                    }
+                }
+                // Fire watch: each region's new scans against the watches.
+                if run_rules && watch_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) {
+                    watch_at = Some(Instant::now());
+                    for r in REGIONS {
+                        let since = watched.get(r).copied().unwrap_or(0);
+                        match crate::watch::check(&svc.db, r, since).await {
+                            Ok((t, n)) => {
+                                watched.insert(r, t);
+                                if n > 0 {
+                                    tracing::info!(region = r, alerts = n, "fire watch");
+                                }
+                            }
+                            Err(e) => tracing::warn!(region = r, error = %e, "fire watch"),
+                        }
                     }
                 }
                 for r in REGIONS {
@@ -176,7 +233,18 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/path/:id", get(path))
         .route("/v1/layer/:name", get(layer))
         .route("/v1/at", get(at))
+        .route("/v1/find", get(find))
         .route("/v1/chip/:place/:year", get(chip))
+        .route("/v1/frame/:replay/:n", get(frame))
+        .route("/v1/sky", get(sky_layer))
+        .route("/v1/sky/find", get(sky_find))
+        .route("/v1/future", get(future_layer))
+        .route("/v1/future/place/:id", get(future_place))
+        .route("/v1/land", get(land_find))
+        .route("/v1/watches", get(watches).post(watch_new))
+        .route("/v1/watches/example", get(watch_example))
+        .route("/v1/watches/feed/:key", get(watch_feed))
+        .route("/v1/watch/:id", get(watch_one).post(watch_change))
         .route("/v1/rules", get(rules_page))
         .route("/v1/data", get(data))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
@@ -207,7 +275,10 @@ async fn guard(State(svc): State<Shared>, req: Request, next: Next) -> Response 
     if authed {
         return next.run(req).await;
     }
-    let reads = req.method() == Method::GET || (req.method() == Method::POST && req.uri().path() == "/v1/picture");
+    // The page's writes: a picture to search by, and a browser's own
+    // watches (each under its random key, so many and no more).
+    let path = req.uri().path();
+    let reads = req.method() == Method::GET || (req.method() == Method::POST && (path == "/v1/picture" || path == "/v1/watches" || path.starts_with("/v1/watch/")));
     if !(svc.public && reads) {
         return ApiError(StatusCode::UNAUTHORIZED, "this app needs its token: open it in ChloeDB's command center (Apps → Earth)".into()).into_response();
     }
@@ -374,7 +445,15 @@ async fn home(State(svc): State<Shared>) -> Answer {
 async fn replay(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
-    let v = pages::replay(&c, &id).await?;
+    let mut v = pages::replay(&c, &id).await?;
+    // The pictures of the sky under it, when tools/frames.py drew them.
+    if let Some(dir) = &svc.frames {
+        if let Ok(text) = tokio::fs::read_to_string(dir.join(&id).join("frames.json")).await {
+            if let Ok(m) = serde_json::from_str::<Value>(&text) {
+                v["frames"] = json!({"box": m["box"], "sat": m["sat"], "frames": m["frames"]});
+            }
+        }
+    }
     done(&trace, v, t0)
 }
 
@@ -531,25 +610,13 @@ async fn twins(State(svc): State<Shared>, Query(a): Query<TwinParams>) -> Answer
     done(&trace, v, t0)
 }
 
-#[derive(serde::Deserialize, Default)]
-struct ChangedParams {
-    #[serde(default)]
-    q: String,
-    #[serde(default)]
-    region: String,
-    #[serde(default)]
-    from: String,
-    #[serde(default)]
-    to: String,
-}
-
-async fn changed(State(svc): State<Shared>, Query(a): Query<ChangedParams>) -> Answer {
+async fn changed(State(svc): State<Shared>, Query(a): Query<pages::ChangeAsk>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     if a.q.len() > 200 || a.from.len() > 40 || a.to.len() > 40 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "a change in at most 200 letters, such as \u{201c}fields became a solar farm\u{201d}".into()));
     }
-    let v = pages::changed(&c, &a.q, &a.region, &a.from, &a.to).await?;
+    let v = pages::changed(&c, &a).await?;
     done(&trace, v, t0)
 }
 
@@ -577,6 +644,24 @@ async fn at(State(svc): State<Shared>, Query(a): Query<AtParams>) -> Json<Value>
 }
 
 #[derive(serde::Deserialize, Default)]
+struct FindParams {
+    #[serde(default)]
+    q: String,
+}
+
+/// Towns and counties by their first letters, or the place under
+/// "lat, lon": what the front page's search box asks.
+async fn find(State(svc): State<Shared>, Query(a): Query<FindParams>) -> Json<Value> {
+    let places = svc.places.read().await.clone();
+    let found: Vec<Value> = places
+        .find(&a.q, 8)
+        .into_iter()
+        .map(|(label, p)| json!({"label": label, "id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "adm1": p.adm1, "people": p.people.round()}))
+        .collect();
+    Json(json!({"found": found}))
+}
+
+#[derive(serde::Deserialize, Default)]
 struct ChipParams {
     /// `?b64=1`: as base64 in JSON.
     b64: Option<String>,
@@ -590,13 +675,27 @@ async fn chip(State(svc): State<Shared>, Path((place, year)): Path<(String, u32)
     if !place.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return ApiError(StatusCode::BAD_REQUEST, "no such place".into()).into_response();
     }
-    match tokio::fs::read(dir.join(format!("{place}_{year}.jpg"))).await {
+    jpeg(dir.join(format!("{place}_{year}.jpg")), &a, format!("no picture of {place} in {year}")).await
+}
+
+/// A picture of the sky under a replay (tools/frames.py), as a chip is sent.
+async fn frame(State(svc): State<Shared>, Path((replay, n)): Path<(String, String)>, Query(a): Query<ChipParams>) -> Response {
+    let Some(dir) = &svc.frames else { return ApiError(StatusCode::NOT_FOUND, "this app has no pictures of the replays (serve --frames DIR)".into()).into_response() };
+    let n = n.trim_end_matches(".jpg");
+    if !pages::REPLAYS.iter().any(|r| r.id == replay) || n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return ApiError(StatusCode::BAD_REQUEST, "no such picture".into()).into_response();
+    }
+    jpeg(dir.join(&replay).join(format!("{n}.jpg")), &a, format!("no picture {n} of {replay}")).await
+}
+
+async fn jpeg(path: std::path::PathBuf, a: &ChipParams, missing: String) -> Response {
+    match tokio::fs::read(path).await {
         Ok(b) if a.b64.as_deref().is_some_and(|v| !matches!(v, "0" | "false")) => {
             use base64::Engine;
             Json(json!({"mime": "image/jpeg", "data": base64::engine::general_purpose::STANDARD.encode(&b)})).into_response()
         }
         Ok(b) => ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=86400")], b).into_response(),
-        Err(_) => ApiError(StatusCode::NOT_FOUND, format!("no picture of {place} in {year}")).into_response(),
+        Err(_) => ApiError(StatusCode::NOT_FOUND, missing).into_response(),
     }
 }
 
@@ -622,6 +721,187 @@ async fn layer(State(svc): State<Shared>, headers: HeaderMap, Path(name): Path<S
         }
     };
     cached(&headers, (*body).clone(), "application/json", 600)
+}
+
+async fn sky_mem(svc: &Shared, region: &'static str) -> Result<Arc<crate::sky::Mem>, ApiError> {
+    if let Some(m) = svc.sky.read().await.get(region) {
+        return Ok(m.clone());
+    }
+    let places = svc.places.read().await.clone();
+    let m = Arc::new(crate::sky::read(&svc.db, &places, region).await?);
+    if !places.is_empty() {
+        svc.sky.write().await.insert(region, m.clone());
+    }
+    Ok(m)
+}
+
+/// Every place's sky now and its last 30 days, as the map draws it.
+async fn sky_layer(State(svc): State<Shared>, headers: HeaderMap, Query(a): Query<RegionParams>) -> Response {
+    let region = match region_of(if a.region.is_empty() { "california" } else { &a.region }) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    match sky_mem(&svc, region).await {
+        Ok(m) => cached(&headers, (*m.layer).clone(), "application/json", 60),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SkyFindParams {
+    #[serde(default)]
+    region: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    km: Option<f64>,
+    #[serde(default)]
+    want: String,
+    #[serde(default)]
+    q: String,
+}
+
+async fn sky_find(State(svc): State<Shared>, Query(a): Query<SkyFindParams>) -> Answer {
+    let t0 = Instant::now();
+    let at = a.lat.zip(a.lon).filter(|(la, lo)| la.is_finite() && lo.is_finite());
+    let region = match at.and_then(|(la, lo)| crate::watch::region_of(la, lo)) {
+        Some(r) => r,
+        None => region_of(if a.region.is_empty() { "california" } else { &a.region })?,
+    };
+    if a.q.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "what the place looks like, in at most 200 letters".into()));
+    }
+    let mem = sky_mem(&svc, region).await?;
+    ctx!(svc, trace, c);
+    let want = match a.want.as_str() {
+        "nights" | "days" => a.want.as_str(),
+        _ => "now",
+    };
+    let v = crate::sky::find(&c, &mem, crate::sky::Find { region, at, km: a.km.unwrap_or(50.0).clamp(5.0, 400.0), want, q: &a.q }).await?;
+    done(&trace, v, t0)
+}
+
+/// A region's map of its climate in 2071-2100.
+async fn future_layer(State(svc): State<Shared>, headers: HeaderMap, Query(a): Query<RegionParams>) -> Response {
+    let region = match region_of(if a.region.is_empty() { "california" } else { &a.region }) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(body) = svc.future.read().await.get(region).cloned() {
+        return cached(&headers, (*body).clone(), "application/json", 3600);
+    }
+    match crate::future::layer(&svc.db, region).await {
+        Ok(v) => {
+            let body = Arc::new(v.to_string());
+            // Kept once the rows are there: they change only when loaded again.
+            if v["n"].as_u64().unwrap_or(0) > 0 {
+                svc.future.write().await.insert(region, body.clone());
+            }
+            cached(&headers, (*body).clone(), "application/json", 3600)
+        }
+        Err(e) => ApiError::from(e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ScopeParams {
+    #[serde(default)]
+    scope: String,
+}
+
+async fn future_place(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<ScopeParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::future::place(&c, &id, &a.scope).await?;
+    done(&trace, v, t0)
+}
+
+/// The Land finder: places within the limits asked for, best first.
+async fn land_find(State(svc): State<Shared>, Query(a): Query<crate::land::Ask>) -> Answer {
+    let t0 = Instant::now();
+    let region = region_of(if a.region.is_empty() { "california" } else { &a.region })?;
+    if a.q.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "what the place looks like, in at most 200 letters".into()));
+    }
+    let cached = svc.solar_looks.read().await.get(region).cloned();
+    let look = match cached {
+        Some(l) => l,
+        None => {
+            let l = crate::land::solar_look(&svc.db, region).await?.map(Arc::new);
+            svc.solar_looks.write().await.insert(region, l.clone());
+            l
+        }
+    };
+    ctx!(svc, trace, c);
+    let v = crate::land::find(&c, region, &a, look.as_deref().map(|v| v.as_slice())).await?;
+    done(&trace, v, t0)
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WatcherParams {
+    #[serde(default)]
+    w: String,
+}
+
+async fn watches(State(svc): State<Shared>, Query(a): Query<WatcherParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::mine(&c, &a.w).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_new(State(svc): State<Shared>, Query(a): Query<WatcherParams>, Json(b): Json<crate::watch::NewWatch>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::create(&c, &a.w, b).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_one(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<WatcherParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::one(&c, &a.w, &id).await?;
+    done(&trace, v, t0)
+}
+
+async fn watch_change(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<WatcherParams>, Json(b): Json<crate::watch::Change>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::change(&c, &a.w, &id, b).await?;
+    done(&trace, v, t0)
+}
+
+/// The Park Fire's first 12 hours as three watches lived them: it never
+/// changes, so it is worked out once.
+async fn watch_example(State(svc): State<Shared>) -> Answer {
+    if let Some(v) = svc.example.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(Json(v));
+    }
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::watch::example(&c).await?;
+    let Json(v) = done(&trace, v, t0)?;
+    if v["pixels"].as_array().is_some_and(|a| !a.is_empty()) && !c.places.is_empty() {
+        *svc.example.lock().unwrap_or_else(|e| e.into_inner()) = Some(v.clone());
+    }
+    Ok(Json(v))
+}
+
+/// A watcher's alerts as an Atom feed: the key in the address is all it
+/// needs, so a feed reader can follow it.
+async fn watch_feed(State(svc): State<Shared>, headers: HeaderMap, Path(key): Path<String>) -> Response {
+    let key = key.trim_end_matches(".xml").trim_end_matches(".atom").to_string();
+    if !crate::watch::key_ok(&key) {
+        return ApiError(StatusCode::NOT_FOUND, "no such feed".into()).into_response();
+    }
+    let rows = match svc.db.query("SELECT id, t, title, body, fire FROM ea_watch_alerts WHERE watcher = :w ORDER BY t DESC LIMIT 50", json!({"w": key})).await {
+        Ok(r) => r,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+    let host = headers.get("x-forwarded-host").or_else(|| headers.get(header::HOST)).and_then(|v| v.to_str().ok()).unwrap_or("earth.chloetech.ai");
+    let proto = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or(if host.starts_with("127.") || host.starts_with("localhost") { "http" } else { "https" });
+    let host: String = host.chars().filter(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(*c)).collect();
+    let body = crate::watch::atom(&format!("{proto}://{host}"), &key, &rows);
+    ([(header::CONTENT_TYPE, "application/atom+xml; charset=utf-8"), (header::CACHE_CONTROL, "max-age=60")], body).into_response()
 }
 
 async fn rules_page(State(svc): State<Shared>) -> Answer {

@@ -300,6 +300,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
         (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
         (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "A follow process writing here (a cluster following another, or chloedb-server follow-postgres) has been over a minute behind its source, or silent, for a minute: it is down, catching up, or held. GET /v1/admin/follow says which of a cluster's, Data > Connectors of a Postgres follower's."), 30.0),
+        (rule("follow-table-held", "A Postgres follower holds a table", "follow_tables_held", ">", 0.0, "min", 60, 0, "warning", s, "chloedb-server follow-postgres could not write a table (a value ChloeDB refuses, a table without a primary key) for a minute: it holds that table, whose rows stay as they were, follows the others, and tries it again. Data > Connectors says which and why."), 0.0),
     ];
     let slo = crate::service::Slo::default();
     v.into_iter()
@@ -798,7 +799,8 @@ impl Event {
             metric: r.metric.clone(),
             eval: r.eval.clone(),
             window_s: r.window_s,
-            where_: shown.iter().filter_map(|w| w["short"].as_str().or_else(|| w["name"].as_str()).map(String::from)).collect(),
+            // A copy by the name people read (`--node-name`), else its short name.
+            where_: shown.iter().filter_map(|w| w["name"].as_str().or_else(|| w["short"].as_str()).map(String::from)).collect(),
             place: shown.iter().take(20).map(|w| (*w).clone()).collect(),
             why: None,
             by: None,
@@ -962,6 +964,8 @@ struct CopySt {
     value: Option<f64>,
     since_ms: u64,
     short: String,
+    /// The name people read ([`crate::coord::shown`]).
+    name: String,
     shard: usize,
     /// The copy evaluates another version of the rule.
     differs: bool,
@@ -1103,6 +1107,34 @@ pub struct SqlRun {
     pub value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Since when this server has run this query (as it is now) and it has
+    /// answered 0, or no number, every time: a rule whose query matches
+    /// nothing, such as a `severity = 'ERROR'` against a table that spells
+    /// it `error`, reads 0 through an incident. Not kept across a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_since_ms: Option<u64>,
+    /// The query that ran, to tell an edited rule from the same one.
+    #[serde(skip)]
+    pub sql: String,
+    /// When this server first ran that query.
+    #[serde(skip)]
+    pub first_ms: u64,
+    /// Whether any run of that query has answered a number other than 0.
+    #[serde(skip)]
+    pub matched: bool,
+}
+
+impl SqlRun {
+    /// This run's `first_ms`, `matched` and `quiet_since_ms`, from the
+    /// last run of the rule (`before`, when its query was `sql`): quiet
+    /// while no run has answered other than 0 and this one did not fail
+    /// (a failed run says so itself, and is no evidence either way).
+    fn quiet(before: Option<&SqlRun>, sql: &str, now_ms: u64, value: Option<f64>, failed: bool) -> (u64, bool, Option<u64>) {
+        let before = before.filter(|b| b.sql == sql);
+        let first_ms = before.map_or(now_ms, |b| b.first_ms);
+        let matched = before.is_some_and(|b| b.matched) || value.is_some_and(|v| v != 0.0);
+        (first_ms, matched, (!matched && !failed).then_some(first_ms))
+    }
 }
 
 /// How often the rules with `sql` run their queries.
@@ -1869,13 +1901,18 @@ impl Alerts {
             for r in replicas.iter() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
                 let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // `short` stays the copy's short name, as `/v1/cluster` gives
+                // it, which clients match copies by; `name` is what people
+                // read, its `--node-name` when it gave one (OLU-402), and what
+                // the messages say.
+                let name = if r["short"].is_string() { crate::coord::shown(r) } else { short.clone() };
                 if !answers(r) {
                     let since = r["down_since_ms"].as_u64();
-                    places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
+                    places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "name": name, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
                 } else {
                     let seen = r["detail"]["load"]["t"].as_u64().or_else(|| r["last_seen_ms"].as_u64());
                     if seen.is_none_or(|s| t.saturating_sub(s) > SILENT_MS) {
-                        places.entry("copies_silent").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "last_ms": seen}));
+                        places.entry("copies_silent").or_default().push(json!({"copy": url, "short": short, "name": name, "shard": i, "state": "firing", "last_ms": seen}));
                     }
                 }
             }
@@ -1943,6 +1980,8 @@ impl Alerts {
             for r in s["replicas"].as_array().into_iter().flatten() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
                 let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // The name people read (`--node-name`), beside the short name clients match by (OLU-402).
+                let name = if r["short"].is_string() { crate::coord::shown(r) } else { short.clone() };
                 let reported = &r["detail"]["alerts"]["rules"];
                 if answers(r) {
                     for f in r["detail"]["alerts"]["firing"].as_array().into_iter().flatten() {
@@ -1950,7 +1989,7 @@ impl Alerts {
                         let id = f["id"].as_str().unwrap_or_default();
                         if !rules.iter().any(|x| x.id == id && x.copies()) {
                             let mut one = f.clone();
-                            (one["copy"], one["short"], one["shard"]) = (json!(url), json!(short), json!(i));
+                            (one["copy"], one["short"], one["name"], one["shard"]) = (json!(url), json!(short), json!(name), json!(i));
                             on_copies.push(one);
                         }
                     }
@@ -1962,8 +2001,8 @@ impl Alerts {
                     present.insert((rule.id.clone(), url.clone()));
                     let key = (rule.id.clone(), url.clone());
                     let mine = &reported[&rule.id];
-                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), shard: i, differs: false, unheard_ms: Some(t), reports: true, own_state: "no_data".into() });
-                    e.short = short.clone();
+                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), name: name.clone(), shard: i, differs: false, unheard_ms: Some(t), reports: true, own_state: "no_data".into() });
+                    (e.short, e.name) = (short.clone(), name.clone());
                     match mine["state"].as_str() {
                         Some(state) => {
                             e.value = mine["value"].as_f64();
@@ -2048,7 +2087,7 @@ impl Alerts {
                 .filter(|&j| (mine[j].reports && mine[j].state != "ok") || mine[j].differs)
                 .map(|j| {
                     let c = mine[j];
-                    let mut w = json!({"copy": urls[j], "short": c.short, "shard": c.shard, "state": c.state, "value": c.value, "since_ms": c.since_ms});
+                    let mut w = json!({"copy": urls[j], "short": c.short, "name": c.name, "shard": c.shard, "state": c.state, "value": c.value, "since_ms": c.since_ms});
                     if c.differs {
                         w["rule_differs"] = json!(true);
                         w["copy_state"] = json!(c.own_state);
@@ -2505,7 +2544,7 @@ impl Alerts {
                 if firing.is_empty() {
                     return None;
                 }
-                Some((r, firing.iter().filter_map(|w| w["shard"].as_u64()).collect(), firing.iter().filter_map(|w| w["short"].as_str().map(String::from)).collect()))
+                Some((r, firing.iter().filter_map(|w| w["shard"].as_u64()).collect(), firing.iter().filter_map(|w| w["name"].as_str().or_else(|| w["short"].as_str()).map(String::from)).collect()))
             })
             .collect();
         causes.sort_by_key(|(r, ..)| sev_rank(&r.severity));
@@ -2973,7 +3012,9 @@ impl Alerts {
         let window = duration(e.window_s * 1000);
         let mut text = match e.state {
             "resolved" => {
-                let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
+                // How long the alert fired, not how long its cause lasted (a rule
+                // fires once its window has held: OLU-407).
+                let after = e.fired_ms.map(|f| format!(" after firing for {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
                 let why = e.why.as_ref().map(|w| format!(" ({w}{})", e.by.as_ref().map(|b| format!(" by {b}")).unwrap_or_default())).unwrap_or_default();
                 format!("[chloedb RESOLVED {}] {} on {}{place}: {value}{after}{why}.", e.severity, e.name, id.name)
             }
@@ -3002,6 +3043,10 @@ impl Alerts {
         }
         if !e.runbook.is_empty() {
             text.push_str(&format!(" Runbook: {}", e.runbook));
+        } else if let Some(b) = crate::runbooks::for_id(&e.rule) {
+            // A built-in rule's runbook is compiled in: the person paged
+            // gets its page too (OLU-407).
+            text.push_str(&format!(" Runbook: {} {}#{}", b.title, crate::runbooks::PAGE, b.anchor));
         }
         if let Some(u) = &id.public_url {
             text.push_str(&format!(" {u}/#/alert/{}", e.rule));
@@ -3704,7 +3749,8 @@ pub fn refresh_sql(svc: &Arc<crate::service::Service>) {
             if let Some(v) = value {
                 values.insert(sql_metric(&r.id), v);
             }
-            runs.insert(r.id.clone(), SqlRun { at_ms: now_ms(), took_ms: t0.elapsed().as_secs_f64() * 1e3, value, error });
+            let (first_ms, matched, quiet_since_ms) = SqlRun::quiet(lock(&svc.alerts.sql_runs).get(&r.id), &r.sql, now_ms(), value, error.is_some());
+            runs.insert(r.id.clone(), SqlRun { at_ms: now_ms(), took_ms: t0.elapsed().as_secs_f64() * 1e3, value, error, quiet_since_ms, sql: r.sql.clone(), first_ms, matched });
         }
         *lock(&svc.alerts.sql_values) = values;
         *lock(&svc.alerts.sql_runs) = runs;
@@ -4376,6 +4422,31 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
 
 #[cfg(test)]
 mod tests {
+    /// MARCO-402: a rule whose query has answered 0 on every run since it
+    /// was made is marked quiet from its first run; one answer other than
+    /// 0 ends that, a failed run neither starts nor ends it, and an edited
+    /// query starts again.
+    #[test]
+    fn a_query_that_never_matched_is_quiet() {
+        let run = |before: Option<&super::SqlRun>, sql: &str, at: u64, value: Option<f64>, failed: bool| {
+            let (first_ms, matched, quiet_since_ms) = super::SqlRun::quiet(before, sql, at, value, failed);
+            super::SqlRun { at_ms: at, took_ms: 1.0, value, error: failed.then(|| "x".into()), quiet_since_ms, sql: sql.into(), first_ms, matched }
+        };
+        let q = "SELECT count(*) FROM logs WHERE severity = 'ERROR'";
+        let a = run(None, q, 100, Some(0.0), false);
+        assert_eq!(a.quiet_since_ms, Some(100));
+        let b = run(Some(&a), q, 130, None, true);
+        assert_eq!(b.quiet_since_ms, None, "a failed run says so itself");
+        let c = run(Some(&b), q, 160, Some(0.0), false);
+        assert_eq!(c.quiet_since_ms, Some(100));
+        let d = run(Some(&c), q, 190, Some(3.0), false);
+        assert_eq!(d.quiet_since_ms, None);
+        let e = run(Some(&d), q, 220, Some(0.0), false);
+        assert_eq!(e.quiet_since_ms, None, "it matched once");
+        let f = run(Some(&e), "SELECT 0", 250, Some(0.0), false);
+        assert_eq!(f.quiet_since_ms, Some(250), "an edited query starts again");
+    }
+
     use super::*;
 
     /// A primary that stepped down reports no replicas out of sync: its
@@ -4687,6 +4758,35 @@ mod tests {
         assert!(changes.iter().any(|e| e.rule == "disk-full" && e.state == "resolved"));
     }
 
+    /// OLU-407, OLU-402: a built-in rule's page carries its runbook's link
+    /// and names the copy by its `--node-name`, without `--public-url`.
+    #[test]
+    fn a_built_in_page_names_the_server_and_links_its_runbook() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        a.set_identity(Some("olu-lab".into()), None);
+        let up = |port: u16, name: &str| json!({"url": format!("http://127.0.0.1:{port}"), "short": format!("127.0.0.1:{port}"), "name": name, "status": "ok", "role": "replica", "detail": {"load": {"t": 1_000}}});
+        let down = json!({"url": "http://127.0.0.1:17754", "short": "127.0.0.1:17754", "name": "s1a", "status": "down", "role": "unknown", "down_since_ms": 1_000});
+        let snap = |t: u64| {
+            let mut s = json!({"shards": [{"shard": 1, "replicas": [down.clone(), up(17755, "s1b"), up(17756, "s1c")]}]});
+            for r in s["shards"][0]["replicas"].as_array_mut().unwrap().iter_mut().filter(|r| r["status"] == "ok") {
+                r["detail"]["load"]["t"] = json!(t);
+            }
+            s
+        };
+        let mut fired = None;
+        for t in (1_000..=60_000).step_by(5_000) {
+            fired = fired.or_else(|| a.check_cluster(&snap(t), t).into_iter().find(|e| e.rule == "copy-down" && e.state == "firing"));
+        }
+        let e = fired.expect("copy-down fires");
+        // `short` stays `/v1/cluster`'s, which clients match copies by; `name` is what people read.
+        assert_eq!((e.place[0]["short"].as_str(), e.place[0]["name"].as_str()), (Some("127.0.0.1:17754"), Some("s1a")), "{:?}", e.place);
+        let text = a.message(&e);
+        assert!(text.starts_with("[chloedb FIRING warning] A copy is down on olu-lab/s1a: copies_down = 1"), "{text}");
+        assert!(text.ends_with("Runbook: A copy is down https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down"), "{text}");
+        assert!(!text.contains("17754"), "{text}");
+    }
+
     #[test]
     fn messages_name_the_cluster_the_place_and_the_runbook() {
         let a = Alerts::new(None, None).unwrap();
@@ -4702,7 +4802,7 @@ mod tests {
         );
         let mut r2 = Event::of(&r, "resolved", &st, 600_010);
         (r2.fired_ms, r2.why, r2.by) = (Some(10), Some("the rule was deleted".into()), Some("ana".into()));
-        assert_eq!(a.message(&r2), "[chloedb RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
+        assert_eq!(a.message(&r2), "[chloedb RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after firing for 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
     }
 
     fn peer(url: &str, this: bool, seen: u64) -> crate::peers::Peer {
@@ -5131,6 +5231,12 @@ mod tests {
         let s = one(d("follow-behind"), &at(&|_| json!({"follow_lag_s": 90.0})));
         assert_eq!(s["state"], "firing", "{s}");
         let s = one(d("follow-behind"), &at(&|i| json!({"follow_lag_s": if i > 290 { 90.0 } else { 1.0 }})));
+        assert_eq!(s["state"], "ok", "{s}");
+        // A Postgres follower holding a table for a minute, and one that
+        // only now held it.
+        let s = one(d("follow-table-held"), &at(&|_| json!({"follow_tables_held": 1.0})));
+        assert_eq!(s["state"], "firing", "{s}");
+        let s = one(d("follow-table-held"), &at(&|i| json!({"follow_tables_held": if i > 290 { 1.0 } else { 0.0 }})));
         assert_eq!(s["state"], "ok", "{s}");
         // Filling 5% an hour at 60%: 8 hours.
         let s = one(d("disk-filling"), &at(&|i| json!({"disk_used_ratio": 0.6 - 0.05 * (300 - i) as f64 * 2.0 / 3600.0})));

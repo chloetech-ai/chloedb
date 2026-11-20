@@ -7,7 +7,7 @@
 // bytes and reads are its drill-down, the index inspector
 // (#/inspector?table=).
 
-import { h, s, clear, fmt, api, card, empty, failure, icon, signInNeeded, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, can } from "../core.js";
+import { h, s, clear, fmt, api, card, empty, failure, icon, signInNeeded, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, shownName, can } from "../core.js";
 import { state } from "../data.js";
 import { shardTrouble } from "../sqlguard.js";
 import { tables as catalog, table as tableOf } from "../catalog.js";
@@ -87,7 +87,7 @@ const windowWords = (s) => s == null ? null : s < 90 ? `last ${Math.round(s)} s`
 function render(page, r) {
   let rows = null, err = null, took = null, at = null, legacy = false, pick = r.params.get("table") || store.get("tables.pick", null);
   // The rates' window (the longest of the tables'), and how often the server looks by itself.
-  let win = null, lookEvery = 60;
+  let win = null, lookEvery = 60, fileTotals = null;
   let by = store.get("tables.by", "docs");
   let growth = store.get("tables.growth", "d1");
   const stamp = h("span", { class: "small muted" });
@@ -111,7 +111,7 @@ function render(page, r) {
     card({ title: "What the numbers are", body: h("p", { class: "small dim", style: { margin: 0 } },
       "Rows and bytes: exact, from every segment of each shard's primary (one copy), in memory and on disk. ",
       "All copies: on a cluster, the bytes each copy of each shard holds, as the copy says them (a copy that does not answer is left out, and the page says so); on one server with replicas, one copy's bytes times the copies a shard has (marked ≈). ",
-      "All tables: the sum of the tables listed, the apps' included. ",
+      "All tables, live data: the sum of the tables listed, the apps' included. Database file on disk: the file and its write-ahead log, which is what the disk holds, and larger by the space deleted and expired rows left until the server gives it back (it tries every 5 minutes once 64 MB and a sixteenth of the file are free). ",
       "Growth: against the size the server kept a day or a week ago (it keeps one a table each hour in its log store, so a server without --log-store shows none). ",
       rateNote,
       "Skew: the largest shard against the mean of all shards. ",
@@ -129,6 +129,7 @@ function render(page, r) {
       rows = (Array.isArray(j) ? j : j.tables || []).map(derive);
       win = Math.max(-1, ...rows.map((t) => t.rate_window_s ?? -1)); if (win < 0) win = null;
       lookEvery = j.look_every_s ?? 60;
+      fileTotals = j.totals?.file_bytes != null ? j.totals : null;
       err = null; legacy = false; took = performance.now() - t0; at = Date.now();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 404 || e.status === 405 || (e.status === 403 && !can("admin")))) {
@@ -182,7 +183,7 @@ function render(page, r) {
   // table's rows of its shard, so it counts for each table.
   const downCopies = () => (state.cluster?.shards || state.health?.shards || []).flatMap((sh, i) => (sh.replicas || []).map((rep, j) => ({ rep, shard: sh.shard ?? i, j })))
     .filter(({ rep }) => rep.status && rep.status !== "ok" || rep.role === "unknown")
-    .map(({ rep, shard, j }) => ({ copy: rep.short || `s${shard}-${j}`, url: rep.url, shard, down: true, why: rep.avoided_why || rep.error || "does not answer", since: rep.down_since_ms }));
+    .map(({ rep, shard, j }) => ({ copy: shownName(rep) || `s${shard}-${j}`, url: rep.url, shard, down: true, why: rep.avoided_why || rep.error || "does not answer", since: rep.down_since_ms }));
   const g = (t) => growth === "d7" ? t.g7 : t.g1;
   const gb = (t) => growth === "d7" ? t.d7 : t.d1;
   const worstTable = () => [...rows].sort((a, b) => (b.staleList.length - a.staleList.length) || ((material(b) ? b.skew || 0 : 0) - (material(a) ? a.skew || 0 : 0)))[0]?.table;
@@ -203,12 +204,15 @@ function render(page, r) {
     clear(totalsRow,
       many ? tile("All tables, all copies", "disk", fmt.bytes(tot.all), allSub,
         tot.measured ? "The bytes each copy of each shard holds, as the copy says them, added up over every table" : "One copy's bytes times the copies a shard has: this server does not ask its replicas") : null,
-      tile(many ? "All tables, one copy" : "All tables, on disk", "layers", fmt.bytes(tot.bytes), many ? `each shard's primary · ${fmt.n(tot.segments)} segments` : "in memory and on disk",
-        "Every segment of each shard's primary, in memory and on disk, added up over every table"),
+      tile(many ? "All tables, one copy" : "All tables, live data", "layers", fmt.bytes(tot.bytes), many ? `each shard's primary · ${fmt.n(tot.segments)} segments` : `${fmt.n(tot.segments)} segments, in memory and on disk`,
+        "Every segment of each shard's primary, in memory and on disk, added up over every table: the data the tables hold now, not the file's size"),
+      !many && fileTotals ? tile("Database file on disk", "disk", fmt.bytes(fileTotals.file_bytes + (fileTotals.wal_bytes || 0)),
+        `${fmt.bytes(fileTotals.free_bytes)} of it free inside the file, given back by itself`,
+        "The size of the database file plus its write-ahead log, which is what the disk holds. It is larger than the live data by the space deleted and expired rows left, which the server gives back to the file system on its own every few minutes (POST /v1/admin/vacuum does it at once)") : null,
       tile("Rows", "table", fmt.si(tot.docs), `${fmt.plural(tot.tables, "table")}${failedSub}`, "Live rows of every table, the apps' included"),
       tot.largest ? tile("Largest table", "layers", h("span", { class: "mono dt-total-name" }, tot.largest.table),
         `${fmt.bytes(tot.largest.bytes)}${many ? " on all copies" : ""} · ${fmt.pct(tot.all ? tot.largest.bytes / (many ? tot.all : tot.bytes) : 0, 0)} of the total`, `Open ${tot.largest.table}'s fields, bytes and reads`, open(tot.largest.table)) : null,
-      !many ? tile("Segments", "layers", fmt.n(tot.segments), "every table's, in memory and on disk") : null);
+      !many && !fileTotals ? tile("Segments", "layers", fmt.n(tot.segments), "every table's, in memory and on disk") : null);
   }
 
   // ------------------------------------------------------------- the four answers
@@ -375,7 +379,7 @@ function render(page, r) {
     const staleBy = new Map((t.staleList || []).map((x) => [x.copy, x]));
     const cells = [];
     shards.forEach((sh, i) => (sh.replicas || []).forEach((rep, j) => {
-      const short = rep.short || `s${sh.shard ?? i}-${j}`;
+      const short = shownName(rep) || `s${sh.shard ?? i}-${j}`;
       const st = staleBy.get(short) || staleBy.get(rep.url) || (rep.status && rep.status !== "ok" || rep.role === "unknown" ? { copy: short, down: true } : null);
       cells.push({ i, j, shard: sh.shard ?? i, short, url: rep.url, primary: rep.takes_writes || rep.role === "primary", st, level: lagLevel(st), why: rep.avoided_why || rep.error || (rep.role === "unknown" ? `does not answer${rep.down_since_ms ? " since " + fmt.time(rep.down_since_ms) : ""}` : null) });
     }));

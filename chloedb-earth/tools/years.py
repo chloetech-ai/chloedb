@@ -14,17 +14,23 @@ year's look is comparable with the others and with words.
 Steps, each its own command:
 
   pick   the places, from ea_places_<region>.jsonl (places.py rows)
+  grow   more places, from the server's ea_places, leaving out those
+         already in ea_years (the steps after it then do only the new)
   fetch  each place's picture of each year, into <out>/chips/<place>_<year>.jpg
   embed  their vectors, by the server's POST /v1/embed (the slow step:
          seconds a picture on four cores)
+  watch  the places of fire watches that asked to be told of a change:
+         their years, then each new clear picture, written to the server
   rows   ea_years.jsonl (a row a place and year whose picture is clear, its
          label the nearest of a few words) and ea_changes.jsonl (a row a place: its first and last
          look, how far it moved, the year it moved most, the direction)
 
   python3 -I tools/years.py pick  --out DIR [--per-region 150]
+  python3 -I tools/years.py grow  --out DIR --per-region 900 --strata URL   (CHLOEDB_KEY)
   python3 -I tools/years.py fetch --out DIR
   python3 -I tools/years.py embed --out DIR --strata http://127.0.0.1:7700
   python3 -I tools/years.py rows  --out DIR --strata http://127.0.0.1:7700
+  python3 -I tools/years.py watch --out DIR --loop     (the watched places, every 6 hours)
 
 Then `chloedb-earth load --dir DIR --only ea_years,ea_changes`, and serve
 with `--chips DIR/chips`. Needs numpy, rasterio and Pillow.
@@ -58,7 +64,10 @@ def log(*a):
 
 
 def post(url, body, timeout=120):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"content-type": "application/json"})
+    headers = {"content-type": "application/json"}
+    if os.environ.get("CHLOEDB_KEY"):
+        headers["authorization"] = "Bearer " + os.environ["CHLOEDB_KEY"]
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -114,6 +123,60 @@ def pick(a):
                     got += 1
         log(region, len(taken), "places:", {w: sum(1 for t in taken if t["why"] == w) for w, _, _ in groups})
         chosen += taken
+    with open(f"{a.out}/years_places.json", "w", encoding="utf-8") as f:
+        json.dump(chosen, f, ensure_ascii=False)
+
+
+def grow(a):
+    """More places, picked from the server's own rows: the places with a
+    solar farm first (most were built since 2017), then the burned, the
+    mines, the edges of towns, the water, the farms and some at random,
+    none next to a place already picked or already kept in
+    ea_years. Only the new ones go into years_places.json, so the next
+    steps fetch, embed and write only theirs."""
+    def q(sql, params):
+        return post(f"{a.strata}/v1/query", {"sql": sql, "params": params}, 300)
+
+    def rows_of(j):
+        return [dict(zip(j["columns"], r)) for r in j["rows"]]
+
+    cols = "id, region, lat, lon, town, adm1, kind, trees, shrubs, crops, built, water, mine, people, fire_px, last_fire, solar"
+    kept = {r["place"] for r in rows_of(q("SELECT place, COUNT(*) AS n FROM ea_years GROUP BY place LIMIT 10000", {}))}
+    rnd = random.Random(11)
+    chosen = []
+    for region in ("california", "chile"):
+        p = {"r": region}
+        groups = [
+            ("solar farm", 0.25, f"SELECT {cols} FROM ea_places WHERE region = :r AND solar >= 0.05 ORDER BY solar DESC LIMIT 10000"),
+            ("burned", 0.2, f"SELECT {cols} FROM ea_places WHERE region = :r AND last_fire >= 2018 AND last_fire <= 2024 AND trees + shrubs >= 40 ORDER BY fire_px DESC LIMIT 10000"),
+            ("mine", 0.12, f"SELECT {cols} FROM ea_places WHERE region = :r AND mine >= 5 ORDER BY mine DESC LIMIT 10000"),
+            ("edge of a town", 0.15, f"SELECT {cols} FROM ea_places WHERE region = :r AND built >= 8 AND built <= 35 AND people >= 2000 ORDER BY people DESC LIMIT 10000"),
+            ("water", 0.08, f"SELECT {cols} FROM ea_places WHERE region = :r AND water >= 12 ORDER BY water DESC LIMIT 10000"),
+            ("farms", 0.1, f"SELECT {cols} FROM ea_places WHERE region = :r AND crops >= 40 LIMIT 10000"),
+            ("random", 0.1, f"SELECT {cols} FROM ea_places WHERE region = :r LIMIT 10000"),
+        ]
+        old = rows_of(q(f"SELECT {cols} FROM ea_places WHERE region = :r AND id IN (:ids) LIMIT 10000", {**p, "ids": sorted(kept)})) if kept else []
+        taken = list(old)
+        new = []
+
+        def far(c):
+            return all(abs(c["lat"] - t["lat"]) > 0.04 or abs(c["lon"] - t["lon"]) > 0.04 / max(0.2, math.cos(math.radians(c["lat"]))) for t in taken)
+
+        for why, share, sql in groups:
+            cands = [c for c in rows_of(q(sql, p)) if c["id"] not in kept]
+            if why in ("farms", "random"):
+                rnd.shuffle(cands)
+            want, got = round(a.per_region * share), 0
+            for c in cands:
+                if got >= want:
+                    break
+                if far(c):
+                    c["why"] = why
+                    taken.append(c)
+                    new.append(c)
+                    got += 1
+        log(region, len(old), "kept,", len(new), "new:", {w: sum(1 for t in new if t["why"] == w) for w, _, _ in groups})
+        chosen += new
     with open(f"{a.out}/years_places.json", "w", encoding="utf-8") as f:
         json.dump(chosen, f, ensure_ascii=False)
 
@@ -327,15 +390,104 @@ def rows(a):
     log("wrote", ny, "years and", nc, "changes")
 
 
+# --- watch ------------------------------------------------------------------
+
+def newest(lat, lon, since):
+    """The scenes over a point since a day, newest first."""
+    body = {"collections": ["sentinel-2-l2a"], "intersects": {"type": "Point", "coordinates": [lon, lat]},
+            "datetime": f"{since}T00:00:00Z/..", "query": {"eo:cloud_cover": {"lt": 20}},
+            "sortby": [{"field": "properties.datetime", "direction": "desc"}], "limit": 8,
+            "fields": {"include": ["id", "properties.datetime", "properties.eo:cloud_cover", "assets.visual"], "exclude": ["links", "geometry"]}}
+    return post(STAC, body, 60).get("features", [])
+
+
+def watched(a):
+    """The places of the fire watches that asked to be told of a change:
+    each one's years, when it has none yet (a few minutes of the server's
+    time a place), then every `--every` seconds its newest clear picture
+    since its last, in ea_years with the day it was taken
+    (<place>-<YYYYMMDD>), which the app compares with the one before."""
+    os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+    os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif")
+    os.makedirs(f"{a.out}/chips", exist_ok=True)
+    from PIL import Image
+
+    def q(sql, params):
+        j = post(f"{a.strata}/v1/query", {"sql": sql, "params": params}, 120)
+        return [dict(zip(j["columns"], r)) for r in j["rows"]]
+
+    words = None
+    while True:
+        t0 = time.time()
+        try:
+            ws = q("SELECT place, region FROM ea_watches WHERE change = true LIMIT 10000", {})
+            places = {w["place"]: w["region"] for w in ws if w.get("place")}
+            if places and words is None:
+                words = np.stack([unit(post(f"{a.strata}/v1/embed", {"text": f"a satellite photo of {w}", "table": "ea_words", "field": "emb"})["vector"]) for w in LABELS])
+            got = 0
+            for pid, region in places.items():
+                ps = q("SELECT id, region, lat, lon FROM ea_places WHERE id = :id", {"id": pid})
+                if not ps:
+                    continue
+                p = ps[0]
+                have = q("SELECT id, taken FROM ea_years WHERE place = :p ORDER BY taken DESC LIMIT 1", {"p": pid})
+                todo = [] if have else list(YEARS)
+                since = (have[0]["taken"][:10] if have else time.strftime("%Y-%m-%d", time.gmtime(time.time() - 60 * 86400)))
+                # Its newest scene whose square is whole and clear, if newer than its last.
+                for sc in newest(p["lat"], p["lon"], since):
+                    day = sc["properties"]["datetime"][:10]
+                    if have and day <= have[0]["taken"][:10]:
+                        break
+                    key = int(day.replace("-", ""))
+                    path = f"{a.out}/chips/{pid}_{key}.jpg"
+                    try:
+                        img = cut(sc["assets"]["visual"]["href"], p["lat"], p["lon"])
+                    except Exception as e:  # noqa: BLE001
+                        log("read", sc["id"], e)
+                        continue
+                    if img is None or usable(img)[0] > 0.005:
+                        continue
+                    Image.fromarray(img).save(path, "JPEG", quality=86)
+                    if not clear(path):
+                        os.remove(path)
+                        continue
+                    with open(f"{a.out}/chips/{pid}_{key}.json", "w") as f:
+                        json.dump({"place": pid, "year": key, "scene": sc["id"], "taken": sc["properties"]["datetime"], "cloud": sc["properties"].get("eo:cloud_cover")}, f)
+                    todo.append(key)
+                    break
+                for key in todo:
+                    if key < 10000 and fetch_one(a, p, key) not in ("got", "kept"):
+                        continue
+                    path = f"{a.out}/chips/{pid}_{key}.jpg"
+                    if not clear(path):
+                        continue
+                    b = base64.b64encode(open(path, "rb").read()).decode()
+                    v = unit(post(f"{a.strata}/v1/embed", {"image": b, "table": "ea_words", "field": "emb"}, 300)["vector"])
+                    m = json.load(open(f"{a.out}/chips/{pid}_{key}.json"))
+                    label = LABELS[int(np.argmax(words @ v))].removeprefix("a ").removeprefix("an ")
+                    doc = {"id": f"{pid}-{key}", "place": pid, "region": region, "year": key if key < 10000 else key // 10000, "taken": m["taken"][:19] + "Z",
+                           "scene": m["scene"], "cloud": m["cloud"], "ndvi": None, "label": label, "look": [round(float(x), 6) for x in v]}
+                    post(f"{a.strata}/v1/write", {"ops": [{"op": "upsert", "table": "ea_years", "doc": doc}]})
+                    got += 1
+            log(len(places), "watched places,", got, "new pictures in", round(time.time() - t0), "s")
+        except Exception as e:  # noqa: BLE001
+            log("watch:", e)
+        if not a.loop:
+            return
+        time.sleep(max(60, a.every - (time.time() - t0)))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=["pick", "fetch", "embed", "rows"])
+    p.add_argument("step", choices=["pick", "grow", "fetch", "embed", "rows", "watch"])
+    p.add_argument("--loop", action="store_true", help="watch: again every --every seconds")
+    p.add_argument("--every", type=int, default=6 * 3600)
     p.add_argument("--out", required=True)
     p.add_argument("--per-region", type=int, default=150)
     p.add_argument("--parallel", type=int, default=8)
     p.add_argument("--strata", default=os.environ.get("CHLOEDB_URL", "http://127.0.0.1:7700"))
     a = p.parse_args()
-    {"pick": pick, "fetch": fetch, "embed": embed, "rows": rows}[a.step](a)
+    {"pick": pick, "grow": grow, "fetch": fetch, "embed": embed, "rows": rows, "watch": watched}[a.step](a)
 
 
 if __name__ == "__main__":

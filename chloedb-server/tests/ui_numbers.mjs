@@ -572,5 +572,248 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
 }
 
+// OLU-403: signed out, every read but /v1/health's status is refused, and
+// Home's readiness list says what it cannot tell as unknown: no "one
+// server", "No alert rules", "Alerts go nowhere" or "No environment named".
+{
+  const data = await import(new URL("data.js", app));
+  const home = await import(new URL("views/overview.js", app));
+  Object.assign(data.state, { health: { status: "ok" }, whoami: null, alerts: null, cluster: null, system: null });
+  assert.equal(data.roleKnown(), false);
+  const items = home.readyItems();
+  const titles = items.map((x) => x.title).join(" | ");
+  assert.doesNotMatch(titles, /One server|No alert rules|Alerts go nowhere|No environment named/, titles);
+  assert.deepEqual(items.filter((x) => x.ok === false), [], titles);
+  assert.match(titles, /Alert rules: needs a key to tell/);
+  assert.match(titles, /Copies of the data: needs a key to tell/);
+  // Signed in to one server with no rules and no route: said as facts.
+  Object.assign(data.state, { health: { status: "ok", role: "server" }, whoami: { name: "k", scope: "admin", auth: { open: false } }, alerts: { rules: [], routes: [] } });
+  const said = home.readyItems().map((x) => x.title).join(" | ");
+  assert.match(said, /One server: its disk holds the only copy/);
+  assert.match(said, /Alerts go nowhere/);
+  Object.assign(data.state, { health: null, whoami: null, alerts: null });
+}
+
+// OLU-401, OLU-402: during a failover the Cluster page says the copy just
+// elected takes writes within seconds and not to restart it, offers no
+// repair, says the window, and names copies by their --node-name (an
+// operator's pod keeps s1-0).
+{
+  const { state } = await import(new URL("data.js", app));
+  const cl = await import(new URL("views/cluster.js", app));
+  const cap = (w) => ({ capability: { serves_reads: true, takes_writes: !w, no_writes: w || undefined, failover_after_ms: 2000 } });
+  const rep = (port, name, o) => ({ url: `http://127.0.0.1:${port}`, short: `127.0.0.1:${port}`, name, term: 2, ...o });
+  state.cluster = { shards: [{ shard: 1, state: "no_writes", failover: true, majority: true, electing: true, failover_window_ms: 2000, takes_writes: false, serves_reads: true, primary: "http://127.0.0.1:17756",
+    why: "2 of 3 copies answer: s1c was just elected primary", replicas: [
+      rep(17754, "s1a", { status: "down", role: "unknown", last_role: "primary", down_since_ms: 1 }),
+      rep(17755, "s1b", { status: "ok", role: "replica", takes_writes: false, detail: cap("a replica takes no writes from clients") }),
+      rep(17756, "s1c", { status: "ok", role: "primary", takes_writes: true, detail: cap("a replica takes no writes from clients") })] }] };
+  const M = cl.model(state.cluster);
+  const sh = M.shards[0];
+  const a = cl.critAdvice(sh);
+  assert.match(a.next, /^Wait: s1c was just elected primary .*Do not restart it$/);
+  assert.doesNotMatch(a.next + a.cause + a.restore, /127\.0\.0\.1|restart it\.|Fix the cause/);
+  assert.match(a.cause, /A silent primary is given 2 s \(--failover-after-ms\)/);
+  const p = cl.problems(M).find((x) => x.shards.includes(1));
+  assert.equal(p.label, "Shard 1 holds writes while it elects a primary");
+  assert.match(p.impact, /held for seconds, then answered/);
+  assert.equal(p.fix, null, "no repair while it elects");
+  // The same shard once the election is over and the primary cannot write: the old advice.
+  state.cluster.shards[0].electing = false;
+  assert.match(cl.critAdvice(cl.model(state.cluster).shards[0]).next, /on s1c and restart it$/);
+  assert.equal(core.copyName("http://127.0.0.1:17755", state.cluster), "s1b");
+  assert.equal(core.shownName({ short: "s1-0", name: "prod-s1-0" }), "s1-0");
+  assert.equal(core.shownName({ short: "127.0.0.1:8004", name: "" }), "127.0.0.1:8004");
+  assert.match(core.copyTitle("http://127.0.0.1:17755", state.cluster), /^s1b: shard 1, replica · copy 127\.0\.0\.1:17755/);
+  state.cluster = null;
+}
+
+// Query templates (qtemplate.js): a design becomes the query the
+// designer previews, and the CREATE statements it is saved as.
+{
+  const T = await import(new URL("qtemplate.js", app));
+  const t = { table: "products", short: { key: "id", fields: [
+    { name: "id", type: "keyword" }, { name: "title", type: "text", indexed: false }, { name: "body", type: "text" }, { name: "brand", type: "keyword" },
+    { name: "price", type: "float" }, { name: "sold", type: "int" }, { name: "emb", type: "vector", embed: { model: "hash:64" } } ] } };
+  const d = T.blank(t, "Shoe search!");
+  assert.equal(d.name, "shoe_search");
+  assert.deepEqual(d.words.fields, [{ field: "body", weight: 1 }]);
+  // A row shows as a result: its title, a line of text and its facts.
+  assert.deepEqual(d.output.columns, ["id", "title", "body", "brand", "price"]);
+  d.output.columns = ["id", "title"];
+  // One input: one phase, no WITH.
+  assert.equal(T.querySql(d, t), "SELECT id, title, score()\nFROM products\nORDER BY bm25(body, :q, syntax => 'plain', fuzzy => 'auto') DESC\nLIMIT 10");
+  assert.equal(T.profileSql(d, t), "CREATE OR REPLACE RANK PROFILE shoe_search ON products AS\n  SELECT * FROM products ORDER BY bm25(body, :q, syntax => 'plain', fuzzy => 'auto') DESC");
+  // Words and meaning fused; a filter; a boost whose weight is a parameter.
+  d.meaning.on = true; d.meaning.field = "emb";
+  d.filters = [{ field: "price", op: "<=", value: "200" }];
+  d.rank.boosts = [{ kind: "number", field: "sold", w: 0.2, log: true }];
+  const sql = T.querySql(d, t);
+  // One phase: the fused score times the boosts, the filter in WHERE.
+  assert.equal(sql, "SELECT id, title, score()\nFROM products\nWHERE price <= 200\nORDER BY rrf(bm25(body, :q, syntax => 'plain', fuzzy => 'auto'), similarity(emb, :q)) * (1 + :w_sold * ln(1 + coalesce(sold, 0))) DESC\nLIMIT 10");
+  d.candidates = 300;
+  assert.match(T.firstScore(d, t), /similarity\(emb, :q\), depth => 300\)$/);
+  d.fusion = "weighted";
+  assert.equal(T.firstScore(d, t), "0.5 * tmm(bm25(body, :q, syntax => 'plain', fuzzy => 'auto', depth => 300)) + 0.5 * tmm(similarity(emb, :q, depth => 300))");
+  assert.match(T.querySql(d, t), /ORDER BY \(0\.5 \* tmm\(.*\)\) \* \(1 \+ :w_sold/);
+  d.fusion = "rrf"; d.candidates = 100;
+  assert.deepEqual(T.params(d, t, "red shoes"), { q: "red shoes", w_sold: 0.2 });
+  assert.equal(T.profileSql(d, t), "CREATE OR REPLACE RANK PROFILE shoe_search ON products AS\n  SELECT * FROM products ORDER BY rrf(bm25(body, :q, syntax => 'plain', fuzzy => 'auto'), similarity(emb, :q)) * (1 + :w_sold * ln(1 + coalesce(sold, 0))) DESC\nWITH (w_sold => 0.2)");
+  // Retrieval alone: the first phase, cut to the page.
+  assert.match(T.querySql(d, t, { upTo: "retrieval" }), /^SELECT id, title, score\(\)\nFROM products\nWHERE price <= 200\nORDER BY rrf\(/);
+  // Understanding and expansions are options of the first words field's bm25; RM3 reads the query's syntax.
+  d.understand = { values: true, mode: "filter", fields: ["brand", "price"], weight: 0.25 };
+  d.words.synonyms = true; d.words.feedback = 5;
+  assert.equal(T.inputs(d, t)[0].sql, "bm25(body, :q, fuzzy => 'auto', synonyms => 1, expand => 5, understand => 'filter', understand_fields => 'brand, price')");
+  // All the words: a MATCH of the first field.
+  d.words.match = "all";
+  assert.ok(T.where(d, t).includes("MATCH(body, :q, syntax => 'plain', fuzzy => 'auto', synonyms => 1)"));
+  // Saved: a profile, the function apps call, and the design; a blend when on.
+  let st = T.saveStatements(d, t);
+  assert.deepEqual(st.map((s) => s.what), ["ranking", "template", "design"]);
+  assert.match(st[1].sql, /^CREATE OR REPLACE FUNCTION shoe_search\(q TEXT, k INT DEFAULT 10\) RETURNS TABLE OPTIONS \(description = '.*'\) AS\n  SELECT id, title, score\(\) FROM products WHERE MATCH\(body, :q.*\) AND price <= 200 ORDER BY rank_profile\('shoe_search', q => :q\) LIMIT :k$/);
+  const body = st[2].sql.slice(st[2].sql.indexOf(" AS ") + 4);
+  assert.deepEqual(T.normalize(T.ofBody(body), t).rank.boosts, d.rank.boosts);
+  assert.equal(T.ofBody("'blend:{}'"), null);
+  d.blend.on = true; d.blend.cap = { per: "brand", at_most: 2 }; d.blend.dedupe = { on: "emb", threshold: 0.95 };
+  st = T.saveStatements(d, t);
+  assert.deepEqual(st.map((s) => s.what), ["ranking", "blend", "template", "design"]);
+  assert.match(st[1].sql, /^CREATE OR REPLACE BLEND shoe_search_blend AS\n  SOURCES \(\n    results AS \(SELECT id, title, brand, emb, score\(\) FROM products WHERE .* ORDER BY rank_profile\('shoe_search', q => :q\) LIMIT 50\)\n  \)\n  MAX 2 PER brand\n  DEDUPE 0.95 ON emb\n  WITH \(k => 10\)$/);
+  assert.match(st[2].sql, /SELECT \* FROM blend\('shoe_search_blend', q => :q\) LIMIT :k$/);
+  // Blending turned off drops the blend it made.
+  d.blend.on = false;
+  assert.equal(T.saveStatements(d, t, { hadBlend: true })[1].sql, "DROP BLEND IF EXISTS shoe_search_blend");
+  assert.throws(() => T.saveStatements({ ...d, name: "" }, t), /Name the template/);
+  assert.throws(() => T.firstScore({ ...d, words: { ...d.words, on: false }, meaning: { ...d.meaning, on: false } }, t), /needs words or meaning/);
+  // Heads: the first phase's top rows scored again, each head weighted.
+  d.rank.heads = { on: true, depth: 50, fuse: "weighted", norm: "minmax", list: [
+    { kind: "words", field: "body", w: 1 }, { kind: "meaning", field: "emb", w: 0.5 }, { kind: "number", field: "sold", log: true, w: -0.2 },
+    { kind: "model", model: "clicks", prob: true, features: [{ kind: "words", field: "body" }, { kind: "number", field: "price" }], w: 0.3 } ] };
+  let ps = T.phases(d, t);
+  assert.deepEqual(ps.map((p) => [p.name, p.limit]), [["candidates", 50], ["ranked", null]]);
+  assert.equal(ps[1].by, "1 * minmax(bm25(body, :q, syntax => 'plain')) + 0.5 * minmax(similarity(emb, :q)) - 0.2 * minmax(ln(1 + coalesce(sold, 0))) + 0.3 * minmax(sigmoid(gbdt('clicks', bm25(body, :q, syntax => 'plain'), coalesce(price, 0))))");
+  // The heads' phase reads the first's rows; the first keeps its text scores' options (and their rewrites).
+  assert.match(T.querySql(d, t), /^WITH candidates AS \(SELECT \* FROM products WHERE MATCH\(body.*expand => 5.*LIMIT 50\)\nSELECT id, title, score\(\) FROM candidates\nORDER BY 1 \* minmax/);
+  assert.doesNotMatch(T.querySql(d, t).split("\n").slice(1).join("\n"), /expand|understand/);
+  d.rank.heads.fuse = "rrf";
+  assert.equal(T.headsScore(d, t), "rrf(bm25(body, :q, syntax => 'plain'), similarity(emb, :q), ln(1 + coalesce(sold, 0)), sigmoid(gbdt('clicks', bm25(body, :q, syntax => 'plain'), coalesce(price, 0))), weights => [1, 0.5, -0.2, 0.3])");
+  assert.throws(() => T.headsScore({ ...d, rank: { ...d.rank, heads: { ...d.rank.heads, list: [{ kind: "model", model: "m", features: [] }] } } }, t), /needs its features/);
+  // A cross-encoder head over the top 20, the one phase after the first.
+  d.rank.heads = { on: true, depth: 20, fuse: "weighted", norm: "minmax", list: [{ kind: "cross", model: "ms-marco-MiniLM-L-6-v2", fields: ["title"], w: 1 }] };
+  ps = T.phases(d, t);
+  assert.deepEqual(ps.map((p) => [p.name, p.limit]), [["candidates", 20], ["ranked", null]]);
+  assert.equal(ps[1].by, "cross_encoder('ms-marco-MiniLM-L-6-v2', title, :q)");
+  // A design of version 1 with a rerank opens as that head.
+  const old = T.normalize({ ...d, rank: { boosts: [], rerank: { on: true, model: "bge-reranker-base", fields: [], depth: 15 } } }, t);
+  assert.deepEqual([old.rank.heads.on, old.rank.heads.depth, old.rank.heads.list[0].kind, old.rank.rerank.on], [true, 15, "cross", false]);
+  // A blend of several queries: this template's, another template's, a table's, any query.
+  d.rank.heads.on = false;
+  d.blend = { ...d.blend, on: true, boost: 0.1, sources: [
+    { kind: "template", template: "news_search", depth: 15, boost: -0.1 }, { kind: "sql", name: "ads", sql: "SELECT *, score() FROM ads ORDER BY bm25(text, :q) DESC LIMIT 5;" }, { kind: "template", template: "" } ] };
+  const def = T.blendDef(d, t, { saved: true });
+  assert.deepEqual(def.sources.map((s) => [s.name, s.sql.slice(0, 40)]), [["results", "SELECT id, title, brand, emb, score() FR"], ["news_search", "SELECT * FROM news_search(q => :q, k => "], ["ads", "SELECT *, score() FROM ads ORDER BY bm25"]]);
+  assert.equal(def.sources[2].sql, "SELECT *, score() FROM ads ORDER BY bm25(text, :q) DESC LIMIT 5");
+  assert.deepEqual(def.boost, [{ source: "results", by: 0.1 }, { source: "news_search", by: -0.1 }]);
+  assert.match(T.blendSql(def), /BOOST \(results 0\.1, news_search -0\.1\)/);
+}
+
+// GRACE-401: a search's head says how many rows match (a COUNT with the
+// WHERE the words keep), of them how many have the words as typed, and
+// pages by OFFSET; GRACE-402: in Both, a row with every word comes first
+// (rrf's fused rank plus 1 for it), so the ticket that says "billing" and
+// "refund" is not ranked under rows close in meaning only.
+{
+  const tk = { table: "tickets", short: { key: "id", fields: [{ name: "id", type: "keyword" }, { name: "subject", type: "text" }, { name: "emb", type: "vector", dim: 4 }] } };
+  const [, subject, emb] = tk.short.fields;
+  const both = tableView.searchSql(tk, { q: "billing refund", fields: [subject], vec: emb, mode: "both", offset: 20 });
+  assert.equal(both.sql, "SELECT id, subject, score()\nFROM tickets\nORDER BY rrf(bm25(subject, :q, fuzzy => 'auto'), similarity(emb, :v))\n  + CASE WHEN MATCH(subject, :q, fuzzy => 'auto', min => '100%') THEN 1 ELSE 0 END DESC\nLIMIT 20 OFFSET 20");
+  assert.deepEqual(both.count, { sql: "SELECT COUNT(*) FROM tickets\nWHERE MATCH(subject, :q, fuzzy => 'auto', min => 1, min_rows => 20)", params: { q: "billing refund" } });
+  assert.equal(both.exact.sql, "SELECT COUNT(*) FROM tickets\nWHERE MATCH(subject, :q, min => 1, min_rows => 20)");
+  assert.equal(both.all.sql, "SELECT id, subject\nFROM tickets\nWHERE MATCH(subject, :q, fuzzy => 'auto', min => 1, min_rows => 20)");
+  assert.ok(!/OFFSET/.test(tableView.searchSql(tk, { q: "x", fields: [subject], vec: null, mode: "words" }).sql));
+  assert.equal(tableView.searchSql(tk, { q: "x", fields: [], vec: emb, mode: "meaning" }).count, null, "by meaning every row is ranked: nothing to count");
+  assert.equal(tableView.matchLine({ mode: "words", matched: 7436, exact: 5022, rows: 20000, n: 20, offset: 20 }), "21–40 of 7,436 rows that have the words (5,022 with the words as typed, the others with a word a letter or two from one)");
+  assert.equal(tableView.matchLine({ mode: "both", matched: 1, exact: 1, rows: 9, n: 1 }), "1–1 of 1 row that has the words, those with every word first, then by words and meaning");
+  assert.match(tableView.matchLine({ mode: "meaning", rows: 20000, n: 20 }), /^1–20 · by meaning, every one of the 20,000 rows is ranked/);
+  // GRACE-403: the Data tab's CSV of a filtered list reads every row its
+  // WHERE keeps (no LIMIT), not the 50 on screen.
+  assert.equal(tableView.dataSql(tk, tk.short.fields.slice(0, 2), { where: " status = 'open' ", by: "id", desc: true }), "SELECT id, subject FROM tickets WHERE status = 'open' ORDER BY id DESC");
+  assert.equal(tableView.dataSql(tk, tk.short.fields.slice(0, 2), { limit: 50, offset: 100 }), "SELECT id, subject FROM tickets LIMIT 50 OFFSET 100");
+  const { jsonLines } = big;
+  assert.equal(jsonLines(["id", "tags"], [["t1", ["a", "b"]], ["t2", null]]), '{"id":"t1","tags":["a","b"]}\n{"id":"t2","tags":null}\n');
+}
+
+// GRACE-404: the builder groups a time by week (date_trunc, Monday
+// weeks), measures the median hours between two times and each group's
+// share of its week, in time order; GRACE-417: "is one of" with two picks
+// turned to "is not" is NOT IN of both, not one value "open, new".
+{
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => JSON.stringify({ tables: [{ table: "tickets", short: { key: "id", table: "tickets", fields: [
+    { name: "id", type: "keyword" }, { name: "status", type: "keyword" }, { name: "priority", type: "keyword" }, { name: "subject", type: "text" }, { name: "created", type: "timestamp" }, { name: "solved", type: "timestamp" }] } }] }) });
+  const { tables } = await import(new URL("catalog.js", app));
+  await tables(true);
+  const b = await import(new URL("views/builder.js", app));
+  const st = { table: "tickets", signals: [], fusion: "weighted", filters: [], any: false, boosts: [], sort: null, columns: [], score: true, limit: 1000,
+    group: { by: ["created", "priority"], bins: { created: "week" }, measures: [{ fn: "count" }, { fn: "median", field: "hours:created:solved" }, { fn: "share", within: "created" }], min: 0 } };
+  assert.equal(b.toSql(st).sql, "SELECT date_trunc('week', created) AS created_week, priority, COUNT(*) AS n, MEDIAN(date_diff('minute', created, solved) / 60.0) AS median_hours_to_solved, ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY date_trunc('week', created)), 1) AS pct_of_created\nFROM tickets\nGROUP BY date_trunc('week', created), priority\nORDER BY date_trunc('week', created), priority\nLIMIT 1000;");
+  const month = b.toSql({ ...st, group: { by: ["created"], bins: { created: "month" }, measures: [{ fn: "share" }], min: 0 } }).sql;
+  assert.match(month, /^SELECT date_trunc\('month', created\) AS created_month, ROUND\(100\.0 \* COUNT\(\*\) \/ SUM\(COUNT\(\*\)\) OVER \(\), 1\) AS pct\n/);
+  assert.deepEqual(b.hoursOf("hours:created:solved"), { from: "created", to: "solved" });
+  assert.equal(b.hoursOf("solved"), null);
+  const picks = b.changeOp({ field: "status", op: "in", value: "open, new" }, "!=");
+  assert.equal(picks.op, "notin");
+  assert.match(b.toSql({ ...st, group: null, columns: ["id"], filters: [picks] }).sql, /\nWHERE status NOT IN \('open', 'new'\)\n/);
+  assert.equal(b.changeOp({ field: "status", op: "notin", value: "open, new" }, "=").op, "in");
+  assert.equal(b.changeOp({ field: "status", op: "in", value: "open" }, "!=").op, "!=", "one pick stays one value");
+  assert.equal(b.changeOp({ field: "status", op: "in", value: "a, b" }, "prefix").value, "");
+  const { operators } = await import(new URL("catalog.js", app));
+  assert.ok(operators({ name: "status", type: "keyword" }).some(([op]) => op === "notin"));
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => "{}" });
+}
+
+// GRACE-405: a column whose values list tags ("billing refund web_form")
+// is found and split at import, the separator shown and changeable; names
+// and sentences are not split.
+{
+  const tags = ["billing refund", "refund web_form", "billing", "email us", "billing email", "us", "web_form email", "refund us", "email", "billing us"];
+  assert.equal(imp.listSeparator(tags), " ");
+  assert.equal(imp.listSeparator(["a;b", "b;c", "a", "c;a"]), ";");
+  assert.equal(imp.listSeparator(["Ana Lima", "Bo Chen", "Cy Diaz", "Di Eng", "Ed Fox"]), null);
+  assert.equal(imp.listSeparator(["Please refund me.", "My card was charged twice!", "Where is it?", "Help now please"]), null);
+  assert.deepEqual(imp.LIST_SEPS.map(([s]) => s), [" ", ",", ";", "|"]);
+  assert.equal(imp.splitLists('id,tags,name\n1,billing refund,"Lima, Ana"\n2,email,Bo\n3,,Cy\n', { tags: " " }), 'id,tags,name\n1,billing|refund,"Lima, Ana"\n2,email,Bo\n3,,Cy\n');
+  assert.equal(imp.splitLists("id,tags\n1,a|b;c\n", { tags: ";" }), 'id,tags\n1,"[""a|b"",""c""]"\n', "an item that holds a | is a JSON array");
+}
+
+// GRACE-406: a chart splits its series by a column, a line per value
+// (the most rows first), a missing point NULL; whole days read "18 May".
+{
+  const r = await import(new URL("results.js", app));
+  const cols = ["created_week", "priority", "n"];
+  const rows = [["2026-11-02T00:00:00Z", "high", 3], ["2026-11-02T00:00:00Z", "low", 5], ["2026-11-09T00:00:00Z", "high", 4], ["2026-11-09T00:00:00Z", "urgent", 1], ["2026-11-09T00:00:00Z", "low", 2]];
+  assert.deepEqual(r.chartSeries(cols, rows, { x: "created_week", ys: ["n"], split: "priority" }),
+    { names: ["high", "low", "urgent"], pts: [{ x: "2026-11-02T00:00:00Z", ys: [3, 5, null] }, { x: "2026-11-09T00:00:00Z", ys: [4, 2, 1] }], left: 0 });
+  assert.deepEqual(r.chartSeries(cols, rows, { x: "created_week", ys: ["n"] }).names, ["n"]);
+  const many = Array.from({ length: r.MAX_SERIES + 3 }, (_, i) => ["w", `p${i}`, i]);
+  assert.equal(r.chartSeries(cols, many, { x: "created_week", ys: ["n"], split: "priority" }).left, 3);
+  assert.equal(r.timeLabel([Date.UTC(2026, 4, 18)])(Date.UTC(2026, 4, 18)), "18 May");
+}
+
+// GRACE-407: a team view is a row of cc_views, its id its name's slug
+// (saving the same name replaces it), its chart and the builder's state
+// in spec; a missing table reads as no views yet.
+{
+  const v = await import(new URL("views/views.js", app));
+  const doc = v.viewDoc({ name: " Monday numbers ", kind: "builder", sql: "SELECT 1 ", params: { a: 1 }, chart: { x: "w", ys: ["n"], split: "p", kind: "line" }, by: "grace", at: Date.UTC(2026, 10, 20) });
+  assert.deepEqual(doc, { id: "monday_numbers", name: "Monday numbers", about: "", kind: "builder", sql: "SELECT 1", spec: { params: { a: 1 }, chart: { x: "w", ys: ["n"], split: "p", kind: "line" }, state: null }, by: "grace", at: "2026-11-20T00:00:00.000Z" });
+  assert.throws(() => v.viewDoc({ name: " ", sql: "SELECT 1" }), /needs a name/);
+  assert.throws(() => v.viewDoc({ name: "x", sql: "" }), /needs a query/);
+  assert.ok(v.noTable(new ApiError(404, "no such table: cc_views", { error_code: "table_not_found" })));
+  assert.ok(!v.noTable(new ApiError(404, "no such table: tickets", { error_code: "table_not_found" })));
+  assert.ok(!v.noTable(new Error("no such table: cc_views")));
+  assert.match(v.TABLE_SQL, /^CREATE TABLE cc_views \(id KEYWORD PRIMARY KEY, .*spec JSON/);
+  assert.equal(owners.ownerOf("cc_views")?.owner, "Command center", "the views table is the command center's, folded with the apps' tables");
+}
+
 console.log("ok");
 process.exit(0);

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html" aria-current="page">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Operate a cluster</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-layout">The layout</a></li><li><a href="#tokens">Tokens</a></li><li><a href="#start-the-copies">Start the copies</a></li><li><a href="#start-the-coordinator">Start the coordinator</a></li><li><a href="#check-its-health">Check its health</a></li><li><a href="#keys-for-clients">Keys for clients</a></li><li><a href="#load-and-search">Load and search</a></li><li><a href="#kill-a-primary">Kill a primary</a></li><li><a href="#checkpoints">Checkpoints</a></li><li><a href="#upgrade-one-server-at-a-time">Upgrade one server at a time</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -278,6 +280,7 @@ chloedb_replica_in_sync{replica=&quot;http://127.0.0.1:7723&quot;} 1
 chloedb_replica_behind{replica=&quot;http://127.0.0.1:7722&quot;} 0
 chloedb_replica_behind{replica=&quot;http://127.0.0.1:7723&quot;} 0</pre>
 <p>Scrape the coordinator and each copy as targets of their own, with the key in Prometheus's <code>authorization.credentials_file</code>. The coordinator's <code>/metrics</code> has its view of the cluster, a series a shard, the state its built-in alerts judge: <code>chloedb_cluster_copies</code>, <code>chloedb_cluster_copies_up</code> and <code>chloedb_cluster_copies_down</code>, <code>chloedb_cluster_copies_in_sync</code>, <code>chloedb_cluster_shard_majority</code> and <code>chloedb_cluster_shard_primary</code> (1 or 0), <code>chloedb_cluster_shard_term</code>, <code>chloedb_cluster_primary_changes_total</code> (its failovers and handovers), and <code>chloedb_cluster_copy_up{shard, copy, url, role}</code> a copy. A copy's own series carry no shard label: its <code>chloedb_copy_info{shard, node, role} 1</code> says which shard it serves, to join on, or add the label in the scrape config. <code>chloedb_docs</code> and <code>chloedb_segments</code> count every table of a copy's database (<code>chloedb_docs</code> is <code>/v1/health</code>'s <code>rows</code>), and <code>chloedb_table_docs{table}</code> each one. The coordinator's alerts go to a webhook, PagerDuty or Opsgenie (<a href="server.html#alerts">alerts</a>); <code>--alert-webhook URL</code> sends them all to one URL.</p>
+<p>To page from Prometheus instead, or as well, start from the kit in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-server/deploy/monitoring"><code>chloedb-server/deploy/monitoring</code></a>: <code>prometheus.yml</code> scrapes this page's coordinator and six copies with the key in a file, <code>chloedb-rules.yml</code> holds an alerting rule for each of the servers' built-in alerts (the same conditions and defaults, each with its runbook as <code>runbook_url</code> and the copy's <code>--node-name</code> in the copy-down alert), plus one for a target Prometheus cannot scrape, which sees a coordinator that is down, and <code>grafana-dashboard.json</code> is a dashboard to import (Dashboards, New, Import), its data source asked for on import. Check the rules with <code>promtool check rules chloedb-rules.yml</code> after changing a threshold or the disk rules' mount point.</p>
 <h2 id="load-and-search">Load and search<a class="anchor" href="#load-and-search" aria-label="Link to this section">#</a></h2>
 <p>Making a table takes the admin token, and runs on every shard:</p>
 <pre data-lang="sh">curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; -H &#x27;content-type: application/json&#x27; \
@@ -315,10 +318,12 @@ python3 -c &#x27;import json; r = json.load(open(&quot;answer.json&quot;)); prin
 <pre data-lang="json">{&quot;error&quot;: &quot;127.0.0.1:7721 (shard 0): tcp connect error&quot;, &quot;error_code&quot;: &quot;unavailable&quot;, &quot;retryable&quot;: true,
  &quot;hint&quot;: &quot;a copy, a shard or a hosted model did not answer: send it again after Retry-After seconds&quot;,
  &quot;docs&quot;: &quot;https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover&quot;}</pre>
-<p>The loop above sends it again, with the same idempotency key, until a new primary takes it. Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (<code>--write-acks all</code>, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.</p>
+<p>The loop above sends it again, with the same idempotency key, until a new primary takes it.</p>
+<p>A primary that freezes rather than dies (a stopped process, a long pause, a disk that hangs) stalls a write longer than a kill does. Its copies elect another one within about two seconds as before, but the elected copy takes writes only once the old primary's lease has run out (about two seconds more with <code>--failover-after-ms 2000</code>), and a write sent meanwhile is held rather than refused: in a drill on this page's cluster, with the primary stopped by <code>kill -STOP</code> under a steady writer, one write was held 6.8 s and then answered 200, and none failed. For those few seconds the coordinator shows the new primary as taking no writes. Leave it alone: it is waiting out the lease, and restarting it while the old primary is still frozen leaves the shard one copy of three, with no majority and no writes until a second copy answers.</p>
+<p>Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (<code>--write-acks all</code>, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.</p>
 <p>The coordinator now sees <code>s0a</code> down and another copy as shard 0's primary:</p>
 <pre data-lang="sh">python3 cluster.py</pre>
-<pre data-lang="text" data-title="Output" class="output">shard 0: degraded, 2 of 3 copies answer (127.0.0.1:7721 down); the shard serves reads and takes writes; one more copy down stops its reads and writes; primary s0...
+<pre data-lang="text" data-title="Output" class="output">shard 0: degraded, 2 of 3 copies answer (s0a down); the shard serves reads and takes writes; one more copy down stops its reads and writes; primary s0...
   s0a    down
 ...
 shard 1: ok, 3 of 3 copies answer; primary s1a

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from JavaScript</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/javascript.md">docs/chloedb/javascript.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#install">Install</a></li><li><a href="#a-database-in-the-process">A database in the process</a></li><li><a href="#a-server-from-javascript">A server from JavaScript</a></li><li><a href="#a-search-box-in-a-web-app">A search box in a web app</a></li><li><a href="#search-on-the-device">Search on the device</a></li><li><a href="#bun-and-deno">Bun and Deno</a></li><li><a href="#tests">Tests</a></li></ol></details>
     <div class="doc-body">
@@ -191,6 +193,7 @@ for (const row of await db.search(&quot;dragon&quot;)) console.log(row.id, row.t
 const r = await db.query(&quot;SELECT year, COUNT(*) FROM books GROUP BY year&quot;);
 r.rows;          // [[1999, 1]]
 await db.close();</pre>
+<p><span class="since unreleased">since 0.3.10 (unreleased)</span> The schema's <code>emb</code> field names <code>potion-retrieval-32M</code>, a model ChloeDB knows: on a machine that does not have it yet, the first <code>open</code> downloads it once into the models folder (about 130 MB, from its pinned revision on Hugging Face, each file checked against its SHA-256) and says so on stderr. <code>CHLOEDB_FETCH_MODELS=0</code> turns that off (then <code>chloedb-server fetch-model potion-retrieval-32M</code> fetches it), and <code>HF_ENDPOINT</code> names a mirror of Hugging Face.</p>
 <p><code>open(path, {schema})</code> opens the file, or creates it with the schema when it does not exist; <code>Database.create(path, schema)</code> and <code>Database.open(path)</code> do one or the other. A schema is an object, JSON text or the path of a JSON file, in the <a href="server.html#schemas">short form or the long one</a>. <code>directory: true</code> keeps a database as a directory of segment files, <code>models</code> is where embedded fields' models are (<code>$CHLOEDB_MODELS</code>, else <code>~/.local/share/chloedb/models</code> (or <code>~/.local/share/strata/models</code>, on a machine that has that folder from before the rename and no <code>~/.local/share/chloedb</code>; before 0.3.2, always); <code>chloedb-server fetch-model</code> fetches them), and <code>threads</code> how many cores index builds and each query use (every core by default).</p>
 <p>Every call answers a promise and runs on a worker thread of Node's pool, so queries and writes leave the event loop free and many run at once. Writes made at once wait for each other and share commits (one disk flush for all those waiting), so none fails as busy. One process at a time may have a database open to write it, and only once: a second <code>open</code> of the file, by another process or by the same one, gets "busy: the database is open elsewhere", so a program opens it once and shares the <code>Database</code> (in a dev server that runs modules again, <a href="#the-same-in-the-process">on <code>globalThis</code></a>). Others can open it with <code>Database.open(path, { readOnly: true })</code> to read it while it is written, the workers of a cluster, say: each query sees the writer's commits so far, every write fails, and <code>refresh()</code> looks for new commits at once (<a href="design.html#readers-in-other-processes">how readers follow the writer</a>). For writes from several processes, serve it with chloedb-server.</p>
 <h3 id="querying">Querying<a class="anchor" href="#querying" aria-label="Link to this section">#</a></h3>

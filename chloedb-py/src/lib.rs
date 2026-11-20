@@ -218,6 +218,19 @@ fn params(db: &Db, j: &[(String, Json)], sql: &str) -> chloedb::Result<Params> {
     if j.is_empty() {
         return Ok(Params::new());
     }
+    // Only an object (`{"embed": ...}` and the like) needs the tables the
+    // statement reads, which takes parsing it: numbers, text and lists of
+    // them do not, so `UPDATE ... WHERE id = :id` is not parsed here.
+    fn has_object(v: &Json) -> bool {
+        match v {
+            Json::Object(_) => true,
+            Json::Array(xs) => xs.iter().any(has_object),
+            _ => false,
+        }
+    }
+    if !j.iter().any(|(_, v)| has_object(v)) {
+        return params_in(db, j, None);
+    }
     let read = chloedb::query::tables::read_by_sql(sql);
     let from = read.iter().find(|t| db.storage().table(t).is_some()).cloned();
     // A `{"embed"}` or `{"vector_of"}` that names no field is the field the
@@ -1376,6 +1389,18 @@ fn upgrade(py: Python<'_>, path: PathBuf) -> PyResult<Option<(PathBuf, usize, u6
     Ok(py.detach(|| chloedb::upgrade::upgrade(&path)).map_err(err)?.map(|u| (u.old, u.tables, u.rows)))
 }
 
+/// Downloads model `name` (one ChloeDB knows, such as
+/// `potion-retrieval-32M`) into `models` (default: the models directory),
+/// at its pinned revision, each file checked against its SHA-256; returns
+/// its directory. Opening a database whose schema names the model does
+/// this by itself.
+#[pyfunction]
+#[pyo3(signature = (name, models=None))]
+fn fetch_model(py: Python<'_>, name: String, models: Option<PathBuf>) -> PyResult<PathBuf> {
+    let models = models.unwrap_or_else(chloedb::embed::models_dir);
+    py.detach(|| chloedb::fetch::fetch(&name, &models)).map_err(err)
+}
+
 /// The `CREATE TABLE` statement that makes a table of `schema` (JSON
 /// text, either form): how a frame's store adds a table to an open
 /// database.
@@ -1517,6 +1542,9 @@ impl SliceDevice {
 
 #[pymodule]
 fn _chloedb(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // A schema that names a model ChloeDB knows works on a new machine:
+    // the model is downloaded on first use (CHLOEDB_FETCH_MODELS=0 stops it).
+    chloedb::fetch::set_auto_fetch(true);
     m.add_class::<Database>()?;
     m.add_class::<SliceDevice>()?;
     #[cfg(feature = "datafusion")]
@@ -1525,6 +1553,7 @@ fn _chloedb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(codebook_report, m)?)?;
     m.add_function(wrap_pyfunction!(upgrade, m)?)?;
     m.add_function(wrap_pyfunction!(create_sql, m)?)?;
+    m.add_function(wrap_pyfunction!(fetch_model, m)?)?;
     m.add("ChloeDBError", m.py().get_type::<ChloeDBError>())?;
     // Its name when ChloeDB was called Strata: the same class.
     m.add("StrataError", m.py().get_type::<ChloeDBError>())?;

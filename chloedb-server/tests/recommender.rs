@@ -80,6 +80,16 @@ async fn a_recommender_over_http() {
     let (status, a) = post("/v1/query", json!({"sql": "SELECT item, next FROM recommend('shop', 'u1', k => 1)"})).await;
     assert_eq!(status, 200, "{a}");
     assert_eq!(a["rows"], json!([["stove", 1]]), "{a}");
+    // The counts' values written in place merge into their segments
+    // (NADIA-301): the server's way to restore recommend's latency.
+    let (status, a) = post("/v1/admin/optimize", json!({})).await;
+    assert_eq!(status, 200, "{a}");
+    for f in ["merges", "segments_merged", "docs_merged", "docs_dropped", "bytes_written", "took_ms"] {
+        assert!(a[f].is_number(), "{f}: {a}");
+    }
+    let (status, a) = post("/v1/query", json!({"sql": "SELECT item, next FROM recommend('shop', 'u1', k => 1)"})).await;
+    assert_eq!(status, 200, "{a}");
+    assert_eq!(a["rows"], json!([["stove", 1]]), "{a}");
     // A key limited to tables reads recommendations only with read on the counts.
     let limited = |tables: &[&str]| Principal {
         name: "k".into(),
