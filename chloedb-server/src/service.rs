@@ -4913,6 +4913,12 @@ impl Service {
             // An INSERT of new rows into a table the key appends to: its
             // grant, checked below with the tables it names.
             true => {}
+            // Any other write of a table the key appends to: its grant
+            // there inserts new rows only, and the refusal says so.
+            false if matches!(&command, Command::Write { table, .. } if who.appends(table) && who.table_scope(table).is_none_or(|s| s < Scope::Write)) => {
+                let Command::Write { table, .. } = &command else { unreachable!() };
+                return Err(ApiError { code: None, status: 403, message: format!("the key {:?} has a grant of append on {table}, which inserts new rows only: an UPDATE, a DELETE or a write that replaces a row needs the write scope there", who.name) });
+            }
             false => who.may(need, &format!("a {} statement", match need { Scope::Append | Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?,
         }
         if who.limited() {

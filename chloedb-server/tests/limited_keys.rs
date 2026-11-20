@@ -532,6 +532,10 @@ async fn an_append_key_inserts_and_reads_nothing() {
         let (s, j) = call(&base, "POST", "/v1/sql", k, Some(json!({"sql": sql}))).await;
         if sql.contains("products") {
             assert_eq!(s, 403, "{sql}: {j}");
+        } else if sql.contains(" SELECT ") && s == 400 {
+            // A server that runs no INSERT ... SELECT refuses it before
+            // any key is weighed, and reads nothing either way.
+            assert!(j["error"].as_str().is_some_and(|e| e.contains("not supported")), "{sql}: {j}");
         } else {
             refused(s, &j, sql);
         }
