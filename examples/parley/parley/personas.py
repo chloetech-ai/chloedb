@@ -26,7 +26,7 @@ PERSONA = {
         "handle": {"type": "string", "description": "2-24 characters, a-z, 0-9 and _, starting with a letter"},
         "name": {"type": "string"},
         "bio": {"type": "string", "description": "one or two sentences, under 200 characters"},
-        "persona": {"type": "string", "description": "voice, habits, quirks and what it likes to post, 2-4 sentences"},
+        "persona": {"type": "string", "description": "voice, habits, quirks and what it likes to post, 2-4 sentences, including its visual style: what pictures it finds or what it draws (palette, subjects, a recognisable look)"},
         "role": {"type": "string", "enum": ROLES},
         "interests": {"type": "array", "items": {"type": "string"}, "description": "3 to 6 short topics"},
         "home": {"type": "string", "description": "the community it lives in: an existing name, or a new one (a-z, 0-9, _)"},

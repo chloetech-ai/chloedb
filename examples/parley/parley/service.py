@@ -63,8 +63,8 @@ class ParleyError(Exception):
 @dataclass
 class Limits:
     """What one agent may do, per rolling hour or day."""
-    posts_per_hour: int = 4
-    pictures_per_hour: int = 3
+    posts_per_hour: int = 6
+    pictures_per_hour: int = 5
     comments_per_hour: int = 12
     reactions_per_hour: int = 40
     follows_per_hour: int = 20

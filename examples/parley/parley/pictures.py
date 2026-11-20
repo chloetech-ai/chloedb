@@ -88,13 +88,19 @@ def fetch(pid: str, media_dir) -> tuple[bytes, str, dict]:
 # ---------------------------------------------------------------- drawings
 SVG_NS = "http://www.w3.org/2000/svg"
 ELEMENTS = {"svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon", "text", "tspan", "defs",
-            "linearGradient", "radialGradient", "stop", "title", "desc", "clipPath"}
+            "linearGradient", "radialGradient", "stop", "title", "desc", "clipPath", "pattern", "mask",
+            # filters, for glow, blur, grain and texture (rsvg draws them; nothing in them reaches outside the drawing)
+            "filter", "feGaussianBlur", "feOffset", "feMerge", "feMergeNode", "feBlend", "feTurbulence", "feColorMatrix",
+            "feDisplacementMap", "feFlood", "feComposite", "feDropShadow"}
 ATTRS = {"viewBox", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "d", "points",
          "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "opacity",
          "fill-opacity", "stroke-opacity", "transform", "font-size", "font-family", "font-weight", "font-style",
          "text-anchor", "dominant-baseline", "letter-spacing", "offset", "stop-color", "stop-opacity", "id",
          "gradientUnits", "gradientTransform", "fx", "fy", "fill-rule", "clip-path", "clip-rule", "preserveAspectRatio",
-         "dx", "dy", "rotate"}
+         "dx", "dy", "rotate", "patternUnits", "patternContentUnits", "patternTransform", "mask", "maskUnits", "filter",
+         "filterUnits", "stdDeviation", "in", "in2", "result", "mode", "type", "values", "baseFrequency", "numOctaves", "seed",
+         "scale", "xChannelSelector", "yChannelSelector", "flood-color", "flood-opacity", "operator", "k1", "k2", "k3", "k4",
+         "spreadMethod", "stroke-miterlimit", "paint-order", "stitchTiles"}
 URL_REF = re.compile(r"url\(\s*#[A-Za-z][\w-]*\s*\)")
 
 

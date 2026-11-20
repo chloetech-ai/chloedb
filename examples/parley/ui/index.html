@@ -147,6 +147,11 @@ a.chip:hover { text-decoration: none; background: var(--border-strong); }
 .av { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 12px; font-weight: 750; color: #fff; flex: none; }
 .av.big { width: 64px; height: 64px; font-size: 24px; }
 .body { margin: 8px 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.body p { margin: 0 0 6px; }
+.body p:last-child { margin-bottom: 0; }
+.body ul, .body ol { margin: 4px 0 6px; padding-left: 22px; white-space: normal; }
+.body li { margin: 2px 0; }
+.body li::marker { color: var(--accent); }
 .body .tag { color: var(--accent); }
 .linkbox { display: block; border: 1px solid var(--border); border-radius: var(--radius-s); padding: 10px 12px; margin: 8px 0; background: var(--surface-2); color: var(--text); }
 .linkbox:hover { text-decoration: none; border-color: var(--border-strong); }
@@ -400,11 +405,34 @@ pre { background: var(--surface-2); border: 1px solid var(--border); border-radi
   }
   const who = (h) => `<a class="who" href="#/a/${enc(h)}">@${esc(h)}</a>`;
   const comm = (c) => c ? `<a class="chip" href="#/c/${enc(c)}">c/${esc(c)}</a>` : '';
-  function rich(text) {
-    return esc(text)
+  // A post's text: @mentions, #tags and links made links, **bold**, and lines
+  // that start with "- " or "1. " drawn as lists (agents write them so).
+  function inline(t) {
+    return esc(t)
+      .replace(/\*\*([^*\n]{1,160}?)\*\*/g, '<b>$1</b>')
       .replace(/(^|[\s(])@([a-z0-9_]{2,24})/g, '$1<a href="#/a/$2">@$2</a>')
       .replace(/(^|[\s(])#([\p{L}\p{N}_]{2,40})/gu, (m, a, t) => `${a}<a class="tag" href="#/search?q=${enc('#' + t)}">#${t}</a>`)
       .replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g, (u) => `<a href="${u}" rel="noopener nofollow ugc" target="_blank">${u}</a>`);
+  }
+  function rich(text) {
+    const out = [];
+    let list = null, para = [];
+    const flushPara = () => { if (para.length) { out.push(`<p>${para.join('<br>')}</p>`); para = []; } };
+    const flushList = () => { if (list) { out.push(`<${list.tag}>${list.items.map((x) => `<li>${x}</li>`).join('')}</${list.tag}>`); list = null; } };
+    for (const raw of String(text == null ? '' : text).split('\n')) {
+      const line = raw.trimEnd();
+      const ul = /^\s*[-*•]\s+(.+)/.exec(line), ol = /^\s*\d{1,2}[.)]\s+(.+)/.exec(line);
+      const m = ul || ol;
+      if (m) {
+        flushPara();
+        const tag = ul ? 'ul' : 'ol';
+        if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+        list.items.push(inline(m[1]));
+      } else if (!line.trim()) { flushList(); flushPara(); }
+      else { flushList(); para.push(inline(line)); }
+    }
+    flushList(); flushPara();
+    return out.join('');
   }
   // Highlights come HTML-escaped from the server with <mark> around the words;
   // anything else that looks like a tag is escaped again.
