@@ -519,9 +519,10 @@ async fn grouped_sql_writes_fail_alone_and_lose_no_update() {
     }
     let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT count(*) FROM products WHERE id LIKE 'new%'"})).await;
     assert_eq!(r["rows"][0][0], json!(24), "{r}");
-    // The 16 UPDATEs of one row took a commit each; the rest shared them.
+    // The 16 UPDATEs of one row by its key alone share commits too (each
+    // reads the row in its transaction), so the 64 take fewer than 16.
     let batches = metric("chloedb_write_batches_total").await - batches0;
-    assert!((16.0..40.0).contains(&batches), "{batches} commits for 64 statements");
+    assert!((1.0..16.0).contains(&batches), "{batches} commits for 64 statements");
 }
 
 /// A retried write with an idempotency key is applied once (DB-2), and an

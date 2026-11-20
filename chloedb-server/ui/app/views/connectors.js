@@ -353,7 +353,7 @@ function render(page) {
           h("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, h("b", {}, n), pill("warn", "no report")),
           h("div", { class: "small dim" }, `This server has heard nothing from follower ${n} since it started: it is down, or an older follower, or its key may not report (its log says so). Last applied${applied ? ` ${applied.lsn}, ${applied.updated ? fmt.ago(Date.parse(applied.updated)) : "–"}` : ": nothing yet"}.`));
       }
-      const [k, text] = f.silent && f.state !== "stopped" && f.state !== "failed" ? ["failing", `silent ${fmt.dur(f.age_ms / 1000)}`] : PG_STATE[f.state] || ["info", f.state];
+      const [k, text] = f.silent && f.state !== "stopped" && f.state !== "failed" ? ["failing", `silent ${fmt.dur(f.age_ms / 1000)}`] : f.state === "following" && f.held_tables ? ["warn", `following, ${f.held_tables} held`] : PG_STATE[f.state] || ["info", f.state];
       const lag = f.lag_s ?? (f.lag_ms || 0) / 1000;
       const kv = (label, val, title) => h("div", { class: "stack", style: { gap: "1px" }, title: title || null }, h("span", { class: "tiny dim" }, label), h("span", { class: "mono" }, val ?? "–"));
       return h("div", { class: "stack", style: { gap: "6px" } },
@@ -366,8 +366,12 @@ function render(page) {
           kv("applied", f.applied_lsn, "The end of the last Postgres transaction written to ChloeDB"),
           kv("confirmed", f.confirmed_lsn, "What the follower told Postgres it has (past transactions of other tables too): the slot keeps the WAL after it"),
           kv("Postgres at", f.postgres_lsn, f.postgres_error ? `Not asked: ${f.postgres_error}` : "Postgres's own WAL position (pg_current_wal_lsn()), as the follower last asked"),
-          kv("tables", fmt.n(f.tables || 0)), kv("transactions", fmt.si(f.transactions || 0), "Applied since the follower started"),
+          kv("tables", f.held_tables ? `${fmt.n(f.tables || 0)}, ${fmt.n(f.held_tables)} held` : fmt.n(f.tables || 0), "The tables it follows; a table held failed, and is tried again while the others follow"), kv("transactions", fmt.si(f.transactions || 0), "Applied since the follower started"),
           kv("last report", fmt.ago(Date.now() - (f.age_ms || 0)))),
+        // Tables it holds (ROSA-404): each failed and is tried again, while
+        // the others follow.
+        ...(f.table_states || []).filter((t) => t.state === "held").map((t) => h("div", { class: "small error", style: { overflowWrap: "anywhere" } }, icon("bad"), " ",
+          h("b", {}, t.table), ` held ${t.since_ms ? fmt.ago(t.since_ms) : ""}${t.attempts ? ` (${t.attempts} ${t.attempts === 1 ? "try" : "tries"} since, next in ${fmt.dur(t.retry_in_s || 0)})` : ""}: ${t.error}`)),
         f.error ? h("div", { class: "small error", style: { overflowWrap: "anywhere" } }, f.error) : f.last_error ? h("div", { class: "small dim", style: { overflowWrap: "anywhere" } }, `Last error ${fmt.ago(f.last_error.at_ms)}: ${f.last_error.message}`) : null,
         f.postgres_error && !f.error ? h("div", { class: "small warn" }, `Postgres's position could not be asked: ${f.postgres_error}`) : null,
         marks.length ? h("details", {}, h("summary", { class: "small dim" }, `Its marks in _sources (${marks.length})`),
@@ -376,7 +380,7 @@ function render(page) {
     return card({
       title: "Postgres followers", sub: "chloedb-server follow-postgres, as each says every 2 s",
       body: h("div", { class: "stack small", style: { gap: "14px" } }, all.map(one),
-        h("div", { class: "dim tiny" }, "Its lag is in /metrics (chloedb_follow_lag_seconds, chloedb_follow_behind_bytes, chloedb_follow_up) and the built-in alert follow-behind (\"A follower is behind its source\"), which a follower that stops reporting fires too.")),
+        h("div", { class: "dim tiny" }, "Its lag is in /metrics (chloedb_follow_lag_seconds, chloedb_follow_behind_bytes, chloedb_follow_up, and per table chloedb_follow_table_up, chloedb_follow_table_lag_seconds, chloedb_follow_table_error_info) and the built-in alert follow-behind (\"A follower is behind its source\"), which a follower that stops reporting fires too.")),
     });
   }
 

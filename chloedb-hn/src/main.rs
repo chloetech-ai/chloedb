@@ -164,6 +164,12 @@ struct ServeArgs {
     /// An index an experiment's arm may read instead of hn_stories, NAME=TABLE (a table of stories built another way); again for more.
     #[arg(long = "experiment-index")]
     experiment_index: Vec<String>,
+    /// Log the page's searches (the first page of stories by the best match) and the stories opened from them, for the Experiments app to value rankings on; this share of them shows its top in a random order (0: none logged).
+    #[arg(long, env = "CHLOEDB_HN_EXPLORE_SHARE", default_value_t = 0.0)]
+    explore_share: f64,
+    /// How many of the top stories an exploring search shuffles.
+    #[arg(long, default_value_t = 10)]
+    explore_top: usize,
     /// Keep the tables live from the HN API: new items as they are posted, and the points and comments of the stories that change.
     #[arg(long)]
     feed: bool,
@@ -354,6 +360,44 @@ async fn serve(a: ServeArgs) {
         tokio::spawn(f.clone().run(Duration::from_secs(a.feed_every.max(5))));
         tokio::spawn(f.clone().backfill());
     }
+    let indexes: Vec<(String, String)> = a
+        .experiment_index
+        .iter()
+        .map(|s| {
+            let (n, t) = s.split_once('=').unwrap_or((s.as_str(), s.as_str()));
+            let ok = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ok(n) || !ok(t) {
+                eprintln!("chloedb-hn: --experiment-index is NAME=TABLE, letters, digits and _");
+                std::process::exit(2);
+            }
+            (n.to_string(), t.to_string())
+        })
+        .collect();
+    let has_token = a.experiments_token.as_deref().is_some_and(|t| !t.trim().is_empty());
+    if a.explore_share > 0.0 && !has_token {
+        eprintln!("chloedb-hn: --explore-share needs --experiments-token: only the Experiments app reads the log");
+        std::process::exit(2);
+    }
+    // With the experiments token, the page's searches can be logged: a
+    // share exploring (--explore-share), and those of an interleaving test
+    // the Experiments app starts.
+    let interleave = Arc::new(chloedb_hn::interleave::Interleave::default());
+    let explore = if has_token {
+        if let Err(e) = async { chloedb_hn::explore::create_tables(&db).await?; chloedb_hn::interleave::create_tables(&db).await }.await {
+            eprintln!("chloedb-hn: the search log's tables: {e}");
+            std::process::exit(1);
+        }
+        if a.explore_share > 0.0 {
+            eprintln!("chloedb-hn: the page's searches are logged; {:.0}% of them show their top {} in a random order", a.explore_share.min(1.0) * 100.0, a.explore_top);
+        }
+        interleave.set(chloedb_hn::interleave::load(&db, &indexes).await);
+        if let Some(t) = interleave.current() {
+            eprintln!("chloedb-hn: interleaving test {} on {:.0}% of the page's searches", t.id, t.share * 100.0);
+        }
+        Some(Arc::new(chloedb_hn::explore::Explore::new(a.explore_share, a.explore_top)))
+    } else {
+        None
+    };
     let svc = Arc::new(Service {
         db,
         feed,
@@ -369,19 +413,9 @@ async fn serve(a: ServeArgs) {
         seen: Mutex::new(Default::default()),
         started: Instant::now(),
         experiments_token: a.experiments_token.clone().filter(|t| !t.trim().is_empty()),
-        indexes: a
-            .experiment_index
-            .iter()
-            .map(|s| {
-                let (n, t) = s.split_once('=').unwrap_or((s.as_str(), s.as_str()));
-                let ok = |x: &str| !x.is_empty() && x.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                if !ok(n) || !ok(t) {
-                    eprintln!("chloedb-hn: --experiment-index is NAME=TABLE, letters, digits and _");
-                    std::process::exit(2);
-                }
-                (n.to_string(), t.to_string())
-            })
-            .collect(),
+        indexes,
+        explore,
+        interleave,
     });
     eprintln!("chloedb-hn: the API answers at {me}{}{}", if token.is_some() && a.token.is_none() { " (token made for the server)" } else { "" }, if a.public { ", and the page at / to anyone" } else { "" });
     if local.is_none() {

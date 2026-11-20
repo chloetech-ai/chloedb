@@ -370,6 +370,23 @@ const SPARK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 
 // ---- small helpers ---------------------------------------------------------
 
+/** An anonymous id of this browser: random, kept in its storage, never
+ *  tied to an address or an account. A logged search carries it so an
+ *  experiment can tell a search asked again or a next page from a new
+ *  visitor's; clearing the site's data makes a new one. */
+function visitor() {
+  try {
+    let v = localStorage.getItem("hn-vid");
+    if (!v || !/^[0-9a-z]{16}$/.test(v)) {
+      v = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem("hn-vid", v);
+    }
+    return v;
+  } catch {
+    return "";
+  }
+}
+
 function h(tag, attrs, ...kids) {
   const el = tag === "svg" || tag === "g" || tag === "line" || tag === "circle" || tag === "path" || tag === "text" || tag === "rect" || tag === "polyline"
     ? document.createElementNS("http://www.w3.org/2000/svg", tag) : document.createElement(tag);
@@ -782,20 +799,21 @@ function answerCard(app, a, re, q, j) {
   return h("div", { class: "hn-ans" }, kids);
 }
 
-function storyItem(app, s, re, extra) {
+function storyItem(app, s, re, extra, opened) {
+  const open = opened ? () => opened(s.id) : null;
   const k = s.kind && s.kind !== "story" ? h("span", { class: `k ${s.kind}` }, s.kind === "show" ? "Show HN" : s.kind === "ask" ? "Ask HN" : s.kind === "launch" ? "Launch HN" : s.kind === "tell" ? "Tell HN" : s.kind) : null;
   const title = String(s.title || "").replace(/^(Show|Ask|Launch|Tell) HN:\s*/i, "");
   const topics = (Array.isArray(s.topics) ? s.topics : []).slice(0, 3);
   return h("li", { class: "hn-s" },
     h("div", { class: "hn-pts" }, h("b", {}, compact(s.points)), h("span", {}, "points")),
     h("div", {},
-      h("div", { class: "hn-ttl" }, s.title_hl ? h("a", { href: app.href("item", s.id), html: s.title_hl }) : h("a", { href: app.href("item", s.id) }, marked(title, re)), s.site ? h("a", { class: "site", href: app.href("search", `site:${s.site}`) }, s.site) : null),
+      h("div", { class: "hn-ttl" }, s.title_hl ? h("a", { href: app.href("item", s.id), html: s.title_hl, onclick: open }) : h("a", { href: app.href("item", s.id), onclick: open }, marked(title, re)), s.site ? h("a", { class: "site", href: app.href("search", `site:${s.site}`) }, s.site) : null),
       h("div", { class: "hn-meta" }, k,
-        h("a", { href: app.href("item", s.id) }, `${fmt(s.comments)} comments`),
+        h("a", { href: app.href("item", s.id), onclick: open }, `${fmt(s.comments)} comments`),
         h("a", { href: app.href("user", s.author) }, s.author),
         h("span", { title: day(s.created) }, ago(s.created)),
         topics.map((t) => h("a", { class: "tp", href: app.href("search", `topic:${t.replace(/\s+/g, "-")}`) }, t)),
-        s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", title: s.url }, "link ↗") : null,
+        s.url ? h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer", title: s.url, onclick: open }, "link ↗") : null,
         s.url ? h("a", { href: app.href("link", s.url), title: "Every discussion of this link, and who was there" }, "across HN") : null),
       s.body_hl ? h("div", { class: "hn-snip", html: s.body_hl }) : s.body ? h("div", { class: "hn-snip" }, marked(excerpt(s.body, re, 240), re)) : null,
       extra));
@@ -899,7 +917,10 @@ async function results(main, app, q, opts, alive) {
   // shown when they come; the facets once the results are on the page.
   const all = !only;
   const cP = all ? app.ctx.api(`/v1/search?${base}&only=comment&per=8&facets=0`).catch(() => null) : null;
-  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}`);
+  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}&log=1&dev=${matchMedia("(max-width: 700px)").matches ? "m" : "d"}&vid=${visitor()}`);
+  // A logged search: the stories opened from it are kept, to value rankings on.
+  const req = j.log?.request;
+  const opened = (id) => { if (req) app.ctx.api(`/v1/click?r=${enc(req)}&id=${enc(id)}`).catch(() => null); };
   if (!alive()) return;
   if (keep) fill(main, und, grid);
   const u = j.understood || {};
@@ -947,7 +968,7 @@ async function results(main, app, q, opts, alive) {
     stories.push(e);
   }
   if (stories.length) {
-    list.push(h("ul", { class: "hn-res" }, stories.map(({ s, again }) => storyItem(app, s, re, again.length ? h("div", { class: "hn-again" }, `Also discussed ${again.length === 1 ? "once more" : `${again.length} more times`}: `, again.map((a, i) => [i ? ", " : "", h("a", { href: app.href("item", a.id) }, `${new Date(a.created).getFullYear()} (${fmt(a.comments)} comments)`)])) : null))));
+    list.push(h("ul", { class: "hn-res" }, stories.map(({ s, again }) => storyItem(app, s, re, again.length ? h("div", { class: "hn-again" }, `Also discussed ${again.length === 1 ? "once more" : `${again.length} more times`}: `, again.map((a, i) => [i ? ", " : "", h("a", { href: app.href("item", a.id) }, `${new Date(a.created).getFullYear()} (${fmt(a.comments)} comments)`)])) : null, opened))));
   }
   // The comments: on their own page, with the results; beside the
   // stories, a placeholder they fill when they come.
@@ -973,7 +994,7 @@ async function results(main, app, q, opts, alive) {
     const more = h("button", { class: "hn-more", onclick: async () => {
       page++;
       more.textContent = "Loading…";
-      const k = app.add(await app.ctx.api(`/v1/search?${qs}&page=${page}&facets=0`), `page ${page + 1}`);
+      const k = app.add(await app.ctx.api(`/v1/search?${qs}&page=${page}&facets=0&log=1&vid=${visitor()}`), `page ${page + 1}`);
       const add2 = [...(k.stories || []).map((s) => storyItem(app, s, re)), ...(k.comments || []).map((c) => commentItem(app, c, re))];
       more.before(h("ul", { class: "hn-res" }, add2));
       more.textContent = "More results";
