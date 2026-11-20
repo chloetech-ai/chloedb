@@ -9,7 +9,7 @@ import { can, h, icon, clear, fmt, card, every, api, empty, bus, seg, store, tip
 import { tables as catalogTables } from "../catalog.js";
 import { isMine } from "../owners.js";
 import { timeChart, sparkline, SERIES } from "../charts.js";
-import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, homeProblems, homeStatus, kubeInfo, managed, specName, howToSet } from "../data.js";
+import { state, visible, domain, setZoom, isCoordinator, timeRange, fresh, staleText, firingNow, clusterName, environment, rangeParams, rangeSince, isPast, shardState, roleKnown, homeProblems, homeStatus, kubeInfo, managed, specName, howToSet } from "../data.js";
 
 export default { id: "home", title: "Home", icon: "overview", group: "Operate", keywords: "overview home fleet health status incident banner problems slo where capacity coordinators affected dashboard morning check", render };
 // Its count in the navigation is the shell's (main.js), from homeProblems() as here.
@@ -95,6 +95,64 @@ function shardCell(s, lens) {
 const stText = (st) => ({ ok: "serves reads and writes", degraded: "a copy is down; it still serves", no_reads: "serves no reads", no_writes: "takes no writes", down: "does not answer" })[st] || st;
 
 // ---------------------------------------------------------------- the view
+/**
+ * Home's readiness list ("Before production"), from what the page read:
+ * each item `ok` true, false, or null when it cannot be told from here
+ * (signed out, an older server: OLU-403).
+ */
+export function readyItems({ auditKnown = false, auditFile = null, auditShards = null } = {}) {
+  const w = state.whoami, a = state.alerts, env = environment();
+  const rules = (a?.rules || []).filter((r) => r.enabled !== false);
+  // CCW-13: a rule shipped with the server has its runbook compiled in
+  // (runbook_docs); `webhook` is true when there are routes, not one more.
+  const told = rules.filter((r) => (r.owner && r.runbook) || r.runbook_docs).length;
+  const routes = (a?.routes || []).length || (a?.webhook ? 1 : 0);
+  const shards = state.cluster?.shards || [];
+  const single = !isCoordinator();
+  // OLU-403: what a refused read (signed out) leaves unknown is said as
+  // unknown, as the audit log's line is, not as a fact.
+  const known = roleKnown(), idKnown = known || !!state.whoami;
+  const untold = state.whoami ? "not known here (its read failed)" : "needs a key to tell";
+  const items = [
+    !idKnown ? { ok: null, title: `Environment: ${untold}`, fix: "", href: "#/system" } :
+    { ok: env != null, title: env != null ? `Environment named: ${env}` : "No environment named", fix: `${cap(howToSet({ flag: "--environment", field: "spec.environment", value: "production", or: "staging" }))}: the command center then asks before writes and drops.`, href: "#/system" },
+    { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: `${managed() ? `Set spec.tokenSecret in the StrataCluster ${specName()}` : "Start it with --token"}, then give each person, app and agent its own key, limited to its tables.`, href: "#/access?tab=keys" },
+    !a ? { ok: null, title: `Alert routes: ${untold}`, fix: "", href: "#/alerts?routes=1" } :
+    { ok: routes > 0, title: routes ? `Alerts go somewhere: ${fmt.plural(routes, "route")}` : "Alerts go nowhere: no route (Slack, PagerDuty, a webhook)", fix: "Add a route in Alerts, so that a firing alert reaches a person.", href: "#/alerts?routes=1" },
+    !a ? { ok: null, title: `Alert rules: ${untold}`, fix: "", href: "#/alerts" } :
+    { ok: rules.length ? told === rules.length : null, title: rules.length ? `${told} of ${rules.length} alert rules say who owns them and what to do` : "No alert rules", fix: "Give each rule an owner and a runbook URL: the person paged knows it is theirs and where to start.", href: "#/alerts" },
+    // OLU-201: a coordinator's rules, routes and alert states are kept on its shards.
+    (() => {
+      const k = a?.kept;
+      if (!k) return { ok: null, title: "Alert rules and routes: where they are kept is not known here", fix: "", href: "#/alerts" };
+      const held = k.shards?.holding || 0;
+      const title = k.file ? `Alert rules and routes kept in ${k.file}${held ? ` and on ${fmt.plural(held, "copy", "copies")} of the cluster` : ""}` : held ? `Alert rules, routes and alert states kept on ${fmt.plural(held, "copy", "copies")} of the cluster` : "Alert rules and routes kept in memory only: a restart loses them";
+      return { ok: !k.memory_only, title, fix: k.shards?.failed?.length ? `${fmt.plural(k.shards.failed.length, "copy", "copies")} did not keep them: ${k.shards.failed[0].error}` : "Start the server with --alerts FILE.", href: "#/alerts" };
+    })(),
+    { ok: auditKnown ? !!auditFile || !!auditShards : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : auditShards ? `Audit log: the latest ${fmt.n(auditShards.keep)} entries kept on the shards; --audit-log FILE keeps every one` : "Audit log kept in memory only: a restart loses who changed what", fix: managed() ? `Give each coordinator a volume: spec.coordinatorStorage in the StrataCluster ${specName()} keeps its audit log, events and alerts on it.` : "Start the server with --audit-log FILE.", href: "#/access" },
+    !known ? { ok: null, title: `Copies of the data: ${untold}`, fix: "", href: "#/cluster" } :
+    single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
+      : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : (() => { const n = shards.filter((sh) => (sh.replicas || []).length < 2).length; return `${fmt.plural(n, "shard")} ${n === 1 ? "has" : "have"} one copy`; })(), fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
+  ];
+  // X-E7: a StatefulSet of one coordinator stops it before it starts the
+  // next, so each rollout leaves the cluster's API with none.
+  // Run by the operator, its spec (data.js keeps state.kube) says whether
+  // the coordinators keep a volume each and how many there are.
+  const kubeSpec = state.kube?.managed === false ? null : state.kube?.spec;
+  if (kubeSpec?.coordinatorStorage) {
+    const n = kubeSpec.coordinators ?? 1;
+    items.push({ ok: n >= 2, title: n >= 2 ? `${n} coordinators, each with a volume: a rollout restarts one at a time` : "One coordinator with a volume (coordinatorStorage): every rollout leaves the API down while it restarts", fix: "Set spec.coordinators to 2 or more: a StatefulSet stops its one pod before it starts the new one.", href: "#/cluster" });
+  }
+  // LIV-6: copies of a shard on one node, while the cluster has others.
+  if (!single && known) {
+    const nodeOf = (rp) => rp.detail?.place?.node || null;
+    const all = shards.flatMap((sh) => sh.replicas || []), nodes = new Set(all.map(nodeOf).filter(Boolean));
+    const together = shards.filter((sh) => (sh.replicas || []).length >= 2 && (sh.replicas || []).every((rp) => nodeOf(rp) && nodeOf(rp) === nodeOf(sh.replicas[0])));
+    if (nodes.size > 1 || together.length) items.push({ ok: nodes.size > 1 ? !together.length : null, title: !together.length ? "Every shard's copies run on more than one node" : `${fmt.plural(together.length, "shard")} with every copy on one node (${together.slice(0, 3).map((sh) => `shard ${sh.shard ?? ""}: ${nodeOf(sh.replicas[0])}`).join(", ")}): losing that node stops ${together.length === 1 ? "it" : "them"}`, fix: "Restart one of its replicas so the scheduler places it on another node, or add a node.", href: "#/cluster" });
+  }
+  return items;
+}
+
 function render(page, r0) {
   const head = h("div", { class: "page-head" });
   const banner = h("div", { class: "banner home-banner" });
@@ -218,7 +276,7 @@ function render(page, r0) {
     const copiesTxt = lo === hi ? ` × ${lo} ${lo === 1 ? "copy" : "copies"}` : `, ${lo}-${hi} copies`;
     const parts = [
       name || location.host,
-      m.shards.length ? `${fmt.plural(m.shards.length, "shard")}${copiesTxt}${m.nodes.size ? ` on ${fmt.plural(m.nodes.size, "node")}` : ""}${m.zones.size ? ` in ${fmt.plural(m.zones.size, "zone")}` : ""}` : state.health ? (isCoordinator() ? "no shards listed" : "one server, not a cluster") : null,
+      m.shards.length ? `${fmt.plural(m.shards.length, "shard")}${copiesTxt}${m.nodes.size ? ` on ${fmt.plural(m.nodes.size, "node")}` : ""}${m.zones.size ? ` in ${fmt.plural(m.zones.size, "zone")}` : ""}` : state.health && roleKnown() ? (isCoordinator() ? "no shards listed" : "one server, not a cluster") : null,
       coords > 1 ? fmt.plural(coords, "coordinator") : null,
       `numbers over ${r.fixed ? span(r.from, r.to) : r.label.replace("last ", "the last ")} unless marked`,
     ].filter(Boolean);
@@ -704,51 +762,14 @@ function render(page, r0) {
     drawReady();
   }
   function drawReady() {
-    const w = state.whoami, a = state.alerts, env = environment();
+    const env = environment();
     kubeInfo();
-    const rules = (a?.rules || []).filter((r) => r.enabled !== false);
-    // CCW-13: a rule shipped with the server has its runbook compiled in
-    // (runbook_docs); `webhook` is true when there are routes, not one more.
-    const told = rules.filter((r) => (r.owner && r.runbook) || r.runbook_docs).length;
-    const routes = (a?.routes || []).length || (a?.webhook ? 1 : 0);
-    const shards = state.cluster?.shards || [];
-    const single = !isCoordinator();
-    const items = [
-      { ok: env != null, title: env != null ? `Environment named: ${env}` : "No environment named", fix: `${cap(howToSet({ flag: "--environment", field: "spec.environment", value: "production", or: "staging" }))}: the command center then asks before writes and drops.`, href: "#/system" },
-      { ok: w ? !w.auth?.open : null, title: w?.auth?.open ? "Open: anyone who reaches it can read and change everything" : "Closed: every call needs a key", fix: `${managed() ? `Set spec.tokenSecret in the StrataCluster ${specName()}` : "Start it with --token"}, then give each person, app and agent its own key, limited to its tables.`, href: "#/access?tab=keys" },
-      { ok: routes > 0, title: routes ? `Alerts go somewhere: ${fmt.plural(routes, "route")}` : "Alerts go nowhere: no route (Slack, PagerDuty, a webhook)", fix: "Add a route in Alerts, so that a firing alert reaches a person.", href: "#/alerts?routes=1" },
-      { ok: rules.length ? told === rules.length : null, title: rules.length ? `${told} of ${rules.length} alert rules say who owns them and what to do` : "No alert rules", fix: "Give each rule an owner and a runbook URL: the person paged knows it is theirs and where to start.", href: "#/alerts" },
-      // OLU-201: a coordinator's rules, routes and alert states are kept on its shards.
-      (() => {
-        const k = a?.kept;
-        if (!k) return { ok: null, title: "Alert rules and routes: where they are kept is not known here", fix: "", href: "#/alerts" };
-        const held = k.shards?.holding || 0;
-        const title = k.file ? `Alert rules and routes kept in ${k.file}${held ? ` and on ${fmt.plural(held, "copy", "copies")} of the cluster` : ""}` : held ? `Alert rules, routes and alert states kept on ${fmt.plural(held, "copy", "copies")} of the cluster` : "Alert rules and routes kept in memory only: a restart loses them";
-        return { ok: !k.memory_only, title, fix: k.shards?.failed?.length ? `${fmt.plural(k.shards.failed.length, "copy", "copies")} did not keep them: ${k.shards.failed[0].error}` : "Start the server with --alerts FILE.", href: "#/alerts" };
-      })(),
-      { ok: auditKnown ? !!auditFile || !!auditShards : null, title: !auditKnown ? "Audit log: needs an admin key to tell" : auditFile ? `Audit log kept on disk (${auditFile})` : auditShards ? `Audit log: the latest ${fmt.n(auditShards.keep)} entries kept on the shards; --audit-log FILE keeps every one` : "Audit log kept in memory only: a restart loses who changed what", fix: managed() ? `Give each coordinator a volume: spec.coordinatorStorage in the StrataCluster ${specName()} keeps its audit log, events and alerts on it.` : "Start the server with --audit-log FILE.", href: "#/access" },
-      single ? { ok: null, title: "One server: its disk holds the only copy of the data", fix: "Run a cluster with two or more copies a shard (or back the file up) before the data matters.", href: "#/cluster" }
-        : { ok: shards.length ? shards.every((sh) => (sh.replicas || []).length >= 2) : null, title: shards.every((sh) => (sh.replicas || []).length >= 2) ? "Every shard has two copies or more" : (() => { const n = shards.filter((sh) => (sh.replicas || []).length < 2).length; return `${fmt.plural(n, "shard")} ${n === 1 ? "has" : "have"} one copy`; })(), fix: "Add a replica to each shard: a lost disk then loses nothing.", href: "#/cluster" },
-    ];
-    // X-E7: a StatefulSet of one coordinator stops it before it starts the
-    // next, so each rollout leaves the cluster's API with none.
-    // Run by the operator, its spec (data.js keeps state.kube) says whether
-    // the coordinators keep a volume each and how many there are.
-    const kubeSpec = state.kube?.managed === false ? null : state.kube?.spec;
-    if (kubeSpec?.coordinatorStorage) {
-      const n = kubeSpec.coordinators ?? 1;
-      items.push({ ok: n >= 2, title: n >= 2 ? `${n} coordinators, each with a volume: a rollout restarts one at a time` : "One coordinator with a volume (coordinatorStorage): every rollout leaves the API down while it restarts", fix: "Set spec.coordinators to 2 or more: a StatefulSet stops its one pod before it starts the new one.", href: "#/cluster" });
-    }
-    // LIV-6: copies of a shard on one node, while the cluster has others.
-    if (!single) {
-      const nodeOf = (rp) => rp.detail?.place?.node || null;
-      const all = shards.flatMap((sh) => sh.replicas || []), nodes = new Set(all.map(nodeOf).filter(Boolean));
-      const together = shards.filter((sh) => (sh.replicas || []).length >= 2 && (sh.replicas || []).every((rp) => nodeOf(rp) && nodeOf(rp) === nodeOf(sh.replicas[0])));
-      if (nodes.size > 1 || together.length) items.push({ ok: nodes.size > 1 ? !together.length : null, title: !together.length ? "Every shard's copies run on more than one node" : `${fmt.plural(together.length, "shard")} with every copy on one node (${together.slice(0, 3).map((sh) => `shard ${sh.shard ?? ""}: ${nodeOf(sh.replicas[0])}`).join(", ")}): losing that node stops ${together.length === 1 ? "it" : "them"}`, fix: "Restart one of its replicas so the scheduler places it on another node, or add a node.", href: "#/cluster" });
-    }
+    const items = readyItems({ auditKnown, auditFile, auditShards });
     const bad = items.filter((x) => x.ok === false).length;
     readyTitle.textContent = env != null && /^prod/i.test(env) ? "Ready for production" : "Before production";
-    readySub.textContent = bad ? `${bad} of ${items.length} not set` : "all set that can be told from here";
+    // The count says what the list shows: those not set, and those it cannot tell (OLU-403).
+    const unknown = items.filter((x) => x.ok == null).length;
+    readySub.textContent = [bad ? `${bad} of ${items.length} not set` : null, unknown ? `${unknown} not known here` : null].filter(Boolean).join(", ") || "all set that can be told from here";
     clear(readyBody, h("ul", { class: "ready-list" }, items.map((x) => h("li", { class: x.ok === true ? "ok" : x.ok === false ? "no" : "unk" },
       icon(x.ok === true ? "okc" : x.ok === false ? "warn" : "info"),
       h("div", { class: "grow" }, h("div", {}, x.title), x.ok === true ? null : h("div", { class: "small muted" }, x.fix)),

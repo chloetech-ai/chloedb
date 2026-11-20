@@ -33,7 +33,22 @@
 //! counted in the answer's `partial_success` with the first reason; the
 //! others are written. A failure to write (the server overloaded, holding
 //! its writes, or a shard down) fails the request with the status OTLP
-//! clients retry on (429, 503), so that they send it again.
+//! clients retry on (429, 503), so that they send it again. A retry writes
+//! nothing twice: the request's `batch` and the idempotency key of each
+//! part of it (1,000 rows) are made from its content, so a part already
+//! written is answered, not written again (for as long as the server
+//! keeps keys, `--idempotency-ttl-s`, an hour by default). A request whose
+//! records carry no time, which the server stamps with its own, has no key.
+//!
+//! **What is normalised.** `severity` is one spelling whoever sent it
+//! (`warning`, `WARN` and `Warn` are `WARN`; `err` is `ERROR`; `critical`
+//! is `FATAL`; a text it does not know is kept as written), and
+//! `severity_number` is the record's, or the first of its text's range
+//! (INFO 9, WARN 13, ERROR 17, FATAL 21), so `severity_number >= 17` finds
+//! the errors of every source. `host` and `service` are the resource's
+//! `host.name` and `service.name`, or, when it has none, the record's
+//! `hostname` and `appname` attributes, which Collector's syslog receiver
+//! sets.
 
 use std::sync::Arc;
 
@@ -111,6 +126,40 @@ fn table_name(name: &str) -> Result<&str, ApiError> {
 fn severity_name(n: i32) -> Option<&'static str> {
     const NAMES: [&str; 6] = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"];
     (1..=24).contains(&n).then(|| NAMES[(n as usize - 1) / 4])
+}
+
+/// The one spelling of a severity text, and the first number of its range
+/// (OTLP's: TRACE 1, DEBUG 5, INFO 9, WARN 13, ERROR 17, FATAL 21), for the
+/// spellings sources use (`warning`, `err`, `critical`, syslog's `notice`,
+/// Java's `severe`...), in any case. A text it does not know stays as the
+/// source wrote it, with no number of its own.
+fn severity_spelling(text: &str) -> Option<(&'static str, i32)> {
+    Some(match text.trim().to_ascii_lowercase().as_str() {
+        "trace" | "trc" | "finest" | "finer" | "verbose" | "vrb" => ("TRACE", 1),
+        "debug" | "dbg" | "fine" | "config" => ("DEBUG", 5),
+        "info" | "inf" | "information" | "informational" | "notice" | "note" => ("INFO", 9),
+        "warn" | "wrn" | "warning" => ("WARN", 13),
+        "error" | "err" | "erro" | "severe" => ("ERROR", 17),
+        "fatal" | "crit" | "critical" | "alert" | "emerg" | "emergency" | "panic" => ("FATAL", 21),
+        _ => return None,
+    })
+}
+
+/// A record's severity as the table keeps it: its text in the one spelling
+/// of [`severity_spelling`] (or as written if unknown, or from the number
+/// if it has no text), and its number (or the first of its text's range).
+/// So `severity = 'ERROR'` and `severity_number >= 17` find a line
+/// whoever spelled it.
+fn severity(text: &str, number: i32) -> (Option<String>, Option<i32>) {
+    let number = (number > 0).then_some(number);
+    let text = text.trim();
+    if text.is_empty() {
+        return (number.and_then(severity_name).map(String::from), number);
+    }
+    match severity_spelling(text) {
+        Some((name, first)) => (Some(name.to_string()), number.or(Some(first))),
+        None => (Some(text.to_string()), number),
+    }
 }
 
 /// A value as JSON: bytes in base64, a float that is not a number as
@@ -201,12 +250,16 @@ fn record(r: &LogRecord, (service, host, scope, resource): (&Option<String>, &Op
     });
     let observed = time(r.observed_time_unix_nano);
     let ts = time(r.time_unix_nano).or_else(|| observed.clone()).unwrap_or_else(|| chloedb::timestamp::format(crate::telemetry::now_ms() as i64 * 1000));
-    let severity = Some(r.severity_text.clone()).filter(|s| !s.is_empty()).or_else(|| severity_name(r.severity_number).map(String::from));
+    let (severity, severity_number) = severity(&r.severity_text, r.severity_number);
+    // A syslog receiver's lines come with the host and the program in the
+    // record's attributes, where the resource has none.
+    let from_attr = |key: &str| attrs.get(key).and_then(Json::as_str).filter(|s| !s.is_empty()).map(String::from);
+    let (service, host) = (service.clone().or_else(|| from_attr("appname")), host.clone().or_else(|| from_attr("hostname")));
     let mut m = Map::new();
     m.insert("ts".into(), json!(ts));
     m.insert("observed_ts".into(), json!(observed));
     m.insert("severity".into(), json!(severity));
-    m.insert("severity_number".into(), if r.severity_number > 0 { json!(r.severity_number) } else { Json::Null });
+    m.insert("severity_number".into(), json!(severity_number));
     m.insert("service".into(), json!(service));
     m.insert("host".into(), json!(host));
     m.insert("body".into(), json!(body));
@@ -255,16 +308,26 @@ pub async fn export(svc: &Arc<Service>, who: &Principal, name: Option<&str>, req
     // appends to (MARCO-403): logs are inserted, never replaced.
     who.may_insert(name, "writing logs")?;
     let schema = table(svc, name).await?;
-    let batch: i64 = rand::random::<u32>() as i64 >> 1;
+    // A request's `batch` and its parts' idempotency keys come from its
+    // content, so that a client that sends it again (a Collector whose
+    // answer was a 503 or a timeout after the rows were written) writes
+    // each part once. A record with no time gets the time it arrives, which
+    // a retry would change: such a request is keyed by nothing.
+    let timed = req.resource_logs.iter().flat_map(|r| &r.scope_logs).flat_map(|s| &s.log_records).all(|r| r.time_unix_nano > 0 || r.observed_time_unix_nano > 0);
+    let digest = twox_hash::XxHash3_64::oneshot(&[name.as_bytes(), &[0], &req.encode_to_vec()].concat());
+    let batch: i64 = if timed { (digest >> 33) as i64 } else { rand::random::<u32>() as i64 >> 1 };
     let now = crate::telemetry::now_ms() as i64 * 1000;
     let (schema_, n) = (schema.clone(), req.resource_logs.len());
     let rows = if n > 0 { tokio::task::spawn_blocking(move || rows(&req, &schema_, batch, now)).await.map_err(ApiError::internal)? } else { Rows { docs: Vec::new(), rejected: 0, error: None } };
     let mut out = Exported { written: 0, rejected: rows.rejected, error: rows.error };
     let table = schema.table.clone();
     let mut docs = rows.docs.into_iter().peekable();
+    let mut part = 0;
     while docs.peek().is_some() {
         let ops: Vec<Json> = docs.by_ref().take(IMPORT_OPS).map(|d| json!({"op": "insert", "table": table, "doc": d})).collect();
-        out.written += svc.write_request(ops, None).await?.rows;
+        let key = timed.then(|| format!("otlp-{digest:016x}-{part}"));
+        out.written += svc.write_request(ops, key).await?.rows;
+        part += 1;
     }
     Ok(out)
 }
@@ -569,10 +632,12 @@ mod tests {
         // is its JSON; an event's name is an attribute.
         assert_eq!(rows.docs[1]["ts"], json!("2025-11-08T00:00:01Z"));
         assert_eq!(rows.docs[1]["observed_ts"], json!("2025-11-08T00:00:01Z"));
-        assert_eq!(rows.docs[1]["severity"], json!("Warning"));
+        // "Warning" is kept as WARN, with the first number of its range.
+        assert_eq!(rows.docs[1]["severity"], json!("WARN"));
+        assert_eq!(rows.docs[1]["severity_number"], json!(13));
         assert_eq!(rows.docs[1]["body"], json!(r#"{"a":"b"}"#));
         assert_eq!(rows.docs[1]["attributes"], json!({"event_name": "retry"}));
-        assert!(rows.docs[1].get("trace_id").is_none() && rows.docs[1].get("severity_number").is_none());
+        assert!(rows.docs[1].get("trace_id").is_none());
     }
 
     #[test]

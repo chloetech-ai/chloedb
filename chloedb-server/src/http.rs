@@ -358,6 +358,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/check", post(admin_check))
         .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
+        .route("/v1/admin/optimize", post(admin_optimize))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
         .route("/v1/admin/follow", get(follow_view))
@@ -730,7 +731,8 @@ struct CopyOf {
 fn copy_of(snap: &Json, node: &str) -> Result<CopyOf, ApiError> {
     for s in snap["shards"].as_array().into_iter().flatten() {
         for r in s["replicas"].as_array().into_iter().flatten() {
-            if r["url"] == node || r["short"] == node {
+            // By its URL, its short name or the name the command center shows (OLU-402).
+            if r["url"] == node || r["short"] == node || crate::coord::shown(r) == node {
                 return Ok(CopyOf {
                     shard: s["shard"].as_u64().unwrap_or(0),
                     url: r["url"].as_str().unwrap_or_default().to_string(),
@@ -3281,8 +3283,9 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
 /// when it was not there.
 ///
 /// `?table=NAME` names it, and a table not there is made from the rows'
-/// columns and values ([`chloedb::ingest::create_for`]: an admin's
-/// statement, so it needs an admin key), unless `?create=false`. Without a
+/// columns and values ([`chloedb::ingest::create_for_with`]: an admin's
+/// statement, so it needs an admin key), unless `?create=false`; its prose
+/// gets a vector to search by meaning, unless `?meaning=false`. Without a
 /// table the rows go to the only table of the database when it has at
 /// least half of their columns, as before; rows that do not fit it, or a
 /// database of several tables or none, are refused with what to name,
@@ -3292,7 +3295,11 @@ async fn import_table(app: &App, who: &Principal, q: &std::collections::HashMap<
         if app.svc.table(t).await.is_ok() || !flag(q, "create", true)? {
             return Ok((Some(t.clone()), None));
         }
-        let sql = chloedb::ingest::create_for(t, body, format, q.get("key").map(String::as_str)).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
+        // Prose is searched by meaning too, by a model this server has or
+        // downloads (unless ?meaning=false, or --no-fetch-models without it).
+        let model = chloedb::ingest::MEANING_MODEL;
+        let meaning = (flag(q, "meaning", true)? && (app.svc.fetch_models || chloedb::embed::to_fetch(model, &app.svc.models_dir()).is_none())).then_some(model);
+        let sql = chloedb::ingest::create_for_with(t, body, format, q.get("key").map(String::as_str), meaning).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
         app.svc.sql(who, &sql, &chloedb::query::Params::default(), After::default(), 0).await.map_err(|e| ApiError { message: format!("{} (there is no table {t}: the import makes it from the rows' columns with {sql}; ?create=false refuses instead)", e.message), ..e })?;
         return Ok((Some(t.clone()), Some(sql)));
     }
@@ -4012,6 +4019,35 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let who = who(w);
     reads_ok(&app, &who, sql).await?;
     let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    // `EXPLAIN SELECT ...` as it is typed in /v1/sql explains the statement.
+    let stripped = chloedb::query::sql::explained(sql)?.map(|(inner, _)| inner);
+    let sql = stripped.as_deref().unwrap_or(sql);
+    // An INSERT, UPDATE or DELETE is explained and not run: its plan, and
+    // how it picks its rows.
+    if matches!(sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase().as_str(), "insert" | "update" | "delete") {
+        let t0 = std::time::Instant::now();
+        let (plan, note) = app.svc.explain_plan(sql, &params, body_u64(&b, "timeout_ms")?, app.svc.budget_for(Some(&who), body_budget(&b)?)).await?;
+        let catalog = app.svc.catalog();
+        let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+        let mut lines = plan.explain(&tables);
+        if let Some(n) = note {
+            lines.insert(1.min(lines.len()), n);
+        }
+        return Ok(AxJson(json!({
+            "kind": "explain",
+            "logical": format!("{:#?}", plan.root),
+            "ir": plan.to_json()?,
+            "tree": json!(lines),
+            // Nothing ran: no executor lines, steps or rows.
+            "ran": false,
+            "plan": [],
+            "steps": [],
+            "filter_docs": 0,
+            "scored": 0,
+            "rows": 0,
+            "took_ms": t0.elapsed().as_secs_f64() * 1e3,
+        })));
+    }
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
@@ -4512,6 +4548,13 @@ async fn admin_check(State(app): State<App>) -> Res {
 
 async fn admin_vacuum(State(app): State<App>) -> Res {
     Ok(AxJson(json!({"bytes_freed": app.svc.vacuum().await?})))
+}
+
+/// Writes what the memtables hold and merges every table's segments into as
+/// few as the merge policy allows ([`Service::optimize`]): what restores the
+/// latency of `recommend(...)` and of searches after many small writes.
+async fn admin_optimize(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.optimize().await?))
 }
 
 async fn admin_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {

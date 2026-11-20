@@ -923,10 +923,16 @@ class Client(Search, FrameStore):
             rows += int(r.get("rows", part.num_rows))
         return {"table": table, "rows": rows}
 
-    def ask(self, question: str, *, model: str | None = None, effort: str | None = None, api_key: str | None = None, max_steps: int | None = None) -> dict:
-        """Asks the server's agent a question about the data: {answer,
-        steps (the queries it ran), ...}. Needs an Anthropic API key, the
-        server's or `api_key`."""
+    def ask(self, question: str, *, table: str | None = None, k: int = 8, where: Any = None, params: Mapping[str, Any] | None = None, model: str | None = None, effort: str | None = None, api_key: str | None = None, max_steps: int | None = None) -> dict:
+        """With `table`: the answer to `question` from the rows of the table
+        `search` finds for it, citing them, as `Database.ask` gives it
+        ({answer, sources, model}; `model` is a model of `llm()`, its key
+        on the server). Without: asks the server's agent, which writes its
+        own queries, about the data: {answer, steps (the queries it ran),
+        ...}. Either needs a key for the model where it runs: the server's
+        (ANTHROPIC_API_KEY), or `api_key` for the agent."""
+        if table is not None:
+            return self._ask(question, table=table, k=k, where=where, params=params, model=model)
         body = {k: v for k, v in {"question": question, "model": model, "effort": effort, "api_key": api_key, "max_steps": max_steps}.items() if v is not None}
         return self._call("POST", "/v1/agent", body)
 

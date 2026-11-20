@@ -42,6 +42,16 @@ pub const BIG_MW: f64 = 1000.0;
 pub const CLOSER_KM: f64 = 2.0;
 /// Alerts are kept and not raised again for this long.
 const KEEP_S: i64 = 30 * 86400;
+/// How far a place's look must move between two pictures (1 minus their
+/// cosine) to be told as a change: about the 90th centile of the moves
+/// between the two-yearly pictures of the places with years (0.089).
+pub const CHANGE_STEP: f64 = 0.09;
+/// Two pictures further apart than this may be of different seasons, so
+/// they are not compared.
+pub const CHANGE_GAP_S: i64 = 120 * 86400;
+/// New pictures are looked for this far back (inside KEEP_S, so an alert
+/// is still there to be seen when its picture is).
+const CHANGE_BACK_S: i64 = 25 * 86400;
 
 /// A key a browser made: letters, digits and dashes, long enough not to be
 /// guessed.
@@ -72,6 +82,8 @@ pub struct Watch {
     pub power: bool,
     /// A clear night over it, by GOES's cloud mask.
     pub sky: bool,
+    /// A new picture of its place that looks unlike the one before.
+    pub change: bool,
     pub place: String,
     pub created: String,
 }
@@ -98,6 +110,7 @@ impl Watch {
             closer: flag(r, "closer"),
             power: flag(r, "power"),
             sky: flag(r, "sky"),
+            change: flag(r, "change"),
             place: r.s("place"),
             created: r.s("created"),
         }
@@ -106,7 +119,7 @@ impl Watch {
     /// The row as stored.
     pub fn doc(&self) -> Value {
         json!({"id": self.id, "watcher": self.watcher, "name": self.name, "lat": self.lat, "lon": self.lon, "km": self.km,
-               "region": self.region, "closer": self.closer, "power": self.power, "sky": self.sky, "place": self.place, "created": self.created})
+               "region": self.region, "closer": self.closer, "power": self.power, "sky": self.sky, "change": self.change, "place": self.place, "created": self.created})
     }
 
     /// As the page sees it: not the watcher's key.
@@ -271,6 +284,49 @@ pub fn clear_night(w: &Watch, sky: &Row, seen: &mut HashSet<String>) -> Option<V
         "km": null, "dir": "", "fire": "", "lat": w.lat, "lon": w.lon, "name": w.name}))
 }
 
+/// A new picture of a watch's place unlike the one before it: told once.
+pub fn look_changed(w: &Watch, new: &Row, before: &Row, seen: &mut HashSet<String>) -> Option<Value> {
+    let id = format!("{}-look-{}", w.id, new.s("id"));
+    let (t1, t0) = (crate::pages::unix(&new.s("taken"))?, crate::pages::unix(&before.s("taken"))?);
+    if t1 <= t0 || t1 - t0 > CHANGE_GAP_S || seen.contains(&id) {
+        return None;
+    }
+    let step = 1.0 - cosine(&look(new), &look(before))?;
+    if step < CHANGE_STEP {
+        return None;
+    }
+    seen.insert(id.clone());
+    let day = |t: i64| chrono::DateTime::from_timestamp(t, 0).map(|d| d.format("%-d %B %Y").to_string()).unwrap_or_default();
+    let (l1, l0) = (new.s("label"), before.s("label"));
+    let read = if l1 != l0 { format!(" It reads as {l1}, and before as {l0}.") } else { String::new() };
+    Some(json!({"id": id, "watch": w.id, "watcher": w.watcher, "region": w.region, "kind": "look", "t": iso(t1),
+        "sent": iso(chrono::Utc::now().timestamp()),
+        "title": format!("{} looks different", w.name),
+        "body": format!("Sentinel-2's picture of {} is unlike the one of {} (it moved {:.2}; most new pictures move under {CHANGE_STEP}).{read}", day(t1), day(t0), step),
+        "km": null, "dir": "", "fire": "", "lat": w.lat, "lon": w.lon, "name": w.name}))
+}
+
+fn look(r: &Row) -> Vec<f64> {
+    r.get("look").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default()
+}
+
+fn cosine(a: &[f64], b: &[f64]) -> Option<f64> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        ab += x * y;
+        aa += x * x;
+        bb += y * y;
+    }
+    (aa > 0.0 && bb > 0.0).then(|| ab / (aa.sqrt() * bb.sqrt()))
+}
+
+/// The pictures already judged for a watch (its id and the picture's), so
+/// a new picture's vectors are read once.
+static JUDGED: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
 /// The nearest fire, scan by scan: (time, km within `FAR_KM`, or none).
 pub fn track(w: &Watch, scans: &[i64], px: &[Px]) -> Vec<Value> {
     scans
@@ -357,6 +413,33 @@ pub async fn judge(db: &Strata, region: &str, from: i64, now: i64) -> Result<usi
         for w in watches.iter().filter(|w| w.sky) {
             if let Some(r) = by.get(&w.place) {
                 out.extend(clear_night(w, r, &mut seen));
+            }
+        }
+    }
+    // A change in how each watch's place looks, from its newest pictures.
+    let places: HashSet<String> = watches.iter().filter(|w| w.change && !w.place.is_empty()).map(|w| w.place.clone()).collect();
+    if !places.is_empty() {
+        let fresh = db
+            .query("SELECT id, place, taken FROM ea_years WHERE place IN (:ids) AND taken >= :a LIMIT 10000", json!({"ids": places.iter().collect::<Vec<_>>(), "a": iso(now - CHANGE_BACK_S)}))
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        for r in &fresh {
+            let todo: Vec<&Watch> = {
+                let mut j = JUDGED.lock().unwrap_or_else(|e| e.into_inner());
+                let j = j.get_or_insert_with(HashSet::new);
+                watches.iter().filter(|w| w.change && w.place == r.s("place") && j.insert(format!("{}/{}", w.id, r.s("id")))).collect()
+            };
+            if todo.is_empty() {
+                continue;
+            }
+            let two = db
+                .query("SELECT id, taken, label, look FROM ea_years WHERE place = :p AND taken <= :t ORDER BY taken DESC LIMIT 2", json!({"p": r.s("place"), "t": r.s("taken")}))
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            if let [new, before] = &two[..] {
+                for w in todo {
+                    out.extend(look_changed(w, new, before, &mut seen));
+                }
             }
         }
     }
@@ -543,6 +626,7 @@ pub struct NewWatch {
     pub closer: Option<bool>,
     pub power: Option<bool>,
     pub sky: Option<bool>,
+    pub change: Option<bool>,
 }
 
 pub async fn create(c: &Ctx<'_>, watcher: &str, b: NewWatch) -> R<Value> {
@@ -580,6 +664,7 @@ pub async fn create(c: &Ctx<'_>, watcher: &str, b: NewWatch) -> R<Value> {
         closer: b.closer.unwrap_or(true),
         power: b.power.unwrap_or(true),
         sky: b.sky.unwrap_or(false),
+        change: b.change.unwrap_or(false),
         place: c.places.nearest(b.lat, b.lon, 3.0).map(|p| p.id.clone()).unwrap_or_default(),
         created: iso(chrono::Utc::now().timestamp()),
     };
@@ -595,6 +680,7 @@ pub struct Change {
     pub closer: Option<bool>,
     pub power: Option<bool>,
     pub sky: Option<bool>,
+    pub change: Option<bool>,
     #[serde(default)]
     pub remove: bool,
 }
@@ -625,6 +711,9 @@ pub async fn change(c: &Ctx<'_>, watcher: &str, id: &str, b: Change) -> R<Value>
     }
     if let Some(x) = b.sky {
         w.sky = x;
+    }
+    if let Some(x) = b.change {
+        w.change = x;
     }
     c.db.upsert("ea_watches", vec![w.doc()]).await?;
     Ok(json!({"watch": w.public()}))
@@ -707,7 +796,7 @@ pub async fn example(c: &Ctx<'_>) -> R<Value> {
     let to = t0 + 12 * 3600;
     let watches: Vec<Watch> = EXAMPLE
         .iter()
-        .map(|(id, name, lat, lon, k)| Watch { id: id.to_string(), watcher: String::new(), name: name.to_string(), lat: *lat, lon: *lon, km: *k, region: "california".into(), closer: true, power: true, sky: false, place: String::new(), created: String::new() })
+        .map(|(id, name, lat, lon, k)| Watch { id: id.to_string(), watcher: String::new(), name: name.to_string(), lat: *lat, lon: *lon, km: *k, region: "california".into(), closer: true, power: true, sky: false, change: false, place: String::new(), created: String::new() })
         .collect();
     let (la, lo) = (39.83, -121.71);
     let tq = std::time::Instant::now();
@@ -741,7 +830,7 @@ mod tests {
     use super::*;
 
     fn w(km: f64) -> Watch {
-        Watch { id: "w1".into(), watcher: "k".repeat(24), name: "the house".into(), lat: 39.866, lon: -121.745, km, region: "california".into(), closer: true, power: true, sky: true, place: String::new(), created: String::new() }
+        Watch { id: "w1".into(), watcher: "k".repeat(24), name: "the house".into(), lat: 39.866, lon: -121.745, km, region: "california".into(), closer: true, power: true, sky: true, change: false, place: String::new(), created: String::new() }
     }
     fn p(t: i64, lat: f64, lon: f64, mw: f64) -> Px {
         Px { t, lat, lon, mw, fire: "f1".into() }

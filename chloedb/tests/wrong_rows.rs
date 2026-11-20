@@ -142,11 +142,13 @@ fn in_place_integers_compare_exactly() {
     db.sql(&format!("UPDATE t SET n = {} WHERE id = 6", BIG + 1), &p).unwrap();
     assert_eq!(q(&db, &format!("SELECT id FROM t WHERE n = {}", BIG + 1)), vec![6, BIG + 1]);
     assert_eq!(q(&db, &format!("SELECT id FROM t WHERE n IN ({})", BIG + 1)), vec![6, BIG + 1]);
-    db.sql("UPDATE t SET n = n + 9007199254740993 WHERE id = 5", &p).unwrap();
+    // Row 5's n is NULL, which `n + x` keeps (as SELECT does): coalesce counts from zero.
+    db.sql("UPDATE t SET n = coalesce(n, 0) + 9007199254740993 WHERE id = 5", &p).unwrap();
     db.sql("UPDATE t SET n = n - 2 WHERE id = 6", &p).unwrap();
     let r = db.query("SELECT id, n FROM t WHERE id IN (5, 6)", &p).unwrap();
     let got: Vec<(i64, Value)> = r.rows.iter().map(|row| (row[0].as_i64().unwrap(), row[1].clone())).collect();
     assert!(got.contains(&(5, Value::Int(BIG + 1))) && got.contains(&(6, Value::Int(BIG - 1))), "{got:?}");
+    db.sql("UPDATE t SET n = 1 WHERE id = 5", &p).unwrap();
     assert!(db.sql("UPDATE t SET n = n + 1.5 WHERE id = 5", &p).is_err());
     assert!(db.sql("UPDATE t SET n = n + 1 WHERE id = 9223372036854775807", &p).is_err(), "i64::MAX + 1 overflows");
 }

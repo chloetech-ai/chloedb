@@ -200,7 +200,7 @@ id  | title
 b04 | The Last Lighthouse
 ```
 
-`db.search(text)` searches the words as written. The search box on a table's page in the command center forgives a typo in each word, and when nothing is found offers the correction ("did you mean") if there is one. A search that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy` and ranks every row the `MATCH` keeps, the words as typed first. For the text of a search box, `MATCH(description, :q, syntax => 'plain')` reads it as words alone, so a stray quote or bracket is no error ([what a visitor typed](../chloedb/query-language.md#full-text-match)):
+`db.search(text)` forgives a typo in each word, as the search box on a table's page in the command center does (which, when nothing is found, also offers the correction, "did you mean", if there is one); `typos=False` searches the words as written. A query of your own that should forgive typos asks for it in its SQL, or writes `~` after a word (`dragn~`), which `bm25` reads as `fuzzy => 'auto'` for that word. With a `MATCH`, a row must have every word, each as typed or within its edits, and a `bm25` of the same text on the same field takes the `MATCH`'s `fuzzy` and ranks every row the `MATCH` keeps, the words as typed first. For the text of a search box, `MATCH(description, :q, syntax => 'plain')` reads it as words alone, so a stray quote or bracket is no error ([what a visitor typed](../chloedb/query-language.md#full-text-match)):
 
 ```python
 import chloedb
@@ -211,12 +211,14 @@ r = db.query("""SELECT id, title FROM books
                 ORDER BY bm25(description, :q) DESC LIMIT 3""", q="dragn villge")
 for row in r:
     print(row["id"], row["title"])
-print(len(db.search("dragn villge", mode="text")), "rows from db.search, by the words as written")
+print(len(db.search("dragn villge", mode="text")), "rows from db.search")
+print(len(db.search("dragn villge", mode="text", typos=False)), "rows by the words as written")
 ```
 
 ```text output
 b01 The River and the Dragon
-0 rows from db.search, by the words as written
+5 rows from db.search
+0 rows by the words as written
 ```
 
 [Build a search page](search-page.md) puts this behind a search box, with the matched words highlighted and "did you mean" for a misspelt word.

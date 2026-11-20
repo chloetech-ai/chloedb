@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -130,11 +132,12 @@ until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; don
 <pre data-lang="sh">export ADMIN_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H &#x27;content-type: application/json&#x27; \
   -d &#x27;{&quot;name&quot;: &quot;admin&quot;, &quot;scope&quot;: &quot;admin&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;secret&quot;])&#x27;)</pre>
 <h2 id="a-table-for-log-lines">A table for log lines<a class="anchor" href="#a-table-for-log-lines" aria-label="Link to this section">#</a></h2>
-<p>A log table is any table with a <code>TIMESTAMP</code> and a text column. This one names its columns as OpenTelemetry does (<code>ts</code>, <code>severity</code>, <code>host</code>, <code>service</code>, <code>body</code>, <code>attributes</code>), so that the OpenTelemetry Collector and a JSON lines import both fill it. <code>substring = true</code> gives <code>host</code> and <code>body</code> a <a href="sql.html#substrings-like-and-ilike-anywhere-in-a-value">substring index</a>, which answers <code>LIKE</code> and <code>ILIKE</code> with <code>%</code> anywhere (<code>'%GigabitEthernet0/1%'</code>, <code>'%10.0.12.2%'</code>) from the index rather than by reading every line. <code>retain</code> drops lines older than 30 days. A log line has no key, so the table has none.</p>
-<p>Choose the retention now: a table's <code>retain</code> cannot be changed later (<code>ALTER TABLE ... SET (retain = ...)</code> is refused), so another one means a new table and the shippers moved to it. Size the disk for it too. How many bytes a line takes depends on the lines: short ones that repeat themselves, as a router's syslog, take tens of bytes (30 to 43 on four of Loghub's logs, without substring indexes: <a href="server.html#opentelemetry-logs">OpenTelemetry logs</a>), while a service's lines with a trace id and a JSON body took about 500 bytes each in this table, 312 without the two substring indexes, and 195 with <code>body</code> not indexed either (200,000 such lines, measured in a persona study on a 4-core cloud container, 2026-11-18). At 1,000 lines a second, 500 bytes a line is 43 GB a day. <code>GET /v1/index/tables</code> gives each table's bytes: read it after a day of your own lines. A <a href="runbooks.html#the-disk-is-filling">vacuum</a> to free deleted rows needs room first, since the file grows while it runs.</p>
+<p>A log table is any table with a <code>TIMESTAMP</code> and a text column. This one names its columns as OpenTelemetry does (<code>ts</code>, <code>severity</code>, <code>severity_number</code>, <code>host</code>, <code>service</code>, <code>body</code>, <code>attributes</code>), so that the OpenTelemetry Collector and a JSON lines import both fill it. <code>substring = true</code> gives <code>host</code> and <code>body</code> a <a href="sql.html#substrings-like-and-ilike-anywhere-in-a-value">substring index</a>, which answers <code>LIKE</code> and <code>ILIKE</code> with <code>%</code> anywhere (<code>'%GigabitEthernet0/1%'</code>, <code>'%10.0.12.2%'</code>) from the index rather than by reading every line. <code>retain</code> drops lines older than 30 days. A log line has no key, so the table has none.</p>
+<p>Choose the retention now: a table's <code>retain</code> cannot be changed later (<code>ALTER TABLE ... SET (retain = ...)</code> is refused), so another one means a new table and the shippers moved to it. Size the disk for it too. How many bytes a line takes depends on the lines: short ones that repeat themselves, as a router's syslog, take tens of bytes (30 to 43 on four of Loghub's logs, without substring indexes: <a href="server.html#opentelemetry-logs">OpenTelemetry logs</a>), while a service's lines with a trace id and a JSON body took about 500 bytes each in this table, 312 without the two substring indexes, and 195 with <code>body</code> not indexed either (200,000 such lines, measured in a persona study on a 4-core cloud container, 2026-11-18). At 1,000 lines a second, 500 bytes a line is 43 GB a day. Size the disk from the database file, not from the tables' bytes: <strong>Tables and storage</strong> shows both, "All tables, live data" (what the tables hold now) and "Database file on disk" (the file and its log, which is what the disk holds), and <code>GET /v1/index/tables</code> answers the file's <code>file_bytes</code>, <code>free_bytes</code> and <code>wal_bytes</code> in its <code>totals</code>. The file is larger than the live data by the space that expired and deleted lines left, until it is given back. The server gives it back by itself: every 5 minutes it moves the segments at the end of the file into the free space below them and shortens the file, when at least 64 MB and a sixteenth of the file are free, with no vacuum and no extra room (it only moves what is already in the file). So a table under <code>retain</code> does not keep its largest size so far: the space its expired lines leave is reused by new lines or given back. A file whose free space is in pieces too small for the segments above them keeps it; a <a href="runbooks.html#the-disk-is-filling">vacuum</a> packs those, and needs room first, since the file grows while it runs. Read <code>file_bytes</code> after a day of your own lines.</p>
 <pre data-lang="sql" data-title="logs_syslog.sql">CREATE TABLE logs_syslog (
   ts TIMESTAMP NOT NULL,
   severity KEYWORD,
+  severity_number INT,
   host KEYWORD OPTIONS(substring = true),
   service KEYWORD,
   body TEXT OPTIONS(substring = true),
@@ -189,7 +192,8 @@ service:
       receivers: [syslog, otlp]
       processors: [batch]
       exporters: [otlphttp/chloedb]</pre>
-<p>A Collector retries an export that failed, and a row has no key to tell a retry from a new line, so a retried export can leave a line twice.</p>
+<p>A Collector retries an export that failed, and the server tells a retry from new lines: each request's rows are written under keys made from its content, so a request sent again (after a 503, or an answer that never arrived) writes nothing twice. The server remembers a key for an hour (<code>--idempotency-ttl-s</code>). The Collector's receivers and the SDKs give each record a time (the time it was observed, at least), which is part of the key; a request whose records carry no time at all, which the server stamps with its own clock, is not keyed, and a retry of it can leave a line twice.</p>
+<p>The server also writes severity in one spelling whoever sent it (<code>warning</code> and <code>WARN</code> are <code>WARN</code>, <code>err</code> is <code>ERROR</code>, <code>critical</code> is <code>FATAL</code>; a text it does not know stays as written) and fills <code>severity_number</code> (INFO 9, WARN 13, ERROR 17, FATAL 21) when the record has none, so <code>severity_number &gt;= 17</code> finds the errors of every source. The lines the next sections import are in the same form.</p>
 <p>What the Collector sends is OTLP JSON, which <code>curl</code> can send too:</p>
 <pre data-lang="sh">now=$(python3 -c &#x27;import time; print(time.time_ns())&#x27;)
 curl -s &quot;localhost:7700/v1/logs?table=logs_syslog&quot; -H &quot;authorization: Bearer $CHLOEDB_SHIP_KEY&quot; \
@@ -200,6 +204,16 @@ curl -s &quot;localhost:7700/v1/logs?table=logs_syslog&quot; -H &quot;authorizat
 echo</pre>
 <pre data-lang="text" data-title="Output" class="output">{}</pre>
 <p>An empty answer is OTLP's success: no record was refused (one refused is counted in <code>partialSuccess</code>).</p>
+<p>The syslog receiver, unlike an SDK, puts no host on the resource: a line comes with <code>hostname</code> and <code>appname</code> among its attributes, and the raw line as its body. <code>/v1/logs</code> takes the line's <code>host</code> and <code>service</code> from them when the resource has none, so that <code>host = 'edge-sw-11'</code>, the incident queries below and the explorer's same-host view find syslog as they find the rest:</p>
+<pre data-lang="sh">now=$(python3 -c &#x27;import time; print(time.time_ns())&#x27;)
+curl -s &quot;localhost:7700/v1/logs?table=logs_syslog&quot; -H &quot;authorization: Bearer $CHLOEDB_LOGS_KEY&quot; \
+  -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;resourceLogs&quot;: [{&quot;scopeLogs&quot;: [{&quot;logRecords&quot;: [{&quot;timeUnixNano&quot;: &quot;&#x27;$now&#x27;&quot;, &quot;severityText&quot;: &quot;notice&quot;,
+    &quot;body&quot;: {&quot;stringValue&quot;: &quot;&lt;189&gt;Nov 20 12:00:00 edge-sw-11 sshd[4242]: Failed password for root from 203.0.113.9&quot;},
+    &quot;attributes&quot;: [{&quot;key&quot;: &quot;hostname&quot;, &quot;value&quot;: {&quot;stringValue&quot;: &quot;edge-sw-11&quot;}}, {&quot;key&quot;: &quot;appname&quot;, &quot;value&quot;: {&quot;stringValue&quot;: &quot;sshd&quot;}}]}]}]}]}&#x27; &gt; /dev/null
+curl -s localhost:7700/v1/query -H &quot;authorization: Bearer $CHLOEDB_LOGS_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;SELECT host, service, severity, body FROM logs_syslog WHERE body LIKE &#x27;&quot;&#x27;&quot;&#x27;%Failed password%&#x27;&quot;&#x27;&quot;&#x27;&quot;}&#x27; \
+| python3 -c &#x27;import json, sys; [print(&quot; | &quot;.join(str(v) for v in r)) for r in json.load(sys.stdin)[&quot;rows&quot;]]&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">edge-sw-11 | sshd | INFO | &lt;189&gt;Nov 20 12:00:00 edge-sw-11 sshd[4242]: Failed password for root from 203.0.113.9</pre>
 <h3 id="from-a-file-json-lines">From a file: JSON lines<a class="anchor" href="#from-a-file-json-lines" aria-label="Link to this section">#</a></h3>
 <p><code>POST /v1/import?format=jsonl</code> takes one JSON object a line, with the table's columns. This script writes an hour of lines from five routers and switches, with an incident in its last ten minutes: <code>GigabitEthernet0/1</code> on <code>core-rtr-02</code> going down and up, its BGP session to 10.0.12.2 dropping each time, and OSPF on <code>core-rtr-03</code> losing the same neighbour.</p>
 <pre data-lang="python" data-title="make_logs.py">import json
@@ -209,32 +223,34 @@ now = datetime.now(timezone.utc)
 at = lambda s: (now - timedelta(seconds=s)).isoformat().replace(&quot;+00:00&quot;, &quot;Z&quot;)
 hosts = [&quot;core-rtr-01&quot;, &quot;core-rtr-02&quot;, &quot;core-rtr-03&quot;, &quot;edge-sw-11&quot;, &quot;fw-01&quot;]
 normal = [
-    (&quot;info&quot;, &quot;%SYS-5-CONFIG_I&quot;, &quot;Configured from console by admin on vty0 (192.168.{a}.{b})&quot;),
-    (&quot;info&quot;, &quot;%SEC-6-IPACCESSLOGP&quot;, &quot;list OUTSIDE permitted tcp 192.168.{a}.{b}(5{a}{b}) -&gt; 10.0.0.{a}(443), 1 packet&quot;),
-    (&quot;debug&quot;, &quot;%OSPF-7-HELLO&quot;, &quot;hello from 192.168.{a}.{b} on GigabitEthernet0/{a}&quot;),
-    (&quot;warn&quot;, &quot;%SYS-4-CPUHOG&quot;, &quot;Task is running for ({b}00)msecs, more than (2000)msecs&quot;),
-    (&quot;info&quot;, &quot;%DHCPD-6-ADDRESS_ASSIGN&quot;, &quot;Interface Vlan1{a} assigned DHCP address 192.168.{a}.{b}, mask 255.255.255.0&quot;),
+    (&quot;INFO&quot;, &quot;%SYS-5-CONFIG_I&quot;, &quot;Configured from console by admin on vty0 (192.168.{a}.{b})&quot;),
+    (&quot;INFO&quot;, &quot;%SEC-6-IPACCESSLOGP&quot;, &quot;list OUTSIDE permitted tcp 192.168.{a}.{b}(5{a}{b}) -&gt; 10.0.0.{a}(443), 1 packet&quot;),
+    (&quot;DEBUG&quot;, &quot;%OSPF-7-HELLO&quot;, &quot;hello from 192.168.{a}.{b} on GigabitEthernet0/{a}&quot;),
+    (&quot;WARN&quot;, &quot;%SYS-4-CPUHOG&quot;, &quot;Task is running for ({b}00)msecs, more than (2000)msecs&quot;),
+    (&quot;INFO&quot;, &quot;%DHCPD-6-ADDRESS_ASSIGN&quot;, &quot;Interface Vlan1{a} assigned DHCP address 192.168.{a}.{b}, mask 255.255.255.0&quot;),
 ]
+# The one spelling and number /v1/logs gives a severity, so that every source of lines answers one query.
+NUMBER = {&quot;DEBUG&quot;: 5, &quot;INFO&quot;: 9, &quot;WARN&quot;: 13, &quot;ERROR&quot;: 17}
 lines = []
 for i in range(600):  # one line every 6 seconds for an hour
     sev, mn, text = normal[i % 5]
     host = hosts[i % 4] if i % 50 != 25 else &quot;fw-01&quot;
     if i % 50 == 25:
-        sev, mn, text = &quot;error&quot;, &quot;%FW-3-DENY&quot;, &quot;Deny tcp src outside:203.0.113.{b}/4{a}{b} dst inside:10.0.0.{a}/22&quot;
-    lines.append({&quot;ts&quot;: at(i * 6 + 3), &quot;severity&quot;: sev, &quot;host&quot;: host, &quot;service&quot;: &quot;syslog&quot;,
+        sev, mn, text = &quot;ERROR&quot;, &quot;%FW-3-DENY&quot;, &quot;Deny tcp src outside:203.0.113.{b}/4{a}{b} dst inside:10.0.0.{a}/22&quot;
+    lines.append({&quot;ts&quot;: at(i * 6 + 3), &quot;severity&quot;: sev, &quot;severity_number&quot;: NUMBER[sev], &quot;host&quot;: host, &quot;service&quot;: &quot;syslog&quot;,
                   &quot;body&quot;: f&quot;{mn}: &quot; + text.format(a=i % 7, b=10 + i % 89), &quot;attributes&quot;: {&quot;mnemonic&quot;: mn}})
 for k in range(12):  # the flap: down and up every 50 seconds, the last ten minutes
     down = 590 - k * 50
-    lines.append({&quot;ts&quot;: at(down), &quot;severity&quot;: &quot;error&quot;, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
+    lines.append({&quot;ts&quot;: at(down), &quot;severity&quot;: &quot;ERROR&quot;, &quot;severity_number&quot;: 17, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
                   &quot;body&quot;: &quot;%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down&quot;,
                   &quot;attributes&quot;: {&quot;mnemonic&quot;: &quot;%LINK-3-UPDOWN&quot;, &quot;iface&quot;: &quot;Gi0/1&quot;}})
-    lines.append({&quot;ts&quot;: at(down - 2), &quot;severity&quot;: &quot;error&quot;, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
+    lines.append({&quot;ts&quot;: at(down - 2), &quot;severity&quot;: &quot;ERROR&quot;, &quot;severity_number&quot;: 17, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
                   &quot;body&quot;: &quot;%BGP-3-NOTIFICATION: sent to neighbor 10.0.12.2 4/0 (hold time expired) 0 bytes&quot;,
                   &quot;attributes&quot;: {&quot;mnemonic&quot;: &quot;%BGP-3-NOTIFICATION&quot;, &quot;peer&quot;: &quot;10.0.12.2&quot;}})
-    lines.append({&quot;ts&quot;: at(down - 3), &quot;severity&quot;: &quot;warn&quot;, &quot;host&quot;: &quot;core-rtr-03&quot;, &quot;service&quot;: &quot;syslog&quot;,
+    lines.append({&quot;ts&quot;: at(down - 3), &quot;severity&quot;: &quot;WARN&quot;, &quot;severity_number&quot;: 13, &quot;host&quot;: &quot;core-rtr-03&quot;, &quot;service&quot;: &quot;syslog&quot;,
                   &quot;body&quot;: &quot;%OSPF-5-ADJCHG: Process 1, Nbr 10.0.12.2 on GigabitEthernet0/2 from FULL to DOWN, Neighbor Down: Dead timer expired&quot;,
                   &quot;attributes&quot;: {&quot;mnemonic&quot;: &quot;%OSPF-5-ADJCHG&quot;, &quot;iface&quot;: &quot;Gi0/2&quot;}})
-    lines.append({&quot;ts&quot;: at(down - 25), &quot;severity&quot;: &quot;notice&quot;, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
+    lines.append({&quot;ts&quot;: at(down - 25), &quot;severity&quot;: &quot;INFO&quot;, &quot;severity_number&quot;: 9, &quot;host&quot;: &quot;core-rtr-02&quot;, &quot;service&quot;: &quot;syslog&quot;,
                   &quot;body&quot;: &quot;%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to up&quot;,
                   &quot;attributes&quot;: {&quot;mnemonic&quot;: &quot;%LINK-3-UPDOWN&quot;, &quot;iface&quot;: &quot;Gi0/1&quot;}})
 with open(&quot;syslog.jsonl&quot;, &quot;w&quot;) as f:
@@ -261,14 +277,14 @@ for r in j[&quot;rows&quot;]: print(&quot; | &quot;.join(&quot;&quot; if v is No
 }</pre>
 <p><strong>1. What failed in the last 15 minutes, and where.</strong> <code>now() - INTERVAL '15 minutes'</code> is one time for the whole statement, so the index on <code>ts</code> answers the range:</p>
 <pre data-lang="sh">sql &quot;SELECT host, count(*) AS errors FROM logs_syslog
-     WHERE severity = &#x27;error&#x27; AND ts &gt; now() - INTERVAL &#x27;15 minutes&#x27;
+     WHERE severity_number &gt;= 17 AND ts &gt; now() - INTERVAL &#x27;15 minutes&#x27;
      GROUP BY host ORDER BY errors DESC&quot;</pre>
 <pre data-lang="text" data-title="Output" class="output">host | errors
 core-rtr-02 | 24
 fw-01 | 3</pre>
 <p><strong>2. Per host per minute.</strong> <code>time_bucket('1 minute', ts)</code> is the start of each line's minute (<code>'5 minutes'</code>, <code>'1 hour'</code> for wider buckets), grouped by the executor from the <code>ts</code> column:</p>
 <pre data-lang="sh">sql &quot;SELECT time_bucket(&#x27;1 minute&#x27;, ts) AS minute, host, count(*) AS lines FROM logs_syslog
-     WHERE ts &gt; now() - INTERVAL &#x27;15 minutes&#x27; AND severity IN (&#x27;error&#x27;, &#x27;warn&#x27;)
+     WHERE ts &gt; now() - INTERVAL &#x27;15 minutes&#x27; AND severity_number &gt;= 13
      GROUP BY minute, host ORDER BY minute DESC LIMIT 6&quot;</pre>
 <pre data-lang="text" data-title="Output" class="output">minute | host | lines
 ...</pre>
@@ -303,9 +319,9 @@ core-rtr-03 | %OSPF-5-ADJCHG | 12</pre>
 <h2 id="alert-on-your-logs">Alert on your logs<a class="anchor" href="#alert-on-your-logs" aria-label="Link to this section">#</a></h2>
 <p>An alert rule can watch a query over a log table: its <code>sql</code> is a <code>SELECT</code> whose first number is the value, run every 30 seconds with <code>:since</code> (the start of the rule's window) and <code>:now</code> (<a href="server.html#alerts">a rule on the data</a>). Fire when the payments service logs more than 50 errors in a minute, and resolve under 10:</p>
 <pre data-lang="json">{&quot;id&quot;: &quot;payments-errors&quot;, &quot;name&quot;: &quot;payments errors (from its logs)&quot;,
- &quot;sql&quot;: &quot;SELECT COUNT(*) FROM logs_syslog WHERE service = &#x27;payments&#x27; AND severity = &#x27;ERROR&#x27; AND ts &gt; :since&quot;,
+ &quot;sql&quot;: &quot;SELECT COUNT(*) FROM logs_syslog WHERE service = &#x27;payments&#x27; AND severity_number &gt;= 17 AND ts &gt; :since&quot;,
  &quot;op&quot;: &quot;&gt;&quot;, &quot;threshold&quot;: 50, &quot;resolve&quot;: 10, &quot;eval&quot;: &quot;max&quot;, &quot;window_s&quot;: 60, &quot;severity&quot;: &quot;critical&quot;}</pre>
-<p>Add it on the command center's <strong>Alerts</strong> page (<strong>New rule</strong>, then <strong>Or a query</strong>, which runs the query once and shows what it answers), or in the list <code>PUT /v1/alerts/rules</code> takes, with an admin key: the on-call key may acknowledge, silence and note an alert, not change the rules. It is routed and paged as any rule is, and fires within about a minute of the lines that cross it. <code>GET /v1/alerts</code> says when each such query last ran, what it answered and any error.</p>
+<p>Add it on the command center's <strong>Alerts</strong> page (<strong>New rule</strong>, then <strong>Or a query</strong>, which runs the query once and shows what it answers), or in the list <code>PUT /v1/alerts/rules</code> takes, with an admin key: the on-call key may acknowledge, silence and note an alert, not change the rules. It is routed and paged as any rule is, and fires within about a minute of the lines that cross it. <code>GET /v1/alerts</code> says when each such query last ran, what it answered and any error. A rule whose query has answered 0 on every run since the server began running it is marked "never matched" in the Alerts page's list of rules and in its editor, because a <code>WHERE</code> that matches nothing, such as <code>severity = 'ERROR'</code> against a table that spells it <code>error</code>, reads 0 through an incident: <code>severity_number &gt;= 17</code> is the condition that matches every spelling.</p>
 <h2 id="the-log-explorer">The Log explorer<a class="anchor" href="#the-log-explorer" aria-label="Link to this section">#</a></h2>
 <p>The command center (the server's address in a browser, here http://127.0.0.1:7700/#/explorer) has a <strong>Log explorer</strong> under Operate. Sign in with the on-call key and it lists the tables the key reads that hold log lines (any table with a <code>TIMESTAMP</code>), and shows one of them:</p>
 <ul>

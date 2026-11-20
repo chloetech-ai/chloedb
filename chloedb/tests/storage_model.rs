@@ -258,8 +258,9 @@ fn sql_write(db: &Db, rng: &mut StdRng, model: &mut Model) {
             let d = rng.gen_range(-5..6);
             let p = Params::new().set("d", Value::Int(d)).set("t", Value::Str(tag.into()));
             let mut n = 0;
+            // SQL keeps a NULL NULL, as SELECT does; the write API's add counts it as zero.
             for r in model.values_mut().filter(|r| r.tag == tag) {
-                r.n = Some(r.n.unwrap_or(0) + d);
+                r.n = r.n.map(|n| n + d);
                 n += 1;
             }
             (db.sql("UPDATE t SET n = n + :d WHERE tag = :t", &p), n)

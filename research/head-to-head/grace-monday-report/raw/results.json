@@ -1,0 +1,933 @@
+{
+ "at": "2026-11-20T11:27:28Z",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "tickets": 20000,
+ "csv_bytes": 2351881,
+ "duckdb": "2.0.0",
+ "chloedb_version": "chloedb-server 0.3.9 (built from a3283ace6c)",
+ "browser_s": 21.5,
+ "clicks": {
+  "steps": [
+   {
+    "name": "Load the export (tags split at spaces, as the page offered)",
+    "actions": 2,
+    "tags_split_at": "spaces",
+    "said": "20,000 rows written to tickets"
+   },
+   {
+    "name": "Tickets each week by priority, as a chart, saved as a team view",
+    "actions": 8,
+    "chart_lines_per": "priority",
+    "view": "monday_numbers",
+    "link": "/#/views/monday_numbers"
+   },
+   {
+    "name": "Median hours from created to solved, each week",
+    "actions": 6
+   },
+   {
+    "name": "The ten most used tags",
+    "actions": 4
+   },
+   {
+    "name": "Satisfaction per agent: the share of ratings that are good",
+    "actions": 12
+   }
+  ],
+  "errors": [],
+  "phone": {
+   "device": "iPhone 13",
+   "shows_chart": true,
+   "wider_than_screen": false,
+   "builder_address": {
+    "link": "#/builder?view=monday_numbers",
+    "chart_on_first_screen": false
+   },
+   "chart_on_first_screen": true
+  },
+  "actions": 33
+ },
+ "builder_sql": {
+  "per_week": "SELECT date_trunc('week', created_at) AS created_at_week, priority, COUNT(*) AS n\nFROM tickets\nGROUP BY date_trunc('week', created_at), priority\nORDER BY date_trunc('week', created_at), priority\nLIMIT 1000;",
+  "median_hours": "SELECT date_trunc('week', created_at) AS created_at_week, MEDIAN(date_diff('minute', created_at, solved_at) / 60.0) AS median_hours_to_solved_at\nFROM tickets\nGROUP BY date_trunc('week', created_at)\nORDER BY date_trunc('week', created_at)\nLIMIT 1000;",
+  "top_tags": "SELECT tags, COUNT(*) AS n\nFROM tickets\nGROUP BY tags\nORDER BY n DESC\nLIMIT 10;",
+  "satisfaction": "SELECT assignee, satisfaction, ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY assignee), 1) AS pct_of_assignee\nFROM tickets\nWHERE satisfaction IN ('good', 'bad')\nGROUP BY assignee, satisfaction\nORDER BY pct_of_assignee DESC\nLIMIT 20;"
+ },
+ "chloedb_sql_ms": {
+  "per_week": 2.95,
+  "median_hours": 21.2,
+  "top_tags": 1.32,
+  "satisfaction": 13.14
+ },
+ "duckdb_ms": {
+  "per_week": 4.49,
+  "median_hours": 5.34,
+  "top_tags": 4.15,
+  "satisfaction": 3.64
+ },
+ "numbers": {
+  "per_week": {
+   "clicked_vs_duckdb": {
+    "numbers": 48,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 0,
+    "agree": true
+   },
+   "hand_sql_vs_duckdb": {
+    "numbers": 48,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 1e-09,
+    "agree": true
+   },
+   "clicked": [
+    [
+     "2026-08-31T00:00:00Z",
+     "high",
+     "356"
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "low",
+     "339"
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "normal",
+     "864"
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "urgent",
+     "148"
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "high",
+     "347"
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "low",
+     "386"
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "normal",
+     "789"
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "urgent",
+     "144"
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "high",
+     "366"
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "low",
+     "322"
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "normal",
+     "822"
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "urgent",
+     "133"
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "high",
+     "361"
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "low",
+     "354"
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "normal",
+     "810"
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "urgent",
+     "152"
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "high",
+     "377"
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "low",
+     "373"
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "normal",
+     "813"
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "urgent",
+     "142"
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "high",
+     "318"
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "low",
+     "344"
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "normal",
+     "816"
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "urgent",
+     "142"
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "high",
+     "386"
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "low",
+     "377"
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "normal",
+     "882"
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "urgent",
+     "151"
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "high",
+     "357"
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "low",
+     "351"
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "normal",
+     "798"
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "urgent",
+     "158"
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "high",
+     "317"
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "low",
+     "338"
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "normal",
+     "770"
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "urgent",
+     "155"
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "high",
+     "362"
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "low",
+     "349"
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "normal",
+     "828"
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "urgent",
+     "125"
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "high",
+     "317"
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "low",
+     "379"
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "normal",
+     "793"
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "urgent",
+     "149"
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "high",
+     "348"
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "low",
+     "333"
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "normal",
+     "832"
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "urgent",
+     "127"
+    ]
+   ],
+   "duckdb": [
+    [
+     "2026-08-31T00:00:00Z",
+     "high",
+     356
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "low",
+     339
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "normal",
+     864
+    ],
+    [
+     "2026-08-31T00:00:00Z",
+     "urgent",
+     148
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "high",
+     347
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "low",
+     386
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "normal",
+     789
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "urgent",
+     144
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "high",
+     366
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "low",
+     322
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "normal",
+     822
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "urgent",
+     133
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "high",
+     361
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "low",
+     354
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "normal",
+     810
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "urgent",
+     152
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "high",
+     377
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "low",
+     373
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "normal",
+     813
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "urgent",
+     142
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "high",
+     318
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "low",
+     344
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "normal",
+     816
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "urgent",
+     142
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "high",
+     386
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "low",
+     377
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "normal",
+     882
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "urgent",
+     151
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "high",
+     357
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "low",
+     351
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "normal",
+     798
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "urgent",
+     158
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "high",
+     317
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "low",
+     338
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "normal",
+     770
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "urgent",
+     155
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "high",
+     362
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "low",
+     349
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "normal",
+     828
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "urgent",
+     125
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "high",
+     317
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "low",
+     379
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "normal",
+     793
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "urgent",
+     149
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "high",
+     348
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "low",
+     333
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "normal",
+     832
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "urgent",
+     127
+    ]
+   ]
+  },
+  "median_hours": {
+   "clicked_vs_duckdb": {
+    "numbers": 12,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.010555,
+    "within": 0.016666666666666666,
+    "agree": true
+   },
+   "hand_sql_vs_duckdb": {
+    "numbers": 12,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 1e-09,
+    "agree": true
+   },
+   "clicked": [
+    [
+     "2026-08-31T00:00:00Z",
+     "33.133333"
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     "33.933333"
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     "31.925"
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     "32.316667"
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     "33.783333"
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     "35.1"
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     "31.958333"
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     "31.233333"
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     "31.966667"
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     "34.916667"
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     "33.266667"
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     "33.733333"
+    ]
+   ],
+   "duckdb": [
+    [
+     "2026-08-31T00:00:00Z",
+     33.138888888888886
+    ],
+    [
+     "2026-09-07T00:00:00Z",
+     33.93472222222222
+    ],
+    [
+     "2026-09-14T00:00:00Z",
+     31.920277777777777
+    ],
+    [
+     "2026-09-21T00:00:00Z",
+     32.314166666666665
+    ],
+    [
+     "2026-09-28T00:00:00Z",
+     33.78138888888889
+    ],
+    [
+     "2026-10-05T00:00:00Z",
+     35.093333333333334
+    ],
+    [
+     "2026-10-12T00:00:00Z",
+     31.95236111111111
+    ],
+    [
+     "2026-10-19T00:00:00Z",
+     31.232777777777777
+    ],
+    [
+     "2026-10-26T00:00:00Z",
+     31.96527777777778
+    ],
+    [
+     "2026-11-02T00:00:00Z",
+     34.919444444444444
+    ],
+    [
+     "2026-11-09T00:00:00Z",
+     33.27722222222222
+    ],
+    [
+     "2026-11-16T00:00:00Z",
+     33.73152777777778
+    ]
+   ]
+  },
+  "top_tags": {
+   "clicked_vs_duckdb": {
+    "numbers": 10,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 0,
+    "agree": true,
+    "same_order": true
+   },
+   "hand_sql_vs_duckdb": {
+    "numbers": 10,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 1e-09,
+    "agree": true,
+    "same_order": true
+   },
+   "clicked": [
+    [
+     "password",
+     "3,039"
+    ],
+    [
+     "login",
+     "3,027"
+    ],
+    [
+     "bug",
+     "3,008"
+    ],
+    [
+     "email",
+     "3,005"
+    ],
+    [
+     "invoice",
+     "2,991"
+    ],
+    [
+     "refund",
+     "2,981"
+    ],
+    [
+     "delay",
+     "2,980"
+    ],
+    [
+     "vip",
+     "2,959"
+    ],
+    [
+     "how_to",
+     "2,939"
+    ],
+    [
+     "eu",
+     "2,934"
+    ]
+   ],
+   "duckdb": [
+    [
+     "password",
+     3039
+    ],
+    [
+     "login",
+     3027
+    ],
+    [
+     "bug",
+     3008
+    ],
+    [
+     "email",
+     3005
+    ],
+    [
+     "invoice",
+     2991
+    ],
+    [
+     "refund",
+     2981
+    ],
+    [
+     "delay",
+     2980
+    ],
+    [
+     "vip",
+     2959
+    ],
+    [
+     "how_to",
+     2939
+    ],
+    [
+     "eu",
+     2934
+    ]
+   ]
+  },
+  "satisfaction": {
+   "clicked_vs_duckdb": {
+    "numbers": 8,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.049448,
+    "within": 0.05,
+    "agree": true
+   },
+   "hand_sql_vs_duckdb": {
+    "numbers": 8,
+    "missing": [],
+    "extra": [],
+    "largest_difference": 0.0,
+    "within": 1e-09,
+    "agree": true
+   },
+   "clicked": [
+    [
+     "Hollis",
+     "good",
+     "87"
+    ],
+    [
+     "Gia",
+     "good",
+     "84.2"
+    ],
+    [
+     "Farid",
+     "good",
+     "84"
+    ],
+    [
+     "Dana",
+     "good",
+     "83.8"
+    ],
+    [
+     "Cyril",
+     "good",
+     "81.9"
+    ],
+    [
+     "Eun",
+     "good",
+     "81.9"
+    ],
+    [
+     "Bo",
+     "good",
+     "79.2"
+    ],
+    [
+     "Avery",
+     "good",
+     "78.8"
+    ],
+    [
+     "Avery",
+     "bad",
+     "21.2"
+    ],
+    [
+     "Bo",
+     "bad",
+     "20.8"
+    ],
+    [
+     "Cyril",
+     "bad",
+     "18.1"
+    ],
+    [
+     "Eun",
+     "bad",
+     "18.1"
+    ],
+    [
+     "Dana",
+     "bad",
+     "16.2"
+    ],
+    [
+     "Farid",
+     "bad",
+     "16"
+    ],
+    [
+     "Gia",
+     "bad",
+     "15.8"
+    ],
+    [
+     "Hollis",
+     "bad",
+     "13"
+    ]
+   ],
+   "duckdb": [
+    [
+     "Avery",
+     78.78372199359853
+    ],
+    [
+     "Bo",
+     79.24944812362031
+    ],
+    [
+     "Cyril",
+     81.89066059225513
+    ],
+    [
+     "Dana",
+     83.77874456183966
+    ],
+    [
+     "Eun",
+     81.94528875379939
+    ],
+    [
+     "Farid",
+     83.96464646464646
+    ],
+    [
+     "Gia",
+     84.21428571428571
+    ],
+    [
+     "Hollis",
+     86.95219123505976
+    ]
+   ]
+  }
+ }
+}

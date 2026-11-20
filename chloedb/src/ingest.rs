@@ -637,8 +637,22 @@ fn short_str(s: &str) -> String {
 /// primary key is `key` when given (`""` for none), else a column named
 /// `id` whose values are all there and all different.
 pub fn create_for(table: &str, data: &[u8], format: Format, key: Option<&str>) -> Result<String> {
+    create_for_with(table, data, format, key, None)
+}
+
+/// The model a table made from a file's rows searches by meaning with
+/// ([`create_for_with`]): fast, run inside ChloeDB by every build, and the
+/// one ChloeCtx uses, so that a machine with either has it already.
+pub const MEANING_MODEL: &str = "potion-retrieval-32M";
+
+/// [`create_for`], and when `meaning` names a model and the rows have prose
+/// (`TEXT` columns), a vector field `emb` (`meaning` when a column is
+/// named `emb`) embedded from that prose by the model, so that the table
+/// searches by meaning as well as by words from its first row
+/// ([`MEANING_MODEL`] is the one to give).
+pub fn create_for_with(table: &str, data: &[u8], format: Format, key: Option<&str>, meaning: Option<&str>) -> Result<String> {
     let (columns, rows) = sample_columns(data, format)?;
-    create_sql(table, &columns, rows, key)
+    create_sql(table, &columns, rows, key, meaning)
 }
 
 /// The names of the columns of rows in `format` (a CSV file's header, the
@@ -647,10 +661,11 @@ pub fn columns_of(data: &[u8], format: Format) -> Result<Vec<String>> {
     Ok(sample_columns(data, format)?.0.into_iter().map(|(n, _)| n).collect())
 }
 
-/// The schema [`create_for`] makes for the rows: a table named `table`
-/// from their columns and values, to create a database or a table with.
-pub fn schema_for(table: &str, data: &[u8], format: Format, key: Option<&str>) -> Result<Schema> {
-    let sql = create_for(table, data, format, key)?;
+/// The schema [`create_for_with`] makes for the rows: a table named
+/// `table` from their columns and values, to create a database or a table
+/// with.
+pub fn schema_for(table: &str, data: &[u8], format: Format, key: Option<&str>, meaning: Option<&str>) -> Result<Schema> {
+    let sql = create_for_with(table, data, format, key, meaning)?;
     match crate::query::sql::bind_command(&sql, &[], &crate::query::Params::default())? {
         crate::query::sql::Command::CreateTable { schema, .. } => Ok(schema),
         _ => Err(Error::Schema(format!("no table could be made from the rows ({sql})"))),
@@ -748,7 +763,7 @@ fn sample_columns(data: &[u8], format: Format) -> Result<(Vec<(String, Vec<Json>
 }
 
 /// [`create_for`]'s statement from the sampled columns.
-fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Option<&str>) -> Result<String> {
+fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Option<&str>, meaning: Option<&str>) -> Result<String> {
     let present = |vs: &[Json]| vs.iter().filter(|v| !v.is_null()).cloned().collect::<Vec<_>>();
     let type_of = |vs: &[Json]| -> &'static str {
         let vs = present(vs);
@@ -785,7 +800,8 @@ fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Op
         }).map(|(n, _)| n.clone()),
     };
     let name = |n: &str| if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !n.starts_with(|c: char| c.is_ascii_digit()) { n.to_string() } else { crate::query::sql::quoted(n) };
-    let fields: Vec<String> = columns
+    let mut prose = Vec::new();
+    let mut fields: Vec<String> = columns
         .iter()
         .map(|(n, vs)| {
             let mut ty = type_of(vs);
@@ -798,9 +814,23 @@ fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Op
                 ty = if ty == "INT" { "INT" } else { "KEYWORD" };
                 return format!("{} {ty} PRIMARY KEY", name(n));
             }
+            if ty == "TEXT" {
+                prose.push(n.as_str());
+            }
             format!("{} {ty}", name(n))
         })
         .collect();
+    // Meaning: one vector of the row's prose, named so as not to take a
+    // column's name. A name the option's list cannot hold (a comma in it)
+    // is left out of it.
+    let embed: Vec<&str> = prose.iter().copied().filter(|n| !n.contains([',', '\'', '"'])).collect();
+    if let (Some(model), false) = (meaning, embed.is_empty()) {
+        let taken = |c: &str| columns.iter().any(|(n, _)| n.eq_ignore_ascii_case(c));
+        let field = ["emb", "meaning", "emb_meaning"].into_iter().find(|c| !taken(c));
+        if let Some(field) = field {
+            fields.push(format!("{field} VECTOR OPTIONS(embed = '{}', model = '{}')", embed.join(", "), model.replace('\'', "''")));
+        }
+    }
     Ok(format!("CREATE TABLE IF NOT EXISTS {} ({})", name(table), fields.join(", ")))
 }
 
@@ -824,9 +854,20 @@ mod create_for_tests {
     fn a_file_names_its_table_and_its_columns() {
         let csv = b"id,title,overview,year,rating,genre\n1,The Matrix,A hacker learns the world is a simulation,1999,8.7,scifi\n2,Up,An old man ties balloons to his house,2009,8.3,animation\n";
         assert_eq!(columns_of(csv, Format::Csv).unwrap(), ["id", "title", "overview", "year", "rating", "genre"]);
-        let s = schema_for("movies", csv, Format::Csv, None).unwrap();
+        let s = schema_for("movies", csv, Format::Csv, None, None).unwrap();
         assert_eq!(s.table, "movies");
         assert_eq!(crate::query::ddl::create_sql(&s).split_whitespace().collect::<Vec<_>>().join(" "), "CREATE TABLE movies ( id INT PRIMARY KEY, title TEXT, overview TEXT, year INT, rating FLOAT, genre KEYWORD );");
+        // With meaning: a vector of the prose, by the model named.
+        let s = schema_for("movies", csv, Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        let emb = s.fields.iter().find(|f| f.name == "emb").expect("an embedded field");
+        let spec = emb.embed.as_ref().expect("embedded");
+        assert_eq!((spec.model.as_str(), spec.from.clone()), (MEANING_MODEL, vec!["title".to_string(), "overview".to_string()]));
+        assert!(matches!(emb.ty, crate::schema::FieldType::Vector { dim: 512, .. }), "{:?}", emb.ty);
+        // No prose, no vector; a column named emb keeps its name.
+        let sql = create_for_with("n", b"id,score\n1,2\n", Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        assert!(!sql.contains("VECTOR"), "{sql}");
+        let sql = create_for_with("n", b"id,emb,note\n1,x,a long note of words\n", Format::Csv, None, Some(MEANING_MODEL)).unwrap();
+        assert!(sql.ends_with("meaning VECTOR OPTIONS(embed = 'note', model = 'potion-retrieval-32M'))"), "{sql}");
         assert_eq!(columns_of(b"{\"a\": 1}\n{\"b\": 2, \"a\": 3}\n", Format::Jsonl).unwrap(), ["a", "b"]);
         assert_eq!(table_name_of(Path::new("data/movies.csv")), "movies");
         assert_eq!(table_name_of(Path::new("My Data-2024.v2.jsonl")), "my_data_2024");

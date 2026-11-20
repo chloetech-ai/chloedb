@@ -130,12 +130,22 @@ jobs:
       - name: Test
         working-directory: chloedb-js
         run: node --test test/database.test.mjs
+      # The notices of every crate compiled into the addon (LENA-408: 0.3.8's
+      # packages had LICENSE alone), which pack.mjs puts beside chloedb.node.
+      - name: Third-party notices
+        run: python3 packaging/sbom/sbom.py --crate chloedb-js --name chloedb --platform ${{ matrix.platform }} --notices chloedb-js/THIRD-PARTY-NOTICES.md
       - name: Pack
         working-directory: chloedb-js
         run: |
           node scripts/pack.mjs ${{ matrix.platform }}
           node scripts/pack.mjs --npm ${{ matrix.platform }}
           node scripts/pack.mjs --npm-main
+      - name: The packages carry the notices
+        working-directory: chloedb-js
+        run: |
+          for t in dist/chloedb-*-${{ matrix.platform }}.tgz dist/npm/chloedb-${{ matrix.platform }}-*.tgz; do
+            tar tzf "$t" | grep -qx package/THIRD-PARTY-NOTICES.md || { echo "::error::$t has no THIRD-PARTY-NOTICES.md"; exit 1; }
+          done
       # The tarball installs into an empty app and runs there, without
       # building anything (a cargo that fails would fail the install).
       - name: Install the tarball and use it

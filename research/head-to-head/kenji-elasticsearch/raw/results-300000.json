@@ -1,0 +1,172 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "docs": 300000,
+ "searches": 1000,
+ "at": "2026-11-20T07:00:22Z",
+ "tenants": 200,
+ "biggest_tenant": [
+  "t001",
+  59966
+ ],
+ "agreement": {
+  "total": 200,
+  "ids_in_order": 165,
+  "ids_as_set": 168,
+  "buckets": 200,
+  "highlighted": 200,
+  "compared": 200,
+  "errors": 0,
+  "top10_overlap_mean": 9.44
+ },
+ "elasticsearch": {
+  "name": "elasticsearch",
+  "bulk_s": 21.53,
+  "count": 300000,
+  "memory_after_load_kb": 4960813,
+  "mix": [
+   {
+    "clients": 1,
+    "searches": 1000,
+    "per_s": 126.5,
+    "p50_ms": 7.38,
+    "p95_ms": 10.61,
+    "p99_ms": 14.26,
+    "errors": 0
+   },
+   {
+    "clients": 4,
+    "searches": 1000,
+    "per_s": 372.7,
+    "p50_ms": 9.31,
+    "p95_ms": 16.73,
+    "p99_ms": 62.54,
+    "errors": 0
+   }
+  ],
+  "parts": {
+   "text query": {
+    "p50_ms": 4.769,
+    "p95_ms": 11.02,
+    "n": 15
+   },
+   "+ highlight": {
+    "p50_ms": 7.168,
+    "p95_ms": 7.802,
+    "n": 15
+   },
+   "terms on status (filters only)": {
+    "p50_ms": 3.036,
+    "p95_ms": 7.405,
+    "n": 15
+   },
+   "terms on tags, an array (filters only)": {
+    "p50_ms": 2.705,
+    "p95_ms": 5.119,
+    "n": 15
+   },
+   "sort by date": {
+    "p50_ms": 3.883,
+    "p95_ms": 5.064,
+    "n": 15
+   },
+   "sort by date, id tie-breaker": {
+    "p50_ms": 3.749,
+    "p95_ms": 6.55,
+    "n": 15
+   },
+   "terms on tags, whole index": {
+    "p50_ms": 2.026,
+    "p95_ms": 2.194,
+    "n": 15
+   }
+  },
+  "paging": {
+   "tenant": "t007",
+   "pages": 75,
+   "unique": 7463,
+   "in_order": true,
+   "page_p50_ms": 4.94
+  },
+  "memory_after_kb": 5038407,
+  "disk_bytes": 104270102,
+  "version": "Elasticsearch 9.5.5 (Docker mirror.gcr.io/library/elasticsearch:9.5.5, heap 4g)"
+ },
+ "chloedb": {
+  "name": "chloedb",
+  "bulk_s": 38.81,
+  "count": 300000,
+  "memory_after_load_kb": 278260,
+  "mix": [
+   {
+    "clients": 1,
+    "searches": 1000,
+    "per_s": 44.6,
+    "p50_ms": 17.62,
+    "p95_ms": 44.1,
+    "p99_ms": 60.91,
+    "errors": 0
+   },
+   {
+    "clients": 4,
+    "searches": 1000,
+    "per_s": 87.3,
+    "p50_ms": 39.03,
+    "p95_ms": 90.0,
+    "p99_ms": 125.21,
+    "errors": 0
+   }
+  ],
+  "parts": {
+   "text query": {
+    "p50_ms": 3.629,
+    "p95_ms": 4.175,
+    "n": 15
+   },
+   "+ highlight": {
+    "p50_ms": 5.2,
+    "p95_ms": 6.313,
+    "n": 15
+   },
+   "terms on status (filters only)": {
+    "p50_ms": 4.065,
+    "p95_ms": 6.969,
+    "n": 15
+   },
+   "terms on tags, an array (filters only)": {
+    "p50_ms": 75.123,
+    "p95_ms": 91.221,
+    "n": 15
+   },
+   "sort by date": {
+    "p50_ms": 2.114,
+    "p95_ms": 2.997,
+    "n": 15
+   },
+   "sort by date, id tie-breaker": {
+    "p50_ms": 128.058,
+    "p95_ms": 153.159,
+    "n": 15
+   },
+   "terms on tags, whole index": {
+    "p50_ms": 885.85,
+    "p95_ms": 947.524,
+    "n": 15
+   }
+  },
+  "paging": {
+   "tenant": "t007",
+   "pages": 75,
+   "unique": 7463,
+   "in_order": true,
+   "page_p50_ms": 23.77
+  },
+  "memory_after_kb": 592044,
+  "disk_bytes": 180089204,
+  "version": "chloedb-server 0.3.9 (built from 2f21f4dd0c) (its OpenSearch API)"
+ }
+}

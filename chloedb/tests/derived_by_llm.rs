@@ -118,7 +118,7 @@ fn a_language_model_makes_text_of_text() {
     {
         let seen = mock.seen.lock().unwrap();
         let (path, headers, body) = &seen[0];
-        assert_eq!(path, "/messages");
+        assert_eq!(path, "/v1/messages");
         let h = |k: &str| headers.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
         assert_eq!((h("x-api-key"), h("anthropic-version")), (Some("ak-derive"), Some("2023-06-01")));
         assert_eq!((body["model"].as_str(), body["system"].as_str()), (Some("claude-haiku-5-5"), Some(PROMPT)));
