@@ -2086,7 +2086,11 @@ impl tonic::service::Interceptor for Check {
                     kind: crate::keys::REFUSAL.into(),
                     ..Default::default()
                 });
-                Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name)))
+                match who.tenant() {
+                    // KENJI-402: its filter is the OpenSearch API's.
+                    Some(t) => Err(tonic::Status::permission_denied(format!("the key {:?} is bound to a tenant ({}): it calls the OpenSearch API, not gRPC", who.name, t.text()))),
+                    None => Err(tonic::Status::permission_denied(format!("the key {:?} is limited to tables: it calls the HTTP API, not gRPC", who.name))),
+                }
             }
             Some(who) => {
                 req.extensions_mut().insert(who);
