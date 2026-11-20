@@ -4361,8 +4361,10 @@ impl Service {
                     // and stops at its next check if this future is dropped.
                     let te = Instant::now();
                     let deep = chloedb::query::parse::nests_deep(&req.sql);
+                    // Listed in /v1/queries until the work ends, if its caller goes first.
+                    let hold = live.hold();
                     let r = tokio::task::spawn_blocking(move || {
-                        let _held = (permit, running);
+                        let _held = (permit, running, hold);
                         let started = Instant::now();
                         // A statement that nests deep runs on a thread with the stack for it.
                         let r = chloedb::query::parse::deep_stack(deep, || match (scroll, columns) {

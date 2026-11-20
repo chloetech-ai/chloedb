@@ -1287,13 +1287,27 @@ fn main() {
     // As #[tokio::main] builds it, with a larger stack for each worker and
     // blocking thread, where queries are planned and run: the statements
     // the parser takes fit in 2 MiB, and this leaves room for more.
-    tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(chloedb::query::parse::QUERY_STACK)
         .build()
-        .expect("start the tokio runtime")
-        .block_on(run());
+        .expect("start the tokio runtime");
+    rt.block_on(run());
+    // A query whose caller went away runs on a blocking thread until its
+    // next check of its cancellation; dropping the runtime would wait for
+    // it however long that takes (a stop that never ends, which only
+    // SIGKILL could). The database opens after this as after a crash, from
+    // its write-ahead log.
+    let t = std::time::Instant::now();
+    rt.shutdown_timeout(SHUTDOWN_WAIT);
+    if t.elapsed() >= SHUTDOWN_WAIT {
+        eprintln!("stopped with work still running after {} s (a query that had not reached a check)", SHUTDOWN_WAIT.as_secs());
+    }
 }
+
+/// How long a stopping server waits for the work still running on its
+/// blocking threads once its listeners have stopped.
+const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The server's options by topic, for `--help`: every option of [`Args`]
 /// is under one (a test says so), so that the few a first run needs are

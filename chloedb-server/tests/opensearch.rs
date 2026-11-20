@@ -365,6 +365,17 @@ async fn social(base: &str) -> Vec<Json> {
     let r = ok(base, "POST", "/tags/_search", Some(tag_search)).await;
     assert_eq!(ids(&r), ["t1", "t2", "t3"]);
     seen.push(r);
+    // A gauss far from its origin scores a row about 1e-150 of its BM25,
+    // below the least f32: the search still answers, nearest first.
+    ok(base, "PUT", "/far", Some(json!({"mappings": {"properties": {"t": {"type": "text"}, "d": {"type": "date"}, "n": {"type": "long"}}}}))).await;
+    for (id, d, n) in [("1", "2026-11-01T00:00:00Z", 5), ("2", "2025-01-01T00:00:00Z", 50)] {
+        ok(base, "POST", &format!("/far/_doc/{id}?refresh=true"), Some(json!({"t": format!("outage {id}"), "d": d, "n": n}))).await;
+    }
+    for f in [json!({"gauss": {"d": {"origin": "2026-11-01", "scale": "30d"}}}), json!({"gauss": {"n": {"origin": 5, "scale": 2}}})] {
+        let q = json!({"query": {"function_score": {"query": {"match": {"t": "outage"}}, "functions": [f]}}});
+        let r = tokio::time::timeout(Duration::from_secs(20), ok(base, "POST", "/far/_search", Some(q.clone()))).await.unwrap_or_else(|_| panic!("no answer in 20 s: {q}"));
+        assert_eq!(ids(&r), ["1", "2"], "{q}");
+    }
     // Statuses in two indexes, a status in both once.
     for (ix, private) in [("pub_statuses", false), ("statuses", true)] {
         let mut props = json!({"id": {"type": "long"}, "text": {"type": "text"}, "created_at": {"type": "date"}});
