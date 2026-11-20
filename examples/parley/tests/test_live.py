@@ -523,6 +523,61 @@ def test_experiments_with_many_arms_and_their_analysis(live):
     assert done["status"] == "done" and done["result"]["verdict"] and ex.running() is None
 
 
+def test_experiments_configured_by_hand(live):
+    """An arm is knobs (signals, kind boosts, filters) or an ORDER BY written
+    by hand; an experiment has settings (outcome window, share of agents,
+    confidence level, stop rules, the next in the queue), and a queued one can
+    be changed, put first or deleted."""
+    kind, a = live
+    authors = ["mira", "rex"]
+    readers = [f"r{i}" for i in range(10)]
+    agents(a, *authors, *readers)
+    for i in range(3):
+        a.post("mira", f"mira on octopuses and telescopes, part {i}.")
+        a.post("rex", f"rex on databases, part {i}.")
+    ex = a.experiments
+    pics = {"arm": "rex-first", "mix": {"taste": 0.5, "fresh": 0.5}, "half_life_h": 2, "per_author": 2, "window_h": 48,
+            "only_kinds": ["text", "link"], "kind_boost": {"text": 0.2}}
+    pv = ex.preview({"arm": pics, "agent": "r0"})
+    assert "decay(ts, now(), 7200)" in pv["order"] and "WHEN kind = 'text' THEN 0.2" in pv["order"]
+    assert len(pv["posts"]) == 4 and max(sum(p["author"] == h for p in pv["posts"]) for h in authors) == 2
+    hand = {"arm": "by-hand", "order": "0.9 * tmm(similarity(emb, :taste)) + 0.1 * (CASE WHEN author = 'rex' THEN 1 ELSE 0 END)"}
+    for bad in [{"arm": "x", "order": "1; DROP TABLE posts"}, {"arm": "x", "order": "(SELECT 1 FROM agents)"}, {"arm": "x", "order": "tmm(similarity(emb, :other))"},
+                {"arm": "x", "order": "no_such_score(ts)"}, {"arm": "x", "mix": {"circle": 1}}, {"arm": "x", "mix": {"taste": 3}}]:
+        with pytest.raises(ParleyError):
+            ex.create({"name": "bad", "arms": [bad, "vector"]})
+    x = ex.create({"name": "by hand", "arms": ["vector", pics, dict(hand, weight=2)], "control": "vector", "metric": "opened",
+                   "settings": {"window_h": 6, "share": 1, "level": 0.9, "stop_after_h": 5, "auto_next": True}})
+    assert x["status"] == "queued" and x["settings"]["level"] == 0.9 and [r["arm"] for r in x["arms"]] == ["vector", "rex-first", "by-hand"]
+    assert x["arms"][2]["sql"].endswith("DESC") and "half-life 2 h" in x["arms"][1]["about"]
+    x = ex.update(x["id"], {"name": "by hand, again", "settings": {"level": 0.99}})
+    assert x["name"] == "by hand, again" and x["settings"]["level"] == 0.99 and x["settings"]["window_h"] == 6
+    ex.to_front(x["id"])
+    assert [r["id"] for r in ex.list() if r["status"] == "queued"][0] == x["id"]
+    ex.start(x["id"])
+    for h in readers:
+        shown = a.feed_for_you(h, 5, log=True)
+        assert shown and shown[0]["experiment"] == x["id"]
+        if shown[0]["arm"] == "rex-first":
+            assert {p["kind"] for p in shown} <= {"text", "link"}
+    an = ex.analyze(x["id"])
+    assert an["level"] == 0.99 and an["settings"]["window_h"] == 6 and sum(r["agents"] for r in an["arms"]) == len(readers)
+    with pytest.raises(ParleyError):
+        ex.update(x["id"], {"name": "running ones are not changed"})
+    nxt = [r["id"] for r in ex.list() if r["status"] == "queued"][0]
+    ex.stop(x["id"])
+    assert ex.get(x["id"])["status"] == "done" and ex.running()["id"] == nxt  # auto_next started the queue's first
+    half = ex.create({"name": "half", "arms": ["vector", "fresh"], "settings": {"share": 0.5}, "start": True})
+    inside = sum(bool(a.feed_for_you(h, 3)[0].get("experiment")) for h in readers)
+    assert 0 < inside < len(readers)
+    gone = ex.create({"name": "gone", "arms": ["vector", "fresh"]})
+    ex.delete(gone["id"])
+    with pytest.raises(ParleyError):
+        ex.get(gone["id"])
+    with pytest.raises(ParleyError):
+        ex.delete(half["id"])
+
+
 def test_trends(live):
     from parley import trends
     kind, a = live

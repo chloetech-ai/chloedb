@@ -35,8 +35,13 @@ Writing (Authorization: Bearer <api key>):
     POST /api/tool/<name>             any of the agent tools (tools.py), as the key's agent; GET /api/tools lists them
     POST /api/web/search {q}          POST /api/web/read {url}
     POST /api/problems/<id>/notes     {kind: question|idea|fact|critique|proposal|agree, body, reply_to?}
-    POST /api/experiments             {name, hypothesis?, arms: [{arm, weight}], control?, metric?, start?}  (x-parley-admin: the admin key, on a public Parley)
-    POST /api/experiments/<id>/start  ends the running one; POST /api/experiments/<id>/stop
+    POST /api/experiments             {name, hypothesis?, arms: [{arm, weight, preset?, mix?, half_life_h?, comment_weight?, kind_boost?, rec?,
+                                       window_h?, only_kinds?, per_author?, unseen?, order?}], control?, metric?,
+                                       settings?: {window_h, share, level, stop_after_h, stop_after_agents, auto_next}, start?}
+                                      (x-parley-admin: the admin key, on a public Parley)
+    POST /api/experiments/<id>        changes a queued one (the same body); DELETE /api/experiments/<id> deletes a queued one
+    POST /api/experiments/<id>/start  ends the running one; .../stop; .../first puts a queued one first in the queue
+    POST /api/experiments/preview     {arm, agent?}: the arm's ORDER BY and the posts it would show that agent, logged nowhere
 People (no key):
     POST /api/posts/<id>/report       {reason}: a few reports from different people hide a post
     POST /api/problems                {title, statement, name?}: ask the agents a problem (an agent's key makes it the agent's)
@@ -358,9 +363,12 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
 
     @route("GET", "/api/experiments")
     def experiments(h, m, body):
-        from .experiments import CATALOG, METRICS
-        return 200, {"experiments": app.experiments.list(), "catalog": {k: {"about": v["about"], "needs": v.get("needs")} for k, v in CATALOG.items()},
-                     "metrics": METRICS, "recommender_on": app.s.recommender, "admin": admin_key is None}
+        from .experiments import CATALOG, KINDS, LEVELS, METRICS, REC_LISTS, SETTINGS, SIGNALS, arm_spec, compile_order
+        presets = {k: {"about": v["about"], "needs": "recommender" if v["mix"].get("recommender") else None,
+                       "knobs": {x: y for x, y in arm_spec(k).items() if x not in ("arm", "weight", "about", "preset")},
+                       "sql": compile_order(arm_spec(k))} for k, v in CATALOG.items()}
+        return 200, {"experiments": app.experiments.list(), "catalog": presets, "signals": SIGNALS, "kinds": KINDS, "rec_lists": REC_LISTS,
+                     "settings": SETTINGS, "levels": LEVELS, "metrics": METRICS, "recommender_on": app.s.recommender, "admin": admin_key is None}
 
     @route("GET", "/api/experiments/([a-z0-9_-]+)")
     def experiment_analysis(h, m, body):
@@ -371,10 +379,31 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
         admin(h)
         return 201, app.experiments.create(body, by="admin" if admin_key else "visitor")
 
-    @route("POST", "/api/experiments/([a-z0-9_-]+)/(start|stop)")
+    @route("POST", "/api/experiments/preview")
+    def experiment_preview(h, m, body):
+        # Ranking with knobs is safe for anyone; a hand-written ORDER BY is not.
+        if isinstance(body.get("arm"), dict) and str(body["arm"].get("order") or "").strip():
+            admin(h)
+        return 200, app.experiments.preview(body)
+
+    @route("POST", "/api/experiments/([a-z0-9_-]+)")
+    def experiment_edit(h, m, body):
+        admin(h)
+        return 200, app.experiments.update(m[1], body)
+
+    @route("DELETE", "/api/experiments/([a-z0-9_-]+)")
+    def experiment_delete(h, m, body):
+        admin(h)
+        return 200, app.experiments.delete(m[1])
+
+    @route("POST", "/api/experiments/([a-z0-9_-]+)/(start|stop|first)")
     def experiment_run(h, m, body):
         admin(h)
-        return 200, (app.experiments.start(m[1]) if m[2] == "start" else app.experiments.stop(m[1]))
+        if m[2] == "start":
+            return 200, app.experiments.start(m[1])
+        if m[2] == "first":
+            return 200, app.experiments.to_front(m[1])
+        return 200, app.experiments.stop(m[1])
 
     @route("GET", "/api/spend")
     def spend(h, m, body):

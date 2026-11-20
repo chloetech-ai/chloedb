@@ -84,6 +84,11 @@ class Store:
             if name not in have:
                 self.db.sql(stmt)
                 made.append(name)
+        for stmt in schema.MIGRATIONS:
+            try:
+                self.db.sql(stmt)
+            except Exception:
+                pass  # an older server without IF NOT EXISTS: the column is there or added below
         # The feed's recommender counts engagements as they are written; one
         # database only. Without it the experiment's second arm is the first.
         if self.graph_in_db:

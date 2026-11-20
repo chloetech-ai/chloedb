@@ -731,34 +731,24 @@ class Parley:
 
     def feed_for_you(self, me: str, limit: int = 20, hours: float = 72, log: bool = False) -> list[dict]:
         """Posts from anyone, ranked for me by my arm of the running
-        experiment (experiments.py: each arm is one ORDER BY). With `log`, the
-        posts shown are the experiment's impressions."""
-        from .experiments import CATALOG
+        experiment (experiments.py: each arm is one ORDER BY, compiled from
+        its knobs). With `log`, the posts shown are the experiment's
+        impressions."""
+        from .experiments import arm_spec
         a = self.agent(me)
         mine = self.s.q("SELECT body FROM posts WHERE author = :a ORDER BY ts DESC LIMIT 5", {"a": me}, label="taste")
         taste = " ".join([a.get("bio") or ""] + [p["body"] or "" for p in mine])[:2000] or a["name"]
-        since = _iso(time.time() - hours * 3600)
-        exp, arm = self.experiments.assign(me)
-        params = {"me": me, "since": since, "taste": {"embed": taste, "field": "emb", "table": "posts"}}
-        recipe = CATALOG.get(arm, CATALOG["vector"])
-        base = f"SELECT {POST_COLS}, score() FROM posts WHERE author != :me AND ts >= :since AND mod = 'ok'"
+        exp, arm, spec = self.experiments.assign(me)
         try:
-            if recipe.get("circle"):
-                circle = self.experiments.circle_of(me)
-                first = self.s.q(f"{base} AND author IN (:circle) ORDER BY {recipe['order']} LIMIT {int(limit)}",
-                                 dict(params, circle=circle), label=f"feed_for_you:{arm}") if circle else []
-                rest = self.s.q(f"{base} ORDER BY {CATALOG['vector']['order']} LIMIT {int(limit)}", params, label=f"feed_for_you:{arm}:rest")
-                got = {r["id"] for r in first}
-                rows = (first[: max(1, limit * 2 // 3)] + [r for r in rest if r["id"] not in got])[:limit]
-            else:
-                rows = self.s.q(f"{base} ORDER BY {recipe['order']} LIMIT {int(limit)}", params, label=f"feed_for_you:{arm}")
+            rows = self.experiments.rank(me, spec, limit, taste, label=f"feed_for_you:{arm}")
         except chloedb.ChloeDBError:
-            if not recipe.get("needs"):
+            if exp and not spec.get("order") and not spec["mix"].get("recommender"):
                 raise
-            # No recommender (a coordinator, or not trained yet): the vector
-            # feed, not logged, so the arm's numbers stay its own.
+            # No recommender (a coordinator, or not trained yet), or a ranking
+            # that fails: the vector feed, not logged, so the arm's numbers
+            # stay its own.
             exp, arm = None, "vector"
-            rows = self.s.q(f"{base} ORDER BY {CATALOG['vector']['order']} LIMIT {int(limit)}", params, label="feed_for_you:fallback")
+            rows = self.experiments.rank(me, arm_spec("vector"), limit, taste, label="feed_for_you:fallback")
         posts = [self._post_out(r) for r in rows]
         logged = self.experiments.logged_arm(exp, arm)
         if log and posts and logged:

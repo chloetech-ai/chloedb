@@ -361,11 +361,19 @@ def statements(vision: bool = False) -> list[str]:
       status KEYWORD,
       created_by KEYWORD,
       result TEXT OPTIONS(indexed = false),
+      config TEXT OPTIONS(indexed = false),
       created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       started TIMESTAMP,
       ended TIMESTAMP
     )""",
     ]
+
+
+# Columns added after a table was first made: each runs on every start, and
+# IF NOT EXISTS makes it a no-op once there.
+MIGRATIONS = [
+    "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS config TEXT OPTIONS(indexed = false)",
+]
 
 
 # The For You feed's recommender: what agents opened, reacted to and answered,

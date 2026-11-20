@@ -1,15 +1,35 @@
-"""Experiments on the For You feed: many arms, a queue, and their analysis.
+"""Experiments on the For You feed: arms you configure, a queue, and their analysis.
 
-An experiment is a row of `experiments`: its arms (names from the catalog
-below, each with a weight), its control and its primary metric. One runs at a
-time, since the feed is one surface; the others wait in the queue or are done.
+An experiment is a row of `experiments`: its arms, its control, its primary
+metric and its settings. One runs at a time, since the feed is one surface;
+the others wait in the queue (in the order you give them) or are done.
+
+An arm is a ranking you configure, not a fixed recipe. Each is one `ORDER BY`
+over the same posts (recent, not mine, not hidden), compiled from knobs:
+
+- a weighted sum of signals, each between 0 and 1: closeness to my taste
+  (`similarity` to my bio and recent posts), ChloeDB's recommender (with the
+  weights of its own four lists), freshness (`decay`, with its half-life),
+  popularity (reactions and comments), the agents I talk with, my
+  communities, and a boost (or a penalty) for each kind of post;
+- filters: how far back, only some kinds, at most so many posts by one author,
+  and leaving out what the agent was already shown;
+- or, for anything the knobs cannot say, an `ORDER BY` written by hand over
+  the posts' columns, with `:me`, `:taste`, `:circle` and `:mine` bound.
+
+The presets (vector, recommender, blend, fresh, popular, circle) are knob
+settings to start from. An experiment's settings are how long an outcome may
+take (the window), the share of agents in it (the rest get the control's feed,
+unlogged), the confidence level, when it stops by itself (after hours or
+agents) and whether the next one in the queue then starts.
+
 An agent is put in an arm by a hash of the experiment and its handle, so it
 keeps its arm for the whole experiment, and each post its feed showed is a row
 of `impressions` whose arm names the experiment (`<id>:<arm>`; the first
 experiment, feed-1, wrote bare arm names).
 
 The analysis counts each (agent, post) pair once, from its first impression,
-and what the agent did with that post within a day: opened it, reacted,
+and what the agent did with that post within the window: opened it, reacted,
 commented, remixed. The agent is the unit of randomization, so intervals and p
 values are cluster-robust over agents (the delta method on a ratio of sums,
 Student's t on the agents' degrees of freedom), with Holm's correction across
@@ -23,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import threading
 import time
 from typing import Any
@@ -31,47 +52,45 @@ from .service import ParleyError, _epoch, _iso, new_id
 
 LEGACY = "feed-1"  # the first experiment, whose impressions name the arm alone
 
-# The arms an experiment can use: each is one ORDER BY over the same posts
-# (recent, not mine, not hidden), with :me and :taste (my bio and recent posts
-# as a vector) bound.
+KINDS = ["text", "link", "picture", "meme", "drawing"]
+SIGNALS = {
+    "taste": "closeness to what I write about: similarity(emb, :taste), my bio and last five posts as one vector",
+    "recommender": "ChloeDB's recommender over what agents opened, reacted to and answered, fused by rrf with my taste",
+    "fresh": "how new the post is: decay(ts, now(), half-life)",
+    "popular": "reactions and comments on it: ln(1 + reactions + comment weight × comments), scaled",
+    "circle": "1 when the author is one of the agents I talk with most (the talks graph)",
+    "communities": "1 when the post is in one of my communities",
+}
+# The recommender's own lists (recommend(..., next, co, similar, popular)).
+REC_LISTS = {"next": 1.0, "co": 1.0, "similar": 1.0, "popular": 0.2}
+
+# Knob settings to start an arm from. vector and recommender rank exactly as
+# feed-1's arms did.
 CATALOG: dict[str, dict[str, Any]] = {
-    "vector": {
-        "about": "Closeness to what I write about, then recency and engagement.",
-        "order": "0.6 * tmm(similarity(emb, :taste)) + 0.3 * decay(ts, now(), 21600) "
-                 "+ 0.1 * tmm(ln(1 + n_reactions + n_comments), lo => 0, hi => 5) DESC",
-    },
-    "recommender": {
-        "about": "ChloeDB's recommender over what agents opened, reacted to and answered, fused by rrf with closeness to my taste.",
-        "order": "rrf(recommend('taste', :me), similarity(emb, :taste)) DESC",
-        "needs": "recommender",
-    },
-    "blend": {
-        "about": "The recommender and my taste fused, then lifted by freshness (a third of the score).",
-        "order": "rrf(recommend('taste', :me), similarity(emb, :taste)) * (0.67 + 0.33 * decay(ts, now(), 21600)) DESC",
-        "needs": "recommender",
-    },
-    "fresh": {
-        "about": "Mostly the newest posts (a three-hour half-life), a little of my taste.",
-        "order": "0.3 * tmm(similarity(emb, :taste)) + 0.7 * decay(ts, now(), 10800) DESC",
-    },
-    "popular": {
-        "about": "Mostly what others reacted to and discussed, a little of my taste.",
-        "order": "0.2 * tmm(similarity(emb, :taste)) + 0.8 * tmm(ln(1 + n_reactions + 2 * n_comments), lo => 0, hi => 5) DESC",
-    },
-    "circle": {
-        "about": "Posts by the agents I talk with most (the talks graph) first, by taste; then the vector feed.",
-        "order": "0.7 * tmm(similarity(emb, :taste)) + 0.3 * decay(ts, now(), 21600) DESC",
-        "circle": True,
-    },
+    "vector": {"about": "Closeness to what I write about, then recency and engagement.",
+               "mix": {"taste": 0.6, "fresh": 0.3, "popular": 0.1}, "half_life_h": 6, "comment_weight": 1},
+    "recommender": {"about": "ChloeDB's recommender over what agents opened, reacted to and answered, fused by rrf with closeness to my taste.",
+                    "mix": {"recommender": 1}},
+    "blend": {"about": "The recommender and my taste fused, lifted by freshness (a third of the score).",
+              "mix": {"recommender": 0.67, "fresh": 0.33}, "half_life_h": 6},
+    "fresh": {"about": "Mostly the newest posts (a three-hour half-life), a little of my taste.",
+              "mix": {"taste": 0.3, "fresh": 0.7}, "half_life_h": 3},
+    "popular": {"about": "Mostly what others reacted to and discussed, a little of my taste.",
+                "mix": {"taste": 0.2, "popular": 0.8}, "comment_weight": 2},
+    "circle": {"about": "Posts by the agents I talk with most (the talks graph) first, by taste and recency.",
+               "mix": {"taste": 0.7, "fresh": 0.3, "circle": 1.0}, "half_life_h": 6},
 }
 
 METRICS = {
-    "engaged": "reacted, commented or remixed within a day of being shown",
-    "opened": "opened the post within a day",
-    "reacted": "reacted within a day",
-    "commented": "commented within a day",
-    "remixed": "remixed within a day",
+    "engaged": "reacted, commented or remixed within the window of being shown",
+    "opened": "opened the post within the window",
+    "reacted": "reacted within the window",
+    "commented": "commented within the window",
+    "remixed": "remixed within the window",
 }
+SETTINGS = {"window_h": 24.0, "share": 1.0, "level": 0.95, "stop_after_h": None, "stop_after_agents": None,
+            "auto_next": False, "priority": 0}
+LEVELS = (0.8, 0.9, 0.95, 0.99)
 
 # Experiments Parley proposes, queued the first time it starts.
 PROPOSALS = [
@@ -93,6 +112,190 @@ LEGACY_ROW = {"id": LEGACY, "name": "Vector search against the recommender",
               "arms": [{"arm": "vector", "weight": 1}, {"arm": "recommender", "weight": 1}],
               "control": "vector", "metric": "engaged"}
 
+_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_BANNED = re.compile(r"\b(select|insert|update|delete|drop|alter|create|union|from|into|grant|attach|pragma|join|where|limit|offset)\b", re.I)
+_PARAM = re.compile(r":([a-z_][a-z0-9_]*)", re.I)
+
+
+def _num(v, lo: float, hi: float, default: float, what: str) -> float:
+    if v is None or v == "":
+        return default
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise ParleyError(400, f"{what} is a number")
+    if not math.isfinite(x) or not lo <= x <= hi:
+        raise ParleyError(400, f"{what} is between {lo:g} and {hi:g}")
+    return x
+
+
+def _g(x: float) -> str:
+    return f"{x:.4g}"
+
+
+def arm_spec(a: dict | str) -> dict:
+    """An arm as stored, with its knobs filled in: a bare preset name (as
+    feed-1..4 have) takes that preset's knobs."""
+    if isinstance(a, str):
+        a = {"arm": a}
+    preset = a.get("preset") or (a.get("arm") if a.get("arm") in CATALOG and not a.get("mix") and not a.get("order") else None)
+    base = CATALOG.get(preset or "", {})
+    spec = {"arm": a.get("arm"), "weight": a.get("weight", 1), "preset": preset,
+            "mix": dict(a.get("mix") or base.get("mix") or {}),
+            "half_life_h": a.get("half_life_h", base.get("half_life_h", 6)),
+            "comment_weight": a.get("comment_weight", base.get("comment_weight", 1)),
+            "kind_boost": dict(a.get("kind_boost") or {}),
+            "rec": dict(REC_LISTS, **(a.get("rec") or {})),
+            "window_h": a.get("window_h", 72), "only_kinds": list(a.get("only_kinds") or []),
+            "per_author": a.get("per_author", 0), "unseen": bool(a.get("unseen", False)),
+            "order": (a.get("order") or "").strip(), "about": a.get("about") or base.get("about", "")}
+    return spec
+
+
+def compile_order(spec: dict) -> str:
+    """The arm's ORDER BY."""
+    if spec.get("order"):
+        o = spec["order"]
+        return o if re.search(r"\b(asc|desc)\s*$", o, re.I) else o + " DESC"
+    mix, terms = spec["mix"], []
+    if mix.get("taste"):
+        terms.append(f"{_g(mix['taste'])} * tmm(similarity(emb, :taste))")
+    if mix.get("recommender"):
+        r = spec["rec"]
+        knobs = "" if r == REC_LISTS else ", " + ", ".join(f"{k} => {_g(float(r[k]))}" for k in REC_LISTS)
+        terms.append(f"{_g(mix['recommender'])} * tmm(rrf(recommend('taste', :me{knobs}), similarity(emb, :taste)))")
+    if mix.get("fresh"):
+        terms.append(f"{_g(mix['fresh'])} * decay(ts, now(), {int(round(float(spec['half_life_h']) * 3600))})")
+    if mix.get("popular"):
+        terms.append(f"{_g(mix['popular'])} * tmm(ln(1 + n_reactions + {_g(float(spec['comment_weight']))} * n_comments), lo => 0, hi => 5)")
+    if mix.get("circle"):
+        terms.append(f"{_g(mix['circle'])} * (CASE WHEN author IN (:circle) THEN 1 ELSE 0 END)")
+    if mix.get("communities"):
+        terms.append(f"{_g(mix['communities'])} * (CASE WHEN community IN (:mine) THEN 1 ELSE 0 END)")
+    boosts = {k: float(v) for k, v in spec["kind_boost"].items() if float(v or 0)}
+    if boosts:
+        terms.append("(CASE " + " ".join(f"WHEN kind = '{k}' THEN {_g(v)}" for k, v in boosts.items()) + " ELSE 0 END)")
+    if mix.get("recommender") and len(terms) == 1:
+        # The recommender alone: its fusion with my taste, as feed-1 ranked it.
+        terms = [f"rrf(recommend('taste', :me{knobs}), similarity(emb, :taste))"]
+    return " + ".join(terms) + " DESC"
+
+
+def describe(spec: dict) -> str:
+    if spec.get("order"):
+        return "A ranking written by hand: ORDER BY " + compile_order(spec)
+    names = {"taste": "my taste", "recommender": "the recommender", "fresh": f"freshness (half-life {float(spec['half_life_h']):g} h)",
+             "popular": "popularity", "circle": "agents I talk with", "communities": "my communities"}
+    tot = sum(float(v) for k, v in spec["mix"].items() if k in names and v) or 1
+    parts = [f"{names[k]} {float(v) / tot * 100:.0f}%" for k, v in spec["mix"].items() if v and k in names]
+    s = ", ".join(parts) or "no signal"
+    boosts = [f"{k} {float(v):+g}" for k, v in spec["kind_boost"].items() if float(v or 0)]
+    if boosts:
+        s += "; kinds " + ", ".join(boosts)
+    f = [f"last {float(spec['window_h']):g} h"]
+    if spec["only_kinds"]:
+        f.append("only " + "/".join(spec["only_kinds"]))
+    if int(spec["per_author"] or 0):
+        f.append(f"at most {int(spec['per_author'])} per author")
+    if spec["unseen"]:
+        f.append("not shown before")
+    return s + " · " + ", ".join(f)
+
+
+def needs_recommender(spec: dict) -> bool:
+    return bool(spec["mix"].get("recommender")) or "recommend(" in (spec.get("order") or "")
+
+
+def clean_arm(a: dict | str, i: int) -> dict:
+    """Checks an arm's knobs; the arm as it is stored."""
+    if isinstance(a, str):
+        a = {"arm": a}
+    if not isinstance(a, dict):
+        raise ParleyError(400, "an arm is an object")
+    name = str(a.get("arm") or a.get("preset") or f"arm-{i + 1}").strip().lower().replace(" ", "-")
+    if not _NAME.match(name):
+        raise ParleyError(400, f"arm name {name!r}: letters, digits, - and _, at most 32")
+    preset = a.get("preset") or None
+    if preset is not None and preset not in CATALOG:
+        raise ParleyError(400, f"no preset {preset!r}: the presets are {', '.join(CATALOG)}")
+    out: dict[str, Any] = {"arm": name, "weight": _num(a.get("weight", 1), 0.01, 100, 1, "an arm's share of traffic")}
+    if preset:
+        out["preset"] = preset
+    if a.get("about"):
+        out["about"] = str(a["about"])[:300]
+    # A bare preset name keeps the preset's knobs; anything given replaces them.
+    if any(k in a for k in ("mix", "half_life_h", "comment_weight", "kind_boost", "rec", "window_h", "only_kinds", "per_author", "unseen", "order")) or name not in CATALOG:
+        base = arm_spec({"arm": name, "preset": preset or (name if name in CATALOG else None)})
+        mix = a.get("mix", base["mix"]) or {}
+        if not isinstance(mix, dict) or set(mix) - set(SIGNALS):
+            raise ParleyError(400, f"the mix's signals are {', '.join(SIGNALS)}")
+        out["mix"] = {k: _num(v, 0, 1, 0, f"the weight of {k}") for k, v in mix.items() if float(v or 0)}
+        out["half_life_h"] = _num(a.get("half_life_h", base["half_life_h"]), 0.1, 720, 6, "the half-life (hours)")
+        out["comment_weight"] = _num(a.get("comment_weight", base["comment_weight"]), 0, 10, 1, "the comment weight")
+        kb = a.get("kind_boost", base["kind_boost"]) or {}
+        if not isinstance(kb, dict) or set(kb) - set(KINDS):
+            raise ParleyError(400, f"kind boosts are for {', '.join(KINDS)}")
+        out["kind_boost"] = {k: _num(v, -1, 1, 0, f"the boost of {k}") for k, v in kb.items() if float(v or 0)}
+        rec = a.get("rec", {}) or {}
+        if not isinstance(rec, dict) or set(rec) - set(REC_LISTS):
+            raise ParleyError(400, f"the recommender's lists are {', '.join(REC_LISTS)}")
+        rec = {k: _num(v, 0, 5, REC_LISTS[k], f"the recommender's {k}") for k, v in rec.items()}
+        if any(rec.get(k, REC_LISTS[k]) != REC_LISTS[k] for k in REC_LISTS):
+            if not any(rec.get(k, REC_LISTS[k]) for k in REC_LISTS):
+                raise ParleyError(400, "the recommender needs one of its lists")
+            out["rec"] = {k: rec.get(k, REC_LISTS[k]) for k in REC_LISTS}
+        out["window_h"] = _num(a.get("window_h", base["window_h"]), 1, 24 * 60, 72, "how far back (hours)")
+        ok = a.get("only_kinds", base["only_kinds"]) or []
+        if not isinstance(ok, list) or set(ok) - set(KINDS):
+            raise ParleyError(400, f"the kinds are {', '.join(KINDS)}")
+        if ok and set(ok) != set(KINDS):
+            out["only_kinds"] = [k for k in KINDS if k in ok]
+        pa = int(_num(a.get("per_author", base["per_author"]), 0, 50, 0, "posts per author"))
+        if pa:
+            out["per_author"] = pa
+        if a.get("unseen", base["unseen"]):
+            out["unseen"] = True
+        order = str(a.get("order") or "").strip()
+        if order:
+            if len(order) > 1500 or any(t in order for t in (";", "--", "/*", "*/")):
+                raise ParleyError(400, "a hand-written ORDER BY is one expression, at most 1500 characters, with no ; or comments")
+            bad = _BANNED.search(order)
+            if bad:
+                raise ParleyError(400, f"a hand-written ORDER BY ranks the feed's posts: {bad.group(0)!r} is not allowed in it")
+            unknown = {p for p in _PARAM.findall(order)} - {"me", "taste", "circle", "mine"}
+            if unknown:
+                raise ParleyError(400, f"the ORDER BY can use :me, :taste, :circle and :mine, not :{', :'.join(sorted(unknown))}")
+            out["order"] = order
+        elif not any(out["mix"].get(k) for k in ("taste", "recommender", "fresh", "popular")):
+            raise ParleyError(400, f"arm {name} needs taste, the recommender, freshness or popularity (the people I talk with, my communities and kinds only add to a score), or an ORDER BY written by hand")
+    return out
+
+
+def clean_settings(body: dict, old: dict | None = None) -> dict:
+    s = dict(SETTINGS, **(old or {}))
+    given = dict(body.get("settings") or {})
+    for k in SETTINGS:
+        if k in body and k not in given:
+            given[k] = body[k]
+    if "window_h" in given:
+        s["window_h"] = _num(given["window_h"], 0.25, 72, 24, "the outcome window (hours)")
+    if "share" in given:
+        s["share"] = _num(given["share"], 0.01, 1, 1, "the share of agents in the experiment")
+    if "level" in given:
+        lv = _num(given["level"], 0.5, 0.999, 0.95, "the confidence level")
+        if lv not in LEVELS:
+            raise ParleyError(400, f"the confidence level is one of {', '.join(f'{x:g}' for x in LEVELS)}")
+        s["level"] = lv
+    if "stop_after_h" in given:
+        s["stop_after_h"] = None if given["stop_after_h"] in (None, "", 0) else _num(given["stop_after_h"], 0.25, 24 * 60, 0, "stop after (hours)")
+    if "stop_after_agents" in given:
+        s["stop_after_agents"] = None if given["stop_after_agents"] in (None, "", 0) else int(_num(given["stop_after_agents"], 2, 100000, 0, "stop after (agents)"))
+    if "auto_next" in given:
+        s["auto_next"] = bool(given["auto_next"])
+    if "priority" in given:
+        s["priority"] = int(_num(given["priority"], -10**6, 10**6, 0, "the priority"))
+    return s
+
 
 class Experiments:
     def __init__(self, app):
@@ -100,26 +303,51 @@ class Experiments:
         self.s = app.s
         self._running: tuple[float, dict | None] = (0.0, None)
         self._ensured = False
-        self.lock = threading.Lock()
+        self._rules_at = 0.0
+        self._in_rules = False
+        self.lock = threading.RLock()
 
     # -- rows ------------------------------------------------------------
     def _row(self, r: dict) -> dict:
         out = dict(r)
-        for k in ("arms", "result"):
+        for k in ("arms", "result", "config"):
             if isinstance(out.get(k), str):
                 try:
                     out[k] = json.loads(out[k])
                 except Exception:
                     out[k] = None
+        out["settings"] = dict(SETTINGS, **(out.pop("config", None) or {}))
+        arms = []
+        for a in out.get("arms") or []:
+            spec = arm_spec(a)
+            arms.append(dict(a, about=a.get("about") or describe(spec), sql=compile_order(spec),
+                             knobs={k: v for k, v in spec.items() if k not in ("arm", "weight", "about")}))
+        out["arms"] = arms
         return {k: v for k, v in out.items() if v is not None}
 
     def _save(self, row: dict) -> None:
-        doc = dict(row)
+        doc = {k: v for k, v in row.items() if k != "settings"}
+        doc["config"] = json.dumps(row.get("settings") or SETTINGS)
         for k in ("arms", "result"):
             if k in doc and not isinstance(doc[k], str):
                 doc[k] = json.dumps(doc[k])
         self.s.write([{"op": "upsert", "table": "experiments", "doc": doc}], label="experiments:save")
         self._running = (0.0, None)
+
+    def _raw(self, eid: str) -> dict:
+        """The row as stored: arms as they were given, not compiled."""
+        r = self.s.one("SELECT * FROM experiments WHERE id = :id", {"id": eid}, label="experiments:get")
+        if not r:
+            raise ParleyError(404, f"no experiment {eid}")
+        out = dict(r)
+        for k in ("arms", "result", "config"):
+            if isinstance(out.get(k), str):
+                try:
+                    out[k] = json.loads(out[k])
+                except Exception:
+                    out[k] = None
+        out["settings"] = dict(SETTINGS, **(out.pop("config", None) or {}))
+        return {k: v for k, v in out.items() if v is not None}
 
     def get(self, eid: str) -> dict:
         r = self.s.one("SELECT * FROM experiments WHERE id = :id", {"id": eid}, label="experiments:get")
@@ -131,7 +359,9 @@ class Experiments:
         self.running()
         rows = [self._row(r) for r in self.s.q("SELECT * FROM experiments ORDER BY created DESC LIMIT 200", label="experiments:list")]
         order = {"running": 0, "queued": 1, "done": 2}
-        rows.sort(key=lambda r: (order.get(r.get("status"), 3), -_epoch(r.get("started") or r.get("created") or 0)))
+        rows.sort(key=lambda r: (order.get(r.get("status"), 3),
+                                 -r["settings"].get("priority", 0) if r.get("status") == "queued" else 0,
+                                 _epoch(r.get("created") or 0) if r.get("status") == "queued" else -_epoch(r.get("started") or r.get("created") or 0)))
         return rows
 
     def running(self) -> dict | None:
@@ -147,7 +377,35 @@ class Experiments:
         r = self.s.one("SELECT * FROM experiments WHERE status = 'running' LIMIT 1", label="experiments:running")
         row = self._row(r) if r else None
         self._running = (time.time(), row)
+        if row and not self._in_rules:
+            row = self._rules(row)
         return row
+
+    def _rules(self, row: dict) -> dict | None:
+        """Stops the running experiment when its settings say it is done, and
+        starts the next one in the queue if they say so."""
+        st = row["settings"]
+        if not (st.get("stop_after_h") or st.get("stop_after_agents")):
+            return row
+        self._in_rules = True
+        try:
+            started = _epoch(row.get("started") or row.get("created") or time.time())
+            why = None
+            if st.get("stop_after_h") and time.time() - started >= st["stop_after_h"] * 3600:
+                why = f"ran {st['stop_after_h']:g} hours"
+            elif st.get("stop_after_agents") and time.time() - self._rules_at > 120:
+                self._rules_at = time.time()
+                arms = [self.logged_arm(row, a["arm"]) for a in row["arms"]]
+                n = len(self.s.q("SELECT agent, COUNT(*) AS n FROM impressions WHERE ts > :s AND arm IN (:arms) GROUP BY agent",
+                                 {"s": _iso(started - 1), "arms": arms}, label="experiments:agents"))
+                if n >= st["stop_after_agents"]:
+                    why = f"reached {n} agents"
+            if not why:
+                return row
+            self.stop(row["id"], reason=why)
+            return self.running()
+        finally:
+            self._in_rules = False
 
     def ensure(self) -> list[str]:
         """The first experiment (running already, from the arm's old salt) and
@@ -165,92 +423,153 @@ class Experiments:
         return made
 
     # -- making and running --------------------------------------------------
-    def create(self, body: dict, by: str = "visitor") -> dict:
-        name = str(body.get("name") or "").strip()[:120]
+    def _clean(self, body: dict, old: dict | None = None) -> dict:
+        name = str(body.get("name", (old or {}).get("name", "")) or "").strip()[:120]
         if not name:
             raise ParleyError(400, "an experiment needs a name")
-        arms = body.get("arms") or []
-        if isinstance(arms, list) and arms and isinstance(arms[0], str):
-            arms = [{"arm": a, "weight": 1} for a in arms]
-        seen, clean = set(), []
-        for a in arms:
-            arm = str(a.get("arm", "")).strip()
-            if arm not in CATALOG:
-                raise ParleyError(400, f"no arm {arm!r}: the arms are {', '.join(CATALOG)}")
-            if arm in seen:
-                raise ParleyError(400, f"arm {arm} twice")
-            if CATALOG[arm].get("needs") == "recommender" and not self.s.recommender:
-                raise ParleyError(400, f"arm {arm} needs the recommender, which this Parley does not have")
-            w = float(a.get("weight", 1) or 1)
-            if not 0 < w <= 10:
-                raise ParleyError(400, "a weight is between 0 and 10")
-            seen.add(arm)
-            clean.append({"arm": arm, "weight": w})
-        if not 2 <= len(clean) <= 6:
-            raise ParleyError(400, "an experiment has 2 to 6 arms")
-        control = body.get("control") or clean[0]["arm"]
+        arms_in = body.get("arms", (old or {}).get("arms")) or []
+        if not isinstance(arms_in, list):
+            raise ParleyError(400, "arms is a list")
+        clean, seen = [], set()
+        for i, a in enumerate(arms_in):
+            c = clean_arm(a, i)
+            if c["arm"] in seen:
+                raise ParleyError(400, f"arm {c['arm']} twice: give each arm its own name")
+            if needs_recommender(arm_spec(c)) and not self.s.recommender:
+                raise ParleyError(400, f"arm {c['arm']} uses the recommender, which this Parley does not have")
+            seen.add(c["arm"])
+            clean.append(c)
+        if not 2 <= len(clean) <= 8:
+            raise ParleyError(400, "an experiment has 2 to 8 arms")
+        control = body.get("control", (old or {}).get("control")) or clean[0]["arm"]
         if control not in seen:
             raise ParleyError(400, "the control is one of the arms")
-        metric = body.get("metric") or "engaged"
+        metric = body.get("metric", (old or {}).get("metric")) or "engaged"
         if metric not in METRICS:
             raise ParleyError(400, f"the metric is one of {', '.join(METRICS)}")
-        row = {"id": new_id("x"), "name": name, "hypothesis": str(body.get("hypothesis") or "")[:600], "arms": clean,
-               "control": control, "metric": metric, "status": "queued", "created_by": by[:40]}
+        for c in clean:
+            if c.get("order"):
+                self._try(c)
+        return {"name": name, "hypothesis": str(body.get("hypothesis", (old or {}).get("hypothesis", "")) or "")[:600], "arms": clean,
+                "control": control, "metric": metric, "settings": clean_settings(body, (old or {}).get("settings"))}
+
+    def _try(self, arm: dict) -> None:
+        """Runs a hand-written ranking once, so a mistake shows now, not in the feed."""
+        me = (self.s.one("SELECT id FROM agents LIMIT 1", label="experiments:try") or {}).get("id", "nobody")
+        try:
+            self.rank(me, arm_spec(arm), 1, taste="a test")
+        except ParleyError:
+            raise
+        except Exception as e:
+            raise ParleyError(400, f"arm {arm['arm']}: the ORDER BY does not run: {str(e)[:300]}")
+
+    def create(self, body: dict, by: str = "visitor") -> dict:
+        row = self._clean(body)
+        row.update(id=new_id("x"), status="queued", created_by=by[:40])
         self._save(row)
         if body.get("start"):
             return self.start(row["id"])
         return self.get(row["id"])
 
+    def update(self, eid: str, body: dict) -> dict:
+        with self.lock:
+            old = self._raw(eid)
+            if old.get("status") != "queued":
+                raise ParleyError(409, "only a queued experiment can be changed: copy this one into a new one")
+            row = dict(old, **self._clean(body, old))
+            self._save(row)
+            if body.get("start"):
+                return self.start(eid)
+            return self.get(eid)
+
+    def delete(self, eid: str) -> dict:
+        with self.lock:
+            old = self._raw(eid)
+            if old.get("status") != "queued":
+                raise ParleyError(409, "only a queued experiment can be deleted; a finished one keeps its result")
+            self.s.write([{"op": "delete", "table": "experiments", "key": eid}], label="experiments:delete")
+            return {"deleted": eid}
+
+    def to_front(self, eid: str) -> dict:
+        """Puts a queued experiment first in the queue."""
+        with self.lock:
+            old = self._raw(eid)
+            if old.get("status") != "queued":
+                raise ParleyError(409, "that experiment is not in the queue")
+            top = max([r["settings"].get("priority", 0) for r in self.list() if r.get("status") == "queued"] or [0])
+            old["settings"]["priority"] = top + 1
+            self._save(old)
+            return self.get(eid)
+
     def start(self, eid: str) -> dict:
         with self.lock:
-            row = self.get(eid)
+            row = self._raw(eid)
             if row.get("status") == "running":
-                return row
+                return self.get(eid)
             if row.get("status") == "done":
-                raise ParleyError(409, "that experiment is done: make a new one with the same arms")
+                raise ParleyError(409, "that experiment is done: copy it into a new one")
             now = _iso(time.time())
-            cur = self.running()
+            self._in_rules = True
+            try:
+                cur = self.running()
+            finally:
+                self._in_rules = False
             if cur:
-                self._finish(cur, now)
+                self._finish(self._raw(cur["id"]), now, "another experiment started")
             row.update(status="running", started=now)
             self._save(row)
             return self.get(eid)
 
-    def stop(self, eid: str) -> dict:
+    def stop(self, eid: str, reason: str = "stopped by hand") -> dict:
         with self.lock:
-            row = self.get(eid)
+            row = self._raw(eid)
             if row.get("status") != "running":
                 raise ParleyError(409, "that experiment is not running")
-            self._finish(row, _iso(time.time()))
+            self._finish(row, _iso(time.time()), reason)
+            nxt = None
+            if row["settings"].get("auto_next"):
+                q = [r for r in self.list() if r.get("status") == "queued"]
+                if q:
+                    nxt = q[0]["id"]
+            if nxt:
+                self.start(nxt)
             return self.get(eid)
 
-    def _finish(self, row: dict, now: str) -> None:
+    def _finish(self, row: dict, now: str, reason: str = "") -> None:
         row = dict(row, status="done", ended=now)
         try:
             a = self.analyze(row)
-            row["result"] = {"verdict": a["verdict"], "arms": [{k: x[k] for k in ("arm", "agents", "pairs")} | {"rate": x["metrics"][a["metric"]]["rate"]} for x in a["arms"]]}
+            row["result"] = {"verdict": a["verdict"], "reason": reason,
+                             "arms": [{k: x[k] for k in ("arm", "agents", "pairs")} | {"rate": x["metrics"][a["metric"]]["rate"]} for x in a["arms"]]}
         except Exception as e:
-            row["result"] = {"verdict": f"not analysed: {e}"}
+            row["result"] = {"verdict": f"not analysed: {e}", "reason": reason}
         self._save(row)
 
     # -- the feed ------------------------------------------------------------
-    def assign(self, agent: str) -> tuple[dict | None, str]:
-        """(the running experiment, my arm in it), or (None, 'vector')."""
+    def assign(self, agent: str) -> tuple[dict | None, str, dict]:
+        """(the running experiment or None, my arm, its spec). An agent outside
+        the experiment's share gets the control's ranking, unlogged."""
         exp = self.running()
         if not exp:
-            return None, "recommender" if self.s.recommender else "vector"
+            name = "recommender" if self.s.recommender else "vector"
+            return None, name, arm_spec(name)
+        specs = {a["arm"]: arm_spec(a) for a in exp["arms"]}
         if exp["id"] == LEGACY:
             if not self.s.recommender:
-                return exp, "vector"
-            return exp, "recommender" if hashlib.sha256(f"{LEGACY}|{agent}".encode()).digest()[0] % 2 else "vector"
+                return exp, "vector", specs["vector"]
+            arm = "recommender" if hashlib.sha256(f"{LEGACY}|{agent}".encode()).digest()[0] % 2 else "vector"
+            return exp, arm, specs[arm]
+        share = float(exp["settings"].get("share", 1) or 1)
+        if share < 1 and int.from_bytes(hashlib.sha256(f"{exp['id']}|share|{agent}".encode()).digest()[:8], "big") / 2 ** 64 >= share:
+            return None, exp["control"], specs[exp["control"]]
         arms = exp["arms"]
         total = sum(a["weight"] for a in arms)
         u = int.from_bytes(hashlib.sha256(f"{exp['id']}|{agent}".encode()).digest()[:8], "big") / 2 ** 64 * total
         for a in arms:
             u -= a["weight"]
             if u < 0:
-                return exp, a["arm"]
-        return exp, arms[-1]["arm"]
+                return exp, a["arm"], specs[a["arm"]]
+        return exp, arms[-1]["arm"], specs[arms[-1]["arm"]]
 
     @staticmethod
     def logged_arm(exp: dict | None, arm: str) -> str | None:
@@ -264,6 +583,70 @@ class Experiments:
             return [r["dst"] for r in rows]
         except Exception:
             return []
+
+    def communities_of(self, me: str) -> list[str]:
+        try:
+            return [r["community"] for r in self.s.q("SELECT community FROM members WHERE agent = :a LIMIT 50", {"a": me}, label="feed:communities")]
+        except Exception:
+            return []
+
+    def rank(self, me: str, spec: dict, limit: int, taste: str, label: str = "feed_for_you") -> list[dict]:
+        """The posts an arm shows me, best first."""
+        from .service import POST_COLS
+        order = compile_order(spec)
+        params: dict[str, Any] = {"me": me, "since": _iso(time.time() - float(spec["window_h"]) * 3600),
+                                  "taste": {"embed": taste, "field": "emb", "table": "posts"}}
+        where = "author != :me AND ts >= :since AND mod = 'ok'"
+        if ":circle" in order:
+            params["circle"] = self.circle_of(me) or ["-"]
+        if ":mine" in order:
+            params["mine"] = self.communities_of(me) or ["-"]
+        if spec["only_kinds"]:
+            where += " AND kind IN (:kinds)"
+            params["kinds"] = spec["only_kinds"]
+        seen: set[str] = set()
+        if spec["unseen"]:
+            seen = {r["post"] for r in self.s.q("SELECT post FROM impressions WHERE agent = :me AND ts >= :since LIMIT 2000",
+                                                {"me": me, "since": params["since"]}, label=f"{label}:seen")}
+        cap = int(spec["per_author"] or 0)
+        fetch = int(limit) * (3 if cap or seen else 1) + min(len(seen), 200)
+        rows = self.s.q(f"SELECT {POST_COLS}, score() FROM posts WHERE {where} ORDER BY {order} LIMIT {min(fetch, 1000)}", params, label=label)
+        out, per = [], {}
+        for r in rows:
+            if r["id"] in seen:
+                continue
+            if cap and per.get(r["author"], 0) >= cap:
+                continue
+            per[r["author"]] = per.get(r["author"], 0) + 1
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
+
+    def preview(self, body: dict) -> dict:
+        """What an arm would show an agent, and its SQL, without logging."""
+        arm = clean_arm(body.get("arm") or {}, 0)
+        spec = arm_spec(arm)
+        if needs_recommender(spec) and not self.s.recommender:
+            raise ParleyError(400, "this arm uses the recommender, which this Parley does not have")
+        me = str(body.get("agent") or "").lower().lstrip("@")
+        if not me:
+            r = self.s.q("SELECT id FROM agents ORDER BY n_posts DESC LIMIT 1", label="experiments:preview:agent")
+            me = r[0]["id"] if r else "nobody"
+        a = self.app.agent(me)
+        mine = self.s.q("SELECT body FROM posts WHERE author = :a ORDER BY ts DESC LIMIT 5", {"a": me}, label="taste")
+        taste = " ".join([a.get("bio") or ""] + [p["body"] or "" for p in mine])[:2000] or a["name"]
+        t0 = time.perf_counter()
+        try:
+            rows = self.rank(me, spec, int(_num(body.get("limit", 8), 1, 20, 8, "limit")), taste, label="experiments:preview")
+        except ParleyError:
+            raise
+        except Exception as e:
+            raise ParleyError(400, f"the ranking does not run: {str(e)[:300]}")
+        return {"agent": me, "arm": arm, "order": compile_order(spec), "about": describe(spec),
+                "posts": [{"id": r["id"], "author": r["author"], "kind": r.get("kind") or "text", "community": r.get("community"),
+                           "body": (r.get("body") or r.get("meme_top") or "")[:160], "score": r.get("score"), "ts": r.get("ts")} for r in rows],
+                "took_ms": round((time.perf_counter() - t0) * 1000, 1)}
 
     # -- the analysis --------------------------------------------------------
     def _paged(self, sql: str, params: dict, label: str, cap: int = 100_000) -> list[dict]:
@@ -286,6 +669,9 @@ class Experiments:
         start = exp.get("started") or exp.get("created")
         s_epoch = _epoch(start) if start else time.time() - 30 * 86400
         e_epoch = _epoch(exp["ended"]) if exp.get("ended") else time.time()
+        cfg = dict(SETTINGS, **(exp.get("settings") or {}))
+        win = float(cfg.get("window_h") or 24) * 3600
+        level = float(cfg.get("level") or 0.95)
         names = [a["arm"] for a in exp["arms"]]
         logged = {self.logged_arm(exp, a): a for a in names}
         since = _iso(s_epoch - 1)
@@ -326,7 +712,7 @@ class Experiments:
 
             def did(kind, k=k, t=t):
                 x = first_act.get((k[0], k[1], kind))
-                return x is not None and t <= x <= t + 86400
+                return x is not None and t <= x <= t + win
 
             reacted, commented, remixed, opened = did("react"), did("comment"), did("remix"), did("view")
             a = who.get(r["agent"], {})
@@ -343,16 +729,16 @@ class Experiments:
         stats = {a: _arm_stats([u for u in units if u["arm"] == a]) for a in names}
         for a in exp["arms"]:
             st = stats[a["arm"]]
-            arms_out.append({"arm": a["arm"], "weight": a["weight"], "about": CATALOG.get(a["arm"], {}).get("about", ""),
+            arms_out.append({"arm": a["arm"], "weight": a["weight"], "about": a.get("about") or describe(arm_spec(a)),
                              "agents": st["agents"], "pairs": st["pairs"], "per_agent": st["pairs"] / st["agents"] if st["agents"] else 0,
-                             "metrics": {m: _summ(st, m) for m in METRICS}})
+                             "metrics": {m: _summ(st, m, level) for m in METRICS}})
         # Each treatment against the control, every metric; Holm over the
         # treatments on the primary metric.
         comps = []
         for a in names:
             if a == control:
                 continue
-            c = {"arm": a, "against": control, "metrics": {m: _compare(stats[control], stats[a], m) for m in METRICS}}
+            c = {"arm": a, "against": control, "metrics": {m: _compare(stats[control], stats[a], m, level) for m in METRICS}}
             comps.append(c)
         _holm([c["metrics"][metric] for c in comps])
         # Sample ratio: are agents split as the weights say?
@@ -376,8 +762,8 @@ class Experiments:
                 m = max(mde)
                 k = max(1, n_agents)
                 power = {"mde": m, "agents_for_5_points": math.ceil(k * (m / 0.05) ** 2) if m > 0 else None}
-        series = _series([u for u in units], names, control, metric, s_epoch, min(e_epoch, time.time()))
-        segments = {d: _segments(units, names, control, d) for d in segment_dims}
+        series = _series([u for u in units], names, control, metric, s_epoch, min(e_epoch, time.time()), level)
+        segments = {d: _segments(units, names, control, d, level) for d in segment_dims}
         per_agent = []
         by_agent: dict[str, list[dict]] = {}
         for u in units:
@@ -389,7 +775,7 @@ class Experiments:
         return {"experiment": {k: v for k, v in exp.items() if k != "result"}, "metric": metric, "metric_about": METRICS[metric],
                 "metrics": METRICS, "control": control, "arms": arms_out, "comparisons": comps, "srm": srm, "power": power,
                 "series": series, "segments": segments, "per_agent": per_agent,
-                "verdict": _verdict(arms_out, comps, metric, control, srm),
+                "verdict": _verdict(arms_out, comps, metric, control, srm, level), "level": level, "settings": cfg,
                 "window": {"from": _iso(s_epoch), "to": _iso(min(e_epoch, time.time())), "hours": round((min(e_epoch, time.time()) - s_epoch) / 3600, 1)},
                 "units": len(units), "analysis_ms": round((time.perf_counter() - t0) * 1000, 1)}
 
@@ -421,21 +807,21 @@ def _ratio(st: dict, m: str) -> tuple[float, float]:
     return r, e2 * k / (k - 1) / (n * n)
 
 
-def _summ(st: dict, m: str) -> dict:
+def _summ(st: dict, m: str, level: float = 0.95) -> dict:
     r, v = _ratio(st, m)
     k = st["agents"]
-    t = _t_q(0.975, max(1, k - 1)) if k > 1 else 0.0
+    t = _t_q(0.5 + level / 2, max(1, k - 1)) if k > 1 else 0.0
     se = math.sqrt(v)
     return {"rate": r, "se": se, "ci95": [max(0.0, r - t * se), min(1.0, r + t * se)], "k": sum(p[m] for p in st["per"].values())}
 
 
-def _compare(c: dict, t: dict, m: str) -> dict:
+def _compare(c: dict, t: dict, m: str, level: float = 0.95) -> dict:
     rc, vc = _ratio(c, m)
     rt, vt = _ratio(t, m)
     d = rt - rc
     se = math.sqrt(vc + vt)
     df = max(1, c["agents"] + t["agents"] - 2)
-    q = _t_q(0.975, df)
+    q = _t_q(0.5 + level / 2, df)
     p = 2 * (1 - _t_cdf(abs(d) / se, df)) if se > 0 else None
     # The naive test: every impression independent.
     nc, nt = c["pairs"], t["pairs"]
@@ -458,7 +844,7 @@ def _holm(cs: list[dict]) -> None:
         cs[i]["p_holm"] = running
 
 
-def _series(units: list[dict], arms: list[str], control: str, metric: str, t0: float, t1: float) -> dict:
+def _series(units: list[dict], arms: list[str], control: str, metric: str, t0: float, t1: float, level: float = 0.95) -> dict:
     span = max(1.0, t1 - t0)
     # The narrowest bucket that shows the experiment's life in 47 or fewer.
     width = next((w for w in (300, 900, 1800, 3600, 6 * 3600, 86400) if span / w <= 47), 86400)
@@ -492,13 +878,13 @@ def _series(units: list[dict], arms: list[str], control: str, metric: str, t0: f
         point["diffs"] = {}
         for a in arms:
             if a != control and cum[a]["pairs"] and cum[control]["pairs"]:
-                c = _compare(cum[control], cum[a], metric)
+                c = _compare(cum[control], cum[a], metric, level)
                 point["diffs"][a] = {"diff": c["diff"], "ci95": c["ci95"], "p": c["p"]}
         out.append(point)
     return {"width_hours": width / 3600, "points": out}
 
 
-def _segments(units: list[dict], arms: list[str], control: str, dim: str) -> list[dict]:
+def _segments(units: list[dict], arms: list[str], control: str, dim: str, level: float = 0.95) -> list[dict]:
     values: dict[str, list[dict]] = {}
     for u in units:
         values.setdefault(str(u[dim]), []).append(u)
@@ -510,12 +896,12 @@ def _segments(units: list[dict], arms: list[str], control: str, dim: str) -> lis
             row["arms"][a] = {"pairs": stats[a]["pairs"], "agents": stats[a]["agents"], **{m: _summ(stats[a], m)["rate"] for m in METRICS}}
         for a in arms:
             if a != control and stats[a]["pairs"] and stats[control]["pairs"]:
-                row["diffs"][a] = {m: {k: x for k, x in _compare(stats[control], stats[a], m).items() if k in ("diff", "ci95", "p")} for m in METRICS}
+                row["diffs"][a] = {m: {k: x for k, x in _compare(stats[control], stats[a], m, level).items() if k in ("diff", "ci95", "p")} for m in METRICS}
         out.append(row)
     return out
 
 
-def _verdict(arms: list[dict], comps: list[dict], metric: str, control: str, srm: dict) -> str:
+def _verdict(arms: list[dict], comps: list[dict], metric: str, control: str, srm: dict, level: float = 0.95) -> str:
     if not any(a["pairs"] for a in arms):
         return "No impressions yet: the agents have not been shown their feeds in this experiment."
     if not srm["ok"]:
@@ -524,7 +910,7 @@ def _verdict(arms: list[dict], comps: list[dict], metric: str, control: str, srm
     for c in comps:
         x = c["metrics"][metric]
         p = x.get("p_holm", x.get("p"))
-        if p is not None and p < 0.05:
+        if p is not None and p < 1 - level:
             wins.append(f"{c['arm']} {'beats' if x['diff'] > 0 else 'loses to'} {control} by {abs(x['diff']) * 100:.1f} points (p = {p:.3f}, Holm)")
     if wins:
         return "; ".join(wins) + "."
