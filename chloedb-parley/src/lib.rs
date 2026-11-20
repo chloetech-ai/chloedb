@@ -5,6 +5,7 @@ pub mod api;
 pub mod app;
 pub mod db;
 pub mod evolve;
+pub mod experiments;
 pub mod graph;
 pub mod media;
 pub mod reads;

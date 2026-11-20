@@ -54,13 +54,17 @@ pub struct App {
     pub cache: Mutex<HashMap<String, (f64, Value)>>,
     /// ChloeCtx spaces known to exist.
     pub ctx_made: Mutex<std::collections::HashSet<String>>,
+    /// The running experiment, cached, and one change to the experiments at a time.
+    pub exp: Mutex<crate::experiments::ExpState>,
+    pub exp_lock: tokio::sync::Mutex<()>,
 }
 
 impl App {
     pub fn new(db: Db) -> App {
         App { db, media_dir: PathBuf::from("parley-media"), shards: Vec::new(), public: false, limits: Limits::default(),
               keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()),
-              ctx_made: Mutex::new(std::collections::HashSet::new()) }
+              ctx_made: Mutex::new(std::collections::HashSet::new()), exp: Mutex::new(Default::default()),
+              exp_lock: tokio::sync::Mutex::new(()) }
     }
 }
 

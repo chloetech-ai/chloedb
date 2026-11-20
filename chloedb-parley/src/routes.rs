@@ -10,6 +10,10 @@ fn is_id(s: &str) -> bool {
     matches!(c.next(), Some('a'..='z')) && s.len() > 1 && c.all(|x| x.is_ascii_hexdigit())
 }
 
+fn is_exp(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 fn is_handle(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
@@ -46,7 +50,9 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
             let me = s.viewer(r, false).await?.unwrap_or_default();
             let limit = r.lim("limit", 20, 100);
             if r.qd("kind", "following") == "for_you" {
-                return Err(crate::util::Error::new(501, "the For You feed is not in the Rust server yet"));
+                let posts = app.feed_for_you(&me, limit, false).await?;
+                let arm = app.assign(&me).await?.1;
+                return ok(json!({"kind": "for_you", "as": me, "arm": arm, "posts": posts}));
             }
             ok(json!({"kind": "following", "as": me, "posts": app.feed_following(&me, limit, r.q("before")).await?}))
         }
@@ -78,6 +84,31 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         }
         ("GET", ["api", "problems"]) => ok(json!({"problems": app.problem_listing(r.q("status"), r.lim("limit", 30, 100)).await?})),
         ("GET", ["api", "problems", pid]) if pid.starts_with('q') && pid.len() > 1 && pid[1..].chars().all(|c| c.is_ascii_hexdigit()) => ok(app.problem_view(pid, 120).await?),
+        // -- experiments on the feed -------------------------------------------
+        ("GET", ["api", "experiments"]) => ok(app.exp_page(s.admin_key.is_none()).await?),
+        ("GET", ["api", "experiments", id]) if is_exp(id) => ok(app.exp_analyze_id(id).await?),
+        ("POST", ["api", "experiments"]) => {
+            s.admin(r)?;
+            created(app.exp_create(&r.body, if s.admin_key.is_some() { "admin" } else { "visitor" }).await?)
+        }
+        ("POST", ["api", "experiments", "preview"]) => {
+            if r.body["arm"].is_object() && !r.body["arm"]["order"].as_str().unwrap_or("").trim().is_empty() {
+                s.admin(r)?;
+            }
+            ok(app.exp_preview(&r.body).await?)
+        }
+        ("POST", ["api", "experiments", id]) if is_exp(id) => {
+            s.admin(r)?;
+            ok(app.exp_update(id, &r.body).await?)
+        }
+        ("DELETE", ["api", "experiments", id]) if is_exp(id) => {
+            s.admin(r)?;
+            ok(app.exp_delete(id).await?)
+        }
+        ("POST", ["api", "experiments", id, what @ ("start" | "stop" | "first")]) if is_exp(id) => {
+            s.admin(r)?;
+            ok(match *what { "start" => app.exp_start(id).await?, "first" => app.exp_to_front(id).await?, _ => app.exp_stop(id).await? })
+        }
         // -- trends -------------------------------------------------------------
         ("GET", ["api", "trends"]) => {
             let terms: Vec<String> = r.qd("terms", "").split([',', '\n']).filter(|t| !t.trim().is_empty()).map(str::to_string).collect();
