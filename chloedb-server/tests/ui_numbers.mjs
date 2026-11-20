@@ -572,6 +572,62 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
 }
 
+// OLU-403: signed out, every read but /v1/health's status is refused, and
+// Home's readiness list says what it cannot tell as unknown: no "one
+// server", "No alert rules", "Alerts go nowhere" or "No environment named".
+{
+  const data = await import(new URL("data.js", app));
+  const home = await import(new URL("views/overview.js", app));
+  Object.assign(data.state, { health: { status: "ok" }, whoami: null, alerts: null, cluster: null, system: null });
+  assert.equal(data.roleKnown(), false);
+  const items = home.readyItems();
+  const titles = items.map((x) => x.title).join(" | ");
+  assert.doesNotMatch(titles, /One server|No alert rules|Alerts go nowhere|No environment named/, titles);
+  assert.deepEqual(items.filter((x) => x.ok === false), [], titles);
+  assert.match(titles, /Alert rules: needs a key to tell/);
+  assert.match(titles, /Copies of the data: needs a key to tell/);
+  // Signed in to one server with no rules and no route: said as facts.
+  Object.assign(data.state, { health: { status: "ok", role: "server" }, whoami: { name: "k", scope: "admin", auth: { open: false } }, alerts: { rules: [], routes: [] } });
+  const said = home.readyItems().map((x) => x.title).join(" | ");
+  assert.match(said, /One server: its disk holds the only copy/);
+  assert.match(said, /Alerts go nowhere/);
+  Object.assign(data.state, { health: null, whoami: null, alerts: null });
+}
+
+// OLU-401, OLU-402: during a failover the Cluster page says the copy just
+// elected takes writes within seconds and not to restart it, offers no
+// repair, says the window, and names copies by their --node-name (an
+// operator's pod keeps s1-0).
+{
+  const { state } = await import(new URL("data.js", app));
+  const cl = await import(new URL("views/cluster.js", app));
+  const cap = (w) => ({ capability: { serves_reads: true, takes_writes: !w, no_writes: w || undefined, failover_after_ms: 2000 } });
+  const rep = (port, name, o) => ({ url: `http://127.0.0.1:${port}`, short: `127.0.0.1:${port}`, name, term: 2, ...o });
+  state.cluster = { shards: [{ shard: 1, state: "no_writes", failover: true, majority: true, electing: true, failover_window_ms: 2000, takes_writes: false, serves_reads: true, primary: "http://127.0.0.1:17756",
+    why: "2 of 3 copies answer: s1c was just elected primary", replicas: [
+      rep(17754, "s1a", { status: "down", role: "unknown", last_role: "primary", down_since_ms: 1 }),
+      rep(17755, "s1b", { status: "ok", role: "replica", takes_writes: false, detail: cap("a replica takes no writes from clients") }),
+      rep(17756, "s1c", { status: "ok", role: "primary", takes_writes: true, detail: cap("a replica takes no writes from clients") })] }] };
+  const M = cl.model(state.cluster);
+  const sh = M.shards[0];
+  const a = cl.critAdvice(sh);
+  assert.match(a.next, /^Wait: s1c was just elected primary .*Do not restart it$/);
+  assert.doesNotMatch(a.next + a.cause + a.restore, /127\.0\.0\.1|restart it\.|Fix the cause/);
+  assert.match(a.cause, /A silent primary is given 2 s \(--failover-after-ms\)/);
+  const p = cl.problems(M).find((x) => x.shards.includes(1));
+  assert.equal(p.label, "Shard 1 holds writes while it elects a primary");
+  assert.match(p.impact, /held for seconds, then answered/);
+  assert.equal(p.fix, null, "no repair while it elects");
+  // The same shard once the election is over and the primary cannot write: the old advice.
+  state.cluster.shards[0].electing = false;
+  assert.match(cl.critAdvice(cl.model(state.cluster).shards[0]).next, /on s1c and restart it$/);
+  assert.equal(core.copyName("http://127.0.0.1:17755", state.cluster), "s1b");
+  assert.equal(core.shownName({ short: "s1-0", name: "prod-s1-0" }), "s1-0");
+  assert.equal(core.shownName({ short: "127.0.0.1:8004", name: "" }), "127.0.0.1:8004");
+  assert.match(core.copyTitle("http://127.0.0.1:17755", state.cluster), /^s1b: shard 1, replica · copy 127\.0\.0\.1:17755/);
+  state.cluster = null;
+}
+
 // Query templates (qtemplate.js): a design becomes the query the
 // designer previews, and the CREATE statements it is saved as.
 {

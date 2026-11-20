@@ -216,9 +216,11 @@ async fn a_two_copy_shard_that_loses_a_copy_serves_no_reads() {
     // Fleet health leads with it: what fails, where, and what to do.
     let f = svc.fleet_health().await;
     assert_eq!((f["status"].as_str(), f["headline"].as_str()), (Some("critical"), Some("Searches are failing: shard 0 has no majority")), "{f}");
+    // The fleet's texts name copies as people do, by their `--node-name`
+    // (OLU-402); `/v1/cluster`'s `short`, above, stays the address's.
     let p = &f["problems"][0];
-    assert_eq!(p["where"], json!(["shard 0", short(&b.url())]));
-    assert_eq!(p["next"]["text"], format!("Bring {} back, or remove it so {} has a majority", short(&b.url()), short(&a.url())));
+    assert_eq!(p["where"], json!(["shard 0", "node-b"]));
+    assert_eq!(p["next"]["text"], "Bring node-b back, or remove it so node-a has a majority");
     assert_eq!(p["since_ms"], dead["down_since_ms"]);
     let check = |id: &str| f["checks"].as_array().unwrap().iter().find(|c| c["id"] == id).cloned().unwrap();
     assert_eq!(check("shards")["value"]["no_reads"], 1);
@@ -257,7 +259,8 @@ async fn a_dead_primary_loses_its_role() {
     assert_eq!(primaries, 1, "{s}");
     assert_eq!(s["state"], "degraded", "{s}");
     let sa = short(&a.url());
-    assert!(s["why"].as_str().unwrap().contains(&format!("{sa} down")), "{s}");
+    // `why` is a sentence for people: the copy by its `--node-name` (OLU-402).
+    assert!(s["why"].as_str().unwrap().contains("node-a down"), "{s}");
 
     // The coordinator's events: the primary down, then another elected.
     let (events, _) = svc.events.range(0, u64::MAX, &[], 100);

@@ -731,7 +731,8 @@ struct CopyOf {
 fn copy_of(snap: &Json, node: &str) -> Result<CopyOf, ApiError> {
     for s in snap["shards"].as_array().into_iter().flatten() {
         for r in s["replicas"].as_array().into_iter().flatten() {
-            if r["url"] == node || r["short"] == node {
+            // By its URL, its short name or the name the command center shows (OLU-402).
+            if r["url"] == node || r["short"] == node || crate::coord::shown(r) == node {
                 return Ok(CopyOf {
                     shard: s["shard"].as_u64().unwrap_or(0),
                     url: r["url"].as_str().unwrap_or_default().to_string(),
