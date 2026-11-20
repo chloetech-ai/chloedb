@@ -836,7 +836,7 @@ mod tests {
     use super::*;
 
     fn def() -> Def {
-        Def { name: "shop".into(), events: "events".into(), user: "usr".into(), item: "item".into(), ts: "ts".into(), items: None, vector: None, window: 2, history: 4 }
+        Def { name: "shop".into(), events: "events".into(), user: "usr".into(), item: "item".into(), ts: "ts".into(), items: None, vector: None, window: 2, history: 4, part: None }
     }
 
     #[test]
