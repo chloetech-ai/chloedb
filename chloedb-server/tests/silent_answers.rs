@@ -221,8 +221,12 @@ async fn sql_answers_as_postgres(url: &str) {
     assert!(e.contains("ROLLUP is not supported") && e.contains("UNION ALL"), "{e}");
     let e = rows(url, "SELECT t.id FROM trips t JOIN pay USING (id)").await.unwrap_err();
     assert!(e.contains("JOIN pay ON t.id = pay.id"), "{e}");
+    // INSERT ... SELECT runs since SAM-8, on a server and through a
+    // coordinator (tests/from_select.rs has the rest).
     let (s, j) = call(url, "/v1/sql", Some(json!({"sql": "INSERT INTO cust (id, name) SELECT id + 10, name FROM cust"}))).await;
-    assert!(s >= 400 && j["error"].as_str().unwrap().contains("INSERT ... SELECT is not supported"), "{s} {j}");
+    assert_eq!(s, 200, "{j}");
+    let r = rows(url, "SELECT id, name FROM cust WHERE id > 10 ORDER BY id").await.unwrap();
+    assert_eq!(Json::Array(r), json!([[11, "A"], [12, "B"], [13, "pad"]]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
