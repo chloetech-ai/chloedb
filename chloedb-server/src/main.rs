@@ -540,9 +540,13 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
-    /// Keep only the types of queries' parameters (not their values) in
-    /// the running and finished queries, statements and the log store.
-    #[arg(long, env = "CHLOEDB_REDACT_PARAMS")]
+    /// Keep the values of queries' parameters (up to 1 KB each query) in the
+    /// running and finished queries, statements and the log store. Without
+    /// it only their types are kept; the statement's text is kept either way.
+    #[arg(long, env = "CHLOEDB_KEEP_PARAMS")]
+    keep_params: bool,
+    /// The default now (kept so that a script that passes it still starts).
+    #[arg(long, env = "CHLOEDB_REDACT_PARAMS", hide = true)]
     redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,chloedb=debug"). debug logs every request.
@@ -690,11 +694,12 @@ struct Args {
     #[arg(long, default_value_t = 1000)]
     tenant_open_max: usize,
     /// The apps this server starts itself, as child processes on loopback
-    /// ports, each with a token and a scoped key of its own: auto (those of
-    /// crawler, sheets and chloectx whose programs are installed beside
-    /// chloedb-server, on a server of its own or a coordinator), off, or
-    /// names (crawler,sheets,chloectx; looked for on the PATH too).
-    #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
+    /// ports, each with a token and a scoped key of its own: off (the
+    /// default), auto (those of crawler, sheets and chloectx whose programs
+    /// are installed beside chloedb-server, on a server of its own or a
+    /// coordinator), or names (crawler,sheets,chloectx; looked for on the
+    /// PATH too). ChloeCtx downloads a 129 MB model when it first starts.
+    #[arg(long, env = "CHLOEDB_START_APPS", default_value = "off")]
     start_apps: String,
     /// Whether this server runs its connectors' pulls on their schedules
     /// (https://chloetech-ai.github.io/chloedb/site/docs/connectors.html): auto
@@ -1269,7 +1274,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
         "node_name", "environment", "public_url", "image_repository"
     ]),
     ("Security", &[
-        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params",
+        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "keep_params", "redact_params",
         "google_client_id", "google_allow"
     ]),
     ("Limits and timeouts", &[
@@ -1621,7 +1626,12 @@ async fn run() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
-    chloedb_server::telemetry::set_redact_params(a.redact_params);
+    // Values are kept only when asked for; --redact-params (the old way to ask for
+    // the default) wins if both are given.
+    chloedb_server::telemetry::set_redact_params(a.redact_params || !a.keep_params);
+    if a.keep_params && !a.redact_params {
+        tracing::info!("keeps the values of queries' parameters (--keep-params): they are in the running and finished queries and the log store");
+    }
     // The apps it starts itself (crate::app_procs).
     let started_apps = {
         let taken: Vec<String> = chloedb_server::apps::parse(&a.apps).unwrap_or_default().into_iter().map(|x| x.name).collect();
@@ -1633,7 +1643,15 @@ async fn run() {
             tls: tls.is_some(),
         };
         let own_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(|p| p.to_path_buf()));
-        chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e))
+        let plans = chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e));
+        if plans.is_empty() {
+            if a.start_apps.trim() == "off" {
+                tracing::info!("starts no apps of its own (--start-apps off, the default; --start-apps auto starts the crawler, Sheets and ChloeCtx installed beside it)");
+            }
+        } else {
+            tracing::info!(apps = %plans.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(","), "starts apps of its own (--start-apps {})", a.start_apps);
+        }
+        plans
     };
     // The connectors' pulls (crate::connectors): not on a replica or a shard.
     let run_connectors = match a.connectors.as_str() {

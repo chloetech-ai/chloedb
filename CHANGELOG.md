@@ -11,6 +11,15 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A server keeps no parameter values and starts no app unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405). `--start-apps`
+  is `off` by default: a server with the crawler, Sheets or ChloeCtx
+  installed beside it starts none of them, and so opens no other port and
+  downloads no model, until given `--start-apps auto` (or names); its log
+  says at the start which it did (LENA-406).
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:

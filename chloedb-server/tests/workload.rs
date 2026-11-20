@@ -190,6 +190,16 @@ async fn queries_are_kept_with_who_sent_them() {
 
     let sql = "SELECT id FROM products WHERE MATCH(body, :q) AND price < :p LIMIT 5";
     let agent = [("user-agent", "nightly-reports/2.3 (linux)")];
+    // LENA-405: with no flag the statement is kept with the types of its
+    // parameters, not their values (`--keep-params` keeps those).
+    assert!(chloedb_server::telemetry::redacts_params(), "the default keeps no values");
+    let (status, body) = call(reqwest::Method::POST, &base, "/v1/sql", &ops, &[], Some(json!({"sql": sql, "params": {"q": "secret-laptop", "p": 500}}))).await;
+    assert_eq!(status, 200, "{body}");
+    let (_, recent) = call(reqwest::Method::GET, &base, "/v1/queries/recent?limit=1", &ops, &[], None).await;
+    assert_eq!(recent["queries"][0]["params"], json!({"p": "int", "q": "text"}), "{recent}");
+    assert_eq!(recent["queries"][0]["sql"], sql, "{recent}");
+    assert!(!recent.to_string().contains("secret-laptop"), "{recent}");
+    chloedb_server::telemetry::set_redact_params(false); // --keep-params
     let (status, body) = call(reqwest::Method::POST, &base, "/v1/query", &rb, &agent, Some(json!({"sql": sql, "params": {"q": "laptop", "p": 500}, "timeout_ms": 2000}))).await;
     assert_eq!(status, 200, "{body}");
     let ui = [("x-strata-client", "command-center")];
@@ -234,6 +244,7 @@ async fn queries_are_kept_with_who_sent_them() {
     assert_eq!(rs.rows[0][4], chloedb::Value::Int(2000));
     let (rs, _) = store.query("SELECT COUNT(*) FROM queries WHERE client = 'command-center'", &chloedb::query::Params::new(), false, Duration::from_secs(5)).await.unwrap();
     assert_eq!(rs.rows[0][0], chloedb::Value::Int(1));
+    chloedb_server::telemetry::set_redact_params(true);
 }
 
 /// Statements are counted a minute at a time: a window's statements come

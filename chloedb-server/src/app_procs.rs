@@ -2,8 +2,8 @@
 //! coordinator, `chloedb-server` runs the crawler (`chloedb-crawl serve`),
 //! Sheets (`chloedb-sheets serve`) and ChloeCtx (`chloectx app`) as child
 //! processes when their programs are installed beside it, so that the
-//! command center shows them with nothing more to start
-//! (`--start-apps`, default `auto`; `off` starts none).
+//! command center shows them with one flag to start
+//! (`--start-apps auto`, or names; the default, `off`, starts none).
 //!
 //! Each child
 //!
