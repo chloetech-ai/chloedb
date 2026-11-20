@@ -248,3 +248,72 @@ export function clip(found = {}) {
     notes: cut(found.notes, 1000),
   })
 }
+
+// What a lookup for a kept answer found, added to it rather than put in
+// its place (PRIYA-1, PRIYA-3 of round 9): every option kept stays, in
+// its order and under its name (the notes on it go by its name); one the
+// lookup found again takes its new facts, quotes and link; one it found
+// new goes at the end; a source found again keeps its number. The kept
+// answer's question, bottom line and best-for stay; what the lookup said
+// is its note.
+export function addFound(kept = {}, found = {}) {
+  const words = name => new Set(String(name ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1 && !SAME_SKIP.has(w)))
+  const same = (a, b) => {
+    const x = words(a), y = words(b)
+    if (!x.size || !y.size) return false
+    const shared = [...x].filter(w => [...y].some(v => alike(w, v))).length
+    return shared === Math.min(x.size, y.size) || shared / new Set([...x, ...y]).size >= 0.6
+  }
+  const documents = [...(kept.documents ?? [])]
+  const number = new Map()
+  ;(found.documents ?? []).forEach((d, i) => {
+    let at = d.url ? documents.findIndex(x => x.url === d.url) : -1
+    if (at < 0) {
+      documents.push(d)
+      at = documents.length - 1
+    } else documents[at] = { ...documents[at], ...d, quotes: [...new Set([...(documents[at].quotes ?? []), ...(d.quotes ?? [])])].slice(0, 5) }
+    number.set(i + 1, at + 1)
+  })
+  const renumber = list => (list ?? []).map(n => number.get(n)).filter(Boolean)
+  const says = list => (list ?? []).map(s => ({ ...s, doc: number.get(s.doc) })).filter(s => s.doc)
+  const items = (kept.items ?? []).map(item => ({ ...item }))
+  for (const raw of found.items ?? []) {
+    const item = { ...raw, says: says(raw.says) }
+    const old = items.find(x => same(x.name, item.name))
+    if (!old) {
+      items.push(item)
+      continue
+    }
+    const quoted = new Set((old.says ?? []).map(s => `${s.doc} ${s.text}`))
+    Object.assign(old, {
+      facts: { ...(old.facts ?? {}), ...(item.facts ?? {}) },
+      says: [...(old.says ?? []), ...item.says.filter(s => !quoted.has(`${s.doc} ${s.text}`))].slice(0, 8),
+      verdict: item.verdict ?? old.verdict,
+      url: item.url ?? old.url,
+      image: old.image ?? item.image,
+    })
+  }
+  const criteria = [...new Set([...(kept.criteria ?? []), ...(found.criteria ?? [])])].slice(0, 8)
+  const said = found.answer?.text ? found.answer.text : found.notes
+  return {
+    ...kept,
+    items: items.slice(0, 20),
+    documents: documents.slice(0, 40),
+    criteria,
+    answer: kept.answer ?? (found.answer && { ...found.answer, cites: renumber(found.answer.cites) }),
+    needs: kept.needs ?? found.needs,
+    notes: said ? `${said}`.slice(0, 1000) : kept.notes,
+  }
+}
+// Two words of a product's name are the same when they are, or when the
+// short one is the long one shortened ("QC" for "QuietComfort"); model
+// numbers ("1000XM4", "1000XM5") only when they are equal.
+const alike = (a, b) => {
+  if (a === b) return true
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+  if (/\d/.test(a) || /\d/.test(b) || short.length > 4 || short[0] !== long[0]) return false
+  let at = 0
+  for (const c of long) if (c === short[at]) at++
+  return at === short.length
+}
+const SAME_SKIP = new Set(['the', 'and', 'with', 'for', 'headphones', 'headphone', 'wireless', 'noise', 'cancelling', 'canceling', 'over', 'ear'])

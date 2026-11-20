@@ -61,7 +61,10 @@ function scripted() {
           ? []
           : /camera/.test(input.query)
             ? [{ title: 'Cameras compared', url: 'https://example.com/cameras', source: 'example.com', date: '2026-11-02', summary: 'Fuji first.', quotes: ['Best colour.'], facts: { pick: 'Fuji' } }]
-            : [{ title: 'Quiet headphones, tested', url: 'https://example.com/quiet', source: 'example.com', date: '2026-11-01', summary: 'Sony first.', quotes: ['Quietest we tried.'], facts: { pick: 'Sony' } }],
+            : input.found
+              ? [{ title: 'Sony store', url: 'https://example.com/sony-store', source: 'example.com', date: '2026-11-20', summary: 'Sony at $399.', quotes: ['$399.00'] }]
+              : [{ title: 'Quiet headphones, tested', url: 'https://example.com/quiet', source: 'example.com', date: '2026-11-01', summary: 'Sony first.', quotes: ['Quietest we tried.'], facts: { pick: 'Sony' } }],
+        items: /quiet/.test(input.query) ? (input.found ? [{ name: 'Sony WH-1000XM5 headphones', facts: { store_price: 399 }, says: [{ doc: 1, text: '$399.00' }] }] : [{ name: 'Sony WH-1000XM5', verdict: 'Quietest.', says: [{ doc: 1, text: 'Quietest we tried.' }] }, { name: 'Bose QuietComfort Ultra', verdict: 'Comfiest.' }, { name: 'AirPods Max', verdict: 'For iPhones.' }]) : undefined,
         notes: 'One source.',
       }
     },
@@ -869,12 +872,22 @@ test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { ski
   // Something to look up for it is searched, and the kept answer itself
   // takes it: the same app, a new version, its notes with it (PRIYA-4).
   const searches = model.calls.research.length
+  const asked = (await chat.apps.get(once.id)).args.query
   model.pick = once.id
   const priced = (await events('/api/turn', { text: 'find its store price', talk })).find(e => e.type === 'app')
   delete model.pick
   assert.equal(model.calls.research.length, searches + 1, 'it looked it up')
   assert.equal(priced.app.id, once.id)
   assert.equal(priced.app.version, once.version + 1)
+  // What it found is added: every option kept stays, in its order, the
+  // one it priced takes the price, and both sources are there (round 9
+  // PRIYA-1, PRIYA-3).
+  const kept = (await chat.apps.get(once.id)).args
+  assert.deepEqual(kept.items.map(i => i.name), ['Sony WH-1000XM5', 'Bose QuietComfort Ultra', 'AirPods Max'])
+  assert.equal(kept.items[0].facts.store_price, 399)
+  assert.deepEqual(kept.items[0].says.map(s => s.doc), [1, 2])
+  assert.deepEqual(kept.documents.map(d => d.url), ['https://example.com/quiet', 'https://example.com/sony-store'])
+  assert.equal(kept.query, asked, 'the question, and so the title, stays')
 })
 
 test('open phones keep up: a new version is told with what changed, and a stopped link is told (R: MAYA-3, DEV-7)', { skip }, async () => {

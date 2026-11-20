@@ -23,6 +23,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
+import { addFound } from '../server/widgets/findings.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
 import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep, signed } from '../server/apps.mjs'
 import { claude } from './model.mjs'
@@ -398,11 +399,13 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     // Something to find for a kept answer (a store price, two more options)
     // is looked up, and the kept answer itself takes it: its notes, links
     // and name stay, and every phone with it open gets it (PRIYA-1, PRIYA-4).
+    // What was found is added to the answer, never put in its place: no
+    // option, price or source kept drops off (round 9 PRIYA-1, PRIYA-3).
     if (keptAnswer && plan.tool === 'findings' && LOOKUP.test(text) && !(await mayChange(app.id, { links }))) {
       send({ type: 'status', text: 'Searching the web' })
       try {
         const found = await model.research({ request: text, query: String(app.args?.query || text), history: history.slice(-6), found: app.args, changes: await apps.changesOf(app.id).catch(() => []) })
-        if (found.documents?.length) app = await apps.put({ ...app, args: found, version: app.version + 1 }, `found again for: ${text}`.slice(0, 300))
+        if (found.documents?.length || found.items?.length) app = await apps.put({ ...app, args: addFound(app.args, found), version: app.version + 1 }, `found again for: ${text}`.slice(0, 300))
       } catch (error) {
         send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
         return
