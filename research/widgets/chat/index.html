@@ -1,0 +1,2231 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instant apps</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #57554f; --ink-3: #76736b;
+    --line: #e5e2d9; --bubble: #efece3; --accent: #c4623f; --accent-ink: #ffffff;
+    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3; --tool: #b8650f; --tool-bg: #fbeedd; --warn: #8a5a00; --warn-bg: #fff4d6; --warn-line: #e8c56a;
+    --shadow: 0 1px 2px rgba(30, 28, 20, .06), 0 4px 18px rgba(30, 28, 20, .05);
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #c4c2bc; --ink-3: #9d9b95;
+    --line: #3b3a37; --bubble: #33322f; --accent: #d97757;
+    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537; --tool: #f0a85a; --tool-bg: #3d2d1c; --warn: #f2c66b; --warn-bg: #3a2e12; --warn-line: #7a6024;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  button, input, textarea { font: inherit; color: inherit; }
+  .shell { display: grid; grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); height: 100vh; height: 100dvh; }
+  .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top { display: flex; align-items: center; gap: 10px; padding: 12px 22px; }
+  .top b { font-size: 16px; white-space: nowrap; }
+  .top .faint { flex: 1; min-width: 0; }
+  .faint { color: var(--ink-3); font-size: 13px; }
+  .newchat { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 6px 12px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .newchat:hover { border-color: var(--ink-3); }
+  .chats { position: relative; }
+  .chats-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 5; width: min(320px, 86vw); max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 6px; }
+  .chats-list[hidden] { display: none; }
+  .chats-list button { display: block; width: 100%; text-align: left; border: 0; background: none; border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 14px; }
+  .chats-list button:hover { background: var(--panel-2); }
+  .chats-list button.here { font-weight: 600; }
+  .chats-list small { display: block; color: var(--ink-3); font-size: 12px; }
+  .ask-new { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: 760px; margin: 0 auto 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 14px; }
+  .ask-new[hidden] { display: none; }
+  .ask-new span { flex: 1 1 200px; }
+  .log { flex: 1; overflow-y: auto; padding: 8px 22px 24px; }
+  .col { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+  .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 18px; padding: 9px 15px; white-space: pre-wrap; }
+  /* The assistant's message: its mark, then what it says and the widgets it shows. */
+  .bot { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 12px; align-items: start; }
+  .av { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; margin-top: 1px; }
+  .av svg { width: 14px; height: 14px; }
+  .body { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; min-height: 26px; }
+  .spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(1turn); } }
+  .reply { white-space: pre-wrap; }
+  /* An answer written about an app that has changed since. */
+  .reply.stale { color: var(--ink-3); }
+  .stale-note { font-size: 13px; font-style: italic; }
+  .error { color: #c8372d; font-size: 15px; }
+  .toolline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); min-height: 26px; }
+  .toolline b { font-weight: 600; color: var(--ink); }
+
+  .tile { width: 28px; height: 28px; border-radius: 8px; display: inline-grid; place-items: center; flex: none; }
+  .tile svg { width: 16px; height: 16px; }
+  .tile.mini { width: 20px; height: 20px; border-radius: 6px; }
+  .tile.mini svg { width: 12px; height: 12px; }
+  .k-info { background: var(--info-bg); color: var(--info); }
+  .k-action { background: var(--action-bg); color: var(--action); }
+  .k-discover { background: var(--discover-bg); color: var(--discover); }
+  .k-tool { background: var(--tool-bg); color: var(--tool); }
+
+  /* A widget: the app, framed lightly, with a slim bar that names it and keeps it. */
+  .widget { max-width: 680px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+  .widget.fresh { animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .wbar { display: flex; align-items: center; gap: 7px; padding: 5px 6px 5px 8px; border-bottom: 1px solid var(--line); font-size: 14px; min-height: 40px; flex-wrap: wrap; }
+  .wname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: none; border: 0; padding: 0; cursor: default; }
+  .chip { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+  .chip.made { background: #fdf0e8; color: var(--accent); }
+  :root[data-theme='dark'] .chip.made { background: #43291f; }
+  .chip.recalled, .chip.saved { background: var(--action-bg); color: var(--action); }
+  .chip.updated { background: var(--info-bg); color: var(--info); }
+  .spacer { flex: 1; }
+  .acts { display: flex; flex-wrap: wrap; gap: 2px; }
+  .wbtn { display: inline-flex; align-items: center; gap: 5px; border: 0; background: none; color: var(--ink-2); border-radius: 8px; padding: 5px 9px; min-height: 32px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  .wbtn svg { width: 13px; height: 13px; }
+  .wbtn:hover { background: var(--panel-2); color: var(--ink); }
+  .wbtn.save { color: var(--accent); font-weight: 600; }
+  .wbtn:disabled { opacity: .5; cursor: default; }
+  .fold-note { display: none; color: var(--ink-3); }
+  .reopen { display: none; }
+  .widget.folded { box-shadow: none; }
+  .widget.folded .wbar { border-bottom: 0; }
+  .widget.folded .wname { cursor: pointer; }
+  .widget.folded .frame, .widget.folded .changer, .widget.folded .acts { display: none; }
+  .widget.folded .fold-note { display: inline; }
+  .widget.folded .reopen { display: inline-flex; color: var(--accent); font-weight: 600; }
+  .gone { color: var(--ink-3); font-size: 13px; }
+  .frame iframe { display: block; width: 100%; height: 160px; border: 0; background: transparent; }
+  .changer[hidden] { display: none; }
+  .changer { display: flex; gap: 6px; padding: 7px 8px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+  .changer input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 10px; font-size: 16px; }
+  .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 5px 12px; cursor: pointer; font-size: 14px; }
+  .making { padding: 16px 14px 18px; display: flex; flex-direction: column; gap: 9px; }
+  .bar { height: 10px; border-radius: 6px; background: linear-gradient(90deg, var(--panel-2), var(--line), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
+  .composer { padding: 10px 22px 18px; }
+  .composer form { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 8px 8px 8px 16px; box-shadow: var(--shadow); }
+  .composer textarea { flex: 1; border: 0; outline: 0; resize: none; background: transparent; padding: 6px 0; height: 28px; max-height: 140px; }
+  .send { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 17px; }
+  .send:disabled { opacity: .45; }
+  .chip.mark { background: var(--bubble); color: var(--ink-2); }
+  .frozebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
+  .frozebox span { flex: 1 1 260px; }
+  .sharebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 13px; color: var(--ink-2); }
+  .sharebox .sharehead { flex: 1 1 100%; }
+  .sharebox .sharerow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; flex: 1 1 100%; }
+  .sharebox .sharerow span { flex: 1 1 240px; }
+  .morebox { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2); font-size: 13px; color: var(--ink-2); }
+  .morebox .faint { flex: 1 1 220px; }
+  .morebox .moments { flex: 1 1 100%; display: flex; flex-direction: column; gap: 6px; }
+  .morebox .moment { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
+  .sharebox .people { display: contents; }
+  .sharebox .hides { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; font-size: 13px; }
+  .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
+  /* A doubled number is a warning, not news (round 9, the owner's look at the clash note). */
+  .offline-note.clash-note { background: var(--warn-bg); color: var(--warn); border-bottom-color: var(--warn-line); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+  .clash-note .clash-text::before { content: '⚠ '; }
+  .clash-note button { border: 1px solid var(--warn-line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 3px 9px; font-size: 13px; cursor: pointer; }
+  .wbtn.undo { margin-left: 10px; }
+  .chip.nothing { background: var(--warn-bg); color: var(--warn); }
+  .wbtn.sure, .btn.sure { background: var(--warn-bg); color: var(--warn); }
+  .connect-note { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0; padding: 10px 12px; }
+  .connect-go { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: var(--bg, #fff); text-decoration: none; font-weight: 600; }
+  .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
+  .sharebox select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); max-width: 100%; }
+  .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
+
+  .hello { margin: 9vh auto 0; max-width: 620px; text-align: center; }
+  .hello h1 { font-size: 26px; font-weight: 600; margin: 0 0 6px; letter-spacing: -.01em; }
+  .hello p { color: var(--ink-2); margin: 0 0 22px; }
+  .ideas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: left; }
+  .idea-col h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .idea { display: block; width: 100%; text-align: left; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; cursor: pointer; font-size: 15px; }
+  .idea:hover { border-color: var(--ink-3); }
+
+  .rail { border-left: 1px solid var(--line); background: var(--panel-2); overflow-y: auto; min-height: 0; padding: 16px 14px; }
+  .rail-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; width: 100%; border: 0; background: none; padding: 0; text-align: left; cursor: default; }
+  .rail-head b { font-size: 16px; }
+  .rail-head .chev { display: none; width: 14px; height: 14px; color: var(--ink-2); transition: transform .15s; }
+  .rail-tip { margin: 0 0 14px; font-size: 13px; color: var(--ink-2); }
+  .group h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .app { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid transparent; background: transparent; border-radius: 12px; padding: 7px 8px; cursor: pointer; }
+  .app:hover { background: var(--panel); border-color: var(--line); }
+  .app.new { background: var(--panel); border-color: var(--accent); animation: glow 2.4s ease-out; }
+  @keyframes glow { from { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent); } }
+  .app .text { min-width: 0; flex: 1; }
+  .app b { display: block; font-size: 14px; font-weight: 600; }
+  .app small { display: block; font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .app .uses { font-size: 12px; color: var(--ink-3); }
+  .row-app { position: relative; }
+  .row-app .x { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: none; border: 0; background: var(--panel); color: var(--ink-2); border-radius: 8px; padding: 4px 8px; font-size: 13px; cursor: pointer; }
+  .row-app:hover .x, .row-app:focus-within .x { display: block; }
+  .row-app:hover .uses, .row-app:focus-within .uses { visibility: hidden; }
+  .ask-remove { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 14px; }
+  .ask-remove span { flex: 1 1 120px; }
+  .ask-remove .yes { color: #c8372d; border-color: #e7b9b4; }
+  .group .none { font-size: 13px; color: var(--ink-3); padding: 2px 8px; }
+  .rail-foot { margin-top: 18px; font-size: 12px; color: var(--ink-3); }
+
+  /* Touch screens: every button big enough for a finger, and Remove always there. */
+  @media (pointer: coarse) {
+    .wbtn, .btn, .newchat { min-height: 44px; }
+    .send { width: 44px; height: 44px; }
+    .app { min-height: 52px; }
+    .row-app .x { display: block; position: static; transform: none; min-height: 44px; }
+    .row-app { display: flex; align-items: center; gap: 4px; }
+    .row-app .uses { display: none; }
+    /* The app's row takes what Remove leaves, so Remove stays on the screen (TOM-9, INES-11). */
+    .row-app .app { flex: 1 1 auto; min-width: 0; width: auto; }
+    .row-app .x { flex: none; }
+  }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    /* Earlier chats opens across the top, inside the screen (TOM-7). */
+    .top { position: relative; }
+    .chats { position: static; }
+    .chats-list { left: 12px; right: 12px; width: auto; }
+    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 55vh; padding: 10px 16px; }
+    /* The rail folds to one line on a small screen; its head opens it. */
+    .rail-head { cursor: pointer; min-height: 40px; margin: 0; }
+    .rail-head .chev { display: block; }
+    .rail:not(.closed) .rail-head .chev { transform: rotate(180deg); }
+    .rail.closed .rail-tip, .rail.closed #groups, .rail.closed .rail-foot { display: none; }
+    .ideas { grid-template-columns: 1fr; }
+    .log, .composer, .top { padding-left: 16px; padding-right: 16px; }
+    .top .faint { display: none; }
+    .user { max-width: 88%; }
+  }
+  /* A phone: an app takes the whole width, under the mark, not beside it (INES-8, MARCUS-9). */
+  @media (max-width: 560px) {
+    .log { padding-left: 10px; padding-right: 10px; }
+    .bot .body > .widget { margin-left: -38px; max-width: none; }
+    .sharebox > *, .sharebox .sharerow > *, .sharebox .hides > * { min-width: 0; max-width: 100%; }
+    .sharebox .sharerow span { flex-basis: 100%; }
+    .sharebox label { overflow-wrap: anywhere; }
+  }
+  /* A guest (a page opened only by a helper, view or copy link) gets its apps and nothing else. */
+  .guest .rail, .guest .composer, .guest .chats, .guest #newchat, .guest .toolline { display: none !important; }
+  .guest .shell { grid-template-columns: minmax(0, 1fr); }
+  .guest-note { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  /* Printing one app (TOM-5): that app, all of it, and nothing else. */
+  @media print {
+    .print-one .rail, .print-one .top, .print-one .composer, .print-one .ask-new, .print-one .printing .wbar, .print-one .printing .changer, .print-one .printing .sharebox, .print-one .printing .morebox { display: none !important; }
+    .print-one .shell, .print-one .chat { display: block; height: auto; }
+    .print-one .log { overflow: visible; padding: 0; }
+    .print-one .col > :not(:has(.printing)), .print-one :has(> .printing) > :not(.printing) { display: none !important; }
+    .print-one .widget.printing { max-width: none; border: 0; box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <main class="chat">
+    <div class="top"><b>Instant apps</b><span class="faint">a prototype: answers come with apps, and the apps you keep come back</span><span class="chats"><button class="newchat" id="earlier" type="button" hidden aria-expanded="false">Earlier chats</button><div class="chats-list" id="chatlist" hidden></div></span><button class="newchat" id="newchat" type="button" title="Start a new conversation; this one stays under Earlier chats">New chat</button></div>
+    <div class="ask-new" id="asknew" hidden><span>Start a new chat? This one stays under Earlier chats, in this browser.</span><button class="btn" id="newyes" type="button">Start a new chat</button><button class="btn" id="newno" type="button">Keep this one</button></div>
+    <div class="log" id="log"><div class="col" id="col"></div></div>
+    <div class="composer">
+      <form id="ask"><textarea id="text" rows="1" placeholder="Ask anything"></textarea><button class="send" id="send" aria-label="Send">↑</button></form>
+      <p class="composer-note">Claude reads what your apps show, and what you type in them, to answer you. To keep an app out, make it private from its ⋯ menu.</p>
+    </div>
+  </main>
+  <aside class="rail" id="rail" aria-label="Your apps">
+    <button class="rail-head" id="railhead" type="button" aria-expanded="true"><b>Your apps</b><span class="spacer"></span><span class="faint" id="count"></span><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg></button>
+    <p class="rail-tip">Open one any time. A saved app opens by itself when you ask for something like what it did before.</p>
+    <div id="groups"></div>
+    <div class="rail-foot">Kept in ChloeDB, found by words and meaning.</div>
+  </aside>
+</div>
+<script type="module">
+import { AppBridge, PostMessageTransport } from '/bridge.js'
+
+const q = new URLSearchParams(location.search)
+const theme = q.get('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+document.documentElement.dataset.theme = theme
+
+const KINDS = {
+  info: { label: 'Look things up', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12l4-4 3 3 5-6"/></svg>' },
+  action: { label: 'Get things done', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>' },
+  discover: { label: 'Discover', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M8 1.8l1.6 4.6 4.6 1.6-4.6 1.6L8 14.2 6.4 9.6 1.8 8l4.6-1.6z"/></svg>' },
+  tool: { label: 'Work things out', icon: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13c2.5 0 3-10 6-10s3.5 10 6 10"/></svg>' },
+}
+const IDEAS = {
+  info: ['How is Apple doing this month?', 'Compare noise cancelling headphones'],
+  action: ['Book a table for 4 on Friday at 8 in North Beach', 'I need a new phone case'],
+  discover: ['Dinner ideas, something Thai', 'Desserts I could bake this weekend'],
+  tool: ['Animate the derivative of x^2 sin(x)', 'Mortgage calculator: $600k at 6% over 30 years'],
+}
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
+const tile = kind => `<span class="tile k-${kind}">${KINDS[kind]?.icon ?? ''}</span>`
+const col = document.getElementById('col')
+const log = document.getElementById('log')
+const text = document.getElementById('text')
+const send = document.getElementById('send')
+const history = []
+let lastApp = null
+let busy = false
+window.events = []
+
+// This browser's own ids: `me` for what apps keep for it (Kit.keep), `talk`
+// for its conversation, which a reload or the next day opens again. Both
+// are random and stay in this browser, so no one else sees either. Where
+// the browser keeps nothing, they last as long as the page.
+// What this browser keeps of the chat (who it is, its conversation, its
+// links) is in localStorage, which a browser killed from outside can lose
+// whole, seconds after it was written: the chat then opened as a stranger's
+// and its apps as empty (LENA-1, INES-1). A copy goes to IndexedDB, which
+// is written at once, and comes back when localStorage has nothing.
+const MIRROR = 'instant-apps-mirror'
+const mirrorDb = () => new Promise((resolve, reject) => {
+  const r = indexedDB.open(MIRROR, 1)
+  r.onupgradeneeded = () => r.result.createObjectStore('local')
+  r.onsuccess = () => resolve(r.result)
+  r.onerror = () => reject(r.error)
+})
+let mirrorTimer = 0
+const mirror = () => {
+  clearTimeout(mirrorTimer)
+  mirrorTimer = setTimeout(async () => {
+    try {
+      const all = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k?.startsWith('instant-apps-')) all[k] = localStorage.getItem(k)
+      }
+      const db = await mirrorDb()
+      db.transaction('local', 'readwrite').objectStore('local').put(all, 'all')
+    } catch {}
+  }, 200)
+}
+try {
+  if (!localStorage.getItem('instant-apps-me')) {
+    const db = await Promise.race([mirrorDb(), new Promise((_, no) => setTimeout(no, 1500))])
+    const all = await new Promise(resolve => {
+      const get = db.transaction('local').objectStore('local').get('all')
+      get.onsuccess = () => resolve(get.result ?? null)
+      get.onerror = () => resolve(null)
+    })
+    if (all?.['instant-apps-me']) for (const [k, v] of Object.entries(all)) localStorage.setItem(k, v)
+  }
+} catch {}
+const local = {
+  get: key => { try { return localStorage.getItem(key) } catch { return null } },
+  set: (key, value) => { try { localStorage.setItem(key, value); mirror() } catch {} },
+}
+const newId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('')
+// Apps shared by a link keep what they keep with everyone who has the
+// link, on any phone or computer, instead of in this browser alone.
+const shared = (() => { try { return JSON.parse(local.get('instant-apps-shared') || '{}') ?? {} } catch { return {} } })()
+const ownerOf = id => (shared[id] ? `s-${shared[id]}` : me)
+const stored = name => { try { return JSON.parse(local.get(name) || '{}') ?? {} } catch { return {} } }
+// What this browser may do with an app shared with it: change everything
+// ("full"), add and tick ("helper") or only look ("viewer"). The server
+// holds to it; the page only leaves out what the link can't do.
+const roles = stored('instant-apps-roles')
+const roleOf = id => (shared[id] ? roles[id] ?? 'full' : 'own')
+const limited = id => ['helper', 'viewer'].includes(roleOf(id))
+// Apps whose link this browser gave out (copied, or made for a person):
+// only those say Shared; opening the Share box alone shares nothing yet
+// (round 10 INES-10). Apps shared before this was kept count as given out.
+const givenOut = local.get('instant-apps-given') ? stored('instant-apps-given') : Object.fromEntries(Object.keys(stored('instant-apps-shared')).map(k => [k, true]))
+const giveOut = (w, id) => {
+  if (givenOut[id]) return
+  givenOut[id] = true
+  local.set('instant-apps-given', JSON.stringify(givenOut))
+  bar(w)
+}
+// The helper and view links of an app this browser shared.
+const links = stored('instant-apps-links')
+const shareUrl = (id, as = 'full') =>
+  as === 'copy'
+    ? `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&as=copy`
+    : `${location.origin}${location.pathname}?app=${encodeURIComponent(id)}&share=${as === 'full' ? shared[id] : links[id]?.[as]}${as === 'full' ? '' : `&as=${as}`}`
+// Apps marked private: the chat reads nothing of them, and what they keep
+// stays in this browser.
+const privateApps = stored('instant-apps-private')
+const privately = stored('instant-apps-local')
+const isPrivate = id => Boolean(privateApps[id])
+const PRIVATE = /\b(private(ly)?|confidential|secret|sensitive)\b|\b(don'?t|do not|never|without) (send|share|read|show)(ing)? (it |this |anything )?(to )?(the )?(chat|claude|you|server)|\bnot (be )?(sent|read|shared)\b|\bstays? (local|offline|in (the|my) browser|on my (machine|laptop|computer|phone|device))|\bonly (in|on) (my|this) (browser|machine|laptop|computer|phone|device)\b|\b(runs?|works?|stays?|kept|lives?) (locally|client[- ]side)\b|\bnever leaves? (my|this) (browser|machine|laptop|computer|phone|device)\b|\bout of (the )?(chat|claude|model)\b|\b(claude|the chat|the model|ai|you) (must|should|can|may)( ?not|n'?t) (see|read|get)\b/i
+// What a tool for pasted data is asked as: private unless asked otherwise (DEV-2).
+const PASTED = /\b(paste[ds]?|pasting|curl|localhost|127\.0\.0\.1|my (own )?(api|endpoint|server|backend)|api (responses?|output)|(responses?|output) (of|from) (my|the|an?) (api|endpoint|server|command|script)|terminal output|command output|decod(e|er|ing)|jwt|bearer|tokens?|api keys?|secrets?|log (lines?|files?)|stack ?traces?|json (formatter|viewer|validator)|format(ter)? (my |this |the )?json|regex (tester|checker)|base64|hash(es|ing)?)\b/i
+const saveLocal = () => { local.set('instant-apps-private', JSON.stringify(privateApps)); local.set('instant-apps-local', JSON.stringify(privately)) }
+// Apps this browser was given by a link without what they keep (a copy:
+// it keeps its own, here).
+const given = stored('instant-apps-given')
+const firstVisit = !local.get('instant-apps-me')
+// Opened from a share link: that app, with what everyone with the link kept.
+const linked = (() => {
+  const q = new URLSearchParams(location.search)
+  const app = q.get('app')
+  const token = q.get('share')
+  if (app && q.get('as') === 'copy' && !token) {
+    // A copy is a copy, even in a browser that has this app by another link (DEV-4).
+    delete shared[app]
+    delete roles[app]
+    local.set('instant-apps-shared', JSON.stringify(shared))
+    local.set('instant-apps-roles', JSON.stringify(roles))
+    given[app] = true
+    local.set('instant-apps-given', JSON.stringify(given))
+    // A copy keeps what is typed into it on this phone only, as its link
+    // says (DEV-5).
+    privateApps[app] = true
+    local.set('instant-apps-private', JSON.stringify(privateApps))
+    window.history.replaceState(null, "", location.pathname)
+    return app
+  }
+  if (!app || !/^[0-9a-f]{32}$/.test(token ?? '')) return null
+  shared[app] = token
+  local.set('instant-apps-shared', JSON.stringify(shared))
+  roles[app] = ['helper', 'viewer'].includes(q.get('as')) ? q.get('as') : 'full'
+  local.set('instant-apps-roles', JSON.stringify(roles))
+  window.history.replaceState(null, "", location.pathname)
+  return app
+})()
+// A browser that came only by a helper, view or copy link (a husband's
+// phone, a flatmate's laptop, a tester's) is a guest: it gets the apps given
+// to it and nothing else of the site: no Your apps, no Remove, no chat
+// (PRIYA-1, INES-1, LENA-5, MAYA-2).
+const guest = (() => {
+  if (local.get('instant-apps-guest') === '1') return true
+  if (!linked || !firstVisit || !(given[linked] || limited(linked))) return false
+  local.set('instant-apps-guest', '1')
+  return true
+})()
+const guestApps = () => [...new Set([...Object.keys(shared), ...Object.keys(given)])]
+if (guest) document.documentElement.classList.add('guest')
+const me = local.get('instant-apps-me') || newId()
+local.set('instant-apps-me', me)
+let talk = local.get('instant-apps-talk') || newId()
+local.set('instant-apps-talk', talk)
+// Every request to the chat says which browser it is (x-self), so a tool of
+// the person's own account (their Spotify, a service they signed in to)
+// acts as them. A link's guest is themselves too.
+{
+  const plain = window.fetch.bind(window)
+  window.fetch = (input, init = {}) => {
+    const at = typeof input === 'string' ? input : input?.url ?? ''
+    if (!at.startsWith('/api/')) return plain(input, init)
+    return plain(input, { ...init, headers: { ...(init.headers ?? {}), 'x-self': me } })
+  }
+}
+// A sign-in to the person's own account, in a tab of its own: the card
+// says when it is done (the sign-in page tells this tab), and what waited
+// for it runs again.
+const connectedAt = () => Number(local.get('instant-apps-connected') || 0)
+function connectCard(parent, connect, again, before = null) {
+  const card = document.createElement('div')
+  card.className = 'offline-note connect-note'
+  // A connector someone else made says so, and where it runs (round 9 DEV-4).
+  // What the sign-in asks for, as its address says (round 10 DEV-2).
+  const scope = (() => { try { return new URL(connect.url).searchParams.get('scope') ?? '' } catch { return '' } })().trim()
+  const theirs = connect.thirdParty
+    ? `This would use “${connect.title ?? connect.name}”, a connector made by someone else${connect.host ? ` (${connect.host})` : ''}, not by ${connect.asked ?? 'the service'} itself. Sign in only if you trust it: it sees what that sign-in allows${scope ? ` (it asks for: ${scope.split(/[\s,]+/).slice(0, 6).join(', ')})` : ''}.`
+    : `This needs your ${connect.name}. Sign in once, and it is used only when you ask.`
+  card.innerHTML = `<span>${esc(theirs)}</span> <a class="connect-go" href="${esc(connect.url)}" target="_blank" rel="noopener">${connect.thirdParty ? 'Sign in anyway' : `Connect ${esc(connect.name)}`}</a>`
+  if (before) parent.insertBefore(card, before)
+  else parent.append(card)
+  const since = connectedAt()
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    card.innerHTML = `<span>${esc(`${connect.name} is connected.`)}</span>`
+    try { channel?.close() } catch {}
+    window.removeEventListener('focus', check)
+    again?.()
+  }
+  let channel = null
+  try {
+    channel = new BroadcastChannel('instant-apps-connect')
+    channel.onmessage = e => { if (e.data?.ok) finish() }
+  } catch {}
+  const check = () => { if (connectedAt() > since) finish() }
+  window.addEventListener('focus', check)
+  window.addEventListener('storage', e => { if (e.key === 'instant-apps-connected') check() })
+  return card
+}
+// Every request about an app or a turn says which apps this browser has by
+// a link, so the server holds to what a helper or view link can't do.
+{
+  const send = window.fetch.bind(window)
+  window.fetch = (url, init) => {
+    if (typeof url === 'string' && /^\/api\/(apps\/|turn$)/.test(url) && init?.method === 'POST') {
+      let payload = {}
+      try {
+        payload = JSON.parse(init.body || '{}') ?? {}
+      } catch {}
+      init = { ...init, body: JSON.stringify({ ...payload, links: shared, ...(guest ? { guest: true } : {}) }) }
+    }
+    return send(url, init)
+  }
+}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const textOf = result => result?.content?.find(c => c.type === 'text')?.text ?? ''
+// A turn of the conversation, kept for this browser.
+const record = turn => {
+  remember(turn.request || turn.shown?.[0]?.name)
+  // After every turn the conversation, and what it showed, are asked for again
+  // so the copy kept for no signal is the newest, not the one from before the
+  // app existed (MAYA-2).
+  return fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) })
+    .then(async () => {
+      const drain = r => r.text().catch(() => '')
+      await fetch(`/api/talk?talk=${talk}`).then(drain)
+      for (const s of turn.shown ?? []) if (s?.id) await fetch(`/api/shown/${encodeURIComponent(s.id)}?talk=${talk}`).then(drain)
+    })
+    .catch(() => {})
+}
+// The conversations this browser had, newest first, to open again: their
+// ids and first words stay in this browser alone.
+const talks = () => {
+  try {
+    const list = JSON.parse(local.get('instant-apps-talks') || '[]')
+    return Array.isArray(list) ? list.filter(t => t && typeof t.id === 'string') : []
+  } catch {
+    return []
+  }
+}
+function remember(title) {
+  const list = talks()
+  const was = list.find(t => t.id === talk)
+  const next = [{ id: talk, at: Date.now(), title: was?.title || String(title || 'A conversation').replace(/\s+/g, ' ').trim().slice(0, 70) }, ...list.filter(t => t.id !== talk)]
+  local.set('instant-apps-talks', JSON.stringify(next.slice(0, 30)))
+  earlier()
+}
+const entry = (ev, how = ev.how) => ({ id: ev.shown, app: ev.app.id, name: ev.app.name, kind: ev.app.kind, how, shows: textOf(ev.result).slice(0, 400) })
+
+function el(cls, html, parent = col) {
+  const node = document.createElement('div')
+  node.className = cls
+  node.innerHTML = html
+  parent.append(node)
+  return node
+}
+const scroll = () => requestAnimationFrame(() => log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' }))
+
+// ---- the rail ----
+let known = new Set()
+async function rail(highlight) {
+  if (guest) return
+  const { apps } = await (await fetch('/api/apps')).json()
+  document.getElementById('count').textContent = `${apps.length} kept`
+  const groups = document.getElementById('groups')
+  groups.innerHTML = Object.entries(KINDS)
+    .map(([kind, { label }]) => {
+      const mine = apps.filter(a => a.kind === kind)
+      return `<div class="group"><h4>${label}</h4>${
+        mine.length
+          ? mine.map(a => `<div class="row-app"><button class="app${a.id === highlight ? ' new' : ''}" data-id="${esc(a.id)}">${tile(a.kind)}<span class="text"><b>${esc(a.name)}</b><small>${esc(a.about)}</small></span><span class="uses">${a.uses}×</span></button><button class="x" type="button" aria-label="Remove ${esc(a.name)}" title="Take it out of your apps">Remove</button></div>`).join('')
+          : '<div class="none">Nothing yet</div>'
+      }</div>`
+    })
+    .join('')
+  groups.querySelectorAll('.row-app').forEach(row => {
+    const b = row.querySelector('.app')
+    const name = b.querySelector('b').textContent
+    b.onclick = () => openFromRail(b.dataset.id, name)
+    row.querySelector('.x').onclick = () => askRemove(row, b.dataset.id, name)
+  })
+  known = new Set(apps.map(a => a.id))
+}
+
+// Removing an app asks first, in place: never a browser dialog.
+function askRemove(row, id, name) {
+  row.innerHTML = `<div class="ask-remove"><span>Remove <b>${esc(name)}</b> from your apps? What it kept goes with it.</span><button class="btn yes" type="button">Remove</button><button class="btn no" type="button">Keep it</button></div>`
+  row.querySelector('.no').onclick = () => rail()
+  row.querySelector('.yes').onclick = async () => {
+    await fetch(`/api/apps/${encodeURIComponent(id)}/remove`, { method: 'POST', body: '{}' })
+    for (const w of widgets) {
+      if (w.app.id !== id) continue
+      w.removed = true
+      if (!w.stub) bar(w)
+    }
+    await rail()
+  }
+}
+
+// On a small screen the rail folds to its head, which opens it.
+const railBox = document.getElementById('rail')
+const railHead = document.getElementById('railhead')
+const small = matchMedia('(max-width: 860px)')
+const foldRail = closed => {
+  railBox.classList.toggle('closed', closed)
+  railHead.setAttribute('aria-expanded', String(!closed))
+}
+foldRail(small.matches)
+railHead.onclick = () => small.matches && foldRail(!railBox.classList.contains('closed'))
+small.addEventListener?.('change', e => foldRail(e.matches))
+
+function hello() {
+  el('hello', `<h1>What do you need?</h1><p>Ask for anything. When an answer is better as an app, one opens here.<br>Keep the ones you like: they show up again when you need them.</p>
+    <div class="ideas">${Object.entries(IDEAS).map(([kind, list]) => `<div class="idea-col"><h4>${tile(kind)} ${KINDS[kind].label}</h4>${list.map(i => `<button class="idea">${esc(i)}</button>`).join('')}</div>`).join('')}</div>`)
+  col.querySelectorAll('.idea').forEach(b => (b.onclick = () => ask(b.textContent)))
+}
+
+// ---- reading a stream of events ----
+async function events(response, on) {
+  const reader = response.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i)
+      buf = buf.slice(i + 1)
+      if (line.trim()) {
+        const event = JSON.parse(line)
+        window.events.push(event)
+        await on(event)
+      }
+    }
+  }
+}
+
+// ---- the assistant's messages ----
+const MARK = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5l1.5 4.4 4.6.1-3.7 2.8 1.4 4.4L8 10.5l-3.8 2.7 1.4-4.4L1.9 6l4.6-.1z"/></svg>'
+const ICON = {
+  more: '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12.5" cy="8" r="1.4"/></svg>',
+  share: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V2.5M5 5l3-3 3 3"/><path d="M3 8.5v4.5h10V8.5"/></svg>',
+  save: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 2.5h8v11L8 10.5l-4 3z"/></svg>',
+  change: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/></svg>',
+  undo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4L2 7l3 3"/><path d="M2.5 7H10a3.5 3.5 0 010 7H7"/></svg>',
+  redo: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4l3 3-3 3"/><path d="M13.5 7H6a3.5 3.5 0 000 7h3"/></svg>',
+}
+const miniTile = kind => `<span class="tile mini k-${kind}">${KINDS[kind]?.icon ?? ''}</span>`
+
+// A message of the assistant; its body takes text, tool lines and widgets.
+function bot() {
+  const node = el('bot', `<div class="av">${MARK}</div><div class="body"></div>`)
+  return node.querySelector('.body')
+}
+
+// ---- the widgets in the conversation ----
+// Each one: the app it draws, what it was last filled with, and what was done
+// in it, which the model reads to answer about it.
+const widgets = []
+window.widgets = widgets
+
+// Every app in the conversation, newest first, folded ones too: the chat
+// reads what each shows on screen to answer about it, and its id to change it.
+// The apps on screen, the one the person used or changed last first.
+function screen() {
+  return widgets.map((w, i) => [w, i]).sort((a, b) => (b[0].touched ?? 0) - (a[0].touched ?? 0) || b[1] - a[1]).map(([w]) => w).slice(0, 12).map(w =>
+    isPrivate(w.app.id)
+      ? { id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: '(private: the person keeps what this app shows to themselves)', did: [], told: '' }
+      : { id: w.app.id, shown: w.shownId, version: w.app.version, name: w.app.name, folded: w.folded, shows: w.shows, did: w.did, told: w.fresh && froze[w.app.id] ? `(It opened without what it kept, after it stopped the page last time: what it keeps is not on screen, so say nothing of what it holds.) ${w.told ?? ''}` : w.told })
+}
+
+const withoutEntries = payload => {
+  const strip = values => {
+    // A take-out too: drawn again on a catch-up, it would take out the
+    // next entry that matches (round 9 INES-1).
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null && values.remove == null)) return values
+    const { add, edit, remove, ...rest } = values
+    return rest
+  }
+  const data = payload.result?.structuredContent
+  return {
+    ...payload,
+    args: payload.args?.values ? { ...payload.args, values: strip(payload.args.values) } : payload.args,
+    result: data?.values ? { ...payload.result, structuredContent: { ...data, values: strip(data.values) } } : payload.result,
+  }
+}
+
+const REPLAY = new Set(['opened', 'again', 'changed', 'undone', 'linked'])
+
+// A pattern an app's person typed runs here, in a worker of its own that is
+// stopped after a second, so a pattern that runs without end ((a+)+$ on a run
+// of a's) can't freeze the page; the text never leaves this browser (DEV-1).
+const MATCHER = `onmessage = e => {
+  const { pattern, flags, text } = e.data
+  try {
+    const re = new RegExp(pattern, flags.includes('g') ? flags : flags + 'g')
+    const matches = []
+    let m
+    while ((m = re.exec(text)) && matches.length < 1000) {
+      matches.push({ index: m.index, text: m[0], groups: m.slice(1), named: m.groups ?? null })
+      if (m[0] === '') re.lastIndex++
+    }
+    postMessage({ matches })
+  } catch (error) {
+    postMessage({ matches: [], error: error.message })
+  }
+}`
+let matcherUrl = null
+function regexApart({ pattern = '', flags = '', text = '' } = {}) {
+  matcherUrl ??= URL.createObjectURL(new Blob([MATCHER], { type: 'text/javascript' }))
+  const answer = out => ({ content: [{ type: 'text', text: out.error ?? `${out.matches.length} matches` }], structuredContent: out })
+  return new Promise(resolve => {
+    const worker = new Worker(matcherUrl)
+    const timer = setTimeout(() => {
+      worker.terminate()
+      resolve(answer({ matches: [], timedOut: true, error: 'This pattern runs too long on this text (over a second): it tries the same thing again and again, as (a+)+ does. Make it simpler (a+ instead of (a+)+).' }))
+    }, 1000)
+    worker.onmessage = e => {
+      clearTimeout(timer)
+      worker.terminate()
+      resolve(answer(e.data))
+    }
+    worker.postMessage({ pattern: String(pattern), flags: String(flags).replace(/[^dgimsuvy]/g, ''), text: String(text).slice(0, 200_000) })
+  })
+}
+
+// An app that still froze the page (a loop of its own) says so as soon as
+// the page answers again (the kit times its handlers and draws), and opens
+// next time without what it kept, so it does not freeze the page again each
+// time it is shown.
+const froze = (() => { try { return JSON.parse(local.get('instant-apps-froze') || '{}') ?? {} } catch { return {} } })()
+let frames = 0
+function frozen(w, ms) {
+  froze[w.app.id] = { ms: Math.round(ms), version: w.app.version, at: Date.now() }
+  local.set('instant-apps-froze', JSON.stringify(froze))
+  w.node.querySelector('.frozebox')?.remove()
+  const box = document.createElement('div')
+  box.className = 'frozebox'
+  box.innerHTML = `<span><b>${esc(w.app.name)}</b> froze the page for ${Math.round(ms / 1000)} s. Next time it opens without what it kept, so it doesn't freeze again.</span><button class="btn fix" type="button">Fix it</button>`
+  box.querySelector('.fix').onclick = () => w.change?.(`Fix this app: it froze the whole page for ${Math.round(ms / 1000)} seconds, most likely a pattern or a loop that runs without end on what was typed. Run typed patterns with Kit.regex.`, 'Fixing it')
+  w.node.querySelector('.wbar').after(box)
+}
+// Prints one app, all of it, as it is on screen (TOM-5): a frame can't
+// print itself.
+// The app's own copy of itself, without anything that runs: no script, no
+// frame, no on… attribute, no javascript: link.
+function inert(html) {
+  const doc = new DOMParser().parseFromString(String(html), 'text/html')
+  doc.querySelectorAll('script, iframe, object, embed, base, meta[http-equiv]').forEach(n => n.remove())
+  for (const el of doc.querySelectorAll('*')) for (const a of [...el.attributes]) if (/^on/i.test(a.name) || /^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name)
+  return `${[...doc.head.querySelectorAll('style')].map(x => x.outerHTML).join('')}${doc.body.innerHTML}`
+}
+function printing(w, html) {
+  const iframe = w.node.querySelector('iframe')
+  const was = iframe?.style.height
+  if (iframe && w.height) iframe.style.height = `${w.height}px`
+  // Printed from its copy, all of it over as many sheets as it takes (round 9 TOM-5).
+  let sheet = null
+  if (html && iframe) {
+    sheet = document.createElement('div')
+    sheet.className = 'print-copy'
+    const root = sheet.attachShadow({ mode: 'open' })
+    root.innerHTML = `<style>:host{display:block} *{max-height:none !important; overflow:visible !important} .wrap, body, html{height:auto !important}</style>${inert(html)}`
+    iframe.after(sheet)
+    iframe.style.display = 'none'
+  }
+  w.node.classList.add('printing')
+  document.documentElement.classList.add('print-one')
+  const done = () => {
+    w.node.classList.remove('printing')
+    document.documentElement.classList.remove('print-one')
+    if (iframe) iframe.style.height = was
+    if (sheet) {
+      sheet.remove()
+      iframe.style.display = ''
+    }
+    removeEventListener('afterprint', done)
+  }
+  addEventListener('afterprint', done)
+  window.print()
+}
+
+// An app that never comes back (a loop without end) stops the page with it,
+// and the kit can't say so (DEV-3). A watch beside the page, in a worker of
+// its own, hears from the page each second: when it hears nothing for six
+// seconds while the page is looked at, that is a hang, and it notes the app
+// in use then. A page closed, or a phone that stops the browser, is no hang:
+// the watch stops with it and notes nothing (LENA-1, INES-1, MAYA-3).
+const WATCH = `
+let last = Date.now(), app = null, watching = true, noted = false
+const put = (note, gone) => { try { const r = indexedDB.open('instant-apps', 1); r.onupgradeneeded = () => r.result.createObjectStore('hang'); r.onsuccess = () => { const t = r.result.transaction('hang', 'readwrite'); gone ? t.objectStore('hang').delete('last') : t.objectStore('hang').put(note, 'last') } } catch {} }
+onmessage = e => {
+  const m = e.data || {}
+  if (m.app) app = m.app
+  if ('watching' in m) watching = m.watching
+  const was = Date.now() - last
+  last = Date.now()
+  if (noted) { noted = false; put(null, true); postMessage({ recovered: app, ms: was }) }
+}
+setInterval(() => { const ms = Date.now() - last; if (watching && app && !noted && ms > 6000) { noted = true; put({ ...app, ms, at: Date.now() }) } }, 1000)`
+const watch = (() => {
+  try {
+    return new Worker(URL.createObjectURL(new Blob([WATCH], { type: 'text/javascript' })))
+  } catch {
+    return null
+  }
+})()
+const inUse = w => watch?.postMessage({ app: { app: w.app.id, name: w.app.name, version: w.app.version } })
+setInterval(() => watch?.postMessage({ ping: 1 }), 1000)
+document.addEventListener('visibilitychange', () => watch?.postMessage({ watching: document.visibilityState === 'visible' }))
+addEventListener('pagehide', () => watch?.postMessage({ watching: false }))
+watch?.addEventListener('message', e => {
+  const w = widgets.find(x => x.app.id === e.data?.recovered?.app && !x.folded && x.node)
+  if (w) frozen(w, e.data.ms)
+})
+// Using an app moves the focus into its frame.
+addEventListener('blur', () => {
+  const name = document.activeElement?.tagName === 'IFRAME' ? document.activeElement.name : ''
+  const w = name && widgets.find(x => x.frameName === name)
+  if (w) inUse(w)
+})
+// What the watch noted last time: that app opens without what it kept.
+const hung = new Promise(resolve => {
+  try {
+    const r = indexedDB.open('instant-apps', 1)
+    r.onupgradeneeded = () => r.result.createObjectStore('hang')
+    r.onerror = () => resolve(null)
+    r.onsuccess = () => {
+      const t = r.result.transaction('hang', 'readwrite')
+      const get = t.objectStore('hang').get('last')
+      get.onsuccess = () => {
+        t.objectStore('hang').delete('last')
+        resolve(get.result ?? null)
+      }
+      get.onerror = () => resolve(null)
+    }
+  } catch {
+    resolve(null)
+  }
+}).then(was => {
+  if (was?.app) {
+    froze[was.app] = { ms: was.ms ?? 0, version: was.version, at: was.at, name: was.name, stopped: true }
+    local.set('instant-apps-froze', JSON.stringify(froze))
+  }
+})
+// A mark of the build before this one, which noted any app drawn: not a hang.
+try { localStorage.removeItem('instant-apps-busy') } catch {}
+
+// ---- with no signal (MAYA-8, INES-4) ----
+// What each app kept, as last read here, so it opens with no signal; and
+// what was kept with no signal, sent in order when there is some, put
+// together with what the others kept meanwhile (an entry added, changed
+// or taken out here is that, on top of theirs).
+const CACHE = 'instant-apps-cache'
+const OUTBOX = 'instant-apps-outbox'
+const cache = stored(CACHE)
+let outbox = (() => { try { return JSON.parse(local.get(OUTBOX) || '[]') ?? [] } catch { return [] } })()
+const slotOf = id => `${id}|${ownerOf(id)}`
+const saveOffline = () => {
+  local.set(OUTBOX, JSON.stringify(outbox))
+  local.set(CACHE, JSON.stringify(cache))
+}
+// What each app read last (not what it did), so it opens with no signal:
+// the newest 80, at most 1.5 MB in all, each at most 200 KB.
+const READS = 'instant-apps-reads'
+const reads = stored(READS)
+function keepRead(key, result) {
+  const text = JSON.stringify(result)
+  if (text.length > 200_000) return
+  reads[key] = { at: Date.now(), result }
+  const keys = Object.keys(reads).sort((a, b) => reads[b].at - reads[a].at)
+  let size = 0
+  for (const [i, k] of keys.entries()) {
+    size += JSON.stringify(reads[k]).length
+    if (i >= 80 || size > 1_500_000) delete reads[k]
+  }
+  local.set(READS, JSON.stringify(reads))
+}
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+function merged(base, mine, theirs, said) {
+  if (same(mine, base)) return theirs
+  const listed = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && e.id != null)
+  if (listed(mine) && listed(base ?? []) && listed(theirs ?? [])) {
+    const was = new Map((base ?? []).map(e => [e.id, e]))
+    const now = new Set(mine.map(e => e.id))
+    const out = (theirs ?? []).filter(e => !(was.has(e.id) && !now.has(e.id)))
+    for (const e of mine) {
+      const at = out.findIndex(x => x.id === e.id)
+      if (!was.has(e.id)) at < 0 && out.push(e)
+      else if (!same(e, was.get(e.id))) at < 0 ? out.push(e) : (out[at] = merged(was.get(e.id), e, out[at], said))
+    }
+    return out
+  }
+  const plain = v => v && typeof v === 'object' && !Array.isArray(v)
+  if (plain(mine) && plain(base) && plain(theirs)) {
+    const out = { ...theirs }
+    for (const k of new Set([...Object.keys(mine), ...Object.keys(base)])) {
+      if (same(mine[k], base[k])) continue
+      // Both sides changed the same field: the one saved first stays, and the
+      // other is said, so neither goes silently (DEV-3).
+      const leaf = v => v === undefined || v === null || typeof v !== 'object'
+      if (said && leaf(mine[k]) && leaf(theirs[k]) && !same(theirs[k], base[k]) && !same(theirs[k], mine[k])) said.push({ field: k, mine: mine[k], theirs: theirs[k] })
+      else out[k] = merged(base[k], mine[k], theirs[k], said)
+    }
+    return out
+  }
+  return mine
+}
+// Both phones changed the same field: the first one saved stays, and what
+// this phone had is said, with no signal or not (DEV-3).
+// What a merge had to say, kept until the app is on screen to say it: a
+// phone that sends what it kept with no signal before the app is drawn is
+// told too (INES-3).
+const toldLater = {}
+// What it kept, as it was just before its last change: the change to the
+// data goes back, not the app's version (round 10 MARCUS-1, LENA-8).
+async function lastChange(app) {
+  const out = await (await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(() => ({}))
+  const m = (out.moments ?? []).find(m => m.then)
+  return m ? { at: m.at, then: m.then, after: m.at > (out.versionAt ?? 0) + 15000 } : { after: false }
+}
+async function takeBack(w, change) {
+  const done = await (await fetch('/api/restore', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, at: change.at }) })).json().catch(error => ({ error: error.message }))
+  if (done.error) return done.error
+  delete cache[slotOf(w.app.id)]
+  saveOffline()
+  w.ownAt = Date.now()
+  draw(w)
+  return null
+}
+// An entry taken out by hand says so, with Undo beside it (round 10 INES-8).
+function removedNote(w, names) {
+  w.node.querySelector('.removed-note')?.remove()
+  const box = el('offline-note removed-note', `<span>Took out ${names.map(n => `“${esc(n)}”`).join(', ')}.</span> <button class="wbtn" type="button">Undo</button>`, w.node)
+  w.node.querySelector('.wbar').after(box)
+  const timer = setTimeout(() => box.remove(), 20000)
+  box.querySelector('button').onclick = async () => {
+    clearTimeout(timer)
+    box.querySelector('button').disabled = true
+    const change = await lastChange(w.app)
+    const failed = change.at ? await takeBack(w, change) : 'Nothing to undo.'
+    box.innerHTML = esc(failed ?? `Brought back ${names.map(n => `“${n}”`).join(', ')}.`)
+    setTimeout(() => box.remove(), 8000)
+  }
+}
+function conflictNote(id, said) {
+  const show = v => (typeof v === 'string' ? `“${v}”` : JSON.stringify(v))
+  const text = !said.length && toldLater[id] ? toldLater[id] : said.slice(0, 3).map(c =>
+    c.twice != null ? `${show(c.twice)} was already added on the other phone, so it is in ${String(c.field)} once`
+    : c.gone != null ? `${show(c.gone)} was taken out on the other phone, so what was changed in it here was not kept`
+    : c.stayedOut != null ? `${show(c.stayedOut)} was taken out on another phone, so it stays out`
+    : c.tookOut != null ? `This version took out ${show(c.tookOut)}: Earlier versions (in ⋯) brings it back`
+    : c.notes ? `Two notes were written on ${show(String(c.field).split('/').slice(-2, -1)[0] ?? c.field)} at once: both are kept (${show(c.both)})`
+    : c.both != null ? `${show(c.both)} was added on both phones with something different: both are kept, check which is right`
+    : `${show(String(c.field))} was changed on both phones: kept ${show(c.theirs)}, saved first; ${show(c.mine)} was not kept`).join('; ')
+  const shown = widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))
+  if (!shown.length) {
+    toldLater[id] = text
+    return
+  }
+  delete toldLater[id]
+  for (const w of shown) {
+    w.node.querySelector('.conflict-note')?.remove()
+    const box = el('offline-note conflict-note', esc(`${text}.`), w.node)
+    w.node.querySelector('.wbar').after(box)
+    setTimeout(() => box.remove(), 30000)
+  }
+}
+const offlineSaid = 'Kept on this phone with no signal. It goes to everyone else when there is signal.'
+function offlineNote(id) {
+  const waiting = outbox.filter(o => o.app === id).length
+  for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node)) {
+    let box = w.node.querySelector('.signal-note')
+    if (!waiting) {
+      if (box) {
+        box.textContent = 'Back online: what was kept with no signal is sent.'
+        setTimeout(() => box.remove(), 4000)
+      }
+      continue
+    }
+    if (!box) {
+      box = el('offline-note signal-note', '', w.node)
+      w.node.querySelector('.wbar').after(box)
+    }
+    box.textContent = 'No signal: what you do here is kept on this phone, and sent when there is signal.'
+  }
+}
+const viaServer = async payload => (await fetch('/api/call', { method: 'POST', body: JSON.stringify(payload) })).json()
+let flushing = null
+async function flush() {
+  if (flushing) return flushing
+  flushing = (async () => {
+    const touched = new Set()
+    while (outbox.length && navigator.onLine !== false) {
+      const o = outbox[0]
+      try {
+        // The server puts it on top of what the others kept meanwhile, from
+        // what this phone saw when it kept it (K).
+        const out = await viaServer({ app: o.app, me: o.me, self: o.self, name: 'app_keep', arguments: { key: o.key, value: o.value }, base: o.base ?? null })
+        const sc = out.structuredContent ?? {}
+        if (sc.said?.length) conflictNote(o.app, sc.said)
+        const value = sc.merged ? sc.value : o.value
+        if (out.isError) {
+          touched.add(o.app)
+          delete (cache[`${o.app}|${o.me}`] ??= {})[o.key]
+        } else (cache[`${o.app}|${o.me}`] ??= {})[o.key] = value
+        if (!same(value, o.value)) touched.add(o.app)
+      } catch {
+        break
+      }
+      outbox.shift()
+      saveOffline()
+      offlineNote(o.app)
+    }
+    // What the others kept meanwhile is drawn, now it's here.
+    for (const w of widgets) if (touched.has(w.app.id) && !w.folded && !w.stub && !w.removed) draw(w)
+  })().finally(() => (flushing = null))
+  return flushing
+}
+window.addEventListener('online', () => {
+  // What this phone showed, with what it did with no signal: what differs
+  // from it once caught up is what the others did.
+  const shownBefore = {}
+  for (const w of widgets) {
+    const slot = slotOf(w.app.id)
+    shownBefore[slot] = { ...(cache[slot] ?? {}) }
+    for (const o of outbox) if (`${o.app}|${o.me}` === slot) shownBefore[slot][o.key] = o.value
+  }
+  flush().then(() => {
+    for (const w of widgets) if (w.node?.querySelector('.signal-note')) offlineNote(w.app.id)
+    catchUp(shownBefore)
+  })
+})
+// Back from no signal (or a watch that dropped): every shared app open here
+// is read again, drawn from what the others kept meanwhile, and what changed
+// is said (MARCUS-2, MAYA-6).
+async function catchUp(shownBefore = {}) {
+  watching.source?.close()
+  watching = { key: '', source: null }
+  syncWatch()
+  for (const w of widgets.filter(x => !x.folded && !x.stub && !x.removed && x.node && (shared[x.app.id] || x.staleShown))) {
+    const slot = slotOf(w.app.id)
+    const before = shownBefore[slot] ?? { ...(cache[slot] ?? {}) }
+    // A newer version made meanwhile is drawn first, and said (round 10 TOM-1).
+    const current = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/now`, { method: 'POST', body: '{}' })).json().catch(() => null)
+    if (current?.app && current.app.version !== w.app.version) await newVersion({ app: w.app.id, version: current.app.version, change: '' })
+    const out = await viaServer({ app: w.app.id, me: ownerOf(w.app.id), self: me, name: 'app_kept', arguments: { all: true } }).catch(() => null)
+    if (!out || out.isError) continue
+    const now = out.structuredContent?.values ?? {}
+    const said = whatChanged(before, now)
+    draw(w)
+    w.node.querySelector('.stale-signal')?.remove()
+    delete w.staleShown
+    if (said) {
+      w.node.querySelector('.caught-note')?.remove()
+      const box = el('offline-note caught-note', esc(`Caught up: ${said} on another phone while this one was away.`), w.node)
+      w.node.querySelector('.wbar').after(box)
+      setTimeout(() => box.remove(), 30000)
+    }
+  }
+}
+// What changed between two readings of what an app kept, in a few words:
+// entries taken out, added or changed, by their names ("bananas taken out").
+function whatChanged(before, now) {
+  const nameOf = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at)$/i.test(k) && typeof v === 'string' && v.trim() && !/^\d{4}-\d\d-\d\d/.test(v))?.[1] ?? '') : String(e ?? '')).slice(0, 30)
+  const lists = (v, depth = 0) => (Array.isArray(v) ? [v] : v && typeof v === 'object' && depth < 3 ? Object.values(v).flatMap(x => lists(x, depth + 1)) : [])
+  const out = []
+  for (const k of new Set([...Object.keys(before), ...Object.keys(now)])) {
+    if (k.startsWith('view:') || same(before[k], now[k])) continue
+    const a = lists(before[k]).flat(), b = lists(now[k]).flat()
+    const key = e => (e && typeof e === 'object' && e.id != null ? `#${e.id}` : JSON.stringify(e))
+    const was = new Map(a.map(e => [key(e), e])), next = new Map(b.map(e => [key(e), e]))
+    const gone = a.filter(e => !next.has(key(e))).map(nameOf).filter(Boolean)
+    const added = b.filter(e => !was.has(key(e))).map(nameOf).filter(Boolean)
+    const edited = b.filter(e => was.has(key(e)) && !same(was.get(key(e)), e)).map(nameOf).filter(Boolean)
+    // A list without ids: a changed entry is one gone and one added with the same name.
+    const both = gone.filter(n => added.includes(n))
+    const put = (names, words) => names.length && out.push(`${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''} ${words}`)
+    put(gone.filter(n => !both.includes(n)), 'taken out')
+    put(added.filter(n => !both.includes(n)), 'added')
+    put([...edited, ...both], 'changed')
+    if (!a.length && !b.length) out.push(`${k} changed`)
+  }
+  return out.slice(0, 3).join('; ')
+}
+function staleNote(w, at) {
+  if (!w.node || w.node.querySelector('.stale-signal')) return
+  w.staleShown = true
+  const when = at ? new Date(at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
+  const box = el('offline-note stale-signal', esc(`No signal: this is what this phone last had${when ? `, from ${when}` : ''}. It catches up when there is signal.`), w.node)
+  w.node.querySelector('.wbar')?.after(box)
+}
+// A doubled number: said as a warning, with a button to keep each one,
+// which takes the others with that number out (round 9, the clash note).
+function clashNote(id, clashes) {
+  for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))) {
+    w.node.querySelector('.clash-note')?.remove()
+    const box = el('offline-note clash-note', `<span class="clash-text">${esc(`${clashes.map(c => c.text).join('; ')}.`)}</span>`, w.node)
+    const mayChoose = !limited(id)
+    for (const c of mayChoose ? clashes.filter(c => c.choices?.length >= 2).slice(0, 2) : []) {
+      for (const choice of c.choices) {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.textContent = `Keep ${choice.label}`
+        b.onclick = async () => {
+          const call = (name, args, extra = {}) => viaServer({ app: id, me: ownerOf(id), self: me, name, arguments: args, ...extra })
+          const now = (await call('app_kept', { key: c.key }).catch(() => null))?.structuredContent?.value
+          if (!Array.isArray(now)) return
+          const others = new Set(c.choices.filter(x => x.id !== choice.id).map(x => x.id))
+          const out = await call('app_keep', { key: c.key, value: now.filter(e => !others.has(String(e?.id))) }, { base: now }).catch(error => ({ isError: true, content: [{ text: error.message }] }))
+          if (out?.isError) {
+            box.querySelector('.clash-text').textContent = out.content?.[0]?.text ?? 'Not kept.'
+            return
+          }
+          box.remove()
+          draw(w)
+        }
+        box.append(b)
+      }
+    }
+    w.node.querySelector('.wbar').after(box)
+  }
+}
+setInterval(() => outbox.length && flush(), 15000)
+// What an app keeps and reads, through the server, or here with no signal.
+// Keeps of one value go one after the other, each with what the one before
+// it left as its base, and only the newest of those waiting is sent: keys
+// typed fast never clash with themselves (PRIYA-3, Q).
+const lanes = {}
+function keptCall(w, params) {
+  const key = String(params.arguments?.key ?? '')
+  if (params.name !== 'app_keep' || key.startsWith('view:')) return keptCallNow(w, params)
+  const lane = (lanes[`${slotOf(w.app.id)}|${key}`] ??= { chain: Promise.resolve(), seq: 0 })
+  const mine = ++lane.seq
+  const run = lane.chain.then(() => (mine === lane.seq ? keptCallNow(w, params) : { content: [{ type: 'text', text: `Kept as ${key}.` }], structuredContent: { key, kept: true, newer: true } }))
+  lane.chain = run.catch(() => {})
+  return run
+}
+async function keptCallNow(w, params) {
+  const a = params.arguments ?? {}
+  const slot = slotOf(w.app.id)
+  const payload = { app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }
+  try {
+    if (navigator.onLine === false) throw new TypeError('offline')
+    if (outbox.length) await flush()
+    // A keep says what this phone saw of it, so the server keeps what the
+    // others kept since (INES-1, MAYA-2).
+    if (params.name === 'app_keep' && cache[slot] && String(a.key) in cache[slot] && !String(a.key).startsWith('view:')) payload.base = cache[slot][String(a.key)]
+    const result = await viaServer(payload)
+    const sc = result.structuredContent ?? {}
+    if (params.name === 'app_keep' && sc.removed?.length) removedNote(w, sc.removed)
+    if (params.name === 'app_keep' && sc.merged) {
+      if (sc.said?.length) conflictNote(w.app.id, sc.said)
+      // What it keeps now has the others' in it: drawn again from there.
+      queueRedraw(w.app.id)
+    }
+    // A change the link may not make is put back on screen at once, by
+    // drawing the app again from what is kept (MARCUS-1, TOM-6).
+    if (params.name === 'app_keep' && result.isError && !/no signal/i.test(textOf(result))) refusedRedraw(w, textOf(result))
+    if (!result.isError) {
+      const mine = (cache[slot] ??= {})
+      if (params.name === 'app_keep') mine[String(a.key)] = sc.merged ? sc.value : a.value ?? null
+      else if (a.all) {
+        cache[slot] = { ...result.structuredContent?.values }
+        ;(cache['-at'] ??= {})[slot] = Date.now()
+        // Two entries with one number from two phones, told to every phone
+        // that opens it until one is fixed (LENA-2).
+        if (result.structuredContent?.clashes?.length) clashNote(w.app.id, result.structuredContent.clashes)
+        else w.node?.querySelector('.clash-note')?.remove()
+        delete w.staleShown
+        w.node?.querySelector('.stale-signal')?.remove()
+      } else mine[String(a.key)] = result.structuredContent?.value ?? null
+      saveOffline()
+    }
+    return result
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    const values = { ...cache[slot] }
+    for (const o of outbox) if (`${o.app}|${o.me}` === slot) values[o.key] = o.value
+    if (params.name === 'app_kept') {
+      // Opened with no signal: it says how old what it shows is, and catches
+      // up once there is signal (MARCUS-2).
+      if (a.all) staleNote(w, cache['-at']?.[slot])
+      return { content: [{ type: 'text', text: 'What this app kept, as last seen on this phone (no signal).' }], structuredContent: a.all ? { values } : { key: a.key, value: values[a.key] ?? null } }
+    }
+    const key = String(a.key)
+    const waiting = outbox.find(o => o.app === w.app.id && o.me === payload.me && o.key === key)
+    if (waiting) waiting.value = a.value ?? null
+    else outbox.push({ app: w.app.id, me: payload.me, self: me, key, value: a.value ?? null, base: values[key] ?? null, at: Date.now() })
+    saveOffline()
+    offlineNote(w.app.id)
+    return { content: [{ type: 'text', text: offlineSaid }], structuredContent: { key, kept: true, queued: true } }
+  }
+}
+
+async function draw(w) {
+  if (!w.folded) inUse(w)
+  const frame = w.node.querySelector('.frame')
+  frame.innerHTML = ''
+  if (toldLater[w.app.id] && !w.folded) setTimeout(() => toldLater[w.app.id] && conflictNote(w.app.id, []), 0)
+  // Settles once the app has said what it shows (or never, for an app that can't).
+  w.seen = new Promise(resolve => (w.saw = resolve))
+  const iframe = document.createElement('iframe')
+  iframe.setAttribute('sandbox', 'allow-scripts')
+  iframe.title = w.app.name
+  w.frameName = iframe.name = `app-${++frames}`
+  // It froze the page last time with what it kept: this time it opens without.
+  const fresh = froze[w.app.id]?.version === w.app.version
+  w.fresh = fresh
+  frame.append(iframe)
+  const bridge = new AppBridge(
+    null,
+    { name: 'instant-apps', version: '0.1.0' },
+    { serverTools: {}, openLinks: {}, message: { text: {} }, updateModelContext: { text: {} } },
+    { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
+  )
+  w.bridge = bridge
+  bridge.oncalltool = async params => {
+    if (params.name === 'app_regex') return regexApart(params.arguments)
+    if (params.name === 'app_download') return download(params.arguments ?? {})
+    if (params.name === 'app_print') {
+      clearTimeout(w.printWait)
+      w.printWait = null
+      printing(w, params.arguments?.html)
+      return { content: [{ type: 'text', text: 'printed' }], structuredContent: {} }
+    }
+    if (isPrivate(w.app.id) && (params.name === 'app_keep' || params.name === 'app_kept')) {
+      const mine = (privately[w.app.id] ??= {})
+      const a = params.arguments ?? {}
+      if (params.name === 'app_keep') {
+        mine[String(a.key)] = a.value ?? null
+        saveLocal()
+        return { content: [{ type: 'text', text: `Kept as ${a.key}, in this browser only.` }], structuredContent: { key: a.key, kept: true } }
+      }
+      return { content: [{ type: 'text', text: 'What this app kept.' }], structuredContent: a.all ? { values: { ...mine } } : { key: a.key, value: mine[String(a.key)] ?? null } }
+    }
+    if (params.name === 'app_busy') {
+      w.typedAt = Date.now()
+      return { content: [{ type: 'text', text: 'noted' }], structuredContent: {} }
+    }
+    if (params.name === 'app_froze') {
+      frozen(w, Number(params.arguments?.ms) || 0)
+      return { content: [{ type: 'text', text: 'noted' }], structuredContent: {} }
+    }
+    // What it keeps meanwhile goes on top of what it kept: opening without
+    // it never writes over it (LENA-1, INES-1).
+    if (fresh && froze[w.app.id] && params.name === 'app_keep') {
+      const a = params.arguments ?? {}
+      const now = (await keptCall(w, { name: 'app_kept', arguments: { key: a.key } }))?.structuredContent?.value ?? null
+      const blankOf = v => (Array.isArray(v) ? [] : v && typeof v === 'object' ? {} : null)
+      return keptCall(w, { ...params, arguments: { ...a, value: now == null ? a.value : merged(blankOf(a.value), a.value, now) } })
+    }
+    if (fresh && froze[w.app.id] && params.name === 'app_kept') {
+      w.node.querySelector('.frozebox')?.remove()
+      const box = document.createElement('div')
+      box.className = 'frozebox'
+      const how = froze[w.app.id].stopped ? 'stopped the page last time, while it was working' : `froze the page last time (${Math.round(froze[w.app.id].ms / 1000)} s)`
+      box.innerHTML = `<span><b>${esc(w.app.name)}</b> ${how}, so it opened without what it kept. Nothing is lost: what you add now goes on top of it.</span><button class="btn keep" type="button">Open with what it kept</button>${limited(w.app.id) || guest ? '' : '<button class="btn fix" type="button">Fix it</button>'}`
+      box.querySelector('.keep').onclick = () => { delete froze[w.app.id]; local.set('instant-apps-froze', JSON.stringify(froze)); box.remove(); draw(w) }
+      box.querySelector('.fix')?.addEventListener('click', () => w.change?.('Fix this app: it stopped the whole page while it was working, most likely a loop that never ends or a pattern that runs without end on what was typed. Make every loop end, and run typed patterns with Kit.regex.', 'Fixing it'))
+      w.node.querySelector('.wbar').after(box)
+      return { content: [{ type: 'text', text: 'nothing kept' }], structuredContent: params.arguments?.all ? { values: {} } : { value: null } }
+    }
+    if (params.name === 'app_keep' || params.name === 'app_kept') return keptCall(w, params)
+    const readKey = `${w.app.id}|${params.name}|${JSON.stringify(params.arguments ?? {})}`
+    let answer
+    try {
+      answer = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }) })).json()
+    } catch (error) {
+      // With no signal, what the app read last time (a recipe, a page) is
+      // read again from here, so it opens as it was (MAYA-1, round 7).
+      if (reads[readKey]) return reads[readKey].result
+      throw error
+    }
+    if (answer.connect && !w.node.querySelector('.connect-note')) connectCard(w.node, answer.connect, null, w.node.querySelector('.wbar')?.nextSibling)
+    if (!answer.acted && !answer.isError) keepRead(readKey, answer)
+    const { acted, ...result } = answer
+    const said = result.content?.find(c => c.type === 'text')?.text ?? ''
+    if (!result.isError && params.name === w.app.tool) {
+      lastApp = { id: w.app.id, args: params.arguments }
+      w.shows = said
+    }
+    w.touched = Date.now()
+    if (acted) {
+      w.did.push(said)
+      note(w, said)
+    }
+    return result
+  }
+  // The app's height; the conversation follows a growing app when it was at its end.
+  bridge.onsizechange = ({ height }) => {
+    if (!height || w.folded) return
+    const following = log.scrollHeight - log.scrollTop - log.clientHeight < 120
+    // A widget stays a widget: past this height the app scrolls inside it.
+    w.height = Math.ceil(height)
+    iframe.style.height = `${Math.min(680, w.height)}px`
+    if (following) scroll()
+  }
+  bridge.onmessage = async params => {
+    const text = params.content.map(c => c.text).join(' ')
+    // An app that hit an error asks to be fixed: that is a change of it.
+    if (/^Fix this app:/.test(text) && w.change) w.change(text, 'Fixing it')
+    else ask(text)
+    return {}
+  }
+  bridge.onupdatemodelcontext = async params => {
+    w.told = isPrivate(w.app.id) ? 'On screen now: (private)' : (params.content ?? []).filter(c => c.type === 'text').map(c => c.text).join(' ')
+    if (/On screen now:/.test(w.told)) w.saw?.()
+    return {}
+  }
+  bridge.onopenlink = async ({ url }) => { window.open(url, '_blank', 'noopener'); return {} }
+  bridge.oninitialized = async () => {
+    await bridge.sendToolInput({ arguments: w.payload.args ?? {} })
+    // Drawn again (opened again, changed, undone), it gets what it was last
+    // asked: what the person typed in it since is kept and newer (Kit.replayed).
+    const again = w.drawn || REPLAY.has(w.payload.how)
+    const data = w.payload.result?.structuredContent
+    const marks = { ...(again ? { again: true } : {}), ...(shared[w.app.id] ? { shared: true } : {}), ...(limited(w.app.id) ? { role: roleOf(w.app.id) } : {}), ...(isPrivate(w.app.id) ? { private: true } : {}) }
+    await bridge.sendToolResult(data && Object.keys(marks).length ? { ...w.payload.result, structuredContent: { ...data, ...marks } } : w.payload.result)
+    w.drawn = true
+    // An entry asked for is sent once: drawn again (a change, an undo), the app has it kept.
+    w.payload = withoutEntries(w.payload)
+  }
+  await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow))
+  iframe.srcdoc = w.payload.html
+}
+
+// The line above an app says what was done (opened, filled with these
+// values), never what was meant to come of it: whether an entry was added
+// is for the app to show and the answer below to read from it.
+const short = x => (x && typeof x === 'object' ? Object.entries(x).filter(([k]) => k !== 'id').map(([, y]) => (y && typeof y === 'object' ? JSON.stringify(y) : String(y))).join(' ') : String(x ?? ''))
+function sentOf(args) {
+  const values = args?.values
+  if (!values || typeof values !== 'object') return ''
+  const parts = []
+  for (const [k, x] of Object.entries(values)) {
+    if (k === 'add') parts.push(...(Array.isArray(x) ? x : [x]).map(e => `add ${short(e)}`))
+    else if (k === 'edit') parts.push(...(Array.isArray(x) ? x : [x]).map(e => `change ${short(e?.find)} to ${short(e?.set)}`))
+    else parts.push(`${k} ${short(x)}`)
+  }
+  const text = parts.join(', ')
+  return text.length > 90 ? `${text.slice(0, 89)}…` : text
+}
+const sent = p => (sentOf(p.args) ? ` · sent: ${sentOf(p.args)}` : '')
+const LINE = {
+  made: why => `Made a new app${why ? ` · ${why}` : ''}`,
+  recalled: p => `Opened ${p.app.name} from your apps${sent(p)}`,
+  updated: p => `Filled ${p.app.name} again${sent(p)}`,
+  again: p => `Opened ${p.app.name} again${sent(p)}`,
+  opened: p => `Opened ${p.app.name} from your apps`,
+  linked: p => `Opened ${p.app.name}, shared with you by its link`,
+  changed: p => `Changed ${p.app.name}: now version ${p.app.version}`,
+  undone: p => `Back to version ${p.app.version} of ${p.app.name}`,
+}
+const CHIP = { made: ['made', 'New app'], recalled: ['recalled', 'From your apps'], updated: ['updated', 'Updated'] }
+
+// A widget of an app; `at` is a folded answer from before that it opens in place of.
+function widget(body, payload, { at = null, request = '' } = {}) {
+  const { app, how } = payload
+  if (!at) el('toolline', `${miniTile(app.kind)}<span>${esc(how === 'made' ? LINE.made(payload.why) : (LINE[how] ?? LINE.opened)(payload))}</span>`, body)
+  const node = el('widget fresh', `
+    <div class="wbar">${miniTile(app.kind)}<button class="wname" type="button">${esc(app.name)}</button><span class="slot"></span><span class="fold-note">· an earlier answer</span><button class="wbtn reopen" type="button">Show it again</button><span class="spacer"></span><span class="acts"></span></div>
+    <form class="changer" hidden><input placeholder="What should change? For example: put the best rated first" /><button class="btn">Change</button></form>
+    <div class="frame"></div>`, body)
+  // An earlier widget of this app folds to its bar: the new one is its state now.
+  for (const old of widgets) if (old.app.id === app.id && !old.folded) fold(old, true)
+  if (at) at.replaceWith(node)
+  const w = { node, app, payload, how, shows: textOf(payload.result), did: [], told: '', folded: false, shownId: payload.shown, newer: Boolean(payload.newer), request, touched: Date.now() }
+  widgets.push(w)
+  node.querySelector('.wname').onclick = () => w.folded && fold(w, false)
+  node.querySelector('.reopen').onclick = () => fold(w, false)
+  draw(w)
+  bar(w)
+  lastApp = { id: app.id, args: payload.args }
+  return w
+}
+
+// An app shown earlier in this browser's conversation, folded to its bar
+// until it is opened again with what it showed then.
+function stub(body, shown, request) {
+  const node = el('widget folded', `<div class="wbar">${miniTile(shown.kind)}<button class="wname" type="button">${esc(shown.name)}</button><span class="fold-note">· from before</span><button class="wbtn reopen" type="button">Show it again</button><span class="spacer"></span></div>`, body)
+  const w = { node, app: { id: shown.app, name: shown.name, kind: shown.kind, version: 1 }, shows: shown.shows ?? '', did: [], told: '', folded: true, stub: true, shownId: shown.id, request }
+  widgets.push(w)
+  const open = async () => {
+    const button = node.querySelector('.reopen')
+    if (!button) return
+    button.textContent = 'Opening…'
+    const res = await fetch(seenHere(`/api/shown/${encodeURIComponent(shown.id)}?talk=${talk}`))
+    const ev = await res.json().catch(() => ({}))
+    if (!res.ok || ev.removed || w.removed) {
+      button.outerHTML = `<span class="gone">${ev.removed || w.removed ? 'This app was removed' : 'It can’t be opened again'}</span>`
+      return
+    }
+    widgets.splice(widgets.indexOf(w), 1)
+    widget(body, ev, { at: node, request })
+  }
+  node.querySelector('.reopen').onclick = open
+  node.querySelector('.wname').onclick = open
+  return open
+}
+
+// The words under an app were said about the version it showed then: once
+// the app changes in place, they say so.
+function stale(w) {
+  for (const node of w.replies ?? []) {
+    if (node.classList.contains('stale')) continue
+    node.classList.add('stale')
+    node.insertAdjacentHTML('beforeend', `<span class="stale-note"> (said about version ${w.saidAbout}; the app has changed since)</span>`)
+  }
+}
+
+function fold(w, folded) {
+  w.folded = folded
+  w.node.classList.toggle('folded', folded)
+}
+
+// The widget's bar: how it came, and Save, Change and Undo.
+// A file handed to the person: what an app keeps, or what it makes to take
+// elsewhere (Kit.download). The frame can't download; the page can.
+function download({ name = 'data.txt', text = '', type = 'text/plain' } = {}) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([String(text)], { type: `${String(type).split(';')[0] || 'text/plain'};charset=utf-8` }))
+  a.download = String(name).replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80) || 'data.txt'
+  document.body.append(a)
+  a.click()
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove() }, 1000)
+  return { content: [{ type: 'text', text: `Downloaded ${a.download}.` }], structuredContent: { downloaded: a.download } }
+}
+// What an app keeps as one table: each list of records a row per record,
+// with where it is kept (a month, a key) in the first column.
+function rowsOf(value, path = []) {
+  const at = path.length ? { kept: path.join(' / ') } : {}
+  const flat = (o, pre = '') => Object.fromEntries(Object.entries(o).flatMap(([k, v]) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.entries(flat(v, `${pre}${k}.`)) : [[`${pre}${k}`, Array.isArray(v) ? v.join('; ') : v]])))
+  if (Array.isArray(value)) return value.map(v => (v && typeof v === 'object' && !Array.isArray(v) ? { ...at, ...flat(v) } : { ...at, value: v }))
+  if (value && typeof value === 'object') return Object.entries(value).flatMap(([k, v]) => rowsOf(v, [...path, k]))
+  return [{ ...at, value }]
+}
+function csvOf(kept) {
+  const rows = rowsOf(kept)
+  const columns = [...new Set(rows.flatMap(r => Object.keys(r)))]
+  const cell = v => {
+    const text = v == null ? '' : String(v)
+    return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+  return [columns.join(','), ...rows.map(r => columns.map(c => cell(r[c])).join(','))].join('\n')
+}
+// What was found, as a sheet: one row per option with its facts, its page,
+// the sources' dates, and the notes and no's on it with who wrote them (PRIYA-2).
+function foundCsv(args, kept) {
+  const notes = Object.entries(kept ?? {}).filter(([k, v]) => k.startsWith('notes ') && Array.isArray(v)).flatMap(([, v]) => v)
+  const docs = args.documents ?? []
+  const facts = [...new Set(args.items.flatMap(i => Object.keys(i.facts ?? {})))]
+  const cell = v => {
+    const text = v == null ? '' : String(v)
+    return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+  const columns = ['option', ...facts, 'link', 'sources', 'source dates', 'verdict', 'notes', 'no from']
+  const rows = args.items.map(item => {
+    const cited = [...new Set((item.says ?? []).map(x => docs[x.doc - 1]).filter(Boolean))]
+    const on = notes.filter(n => n.on === item.name)
+    return [
+      item.name,
+      ...facts.map(f => item.facts?.[f]),
+      item.url ?? '',
+      cited.map(d => d.url || d.title).join(' '),
+      cited.map(d => `${d.source || d.title}: ${d.date || 'undated'}`).join('; '),
+      item.verdict ?? '',
+      on.filter(n => !n.no).map(n => `${n.text}${n.by ? ` (${n.by})` : ''}`).join('; '),
+      on.filter(n => n.no).map(n => n.by || 'you').join(', '),
+    ]
+  })
+  return [columns.map(cell).join(','), ...rows.map(r => r.map(cell).join(','))].join('\n')
+}
+async function keptOf(app) {
+  if (isPrivate(app.id)) return { ...(privately[app.id] ?? {}) }
+  const out = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), name: 'app_kept', arguments: { all: true } }) })).json()
+  return out.structuredContent?.values ?? {}
+}
+const slug = name => String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'app'
+
+function bar(w) {
+  const { app } = w
+  const acts = w.node.querySelector('.acts')
+  if (w.removed) {
+    w.node.querySelector('.slot').innerHTML = '<span class="chip">Removed</span>'
+    acts.innerHTML = ''
+    return
+  }
+  const changed = w.how === 'changed' || w.how === 'undone'
+  const [cls, label] = w.how === 'saved' ? ['saved', 'Saved'] : changed ? ['updated', `Version ${app.version}`] : CHIP[w.how] ?? (app.saved ? ['saved', 'Saved'] : [])
+  const role = roleOf(app.id)
+  const mark = role === 'helper' ? 'Shared · you add and tick' : role === 'viewer' ? 'Shared · you look' : isPrivate(app.id) ? 'Private' : ''
+  // The note that says it is private goes when privacy goes (DEV-7).
+  if (!isPrivate(app.id)) w.node.querySelectorAll('.private-note').forEach(n => n.remove())
+  w.node.querySelector('.slot').innerHTML = `${label ? `<span class="chip ${cls}">${label}</span>` : ''}${mark ? `<span class="chip mark" title="${isPrivate(app.id) ? 'Claude reads nothing of this app, and what it keeps stays in this browser' : 'The person who shared it can change everything'}">${mark}</span>` : ''}`
+  // An answer of what was found is kept as its own app, as it is now; any
+  // other app is saved, and changes with it.
+  const answer = app.tool === 'findings' && !app.id.startsWith('answer-')
+  // A kept answer says so, after a reload too (PRIYA-3).
+  const keptAs = w.keptAs ?? (app.id.startsWith('answer-') && !guest && !limited(app.id) ? app.name : null)
+  const keep = keptAs
+    ? `<span class="chip saved" title="${esc(keptAs)}">Kept</span>`
+    : answer
+      ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
+      : app.saved || guest || limited(app.id) ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
+  // What was found is shared as an answer kept as it is, with its notes (PRIYA-1).
+  const share = guest || limited(app.id) || isPrivate(app.id) ? '' : answer && !w.keptAs ? `<button class="wbtn share" type="button" title="Keep this answer as it is, with your notes, and get links to it">${ICON.share}Keep and share</button>` : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] && givenOut[app.id] ? 'Shared' : 'Share'}</button>`
+  const more = `<button class="wbtn more" type="button" title="Download what it keeps, or make it private" aria-label="More">${ICON.more}</button>`
+  const changes = guest || limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.saved || app.version > 1 ? `<button class="wbtn undo" type="button" title="Undo the last change">${ICON.undo}Undo</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
+  acts.innerHTML = `${keep}${share}${changes}${more}`
+  const changer = w.node.querySelector('.changer')
+  acts.querySelector('.keep')?.addEventListener('click', async () => {
+    const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    const asked = String(w.payload?.args?.query || w.request || app.name).replace(/\s+/g, ' ').trim()
+    const name = `${asked.length > 44 ? `${asked.slice(0, 43)}…` : asked} · ${when}`
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/keep-answer`, { method: 'POST', body: JSON.stringify({ talk, shown: w.shownId, name, request: asked, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
+    if (out.error) {
+      acts.querySelector('.keep').outerHTML = `<span class="error">${esc(out.error)}</span>`
+      return
+    }
+    w.keptAs = out.app.name
+    bar(w)
+    await rail(out.app.id)
+  })
+  acts.querySelector('.save')?.addEventListener('click', async () => {
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/save`, { method: 'POST', body: '{}' })).json()
+    w.app = out.app
+    w.how = 'saved'
+    bar(w)
+    await rail(app.id)
+  })
+  acts.querySelector('.share')?.addEventListener('click', async () => {
+    let box = w.node.querySelector('.sharebox')
+    if (box) return box.remove()
+    // An answer of what was found is kept as its own app first, with the
+    // notes on it, and the links are to that one (PRIYA-1, PRIYA-2).
+    if (answer && !w.keptAs) {
+      const when = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      const asked = String(w.payload?.args?.query || w.request || app.name).replace(/\s+/g, ' ').trim()
+      const name = `${asked.length > 44 ? `${asked.slice(0, 43)}…` : asked} · ${when}`
+      const out = await (await fetch(`/api/apps/${encodeURIComponent(app.id)}/keep-answer`, { method: 'POST', body: JSON.stringify({ talk, shown: w.shownId, name, request: asked, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
+      if (out.error) return acts.querySelector('.share').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error }))
+      w.app = out.app
+      w.keptAs = out.app.name
+      bar(w)
+      await rail(out.app.id)
+      return w.node.querySelector('.wbar .share')?.click()
+    }
+    // Made once, the same links after; asked each time for the people's links.
+    const first = !shared[app.id]
+    const out = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id) }) })).json().catch(error => ({ error: error.message }))
+    if (!out.token) return acts.querySelector('.share').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not share it' }))
+    shared[app.id] = out.token
+    links[app.id] = { helper: out.helper, viewer: out.viewer }
+    local.set('instant-apps-shared', JSON.stringify(shared))
+    local.set('instant-apps-links', JSON.stringify(links))
+    if (first) {
+      bar(w)
+      draw(w)
+    }
+    let people = out.people ?? []
+    box = document.createElement('div')
+    box.className = 'sharebox'
+    const LINK = [
+      ['full', 'Your own other phone', 'opens your whole chat and every app, as you: never send it to anyone else'],
+      ['helper', 'Can add and tick', 'they add, tick and fill in what is empty; what anyone else put there they can’t change, untick or take out'],
+      ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
+      ['copy', 'A copy, empty', 'the app without anything it keeps: what they type stays on their phone, and nobody else sees it; it carries nothing of yours, so it goes on working after Stop sharing'],
+    ]
+    // The parts a person's link can be for: a field of a kept list with a
+    // few values (crew A or B, a month) (MARCUS-4).
+    const kept = (await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, name: 'app_kept', arguments: { all: true } }) })).json().catch(() => ({}))).structuredContent?.values ?? {}
+    // Lists inside an object too (a month with its expenses) (round 10 INES-1).
+    const listsIn = (v, depth = 0) => (Array.isArray(v) ? [v] : v && typeof v === 'object' && depth < 2 ? Object.values(v).flatMap(x => listsIn(x, depth + 1)) : [])
+    const lists = Object.entries(kept).filter(([k]) => !/^(view:|-|seed:|made:|link:)/.test(k)).flatMap(([, v]) => listsIn(v)).filter(l => l.some(e => e && typeof e === 'object' && !Array.isArray(e)))
+    const parts = []
+    for (const list of lists) {
+      if (!Array.isArray(list) || !list.some(e => e && typeof e === 'object')) continue
+      const fields = new Map()
+      // A part is a group of people's entries (a crew, a person, a team),
+      // never a tick, a date, a time or a step ("Only booked true", "Only
+      // transport Stay") (round 9 TOM-10).
+      const NOT_PART = /^(id|by|.*_by|date|day|night|time|when|at|done|booked|checked|ticked|paid|status|transport|note|notes|amount|price|cost|total|code|demo|party)$/i
+      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!NOT_PART.test(k) && typeof v === 'string' && !/^\d/.test(v) && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
+      for (const [field, values] of fields) if (values.size >= 2 && values.size <= 8 && values.size < list.length) for (const value of values) if (!parts.some(p => p.field === field && p.value === value)) parts.push({ field, value })
+    }
+    // Fields of the kept lists a person's link could be kept from, such as prices (MARCUS-1).
+    // Only what one would keep from someone: money and private words, not every field (round 9 TOM-10).
+    const PRIVATE = /price|cost|amount|total|fee|rate|pay|salary|budget|margin|profit|note|phone|email|address|token|secret|code/i
+    const hideable = [...new Set(lists.flatMap(list => list.flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k) && PRIVATE.test(k)).slice(0, 12)
+    const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
+    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : p.marks ? 'can only mark done' : 'can add and tick'}${p.only ? (p.only.field === '*' ? ' · only what is shared with them' : ` · only ${esc(p.only.field)} ${esc(p.only.value)}`) : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
+    box.innerHTML = `<span class="sharehead">Links to <b>${esc(app.name)}</b>. Apart from the first, each opens only this app, never your other apps or the chat. Anyone with a link can do what it says, and sees what the app holds now, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add or tick carries their name, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="marker">Can only mark done</option><option value="viewer">Can only look</option></select>${lists.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (marked shared, or with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    const wirePeople = () => {
+      for (const button of box.querySelectorAll('button[data-person]')) {
+        button.onclick = async () => {
+          button.previousElementSibling.select()
+          await navigator.clipboard?.writeText(button.previousElementSibling.value).catch(() => {})
+          button.textContent = 'Copied'
+          giveOut(w, app.id)
+        }
+      }
+      for (const button of box.querySelectorAll('button[data-stop]')) {
+        button.onclick = async () => {
+          const done = await (await fetch('/api/unshare', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, person: button.dataset.stop }) })).json().catch(error => ({ error: error.message }))
+          if (!done.stopped) return (button.textContent = done.error ?? 'Could not stop it')
+          people = done.people
+          box.querySelector('.people').innerHTML = peopleRows()
+          wirePeople()
+        }
+      }
+    }
+    box.querySelector('.addperson').onsubmit = async e => {
+      e.preventDefault()
+      const form = e.currentTarget
+      const name = form.elements.name.value.trim()
+      if (!name) return form.elements.name.focus()
+      // Only what names them: the entries shared with them or added by them,
+      // and nothing else of the owner's reaches their phone (INES-4).
+      const only = form.elements.only?.value === 'named' ? { field: '*', value: name } : form.elements.only?.value ? parts[Number(form.elements.only.value)] : null
+      const made = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), person: { name, role: form.elements.role.value, only, hide: [...form.querySelectorAll('input[name=hide]:checked')].map(i => i.value) } }) })).json().catch(error => ({ error: error.message }))
+      if (!made.people) return (form.querySelector('button').textContent = made.error ?? 'Could not make it')
+      people = made.people
+      form.reset()
+      giveOut(w, app.id)
+      // The same person asked for again: their link is the one above (round 10 INES-10).
+      if (made.same) form.querySelector('button[type=submit]').textContent = `${name} has this link already, above`
+      box.querySelector('.people').innerHTML = peopleRows()
+      wirePeople()
+    }
+    wirePeople()
+    box.querySelector('.unshare').onclick = async () => {
+      const out = await (await fetch('/api/unshare', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(error => ({ error: error.message }))
+      if (!out.stopped) return box.querySelector('.stop span').replaceWith(Object.assign(document.createElement('span'), { className: 'error', textContent: out.error ?? 'Could not stop it' }))
+      delete shared[app.id]
+      delete links[app.id]
+      delete roles[app.id]
+      local.set('instant-apps-shared', JSON.stringify(shared))
+      local.set('instant-apps-links', JSON.stringify(links))
+      local.set('instant-apps-roles', JSON.stringify(roles))
+      box.remove()
+      bar(w)
+      draw(w)
+    }
+    for (const button of box.querySelectorAll('button[data-as]')) {
+      button.onclick = async () => {
+        button.previousElementSibling.select()
+        await navigator.clipboard?.writeText(shareUrl(app.id, button.dataset.as)).catch(() => {})
+        button.textContent = 'Copied'
+        if (button.dataset.as !== 'copy') giveOut(w, app.id)
+      }
+    }
+    w.node.querySelector('.wbar').after(box)
+  })
+  acts.querySelector('.more').addEventListener('click', () => {
+    let box = w.node.querySelector('.morebox')
+    if (box) return box.remove()
+    box = document.createElement('div')
+    box.className = 'morebox'
+    const canPrivate = (!guest || given[app.id]) && !shared[app.id] && app.tool !== 'findings'
+    const print = `<button class="btn print" type="button">Print</button>`
+    const canEarlier = !limited(app.id) && !isPrivate(app.id) && app.tool !== 'findings'
+    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canEarlier ? `<button class="btn earlier" type="button">Earlier versions of what it kept</button>` : ''}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}${isPrivate(app.id) && !guest ? `<button class="btn emptycopy" type="button" title="A link to this app with nothing it keeps: nothing of yours leaves this browser">Copy a link to an empty copy</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    // A private tool's empty copy for someone else (QA, a colleague): the
+    // app alone, so it needs no un-privating first (round 10 DEV-8).
+    const emptyCopy = box.querySelector('.emptycopy')
+    if (emptyCopy) emptyCopy.onclick = async () => {
+      await navigator.clipboard?.writeText(shareUrl(app.id, 'copy')).catch(() => {})
+      emptyCopy.textContent = 'Copied: it opens this app empty, with nothing of yours'
+    }
+    box.querySelector('.print').onclick = () => {
+      box.remove()
+      // The app sends a copy of itself, all of it, to print over as many
+      // sheets as it takes; one that doesn't is printed as it shows (TOM-5).
+      clearTimeout(w.printWait)
+      w.printWait = setTimeout(() => { w.printWait = null; printing(w) }, 1500)
+      try { w.bridge?.sendHostContextChange({ printing: Date.now() }) } catch {}
+    }
+    // What it held before, a moment at a time, and bringing one back (LENA-1, INES-1).
+    box.querySelector('.earlier')?.addEventListener('click', async () => {
+      const list = box.querySelector('.moments') ?? el('moments', '<span class="faint">Looking…</span>', box)
+      const out = await (await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me }) })).json().catch(error => ({ error: error.message }))
+      if (out.error || !out.moments?.length) {
+        list.innerHTML = `<span class="faint">${esc(out.error ?? 'Nothing earlier yet: what it keeps now is all it has held.')}</span>`
+        return
+      }
+      const when = t => new Date(t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit', second: '2-digit' })
+      list.innerHTML = `<span class="faint">Now: ${esc(out.now || 'nothing')}</span>${out.moments.map(m => `<div class="moment"><span>${esc(when(m.at))} · ${esc(m.says || 'nothing')}${m.then ? `<br><small class="faint">Then: ${esc(m.then)}${m.by?.length ? ` (by ${esc(m.by.join(', '))})` : ''}</small>` : ''}</span><button class="btn back" type="button" data-at="${m.at}">Bring back</button></div>`).join('')}`
+      for (const button of list.querySelectorAll('.back')) {
+        button.onclick = async () => {
+          button.textContent = 'Bringing it back…'
+          const done = await (await fetch('/api/restore', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, at: Number(button.dataset.at) }) })).json().catch(error => ({ error: error.message }))
+          if (done.error) {
+            button.textContent = done.error
+            return
+          }
+          delete froze[app.id]
+          local.set('instant-apps-froze', JSON.stringify(froze))
+          delete cache[slotOf(app.id)]
+          saveOffline()
+          box.remove()
+          w.node.querySelector('.frozebox')?.remove()
+          draw(w)
+          const told = el('offline-note', `Brought back what it held on ${esc(when(Number(button.dataset.at)))}. What it held just before is under Earlier versions too.`, w.node)
+          w.node.querySelector('.wbar').after(told)
+          setTimeout(() => told.remove(), 10000)
+        }
+      }
+    })
+    box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: app.tool === 'findings' && w.payload?.args?.items?.length ? foundCsv(w.payload.args, await keptOf(app)) : csvOf(await keptOf(app)), type: 'text/csv' })
+    box.querySelector('.json').onclick = async () => download({ name: `${slug(app.name)}.json`, text: JSON.stringify(await keptOf(app), null, 2), type: 'application/json' })
+    box.querySelector('.private')?.addEventListener('click', async ev => {
+      const button = ev.currentTarget
+      if (isPrivate(app.id) && !button.classList.contains('sure')) {
+        // Said before it happens: what leaves this browser from now on (DEV-7).
+        button.classList.add('sure')
+        button.textContent = 'Yes, let Claude read it'
+        box.querySelector('.faint').textContent = 'What it keeps is stored on the server with the app again, and Claude reads what it shows from now on.'
+        return
+      }
+      if (isPrivate(app.id)) {
+        // Back to the chat: what it kept goes back with it.
+        for (const [key, value] of Object.entries(privately[app.id] ?? {})) await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me, name: 'app_keep', arguments: { key, value } }) })
+        delete privateApps[app.id]
+        delete privately[app.id]
+      } else {
+        // What it kept comes into this browser, and leaves the chat's store.
+        privately[app.id] = await keptOf(app)
+        for (const key of Object.keys(privately[app.id])) await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me, name: 'app_keep', arguments: { key, value: null } }) })
+        // Nor does what it held before stay there.
+        await fetch('/api/history', { method: 'POST', body: JSON.stringify({ app: app.id, me, self: me, forget: true }) }).catch(() => {})
+        privateApps[app.id] = true
+      }
+      saveLocal()
+      box.remove()
+      for (const other of widgets) if (other.app?.id === app.id && other !== w && !other.removed) bar(other)
+      bar(w)
+      draw(w)
+    })
+    w.node.querySelector('.wbar').after(box)
+  })
+  acts.querySelector('.change')?.addEventListener('click', () => {
+    changer.hidden = !changer.hidden
+    if (!changer.hidden) changer.querySelector('input').focus()
+  })
+  // Undo goes back a version and Redo forward again, until a new change.
+  const step = async way => {
+    w.ownStep = Date.now()
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/${way}`, { method: 'POST', body: '{}' })).json().finally(() => { w.ownStep = 0; w.ownAt = Date.now() })
+    w.app = out.app
+    w.newer = out.newer
+    w.how = 'changed'
+    w.payload.html = out.html
+    // An answer's version brings what it was filled with: drawn from that (round 10 PRIYA-3).
+    if (out.app?.args && w.payload.args) w.payload.args = out.app.args
+    stale(w)
+    draw(w)
+    bar(w)
+  }
+  // Undo asks first and says what it did: it sat next to Change, and a
+  // slip went back a version without a word (round 9 PRIYA-5).
+  // Undo takes back the last change: to what it keeps when that came after
+  // the app's last version (a move, a take-out, a lookup's notes), else the
+  // version itself (round 10 MARCUS-1, LENA-8).
+  acts.querySelector('.undo')?.addEventListener('click', async e => {
+    const button = e.currentTarget
+    const note = text => {
+      w.node.querySelector('.undo-note')?.remove()
+      const box = el('offline-note undo-note', esc(text), w.node)
+      w.node.querySelector('.wbar').after(box)
+      setTimeout(() => box.remove(), 20000)
+    }
+    if (button.dataset.sure === 'data') {
+      const change = w.undoing
+      delete button.dataset.sure
+      const failed = await takeBack(w, change)
+      return note(failed ?? `Took back: ${change.then}. Earlier versions (in ⋯) has every moment it kept.`)
+    }
+    if (button.dataset.sure === 'version') return step('undo').then(() => note(`Back to version ${w.app.version}. Redo brings the change back.`))
+    const change = await lastChange(w.app)
+    if (change.after) {
+      w.undoing = change
+      button.dataset.sure = 'data'
+      button.lastChild.textContent = `Undo: ${change.then.slice(0, 60)}?`
+    } else if (w.app.version > 1) {
+      button.dataset.sure = 'version'
+      button.lastChild.textContent = `Undo: back to version ${w.app.version - 1} of the app?`
+    } else {
+      button.lastChild.textContent = 'Nothing to undo'
+      setTimeout(() => { if (button.isConnected) button.lastChild.textContent = 'Undo' }, 3000)
+      return
+    }
+    button.classList.add('sure')
+    setTimeout(() => { if (button.isConnected) { delete button.dataset.sure; button.classList.remove('sure'); button.lastChild.textContent = 'Undo' } }, 6000)
+  })
+  acts.querySelector('.redo')?.addEventListener('click', () => step('redo'))
+  changer.onsubmit = async e => {
+    e.preventDefault()
+    const what = changer.querySelector('input').value.trim()
+    if (what) w.change(what)
+  }
+  // A change asked in the bar, or a fix the app asks for when it hits an error.
+  w.change = async (what, label = 'Changing it') => {
+    w.ownStep = Date.now()
+    const input = changer.querySelector('input')
+    changer.hidden = true
+    acts.innerHTML = `<span class="status"><span class="spin"></span>${esc(label)}</span>`
+    // That widget's own data, so the change is made to what it shows.
+    const res = await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/change`, { method: 'POST', body: JSON.stringify({ text: what, shown: w.shownId, talk }) })
+    await events(res, async ev => {
+      if (ev.type === 'app') {
+        // One answer of what was found changes as a copy of its own.
+        if (ev.copied) w.keptAs = ev.app.name
+        w.app = ev.app
+        w.newer = false
+        w.how = 'changed'
+        w.payload = { ...w.payload, html: ev.html }
+        // "This one" in the next request is the app just changed.
+        w.touched = Date.now()
+        lastApp = { id: w.app.id, args: w.payload.args }
+        stale(w)
+        await draw(w)
+        bar(w)
+        input.value = ''
+        if (ev.copied) rail(ev.app.id)
+      }
+      if (ev.type === 'error') acts.innerHTML = `<span class="error">${esc(ev.text)}</span>`
+    }).finally(() => { w.ownStep = 0; w.ownAt = Date.now() })
+  }
+}
+
+// What the assistant says after something was done in a widget.
+async function note(w, said) {
+  const body = bot()
+  el('toolline', `${miniTile(w.app.kind)}<span>In <b>${esc(w.app.name)}</b></span>`, body)
+  const status = el('status', '<span class="spin"></span><span>…</span>', body)
+  scroll()
+  history.push({ role: 'app', text: `${w.app.name}: ${said}` })
+  try {
+    const { text } = await (await fetch('/api/note', { method: 'POST', body: JSON.stringify({ app: w.app.id, summary: said, history: history.slice(-10) }) })).json()
+    status.remove()
+    el('reply', esc(text), body)
+    history.push({ role: 'assistant', text })
+    window.events.push({ type: 'note', app: w.app.id, text })
+    record({ request: '', reply: text, shown: [{ app: w.app.id, name: w.app.name, kind: w.app.kind, in: true }] })
+  } catch (error) {
+    status.remove()
+    el('error', esc(error.message), body)
+  }
+  scroll()
+}
+
+// ---- a turn ----
+// A question asked while a turn is still finishing (a button in an app
+// pressed as its answer is written) waits for it rather than being lost.
+const waiting = []
+async function ask(question) {
+  if (!question.trim()) return
+  if (busy) {
+    waiting.push(question)
+    return
+  }
+  busy = true
+  send.disabled = true
+  col.querySelector('.hello')?.remove()
+  el('user', esc(question))
+  const body = bot()
+  const status = el('status', '<span class="spin"></span><span>Thinking</span>', body)
+  let making = null
+  let started = 0
+  let timer = null
+  let reply = ''
+  let shownNow = null
+  let turnId = null
+  const here = []
+  scroll()
+  try {
+    turning = Date.now()
+    const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-10), lastApp, screen: screen(), talk }) })
+    await events(res, async ev => {
+      if (ev.type === 'turn') turnId = ev.id
+      if (ev.type === 'status') status.lastChild.textContent = ev.text
+      // The person's own account first: once signed in, the same request again.
+      if (ev.type === 'connect') {
+        status.remove()
+        connectCard(body, ev, () => ask(ev.request || question))
+        scroll()
+      }
+      if (ev.type === 'making') {
+        status.remove()
+        started = Date.now()
+        making = el('widget fresh', `<div class="wbar">${miniTile(ev.kind)}<span class="wname">${esc(ev.name)}</span><span class="chip made">New app</span><span class="spacer"></span><span class="status"><span class="spin"></span><span class="t">Making it</span></span></div>
+          <div class="making"><div class="bar" style="width:92%"></div><div class="bar" style="width:70%"></div><div class="bar" style="width:84%"></div></div>`, body)
+        body.insertBefore(el('toolline', `${miniTile(ev.kind)}<span>${esc(LINE.made(ev.why))}</span>`, body), making)
+        timer = setInterval(() => { making.querySelector('.t').textContent = `Making it · ${Math.round((Date.now() - started) / 1000)}s` }, 1000)
+        scroll()
+      }
+      if (ev.type === 'app') {
+        clearInterval(timer)
+        status.remove()
+        if (making) {
+          making.previousElementSibling?.remove()
+          making.remove()
+        }
+        // Asked to be private ("private from the start", "nothing leaves my
+        // laptop"): it is, before it draws or keeps anything (DEV-1).
+        // A tool for what is pasted into it (a token, log lines, JSON) is
+        // private from the start: Claude reads nothing of it until the
+        // person says otherwise (DEV-2).
+        // A made app that asks to have something pasted into it (a command's
+        // output, an API's answer) is a paste tool too, whatever was asked (round 10 DEV-1).
+        const pasteIn = /\bpaste (everything|all|what|the (output|response|json|result)|it|your|them|here|below)\b/i.test(String(ev.html ?? '').replace(/<[^>]+>/g, ' '))
+        const pasted = ev.how === 'made' && (PASTED.test(question) || pasteIn) && !PRIVATE.test(question)
+        if ((ev.how === 'made' || ev.how === 'changed') && (PRIVATE.test(question) || pasted) && !shared[ev.app.id] && !isPrivate(ev.app.id)) {
+          privateApps[ev.app.id] = true
+          saveLocal()
+        }
+        // An entry asked for (added, changed, taken out): what it kept
+        // before, to say "Nothing changed" when the app took none of it
+        // instead of a "sent" that reads as done (round 9 MAYA-3).
+        const asked = ev.args?.values && ['add', 'edit', 'remove'].some(k => ev.args.values[k] != null) && !isPrivate(ev.app.id)
+        const keptNow = () => viaServer({ app: ev.app.id, me: ownerOf(ev.app.id), self: me, name: 'app_kept', arguments: { all: true } }).then(o => JSON.stringify(o?.structuredContent?.values ?? null)).catch(() => null)
+        const before = asked ? await keptNow() : null
+        shownNow = widget(body, ev, { request: question })
+        if (asked && before != null) {
+          const w = shownNow
+          Promise.race([w.seen, sleep(6000)]).then(() => sleep(2500)).then(keptNow).then(after => {
+            if (after == null || after !== before || !w.node) return
+            const chip = w.node.querySelector('.wbar .chip')
+            if (chip) { chip.textContent = 'Nothing changed'; chip.className = 'chip nothing' }
+            const line = w.node.previousElementSibling?.classList.contains('toolline') ? w.node.previousElementSibling.querySelector('span:last-child') : null
+            if (line) line.textContent = line.textContent.replace(' · sent: ', ' · asked: ') + ' · nothing changed'
+          })
+        }
+        if (pasted && shownNow?.node?.querySelector('.wbar')) {
+          const box = el('offline-note private-note', esc('Private, because it is for what you paste: Claude reads nothing of it, and what it keeps stays in this browser. To let Claude read it, use ⋯ on it.'), shownNow.node)
+          shownNow.node.querySelector('.wbar').after(box)
+        }
+        here.push(entry(ev))
+        scroll()
+      }
+      // The answer under an app is written from what the app shows, once it
+      // has said (or after a few seconds, from the data it was filled with).
+      if (ev.type === 'say') {
+        const wait = el('status', '<span class="spin"></span><span>…</span>', body)
+        if (shownNow) await Promise.race([shownNow.seen, sleep(4000)])
+        const out = await (await fetch('/api/say', { method: 'POST', body: JSON.stringify({ token: ev.token, shows: shownNow && !isPrivate(shownNow.app.id) ? shownNow.told ?? '' : '' }) })).json().catch(() => ({}))
+        wait.remove()
+        if (out.text) {
+          reply = out.text
+          const said = el('reply', esc(out.text), body)
+          if (shownNow) {
+            shownNow.replies = [...(shownNow.replies ?? []), said]
+            shownNow.saidAbout = shownNow.app.version
+          }
+          scroll()
+        }
+      }
+      if (ev.type === 'reply') {
+        reply = ev.text
+        el('reply', esc(ev.text), body)
+        scroll()
+      }
+      if (ev.type === 'error') {
+        clearInterval(timer)
+        status.remove()
+        making?.remove()
+        el('error', `Something went wrong: ${esc(ev.text)}`, body)
+      }
+    })
+  } finally {
+    turning = Date.now() - 295_000
+    clearInterval(timer)
+    status.remove()
+    history.push({ role: 'user', text: question }, { role: 'assistant', text: reply })
+    record({ turn: turnId, request: question, reply, shown: here })
+    busy = false
+    send.disabled = false
+    await rail()
+    if (waiting.length) ask(waiting.shift())
+  }
+}
+
+// Settles once the page has opened what it opens at the start.
+let loaded = Promise.resolve()
+const openedHere = new Set()
+const shownHere = new Set()
+const seenHere = url => (shownHere.add(url), url)
+async function openFromRail(id, name, how) {
+  if (busy) return
+  col.querySelector('.hello')?.remove()
+  const body = bot()
+  const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, body)
+  openedHere.add(id)
+  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) }).catch(() => null)
+  if (!res) {
+    // No signal, and this phone never opened it from here: the one in this
+    // chat is shown, or it says so instead of waiting (PRIYA-14, DEV-6).
+    status.remove()
+    const here = widgets.find(x => x.app.id === id && !x.removed && x.node)
+    if (here) {
+      el('reply offline', 'No signal: here it is as this chat last showed it, above.', body)
+      here.node.scrollIntoView({ block: 'start' })
+      openedHere.delete(id)
+      return
+    }
+    el('reply offline', 'No signal, and this phone has not opened this app before, so it has nothing of it to show. Try again when there is signal.', body)
+    openedHere.delete(id)
+    return
+  }
+  await events(res, async ev => {
+    // A stopped link opens nothing: say so, and draw nothing of the app (PRIYA-2, TOM-7).
+    if (ev.type === 'stopped') {
+      status.remove()
+      el('reply stopped', esc(ev.text), body)
+      scroll()
+      return
+    }
+    if (ev.type === 'app') {
+      status.remove()
+      if (how) ev = { ...ev, how }
+      widget(body, ev)
+      record({ request: '', reply: '', shown: [entry(ev)] })
+      scroll()
+    }
+  })
+  status.remove()
+}
+
+// This browser's conversation, as it was: each app folded to its bar, the
+// last one open again.
+async function restore() {
+  const { turns = [] } = await fetch(`/api/talk?talk=${talk}`).then(r => r.json()).catch(() => ({}))
+  earlier()
+  if (!turns.length) return hello()
+  if (!talks().some(t => t.id === talk)) remember(turns.find(t => t.request)?.request)
+  let last = null
+  for (const t of turns) {
+    if (t.request) {
+      el('user', esc(t.request))
+      history.push({ role: 'user', text: t.request })
+    }
+    const body = bot()
+    for (const shown of t.shown ?? []) {
+      if (shown.in) el('toolline', `${miniTile(shown.kind)}<span>In <b>${esc(shown.name)}</b></span>`, body)
+      else if (shown.id) last = stub(body, shown, t.request)
+    }
+    if (t.reply) {
+      el('reply', esc(t.reply), body)
+      history.push({ role: 'assistant', text: t.reply })
+    }
+    // A request sent before this page was closed: still being worked on, and
+    // here when done; or cut off, said so (round 10 INES-6, LENA-4, MARCUS-7).
+    if (t.running) el('status', '<span class="spin"></span><span>Still working on this, from before the page was closed. Its answer comes here when it is done.</span>', body)
+    else if (t.cut && !t.reply && !(t.shown ?? []).length) el('reply offline', 'This request was cut off before it finished. If it is not done, send it again.', body)
+    if (!body.children.length) body.parentElement.remove()
+  }
+  await last?.()
+  scroll()
+  if (turns.some(t => t.running)) waitRunning()
+}
+// Asked again every few seconds while a request from before is running; once
+// it is done, the conversation is read back with its answer.
+let runningWait = null
+function waitRunning() {
+  clearTimeout(runningWait)
+  const was = talk
+  runningWait = setTimeout(async () => {
+    if (was !== talk) return
+    const { turns } = await fetch(`/api/talk?talk=${talk}`).then(r => r.json()).catch(() => ({}))
+    if (!turns || turns.some(t => t.running) || busy || was !== talk) return waitRunning()
+    if (switchTo(talk)) restore()
+  }, 4000)
+}
+
+// Another conversation of this browser in place of this one: a new one,
+// or one from before, read back as restore() does.
+function switchTo(id) {
+  if (busy) return false
+  talk = id
+  local.set('instant-apps-talk', talk)
+  widgets.length = 0
+  history.length = 0
+  lastApp = null
+  col.innerHTML = ''
+  earlier()
+  return true
+}
+
+// A new conversation asks first, in place, when this one has anything in
+// it; this one stays under Earlier chats.
+const askNew = document.getElementById('asknew')
+document.getElementById('newchat').onclick = () => {
+  if (busy) return
+  if (!col.querySelector('.user, .widget')) return
+  askNew.hidden = false
+  document.getElementById('newyes').focus()
+}
+document.getElementById('newno').onclick = () => (askNew.hidden = true)
+document.getElementById('newyes').onclick = () => {
+  askNew.hidden = true
+  if (switchTo(newId())) hello()
+}
+
+// Earlier chats: every conversation of this browser, to open one again.
+const earlierButton = document.getElementById('earlier')
+const chatList = document.getElementById('chatlist')
+function earlier() {
+  const others = talks().filter(t => t.id !== talk)
+  earlierButton.hidden = !others.length
+  if (!others.length) chatList.hidden = true
+}
+earlierButton.onclick = () => {
+  const open = chatList.hidden
+  chatList.hidden = !open
+  earlierButton.setAttribute('aria-expanded', String(open))
+  if (!open) return
+  chatList.innerHTML = talks()
+    .map(t => `<button type="button" data-id="${esc(t.id)}" class="${t.id === talk ? 'here' : ''}">${esc(t.title)}<small>${t.id === talk ? 'This chat' : new Date(t.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</small></button>`)
+    .join('')
+  chatList.querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      chatList.hidden = true
+      earlierButton.setAttribute('aria-expanded', 'false')
+      if (b.dataset.id !== talk && switchTo(b.dataset.id)) restore()
+    }
+  })
+}
+document.addEventListener('click', e => {
+  if (!chatList.hidden && !e.target.closest('.chats')) chatList.hidden = true
+})
+
+document.getElementById('ask').onsubmit = e => {
+  e.preventDefault()
+  const value = text.value
+  text.value = ''
+  ask(value)
+}
+text.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    document.getElementById('ask').requestSubmit()
+  }
+})
+window.ask = ask
+if (guest) {
+  // Only what was given to this browser, each opened as it is now.
+  document.querySelector('.top .faint').textContent = 'shared with you by a link'
+  el('guest-note', 'This page has only what was shared with you. What you can do is on each app’s bar.', col)
+  loaded = (async () => {
+    await hung
+    for (const id of guestApps()) await openFromRail(id, 'the shared app', 'linked')
+  })()
+} else loaded = hung.then(() => restore()).then(() => linked && openFromRail(linked, 'the shared app', 'linked'))
+// A shared app shows what the others kept since, when the page is looked at again.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return
+  for (const w of widgets) if (!w.folded && !w.stub && !w.removed && shared[w.app.id]) draw(w)
+})
+// A shared app open here hears when another phone keeps something in it and
+// draws it again; while the person is typing in it, once they stop (MARCUS-4, LENA-5).
+let watching = { key: '', source: null }
+const pending = new Map()
+// Drawn again from what is kept: at once, unless the person is typing in it
+// (the kit says so as they type), and then once they stop, 15 s at most (MAYA-3).
+function redrawShared(id) {
+  const w = widgets.find(x => x.app.id === id && !x.folded && !x.stub && !x.removed && x.node)
+  if (!w) return pending.delete(id)
+  const since = pending.get(id) ?? Date.now()
+  if (Date.now() - (w.typedAt ?? 0) < 3000 && Date.now() - since < 15000) return setTimeout(() => redrawShared(id), 1000)
+  pending.delete(id)
+  draw(w)
+}
+function queueRedraw(id) {
+  if (pending.has(id)) return
+  pending.set(id, Date.now())
+  setTimeout(() => redrawShared(id), 400)
+}
+// A refused change: the app is drawn again from what is kept, and the page
+// says why, five times in ten seconds at most (MARCUS-1, TOM-6).
+function refusedRedraw(w, why) {
+  const now = Date.now()
+  w.refusals = (w.refusals ?? []).filter(t => now - t < 10000)
+  if (w.refusals.length >= 5) return
+  w.refusals.push(now)
+  setTimeout(() => {
+    draw(w)
+    w.node.querySelector('.refused-note')?.remove()
+    const box = el('offline-note refused-note', esc(why || 'Not kept.'), w.node)
+    w.node.querySelector('.wbar').after(box)
+    setTimeout(() => box.remove(), 8000)
+  }, 300)
+}
+// Another phone changed the app itself (a new version, an undo): this phone
+// draws the new one and says what changed, instead of the old one until a
+// reload (MAYA-3).
+// When this page last asked the chat something: a new version then is its own.
+let turning = 0
+async function newVersion(ev) {
+  const ws = widgets.filter(w => w.app.id === ev.app && !w.removed && !w.stub && w.app.version !== ev.version)
+  if (!ws.length) return
+  const out = await (await fetch(`/api/apps/${encodeURIComponent(ev.app)}/now`, { method: 'POST', body: '{}' })).json().catch(() => null)
+  if (!out?.app) return
+  for (const w of ws) {
+    // This page's own Undo or change: it draws that itself, and it was not
+    // another phone (round 9 PRIYA-6, INES-6).
+    if (w.ownStep || Date.now() - (w.ownAt ?? 0) < 5000) continue
+    const mine = Date.now() - turning < 300_000
+    w.app = out.app
+    w.payload.html = out.html
+    w.how = 'changed'
+    if (w.folded) continue
+    draw(w)
+    bar(w)
+    w.node.querySelector('.version-note')?.remove()
+    if (mine) continue
+    const box = el('offline-note version-note', esc(`Changed on another phone${ev.change ? `: ${ev.change}` : ''}. This is the new version.`), w.node)
+    w.node.querySelector('.wbar').after(box)
+    setTimeout(() => box.remove(), 20000)
+  }
+}
+// A phone or a tab that slept (an iPad left closed overnight) catches up
+// when it is looked at again: the version made meanwhile and what the others
+// kept, said, before anyone ticks on what it showed (round 10 TOM-1).
+let hiddenAt = 0
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+  if (hiddenAt && Date.now() - hiddenAt > 20000 && navigator.onLine !== false) catchUp()
+  hiddenAt = 0
+})
+addEventListener('pageshow', e => { if (e.persisted && navigator.onLine !== false) catchUp() })
+function syncWatch() {
+  const pairs = widgets.filter(w => !w.folded && !w.stub && !w.removed && shared[w.app.id]).map(w => `${w.app.id}|${ownerOf(w.app.id)}`).filter(p => /\|s-[0-9a-f]{32}$/.test(p))
+  const key = [...new Set(pairs)].sort().join(',')
+  if (key === watching.key) return
+  watching.source?.close()
+  watching = { key, source: null }
+  if (!key || typeof EventSource === 'undefined') return
+  const source = (watching.source = new EventSource(`/api/watch?apps=${encodeURIComponent(key)}`))
+  // A watch that dropped (no signal, a worker's answer) is made again, and
+  // what was missed meanwhile is read (MARCUS-2).
+  let dropped = false
+  source.onerror = () => {
+    dropped = true
+    if (source.readyState === 2 && watching.source === source) watching = { key: '', source: null }
+  }
+  source.onopen = () => {
+    if (dropped && navigator.onLine !== false) catchUp()
+    dropped = false
+  }
+  watching.source.onmessage = e => {
+    let ev = {}
+    try { ev = JSON.parse(e.data) } catch {}
+    if (!ev.app || ev.self === me) return
+    if (ev.version != null) return newVersion(ev)
+    if (ev.said?.length) conflictNote(ev.app, ev.said)
+    queueRedraw(ev.app)
+  }
+}
+setInterval(syncWatch, 3000)
+rail()
+// The page opens with no signal too, with what it showed last (MAYA-8).
+// On the first visit the worker starts after the page loaded, so what it
+// loaded is asked for once more, through it, to be there next time.
+if (navigator.serviceWorker && !navigator.serviceWorker.controller) {
+  navigator.serviceWorker.addEventListener('controllerchange', async () => {
+    const drain = r => r.text().catch(() => '')
+    await loaded.catch(() => {})
+    await Promise.all([fetch('/').then(drain), fetch('/bridge.js').then(drain), fetch('/api/apps').then(drain), fetch(`/api/talk?talk=${talk}`).then(drain)].map(p => p.catch(() => {})))
+    for (const url of shownHere) await fetch(url).then(drain).catch(() => {})
+    for (const id of openedHere) await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) }).then(drain).catch(() => {})
+  }, { once: true })
+}
+navigator.serviceWorker?.register('/sw.js').catch(() => {})
+if (outbox.length) flush()
+</script>
+</body>
+</html>

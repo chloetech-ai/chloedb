@@ -1,0 +1,284 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search results</title>
+<!-- kit:css -->
+<style>
+  .head { align-items: baseline; gap: 8px; }
+  .head .title { flex: 1; }
+  .bottom { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--bg-2); font-size: 14.5px; line-height: 1.5; }
+  .cite { display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px; margin-left: 2px; border: 0; border-radius: 5px; background: var(--line); color: var(--ink-2); font: 600 10.5px var(--font); cursor: pointer; vertical-align: 2px; }
+  .cite:hover { background: var(--accent); color: #fff; }
+  .needs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .need { text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); padding: 6px 10px; cursor: pointer; font: inherit; line-height: 1.25; }
+  .need small { display: block; color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .need b { font-size: 13px; }
+  .need[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .bar { margin-top: 12px; gap: 6px; }
+  .opts { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .opt { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; transition: box-shadow .2s; }
+  .opt.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .opt.flash { background: var(--bg-2); }
+  .opt .top { display: flex; gap: 10px; align-items: baseline; }
+  .opt::after { content: ''; display: block; clear: both; }
+  .photo { float: right; width: 104px; height: 104px; margin: 0 0 6px 12px; border-radius: 10px; object-fit: cover; background: var(--bg-2); }
+  .thumb { display: block; width: 100%; max-width: 140px; aspect-ratio: 4 / 3; margin-bottom: 6px; border-radius: 8px; object-fit: cover; background: var(--bg-2); }
+  @media (max-width: 420px) { .photo { width: 76px; height: 76px; } }
+  .rank { flex: none; width: 22px; height: 22px; border-radius: 7px; background: var(--bg-2); color: var(--ink-2); font-size: 12px; font-weight: 600; display: grid; place-items: center; }
+  .name { font-weight: 600; font-size: 15px; line-height: 1.3; }
+  a.name { color: var(--ink); text-decoration: none; cursor: pointer; } a.name:hover { text-decoration: underline; }
+  .when { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .in { margin-left: 32px; }
+  .verdict { font-size: 13.5px; line-height: 1.45; margin-top: 3px; }
+  .about { font-size: 13px; color: var(--ink-2); line-height: 1.45; margin-top: 3px; }
+  .bestfor { font-size: 11.5px; color: var(--accent); font-weight: 600; margin-top: 2px; }
+  .facts { gap: 4px; margin-top: 6px; }
+  .facts .chip b { font-weight: 600; color: var(--ink); }
+  .pc { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; margin-top: 6px; font-size: 12.5px; line-height: 1.45; }
+  .pc .p::before { content: '+ '; color: var(--up); font-weight: 700; }
+  .pc .c::before { content: '− '; color: var(--down); font-weight: 700; }
+  .says { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  .say { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+  .say i { font-style: normal; color: var(--ink-3); }
+  .more { border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; padding: 0; margin-top: 3px; }
+  .acts { margin-top: 8px; gap: 6px; }
+  .acts .btn { font-size: 12px; padding: 3px 10px; }
+  .table { overflow-x: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; min-width: 110px; }
+  tr:last-child td { border-bottom: 0; }
+  th { font-weight: 600; background: var(--bg-2); font-size: 12.5px; }
+  td.lab { color: var(--ink-2); font-size: 12px; background: var(--bg-2); min-width: 90px; }
+  .ask { margin-top: 12px; gap: 6px; }
+  .ask input { flex: 1; min-width: 140px; font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  .notes { margin-top: 10px; font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+  details.src { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  details.src summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .doc { display: flex; gap: 8px; padding: 6px 4px; border-radius: 8px; transition: background .4s; }
+  .doc.flash { background: var(--bg-2); }
+  .doc .n { flex: none; width: 18px; color: var(--ink-3); font-size: 12px; font-weight: 600; text-align: right; }
+  .doc .t { font-size: 13px; font-weight: 600; }
+  .doc a.t { color: var(--ink); text-decoration: none; cursor: pointer; } .doc a.t:hover { text-decoration: underline; }
+  .doc .m { font-size: 11.5px; color: var(--ink-3); }
+  .doc .s { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; margin-top: 1px; }
+  .notes-on { margin-top: 8px; display: grid; gap: 4px; }
+  .note-on { font-size: 12.5px; color: var(--ink-2); display: flex; gap: 6px; align-items: baseline; }
+  .note-on.no b { color: var(--bad, #b3261e); }
+  .note-on small { color: var(--ink-3); }
+  .note-on button { font-size: 11px; padding: 0 6px; }
+  .noteform { display: flex; gap: 6px; margin-top: 6px; }
+  .noteform input { flex: 1; min-width: 0; }
+</style>
+<meta name="kit-keeps" content="notes">
+</head>
+<body>
+<div id="root" class="empty">Looking…</div>
+<!-- kit:sdk -->
+<!-- kit:js -->
+<script type="module">
+// What Claude found, shaped to what the person wants: to pick something,
+// the bottom line, which option for which need, the options with their
+// facts, pros and cons and what each source says, side by side on demand;
+// for a question its answer and points, for a how-to its steps, for news
+// its events. Every claim cites its sources, which are listed last.
+const { connect, ask, tell, link, money, esc } = globalThis.Kit
+const Kit = globalThis.Kit
+const root = document.getElementById('root')
+let app = null
+let data = null
+let view = 'cards'
+let chosen = null
+const open = new Set()
+// Notes on the options, kept with the answer: what the person and the people
+// they share it with think of each pick ("No", "too heavy"), each by its
+// writer's name (PRIYA-2, PRIYA-4).
+let notes = []
+let who = null
+let role = 'own'
+let writing = null
+const notesKey = () => `notes ${String(data?.query ?? '').slice(0, 70)}`
+const mayNote = () => role !== 'viewer'
+const mayRemove = n => role === 'own' || role === 'full' || (who?.name && n.by === who.name)
+function notesOn(item) {
+  const mine = notes.filter(n => n.on === item.name)
+  return `<div class="notes-on">${mine.map(n => `<div class="note-on${n.no ? ' no' : ''}"><span>${n.no ? '<b>No</b>' : esc(n.text)}${n.no && n.text && n.text !== 'No' ? ` · ${esc(n.text)}` : ''} <small>${n.by ? `· ${esc(n.by)}` : ''}</small></span>${mayRemove(n) ? `<button class="btn" data-unnote="${esc(n.id)}" title="Take this note out">Remove</button>` : ''}</div>`).join('')}
+    ${writing === item.n ? `<form class="noteform" data-noteform="${item.n}"><input name="t" maxlength="200" placeholder="Your note on ${esc(item.name)}" autocomplete="off"><button class="btn" type="submit">Add note</button></form>` : ''}</div>`
+}
+function keepNotes() {
+  Kit.keep(app, notesKey(), notes)
+}
+
+const GOAL = { pick: 'To pick', answer: 'Answer', overview: 'Overview', 'how-to': 'How to', news: 'What happened' }
+// Money in dollars with its commas, by the fact's name; other big whole
+// numbers with commas, years left as they are (MARCUS-6).
+const MONEY = /price|cost|total|msrp|fee|fare|rent|salary|budget|payment|amount|option|usd|dollar|destination|tax|tuition|wage/i
+const value = (name, v) => (v === true ? 'yes' : v === false ? 'no' : v == null ? '—' : typeof v === 'number' && MONEY.test(name) ? money(v) : typeof v === 'number' && Math.abs(v) >= 10000 && !/year/i.test(name) ? v.toLocaleString('en-US') : String(v))
+const label = name => name.replace(/_/g, ' ')
+const docOf = n => data.documents.find(d => d.n === n)
+const cites = list => (list ?? []).map(n => `<button class="cite" data-cite="${n}" title="${esc(docOf(n)?.source ?? docOf(n)?.title ?? '')}">${n}</button>`).join('')
+const bestFor = item => data.needs.filter(x => x.item === item.n).map(x => x.need)
+
+function says(item) {
+  if (!item.says.length) return ''
+  const shown = open.has(item.n) ? item.says : item.says.slice(0, 2)
+  return `<div class="says">${shown.map(s => `<div class="say">“${esc(s.text)}” <i>${esc(docOf(s.doc)?.source ?? '')}</i>${cites([s.doc])}</div>`).join('')}</div>
+    ${item.says.length > 2 ? `<button class="more" data-more="${item.n}">${open.has(item.n) ? 'Less' : `What ${item.says.length - 2} more source${item.says.length > 3 ? 's' : ''} say`}</button>` : ''}`
+}
+
+// The item's photo, when one was found (a picture handed in with the data).
+const photo = (item, cls) => (/^data:image\//.test(item.image ?? '') ? `<img class="${cls}" src="${esc(item.image)}" alt="${esc(item.name)}"${item.imageFrom ? ` title="Photo: ${esc(item.imageFrom)}"` : ''}>` : '')
+
+function name(item) {
+  return item.url ? `<a class="name" data-link="${esc(item.url)}" title="${esc(item.url)}">${esc(item.name)}</a>` : `<span class="name">${esc(item.name)}</span>`
+}
+
+// An option to pick, a point, a step or an event.
+function card(item) {
+  const facts = data.criteria.filter(c => c in item.facts).slice(0, 6)
+  const best = bestFor(item)
+  const lead = data.goal === 'news' && item.when ? `<span class="when">${esc(item.when)}</span>` : `<span class="rank">${item.n}</span>`
+  return `<div class="opt${chosen === item.n ? ' on' : ''}" id="item-${item.n}">
+    ${photo(item, 'photo')}
+    <div class="top">${lead}<div>${name(item)}${best.length ? `<div class="bestfor">Best for ${best.map(b => esc(/^[A-Z][a-z]/.test(b) ? b[0].toLowerCase() + b.slice(1) : b)).join(', ')}</div>` : ''}</div></div>
+    <div class="in">
+      ${item.verdict ? `<div class="verdict">${esc(item.verdict)}</div>` : ''}
+      ${item.about ? `<div class="about">${esc(item.about)}</div>` : ''}
+      ${facts.length ? `<div class="row wrap facts">${facts.map(c => `<span class="chip">${esc(label(c))} <b>${esc(value(c, item.facts[c]))}</b></span>`).join('')}</div>` : ''}
+      ${item.pros.length || item.cons.length ? `<div class="pc"><div>${item.pros.map(p => `<div class="p">${esc(p)}</div>`).join('')}</div><div>${item.cons.map(c => `<div class="c">${esc(c)}</div>`).join('')}</div></div>` : ''}
+      ${says(item)}
+      ${data.goal === 'pick' ? `<div class="row acts">${linked() ? '' : `<button class="btn" data-ask="${item.n}">Ask about it</button>`}${item.url ? `<button class="btn" data-link="${esc(item.url)}">Its page</button>` : ''}${mayNote() ? `<button class="btn" data-note="${item.n}">Note</button><button class="btn" data-no="${item.n}" title="Say no to this one, with your name">No to this one</button>` : ''}</div>${notesOn(item)}` : ''}
+    </div>
+  </div>`
+}
+
+// The options side by side: a column each, a row for each criterion.
+function table() {
+  const items = data.items
+  const row = (lab, cell) => `<tr><td class="lab">${lab}</td>${items.map(t => `<td>${cell(t)}</td>`).join('')}</tr>`
+  return `<div class="table"><table><thead><tr><th></th>${items.map(t => `<th>${photo(t, 'thumb')}${esc(t.name)}</th>`).join('')}</tr></thead><tbody>
+    ${data.needs.length ? row('best for', t => esc(bestFor(t).join(', ') || '—')) : ''}
+    ${data.criteria.map(c => row(esc(label(c)), t => esc(value(c, t.facts[c])))).join('')}
+    ${row('verdict', t => esc(t.verdict ?? '—'))}
+    ${row('pros', t => t.pros.map(esc).join('<br>') || '—')}
+    ${row('cons', t => t.cons.map(esc).join('<br>') || '—')}
+    ${row('sources', t => cites([...new Set(t.says.map(s => s.doc))]) || '—')}
+  </tbody></table></div>`
+}
+
+function sources(expanded) {
+  if (!data.documents.length) return ''
+  return `<details class="src" id="sources"${expanded ? ' open' : ''}><summary>${data.documents.length} source${data.documents.length > 1 ? 's' : ''}</summary>
+    ${data.documents.map(d => `<div class="doc" id="doc-${d.n}"><span class="n">${d.n}</span><div>
+      ${d.url ? `<a class="t" data-link="${esc(d.url)}" title="${esc(d.url)}">${esc(d.title)}</a>` : `<span class="t">${esc(d.title)}</span>`}
+      <div class="m">${[d.source, d.date, d.kind].filter(Boolean).map(esc).join(' · ')}</div>
+      <div class="s">${esc(d.summary)}</div></div></div>`).join('')}
+  </details>`
+}
+
+// A link someone was given has no chat behind it: no button asks it (PRIYA-11).
+const linked = () => role === 'helper' || role === 'viewer'
+function draw(next) {
+  if (next) {
+    data = { goal: 'answer', answer: null, needs: [], criteria: [], items: [], documents: [], ...next }
+    notes = Array.isArray(next.kept?.[notesKey()]) ? next.kept[notesKey()] : notes
+    who = next.who ?? who
+    role = next.who?.role ?? next.role ?? role
+  }
+  if (!data) return
+  if (!data.documents.length && !data.items.length) {
+    root.className = 'empty'
+    root.textContent = data.query ? `Nothing found for “${data.query}” yet. Ask Claude to look for something.` : 'Ask Claude to look something up, and what it finds shows here.'
+    return
+  }
+  const pick = data.goal === 'pick' && data.items.length > 1
+  root.className = ''
+  root.innerHTML = `<div class="row head"><span class="title">${esc(data.query)}</span><span class="chip">${GOAL[data.goal] ?? 'Found'}</span></div>
+    ${data.answer ? `<div class="bottom">${esc(data.answer.text)} ${cites(data.answer.cites)}</div>` : ''}
+    ${data.needs.length ? `<div class="needs">${data.needs.map((x, i) => `<button class="need" data-need="${i}" aria-pressed="${chosen != null && chosen === x.item}" title="${esc(x.why ?? '')}"><small>${esc(x.need)}</small><b>${esc(x.pick)}</b></button>`).join('')}</div>` : ''}
+    ${data.items.length ? `<div class="row between bar"><span class="faint">${pick ? `${data.items.length} options` : data.goal === 'how-to' ? `${data.items.length} steps` : ''}</span>${pick ? `<span class="tabs"><button class="tab" data-view="cards" aria-pressed="${view === 'cards'}">Options</button><button class="tab" data-view="table" aria-pressed="${view === 'table'}">Side by side</button></span>` : ''}</div>
+      ${pick && view === 'table' ? table() : `<div class="opts">${data.items.map(card).join('')}</div>`}` : ''}
+    ${linked() ? '' : `<form class="row ask" id="ask"><input id="what" placeholder="${pick ? 'What matters to you? (I fly a lot, under $300...)' : 'Ask a follow-up'}" autocomplete="off"><button class="btn primary" type="submit">${pick ? 'Pick for me' : 'Ask'}</button></form>`}
+    ${data.notes ? `<div class="notes"><b>Worth knowing:</b> ${esc(data.notes)}</div>` : ''}
+    ${sources(!data.items.length)}
+    <div class="foot faint">Found by Claude on the web for this request; every claim links to its source.</div>`
+  const form = document.getElementById('ask')
+  if (form) form.onsubmit = e => {
+    e.preventDefault()
+    const what = document.getElementById('what').value.trim()
+    if (!what) return
+    ask(app, pick ? `For me, ${what}. Of the ${data.query}, which should I get?` : what)
+  }
+}
+
+function flash(id) {
+  const el = document.getElementById(id)
+  if (!el) return
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el.classList.add('flash')
+  setTimeout(() => el.classList.remove('flash'), 1600)
+}
+
+root.addEventListener('submit', e => {
+  const f = e.target.closest('[data-noteform]')
+  if (!f) return
+  e.preventDefault()
+  const text = f.querySelector('input').value.trim()
+  const item = data.items.find(x => x.n === Number(f.dataset.noteform))
+  if (!text || !item) return
+  notes = [...notes, { id: Date.now().toString(36), on: item.name, text, ...(who?.name ? { by: who.name } : {}) }]
+  writing = null
+  keepNotes()
+  draw()
+  tell(app, `Noted on ${item.name}: ${text}`)
+})
+root.addEventListener('click', async e => {
+  const t = e.target.closest('[data-cite],[data-need],[data-view],[data-more],[data-ask],[data-link],[data-note],[data-no],[data-unnote]')
+  if (!t) return
+  if (t.dataset.note) {
+    writing = writing === Number(t.dataset.note) ? null : Number(t.dataset.note)
+    draw()
+    document.querySelector(`[data-noteform="${writing}"] input`)?.focus()
+  } else if (t.dataset.no) {
+    const item = data.items.find(x => x.n === Number(t.dataset.no))
+    notes = [...notes, { id: Date.now().toString(36), on: item.name, text: 'No', no: true, ...(who?.name ? { by: who.name } : {}) }]
+    keepNotes()
+    draw()
+    tell(app, `Said no to ${item.name}.`)
+  } else if (t.dataset.unnote) {
+    notes = notes.filter(n => n.id !== t.dataset.unnote)
+    keepNotes()
+    draw()
+  } else if (t.dataset.cite) {
+    document.getElementById('sources').open = true
+    flash(`doc-${t.dataset.cite}`)
+  } else if (t.dataset.need) {
+    const need = data.needs[Number(t.dataset.need)]
+    chosen = chosen === need.item ? null : need.item
+    view = 'cards'
+    draw()
+    if (chosen) {
+      flash(`item-${chosen}`)
+      tell(app, `Looking at the pick for ${need.need}: ${need.pick}${need.why ? ` (${need.why})` : ''}.`)
+    }
+  } else if (t.dataset.view) {
+    view = t.dataset.view
+    draw()
+  } else if (t.dataset.more) {
+    const n = Number(t.dataset.more)
+    open.has(n) ? open.delete(n) : open.add(n)
+    draw()
+  } else if (t.dataset.ask) {
+    const item = data.items.find(x => x.n === Number(t.dataset.ask))
+    await ask(app, `Tell me more about the ${item.name}: is it right for me?`)
+  } else if (t.dataset.link) {
+    await link(app, t.dataset.link)
+    tell(app, `The person opened ${t.dataset.link}.`)
+  }
+})
+
+app = await connect('Search results', draw)
+</script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+# Instant apps at instant.chloetech.ai, for friends (the password is checked
+# by the Caddy in namespace web, which proxies the name to the Service here).
+#
+# One pod on the protos node: the chat (research/widgets/chat), which this
+# branch's folder is fetched for at start (a sparse, shallow clone) along
+# with Claude Code, and its own chloedb-server holding the apps on the
+# node's disk (/mnt/instant). Claude is called with the key in Secret
+# instant/anthropic, capped at WIDGETS_DAILY_USD a day and WIDGETS_TOTAL_USD
+# in all (the ledger is /data/spend.json), WIDGETS_PER_IP_HOUR requests a
+# visitor in an hour, and WIDGETS_MODEL_SLOTS calls at once.
+#
+#   kubectl apply -f research/widgets/deploy/k8s.yaml
+#   kubectl -n instant create secret generic anthropic --from-file=key=...   # the model key, once
+#   kubectl -n instant rollout restart deploy/instant                        # picks up a new push
+apiVersion: v1
+kind: Namespace
+metadata: {name: instant}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: instant, namespace: instant}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: instant}}
+  template:
+    metadata: {labels: {app: instant}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      initContainers:
+      - name: fetch
+        image: node:22.23.4-bookworm
+        workingDir: /work
+        command: [sh, -ec]
+        args:
+        - |
+          rm -rf /work/repo /work/npm
+          git clone --quiet --depth 1 --filter=blob:none --sparse --branch "$BRANCH" "$REPO" /work/repo
+          cd /work/repo && git sparse-checkout set research/widgets chloedb-apps/engine
+          git log -1 --format='%H %cI %s' | tee /work/REVISION
+          cd research/widgets/server && npm ci --no-audit --no-fund --loglevel=error
+          npm install --global --prefix /work/npm --no-audit --no-fund --loglevel=error "@anthropic-ai/claude-code@$CLAUDE_CODE"
+          /work/npm/bin/claude --version
+        env:
+        - {name: REPO, value: https://github.com/chloetech-ai/chloedb}
+        - {name: BRANCH, value: claude/project-thread-goafv8}
+        - {name: CLAUDE_CODE, value: 2.1.327}
+        resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      containers:
+      - name: chat
+        image: node:22.23.4-bookworm
+        workingDir: /work/repo/research/widgets
+        # The database first: the chat opens its tables at start.
+        command: [sh, -c]
+        args: ['until curl -sf http://127.0.0.1:7700/v1/health > /dev/null; do sleep 1; done; exec node chat/server.mjs --host 0.0.0.0 --port 8800 --data /data/chat']
+        env:
+        - {name: CHLOEDB_URL, value: 'http://127.0.0.1:7700'}
+        - name: ANTHROPIC_API_KEY
+          valueFrom: {secretKeyRef: {name: anthropic, key: key}}
+        - {name: WIDGETS_CLAUDE, value: /work/npm/bin/claude}
+        - {name: WIDGETS_DAILY_USD, value: '20'}
+        - {name: WIDGETS_TOTAL_USD, value: '100'}
+        - {name: WIDGETS_SPEND_FILE, value: /data/spend.json}
+        - {name: WIDGETS_PER_IP_HOUR, value: '40'}
+        - {name: WIDGETS_MODEL_SLOTS, value: '3'}
+        - {name: HOME, value: /work/home}
+        - {name: DISABLE_AUTOUPDATER, value: '1'}
+        - {name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, value: '1'}
+        ports: [{containerPort: 8800}]
+        readinessProbe: {httpGet: {path: /healthz, port: 8800}, periodSeconds: 10, timeoutSeconds: 5}
+        livenessProbe: {httpGet: {path: /healthz, port: 8800}, periodSeconds: 30, timeoutSeconds: 10, failureThreshold: 5, initialDelaySeconds: 60}
+        resources: {requests: {cpu: 300m, memory: 768Mi}, limits: {memory: 3Gi}}
+        volumeMounts: [{name: work, mountPath: /work}, {name: data, mountPath: /data}]
+      - name: db
+        image: ghcr.io/chloetech-ai/chloedb-server@sha256:58775b84f37b7909c0dac8cec30453ce3198cc2d488bd931a1f81b7238993fb5
+        command: [sh, -c]
+        args: ['mkdir -p /data/db /data/models && exec chloedb-server --db /data/db/apps.chloedb --seq-no --listen 127.0.0.1:7700 --grpc off --models /data/models --start-apps off']
+        resources: {requests: {cpu: 200m, memory: 256Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+      - {name: work, emptyDir: {}}
+      - {name: data, hostPath: {path: /mnt/instant, type: DirectoryOrCreate}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: instant, namespace: instant}
+spec:
+  selector: {app: instant}
+  ports: [{port: 8800, targetPort: 8800}]

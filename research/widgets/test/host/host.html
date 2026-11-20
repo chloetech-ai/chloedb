@@ -1,0 +1,92 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Apps test host</title>
+<style>
+  :root { color-scheme: light; --bg: #faf9f5; --panel: #ffffff; --ink: #1f1e1d; --ink-2: #6b6a68; --line: #e6e4df; --bubble: #efede6; }
+  :root[data-theme='dark'] { color-scheme: dark; --bg: #1f1f1d; --panel: #262624; --ink: #f2f1ee; --ink-2: #b4b2ac; --line: #3d3d3a; --bubble: #30302e; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .top { padding: 10px 16px; font-size: 12px; color: var(--ink-2); border-bottom: 1px solid var(--line); }
+  main { max-width: 720px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+  .user { align-self: flex-end; max-width: 80%; background: var(--bubble); border-radius: 16px; padding: 8px 14px; }
+  .tool { font-size: 12px; color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+  .tool summary { cursor: pointer; list-style: none; } .tool summary::-webkit-details-marker { display: none; }
+  .tool code { display: block; margin-top: 6px; font: 12px ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+  .frame { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+  iframe { display: block; width: 100%; border: 0; height: 120px; }
+  .reply p { margin: 0 0 10px; } .reply ul { margin: 0 0 10px; padding-left: 22px; }
+  .sent { align-self: flex-end; max-width: 80%; border: 1px dashed var(--line); border-radius: 16px; padding: 8px 14px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="top">MCP Apps test host: the widget's view in a sandboxed iframe, driven by the SDK's AppBridge</div>
+<main id="chat"></main>
+<script type="module">
+import { AppBridge, PostMessageTransport } from '/bridge.js'
+
+const q = new URLSearchParams(location.search)
+const tool = q.get('tool') ?? 'stock_quote'
+const args = JSON.parse(q.get('args') ?? '{"symbol":"NVDA"}')
+const theme = q.get('theme') ?? 'light'
+document.documentElement.dataset.theme = theme
+const chat = document.getElementById('chat')
+const add = (cls, html) => { const el = document.createElement('div'); el.className = cls; el.innerHTML = html; chat.append(el); return el }
+window.events = []
+
+if (q.get('prompt')) add('user', q.get('prompt'))
+// What Claude did before the call (?steps=Searched the web|Searched again),
+// then the call as Claude's apps show one: a line, its arguments folded.
+for (const step of (q.get('steps') ?? '').split('|').filter(Boolean)) add('tool', `<span>⚙ ${step.replace(/</g, '&lt;')}</span>`)
+const brief = JSON.stringify(args, (k, v) => (typeof v === 'string' && v.length > 80 ? `${v.slice(0, 32)}… (${(v.length / 1024).toFixed(1)} KB)` : v), 1)
+add('tool', `<details><summary>⚙ Used ${tool}</summary><code>${brief.replace(/</g, '&lt;')}</code></details>`)
+
+const { tools } = await (await fetch('/tools')).json()
+const uri = tools.find(t => t.name === tool)?._meta?.ui?.resourceUri
+const { contents } = await (await fetch(`/resource?uri=${encodeURIComponent(uri)}`)).json()
+const callTool = async params => (await fetch('/call', { method: 'POST', body: JSON.stringify(params) })).json()
+const result = await callTool({ name: tool, arguments: args })
+
+const frame = add('frame', '')
+const iframe = document.createElement('iframe')
+iframe.setAttribute('sandbox', 'allow-scripts')
+frame.append(iframe)
+// The reply as a chat draws it: paragraphs, lists and bold.
+const md = text =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').split(/\n\s*\n/).map(block => {
+    const lines = block.split('\n')
+    const inline = t => t.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    return lines.every(l => /^\s*[-*] /.test(l))
+      ? `<ul>${lines.map(l => `<li>${inline(l.replace(/^\s*[-*] /, ''))}</li>`).join('')}</ul>`
+      : `<p>${inline(lines.join('<br>'))}</p>`
+  }).join('')
+if (q.get('reply')) add('reply', md(q.get('reply')))
+
+const bridge = new AppBridge(
+  null,
+  { name: 'widgets-test-host', version: '0.0.0' },
+  { serverTools: {}, openLinks: {}, message: { text: {} }, updateModelContext: { text: {} } },
+  { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
+)
+bridge.oncalltool = async params => { window.events.push(['tools/call', params]); return callTool(params) }
+bridge.onsizechange = ({ height }) => { if (height) iframe.style.height = `${Math.ceil(height)}px` }
+bridge.onmessage = async params => {
+  window.events.push(['ui/message', params])
+  add('sent', `Sent by the widget: ${params.content.map(c => c.text).join(' ')}`)
+  return {}
+}
+bridge.onupdatemodelcontext = async params => { window.events.push(['ui/update-model-context', params]); return {} }
+bridge.onopenlink = async params => { window.events.push(['ui/open-link', params]); return {} }
+bridge.oninitialized = async () => {
+  window.events.push(['initialized'])
+  await bridge.sendToolInput({ arguments: args })
+  await bridge.sendToolResult(result)
+  window.events.push(['result sent'])
+}
+await bridge.connect(new PostMessageTransport(iframe.contentWindow, iframe.contentWindow))
+iframe.srcdoc = contents[0].text
+</script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App</title>
+<!-- kit:css -->
+<style>
+  .ia-bar { display: flex; align-items: center; gap: 8px; margin: -2px 0 12px; font-size: 12px; color: var(--ink-2); }
+  .ia-bar .ia-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+  .ia-bar .ia-chip { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 999px; background: var(--bg-2); color: var(--ink-2); }
+  .ia-bar .ia-chip.made { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+  .ia-bar .ia-chip.saved { background: var(--up-bg); color: var(--up); }
+  .ia-bar .ia-gap { flex: 1; }
+  .ia-bar button { font: inherit; font-size: 12px; background: none; border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; color: var(--ink-2); cursor: pointer; }
+  .ia-bar button:hover { color: var(--ink); border-color: var(--ink-3); }
+  .ia-bar button.ia-save { color: var(--ink); }
+  .ia-change { display: flex; gap: 6px; margin: -4px 0 12px; }
+  .ia-change input { flex: 1; font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="ia-bar" id="ia-bar" hidden></div>
+<form class="ia-change" id="ia-change" hidden><input name="text" placeholder="How should it change? Claude rewrites it" autocomplete="off"><button class="btn" type="submit">Ask</button></form>
+<div id="ia-app"><div class="empty">Opening the app…</div></div>
+<!-- kit:sdk -->
+<!-- kit:js -->
+<script type="module">
+// The view every instant app draws in. A tool result names the app
+// (structuredContent.instant); this view fetches its source (app_source),
+// mounts it, and hands it the data as any view would get it. The app's
+// script is written against the kit as for a page of its own: here its
+// connect joins this view's connection, and its calls go through app_call,
+// which runs only the tools the app was made with.
+const Kit = globalThis.Kit
+const { connect, call, ask, tell, esc } = Kit
+const slot = document.getElementById('ia-app')
+const bar = document.getElementById('ia-bar')
+const changer = document.getElementById('ia-change')
+
+let meta = null // the app shown: id, name, version, saved, how
+let mounted = null // its id@version, once mounted
+let draw = null // its own draw, once its script connected
+let last = null
+let lastInput = null
+let ready
+
+// The app's draw, handed what it kept with each result (Kit.drawing).
+Kit.connect = async (name, fn) => {
+  const deliver = Kit.drawing(fn, () => ready)
+  deliver.input = fn.input
+  deliver.error = fn.error
+  draw = deliver
+  if (lastInput) fn.input?.(lastInput)
+  if (last) deliver(last)
+  return ready
+}
+Kit.call = async (app, name, args) => {
+  const data = await call(app, 'app_call', { id: meta.id, tool: name, args: args ?? {} })
+  // Something the person did (a booking, the cart): the conversation knows.
+  if (data?.acted) tell(app, `In the app "${meta.name}": ${data.summary}`)
+  return data
+}
+
+const CHIP = { made: ['made', 'New app'], recalled: ['', 'From your apps'], opened: ['', 'Opened again'], changed: ['made', 'Changed'], saved: ['saved', 'Saved'] }
+
+function drawBar() {
+  const [cls, label] = CHIP[meta.how] ?? ['', '']
+  bar.hidden = false
+  bar.innerHTML = `<span class="ia-name">${esc(meta.name)}</span>${label ? `<span class="ia-chip ${cls}">${label}</span>` : ''}${meta.version > 1 ? `<span class="faint">v${meta.version}</span>` : ''}<span class="ia-gap"></span>` +
+    `${meta.saved ? '' : '<button class="ia-save" data-do="save" title="Keep it in your apps: it opens by itself next time">Save</button>'}<button data-do="change" title="Ask Claude to change how it looks or works">Change</button>`
+}
+
+function mount(source) {
+  const t = document.createElement('template')
+  t.innerHTML = source
+  const scripts = [...t.content.querySelectorAll('script')]
+  for (const s of scripts) s.remove()
+  slot.replaceChildren(t.content)
+  // Scripts put in by markup do not run: each is made again.
+  for (const old of scripts) {
+    const s = document.createElement('script')
+    if (old.type) s.type = old.type
+    s.textContent = old.textContent
+    slot.append(s)
+  }
+}
+
+async function show(data) {
+  const app = await ready
+  last = data
+  const next = data.instant
+  if (!next) return draw?.(data)
+  meta = next
+  drawBar()
+  if (mounted === `${next.id}@${next.version}`) return draw?.(data)
+  mounted = `${next.id}@${next.version}`
+  draw = null
+  const { source } = await call(app, 'app_source', { id: next.id })
+  mount(source)
+}
+show.input = args => {
+  lastInput = args
+  draw?.input?.(args)
+}
+show.error = message => {
+  if (draw?.error) draw.error(message)
+  else slot.innerHTML = `<div class="empty">${esc(message)}</div>`
+}
+
+bar.addEventListener('click', async e => {
+  const button = e.target.closest('button')
+  if (!button) return
+  const app = await ready
+  if (button.dataset.do === 'save') {
+    button.disabled = true
+    button.textContent = 'Saving…'
+    try {
+      await call(app, 'app_save', { id: meta.id })
+      meta = { ...meta, saved: true, how: 'saved' }
+      drawBar()
+      tell(app, `The person saved the app "${meta.name}" (id ${meta.id}) to their apps.`)
+    } catch (error) {
+      button.disabled = false
+      button.textContent = 'Save'
+      button.title = error.message
+    }
+  }
+  if (button.dataset.do === 'change') {
+    changer.hidden = !changer.hidden
+    if (!changer.hidden) changer.text.focus()
+  }
+})
+
+changer.addEventListener('submit', async e => {
+  e.preventDefault()
+  const text = changer.text.value.trim()
+  if (!text) return
+  const app = await ready
+  changer.hidden = true
+  changer.text.value = ''
+  await ask(app, `Change my "${meta.name}" app (id ${meta.id}): ${text}`)
+})
+
+ready = connect('instant-app', show)
+</script>
+</body>
+</html>

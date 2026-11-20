@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock</title>
+<!-- kit:css -->
+<style>
+  .chart { position: relative; margin: 10px -4px 0; }
+  .chart svg { display: block; width: 100%; height: 150px; }
+  .tip { position: absolute; top: 0; transform: translateX(-50%); padding: 2px 6px; border-radius: 6px; background: var(--ink); color: var(--bg); font-size: 11px; pointer-events: none; white-space: nowrap; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; margin-top: 10px; }
+  .stats div { background: var(--bg-2); border-radius: 8px; padding: 6px 9px; }
+  .stats b { display: block; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="root" class="empty">Loading quote…</div>
+<!-- kit:sdk -->
+<!-- kit:js -->
+<script type="module">
+const { connect, call, ask, money, number, ago, esc } = globalThis.Kit
+const RANGES = [['1d', '1D'], ['5d', '5D'], ['1mo', '1M'], ['6mo', '6M'], ['1y', '1Y'], ['5y', '5Y']]
+const root = document.getElementById('root')
+let data = null
+let app = null
+let timer = null
+
+function chart(points, up) {
+  const W = 600, H = 150, pad = 6
+  const ys = points.map(p => p[1])
+  const lo = Math.min(...ys), hi = Math.max(...ys)
+  const x = i => pad + (i / Math.max(1, points.length - 1)) * (W - 2 * pad)
+  const y = v => pad + (1 - (v - lo) / Math.max(1e-9, hi - lo)) * (H - 2 * pad)
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join('')
+  const base = data.range === '1d' ? y(Math.min(hi, Math.max(lo, data.base))) : null
+  const color = up ? 'var(--up)' : 'var(--down)'
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(data.symbol)} price chart">
+    <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".22"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+    ${base != null ? `<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--ink-3)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>` : ''}
+    <path d="${line}L${x(points.length - 1)},${H}L${x(0)},${H}Z" fill="url(#g)"/>
+    <path d="${line}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+    <line id="cross" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--ink-3)" vector-effect="non-scaling-stroke" visibility="hidden"/>
+  </svg><div class="tip" id="tip" hidden></div>`
+}
+
+function when(t) {
+  const d = new Date(t)
+  return data.range === '1d' ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: data.range === '5y' ? 'numeric' : undefined })
+}
+
+function draw(next) {
+  data = next
+  const up = data.change >= 0
+  const sign = up ? '+' : ''
+  root.className = ''
+  root.innerHTML = `
+    <div class="row between">
+      <div><div class="title">${esc(data.name)}</div><div class="faint">${esc(data.symbol)}${data.exchange ? ' · ' + esc(data.exchange) : ''}</div></div>
+      <div class="tabs" role="group" aria-label="Range">${RANGES.map(([r, label]) => `<button class="tab" data-range="${r}" aria-pressed="${r === data.range}">${label}</button>`).join('')}</div>
+    </div>
+    <div class="row" style="margin-top:8px;align-items:baseline;gap:10px">
+      <span class="big num">${money(data.price, data.currency)}</span>
+      <span class="chip ${up ? 'up' : 'down'} num">${up ? '▲' : '▼'} ${sign}${number(data.change, 2)} (${sign}${number(data.changePct, 2)}%)</span>
+      <span class="faint">${data.range === '1d' ? 'today' : 'over ' + data.range}</span>
+    </div>
+    <div class="chart" id="chart">${chart(data.points, up)}</div>
+    <div class="stats num">
+      <div><span class="faint">Low</span><b>${money(data.low, data.currency)}</b></div>
+      <div><span class="faint">High</span><b>${money(data.high, data.currency)}</b></div>
+      <div><span class="faint">${data.range === '1d' ? 'Prev close' : 'Start'}</span><b>${money(data.base, data.currency)}</b></div>
+      ${data.volume ? `<div><span class="faint">Volume</span><b>${number(data.volume / 1e6, 1)}M</b></div>` : ''}
+    </div>
+    <div class="row between foot wrap">
+      <span class="faint"><span class="live ${data.range === '1d' && data.source !== 'simulated' ? '' : 'off'}"></span> ${esc(data.source)} · ${ago(data.asOf)}${data.note ? ' · ' + esc(data.note) : ''}</span>
+      <span class="row"><button class="btn" id="why">Why did it move?</button></span>
+    </div>`
+  root.querySelectorAll('[data-range]').forEach(b => b.onclick = () => load({ symbol: data.symbol, range: b.dataset.range }))
+  root.querySelector('#why').onclick = () => ask(app, `Why did ${data.symbol} move ${data.range === '1d' ? 'today' : 'over the last ' + data.range}?`)
+  hover()
+  clearInterval(timer)
+  if (data.range === '1d') timer = setInterval(() => load({ symbol: data.symbol, range: '1d' }, true), 30_000)
+}
+
+function hover() {
+  const box = document.getElementById('chart')
+  const svg = box.querySelector('svg'), tip = document.getElementById('tip'), cross = document.getElementById('cross')
+  box.onpointermove = e => {
+    const r = svg.getBoundingClientRect()
+    const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+    const i = Math.round(f * (data.points.length - 1))
+    const [t, v] = data.points[i]
+    const px = (i / Math.max(1, data.points.length - 1)) * r.width
+    cross.setAttribute('x1', (px / r.width) * 600); cross.setAttribute('x2', (px / r.width) * 600); cross.setAttribute('visibility', 'visible')
+    tip.hidden = false; tip.style.left = `${Math.min(r.width - 40, Math.max(40, px))}px`
+    tip.textContent = `${money(v, data.currency)} · ${when(t)}`
+  }
+  box.onpointerleave = () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden') }
+}
+
+async function load(args, quiet) {
+  if (!quiet) root.querySelectorAll('.tab').forEach(b => b.disabled = true)
+  try { draw(await call(app, 'stock_quote', args)) } catch (e) { if (!quiet) root.insertAdjacentHTML('beforeend', `<p class="faint">${esc(e.message)}</p>`) }
+}
+
+draw.input = args => { root.textContent = `Loading ${args.symbol ?? ''}…` }
+draw.error = text => { root.className = 'empty'; root.textContent = text }
+app = await connect('Stock widget', draw)
+</script>
+</body>
+</html>

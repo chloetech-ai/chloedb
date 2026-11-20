@@ -1,0 +1,21 @@
+{
+  "name": "widgets-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Widgets in a conversation: an MCP server whose tools open stock, flight and shopping apps",
+  "type": "module",
+  "bin": { "widgets-mcp": "index.mjs" },
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node --test ../test/server.test.mjs ../test/chat.test.mjs ../test/apps.test.mjs ../test/connect.test.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
