@@ -321,6 +321,7 @@ Each step is SQL the page shows before running, and could be run from the workbe
 | `bge-small-en-v1.5` | BERT encoder, 384 dimensions | build with `--features bert`; milliseconds a row |
 | `snowflake-arctic-embed-m-v1.5` | BERT encoder, 768 dimensions | build with `--features bert`; slower, better |
 | `siglip-base-patch16-224` | SigLIP base: images and text in one space, 768 dimensions | build with `--features vision`; about 0.5 s an image and 80 ms a text on a 4-vCPU cloud VM |
+| `siglip-so400m-patch14-384` | SigLIP so400m: images and text in one space, 1152 dimensions, the model of [Major TOM's](https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP) Sentinel-2 vectors (a 3.5 GB download) | build with `--features vision`; about 4.2 s a 384-pixel image and 0.75 s a text on a 4-vCPU cloud container |
 | `clap-htsat-unfused` | CLAP (HTSAT and RoBERTa): sound and text in one space, 512 dimensions | build with `--features audio`; about 0.27 s for each 10 seconds of sound and 20 ms a text on a 4-vCPU cloud VM |
 | `answerai-colbert-small-v1` | ColBERT (BERT, 33M parameters), a 96-dimension vector a token, for a [multi-vector field](#a-vector-a-token) | build with `--features bert` |
 | `hash:N` | hashed bag of words, *N* dimensions, 1 to 65,536 (on a multi-vector field, a vector a word) | no files; tests and the demo |

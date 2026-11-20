@@ -1199,10 +1199,19 @@ impl<'a> Binder<'a> {
                 false => Err(err("min_rows and max_rows on bm25 guard the ranking of ORDER BY")),
             };
         };
-        let mut terms = match filter {
-            Pred::And(ps) => ps,
-            p => vec![p],
-        };
+        // `a AND b AND c` binds as `(a AND b) AND c`: the guarded condition
+        // is found among all three, wherever it was written.
+        fn and_terms(p: Pred, term: &Pred, out: &mut Vec<Pred>) {
+            if p == *term {
+                return out.push(p);
+            }
+            match p {
+                Pred::And(ps) => ps.into_iter().for_each(|q| and_terms(q, term, out)),
+                p => out.push(p),
+            }
+        }
+        let mut terms = Vec::new();
+        and_terms(filter, &term, &mut terms);
         match terms.iter().position(|p| *p == term) {
             Some(i) => {
                 terms.remove(i);

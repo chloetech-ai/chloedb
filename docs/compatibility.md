@@ -278,6 +278,7 @@ the crawler and Sheets are, but carries no promise of its own):
 - `chloedb-gh`, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;
 - `chloedb-sound`, free sounds searched by how they sound, with the moments inside long recordings;
 - `chloedb-backbone`, the internet's routing from public data: what is wrong now, where, and how it connects;
+- `chloedb-earth`, California and Chile from orbit: fires as GOES sees them, places by how they look, their twins across the equator and how they changed;
 - `chloedb-swarm`, simulated users, an internal test instrument;
 - `chloedb-experiments`, A/B tests of rankings on simulated users, and rankings valued on the log of another, checked against the users' truth;
 - `examples/feature-store`, a shop ranked on features ChloeDB keeps;
