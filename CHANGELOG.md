@@ -148,7 +148,8 @@ changes collect under "Unreleased".
   keeps its analyzer), a `CAST`, their values or their expression, and
   drops it again if the rows fail. Through a coordinator the `SELECT` runs
   over every shard and the rows go as `INSERT`s of 500 rows each, not one
-  transaction (cluster-limits.md). `POST /v1/sql/check` says both. A
+  transaction, and the new table needs a primary key there to place its
+  rows by (cluster-limits.md). `POST /v1/sql/check` says both. A
   `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
   refused rather than written in part. Before, both were refused.
 - **A join on a `TEXT` column says why it is refused and what to do**

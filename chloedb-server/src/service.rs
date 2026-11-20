@@ -5052,6 +5052,11 @@ impl Service {
             (false, true) => self.may_write_followed([table.as_str()]).await?,
             (true, false) => keys::note(obs::truncate(sql, 500).into_owned()),
         }
+        // A coordinator places rows by the table's key: a table without
+        // one could be made, but none of its rows written.
+        if matches!(self.backend, Backend::Cluster(_)) && !st.places_rows() {
+            return Err(ApiError::bad(format!("query error: {}", st.unplaced())));
+        }
         // Every shard's rows, or none: a write of some of them would be wrong.
         let read = self.query(QueryReq { sql: st.query_sql(), params: params.clone(), timeout_ms, own_read: true, partial: Some(false), who: Some(who.clone()), budget, ..Default::default() }).await?;
         let rs = read.rs;

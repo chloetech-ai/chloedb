@@ -134,6 +134,31 @@ impl Statement {
         matches!(self, Statement::Create { ct, .. } if ct.if_not_exists)
     }
 
+    /// Whether the table its rows go to has what a coordinator places rows
+    /// on shards by: always for `INSERT ... SELECT` (the table is there,
+    /// placed as it is), and for `CREATE TABLE ... AS SELECT` a primary key
+    /// the statement names (`(PRIMARY KEY (id))`, `(id INT PRIMARY KEY)`)
+    /// or `OPTIONS(shard_by = ...)`. A column read from a table does not
+    /// bring that table's key.
+    pub fn places_rows(&self) -> bool {
+        let Statement::Create { ct, .. } = self else { return true };
+        let options: &[sql::SqlOption] = match &ct.table_options {
+            sql::CreateTableOptions::Options(o) => o.as_slice(),
+            _ => &[],
+        };
+        ct.constraints.iter().any(|c| matches!(c, sql::TableConstraint::PrimaryKey { .. }))
+            || ct.columns.iter().any(|c| c.options.iter().any(|o| matches!(o.option, sql::ColumnOption::Unique { is_primary: true, .. })))
+            || options.iter().any(|o| matches!(o, sql::SqlOption::KeyValue { key, .. } if key.value.eq_ignore_ascii_case("shard_by")))
+    }
+
+    /// What a coordinator says of a `CREATE TABLE ... AS SELECT` that
+    /// names no key ([`Self::places_rows`]), before it reads or makes
+    /// anything.
+    pub fn unplaced(&self) -> String {
+        let t = self.table();
+        format!("through a coordinator, CREATE TABLE {t} AS SELECT needs a primary key, which places each of its rows on a shard: name one of the SELECT's columns whose values are unique, CREATE TABLE {t} (PRIMARY KEY (column)) AS SELECT ... (or OPTIONS(shard_by = 'column')); on one server a table needs none")
+    }
+
     /// Whether it says `ON CONFLICT ... DO UPDATE`.
     pub fn updates_on_conflict(&self) -> bool {
         matches!(self, Statement::Insert { ins, .. } if matches!(&ins.on, Some(sql::OnInsert::OnConflict(oc)) if matches!(oc.action, sql::OnConflictAction::DoUpdate(_))))

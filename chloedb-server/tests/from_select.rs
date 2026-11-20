@@ -76,7 +76,7 @@ fn ticket_rows() -> Vec<String> {
 /// The statements both run, and the queries whose answers must agree.
 const MODELS: [&str; 4] = [
     "CREATE TABLE refunds (PRIMARY KEY (id)) AS SELECT id, customer, amount, notes FROM tickets WHERE MATCH(notes, 'refund')",
-    "CREATE TABLE by_customer AS SELECT customer, COUNT(*) AS n, SUM(amount) AS total FROM tickets GROUP BY customer",
+    "CREATE TABLE by_customer (PRIMARY KEY (customer)) AS SELECT customer, COUNT(*) AS n, SUM(amount) AS total FROM tickets GROUP BY customer",
     "INSERT INTO refunds (id, customer, amount, notes) SELECT id + 1000, customer, amount, notes FROM tickets WHERE id < 20",
     "INSERT INTO refunds (id, customer, amount, notes) SELECT id, customer, amount * 2, notes FROM tickets WHERE id < 50 ON CONFLICT (id) DO UPDATE SET amount = excluded.amount",
 ];
@@ -134,7 +134,14 @@ async fn on_one_server_the_rows_are_one_databases() {
     let check = svc.sql_check("INSERT INTO refunds (id) SELECT id + 5000 FROM tickets", &Params::new(), 0, Default::default()).await.unwrap();
     assert_eq!(check["runs"], true, "{check}");
     assert_eq!(check["kind"], "write", "{check}");
+    // On one server a table needs no key.
+    assert_eq!(run(&svc, LOOSE).await, 9);
+    assert_eq!(svc.catalog().into_iter().find(|s| s.table == "loose").unwrap().primary_key, None);
 }
+
+/// A table of the SELECT's rows with no key, which a coordinator cannot
+/// place on shards.
+const LOOSE: &str = "CREATE TABLE loose AS SELECT customer, COUNT(*) AS n FROM tickets GROUP BY customer";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn through_a_coordinator_the_rows_are_one_databases() {
@@ -145,7 +152,17 @@ async fn through_a_coordinator_the_rows_are_one_databases() {
     let schema = c.schema.clone();
     let svc = Arc::new(Service::new(Backend::Cluster(c), schema, agent(), 16, Duration::from_secs(10)));
     agrees_with_one_database(&svc, d).await;
-    let check = svc.sql_check("CREATE TABLE more AS SELECT id FROM tickets", &Params::new(), 0, Default::default()).await.unwrap();
+    let check = svc.sql_check("CREATE TABLE more (PRIMARY KEY (id)) AS SELECT id FROM tickets", &Params::new(), 0, Default::default()).await.unwrap();
     assert_eq!(check["runs"], true, "{check}");
     assert!(check["notes"][0].as_str().unwrap().contains("not one transaction"), "{check}");
+    // Through a coordinator a table needs a key to place its rows by: it
+    // is refused before anything is read or made, and says how to give one.
+    let e = fails(&svc, LOOSE).await;
+    assert!(e.contains("needs a primary key") && e.contains("CREATE TABLE loose (PRIMARY KEY (column)) AS SELECT"), "{e}");
+    assert!(!svc.catalog().iter().any(|s| s.table == "loose"));
+    let check = svc.sql_check(LOOSE, &Params::new(), 0, Default::default()).await.unwrap();
+    assert_eq!(check["runs"], false, "{check}");
+    assert!(check["error"].as_str().unwrap().contains("needs a primary key"), "{check}");
+    let n = run(&svc, "CREATE TABLE loose (PRIMARY KEY (customer)) AS SELECT customer, COUNT(*) AS n FROM tickets GROUP BY customer").await;
+    assert_eq!(n, 9);
 }

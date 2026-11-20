@@ -35,6 +35,7 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
             let r = match (st.creates(), there) {
                 (true, true) if !st.if_not_exists() => Err(ApiError::bad(format!("query error: table {} already exists", st.table()))),
                 (false, false) => Err(ApiError::bad(format!("query error: {}", chloedb::query::hint::no_table(st.table(), tables.iter().map(|t| t.table.as_str()))))),
+                (true, false) if cluster && !st.places_rows() => Err(ApiError::bad(format!("query error: {}", st.unplaced()))),
                 _ => {
                     let profiles = |t: &str, n: &str| svc.rank_profile(t, n);
                     chloedb::query::compound::plan_read_calling(&st.query_sql(), &tables, params, &profiles, &svc.functions()).map_err(ApiError::from).map(|_| match cluster {
