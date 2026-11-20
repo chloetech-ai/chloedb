@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-backbone"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "The internet's backbone on ChloeDB: every BGP update RIPE RIS hears, checked against RPKI, with PeeringDB's exchanges, CAIDA's relationships, RIPE Atlas's measurements and IODA's outages: what is wrong now, where, and how it connects"

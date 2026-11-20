@@ -106,6 +106,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="github.html">GitHub explorer</a>
       <a href="sound.html">Sound Explorer</a>
       <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
       <a href="app-engine.html">App engine (prototype)</a>
     </nav>
   </details>
@@ -115,7 +116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
-      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
+      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#experimental-features">Experimental features</a></li><li><a href="#demos">Demos</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -123,7 +124,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on <code>main</code>
-(November 2026, every crate and package at version 0.3.8 but the early
+(November 2026, every crate and package at version 0.3.9 but the early
 Workbench, <code>chloedb-workbench</code>, at 0.1.0). The
 <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> says what changed.</p>
 <p>ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -227,7 +228,7 @@ server of their own commit.</p>
 <p><strong>Not promised.</strong> A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.8; <code>chloedb-workbench</code> its own, 0.1.0),
+version of the last release (0.3.9; <code>chloedb-workbench</code> its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
@@ -291,7 +292,19 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   shards: a coordinator of 0.3.8 passes the follower's name on to its
   shards (<code>x-chloedb-postgres-follower</code>), and a server of 0.3.8 refuses
   other writes to a table a follower follows, so behind a 0.3.7
-  coordinator a 0.3.8 shard can refuse the follower's own writes.</li>
+  coordinator a 0.3.8 shard can refuse the follower's own writes.
+  0.3.9 keeps the shard protocol at 21 and adds the plan feature
+  <code>sql_functions</code> (<code>substr</code>, <code>trim</code>, <code>ltrim</code>, <code>rtrim</code>, <code>replace</code>, <code>floor</code>,
+  <code>ceil</code>, <code>date_diff</code> and <code>STRING_AGG</code>, with <code>STRING_AGG</code>'s separator as a
+  new field of the plan's aggregate): a 0.3.8 shard refuses a query that
+  uses one by name, and refuses <code>hash()</code> in a ranking, so upgrade the
+  shards before using them. Otherwise 0.3.8 and 0.3.9 mix in either
+  order. A 0.3.9 coordinator keeps its alert rules, audit log and Timeline
+  on its shards' copies; a copy of 0.3.8 keeps nothing of them, so they
+  survive the coordinator's restart once its shards run 0.3.9. The
+  OpenSearch API's aliases move to a table of their own
+  (<code>opensearch_aliases</code>) at the first alias change: a database taken back
+  to 0.3.8 after that sees its aliases as they were before the change.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -458,6 +471,7 @@ the crawler and Sheets are, but carries no promise of its own):</p>
 <li><code>chloedb-gh</code>, GitHub's public history since 2011: repos by what they do, why they trend, what people use instead;</li>
 <li><code>chloedb-sound</code>, free sounds searched by how they sound, with the moments inside long recordings;</li>
 <li><code>chloedb-backbone</code>, the internet's routing from public data: what is wrong now, where, and how it connects;</li>
+<li><code>chloedb-earth</code>, California and Chile from orbit: fires as GOES sees them, places by how they look, their twins across the equator and how they changed;</li>
 <li><code>chloedb-swarm</code>, simulated users, an internal test instrument;</li>
 <li><code>chloedb-experiments</code>, A/B tests of rankings on simulated users, and rankings valued on the log of another, checked against the users' truth;</li>
 <li><code>examples/feature-store</code>, a shop ranked on features ChloeDB keeps;</li>

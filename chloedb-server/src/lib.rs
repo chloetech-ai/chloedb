@@ -97,6 +97,7 @@ pub mod postgres;
 pub mod profiler;
 pub mod profiling;
 pub mod reads;
+pub mod ready;
 pub mod runbooks;
 pub mod replication;
 // `chloedb-server restore`: a checkpoint in place of a database, with its map and keys.

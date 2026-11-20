@@ -296,6 +296,29 @@ fn guards_are_refused_where_they_guard_nothing() {
     }
 }
 
+/// `a AND b AND c` binds as `(a AND b) AND c`: a guarded condition written
+/// first or between two others is joined by AND as much as one written
+/// last (the Earth explorer's mix wrote it first and was refused).
+#[test]
+fn a_guard_is_found_wherever_it_is_written_among_ands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rng = StdRng::seed_from_u64(13);
+    let db = table(&dir.path().join("g.strata"), &mut rng, 300);
+    let guarded = "MATCH(body, 'amber birch cedar', min => 1, min_rows => 40)";
+    let last = format!("SELECT id FROM t WHERE a > 2 AND c != 'x' AND {guarded} LIMIT 1000");
+    let want = rows(&db, &last);
+    let line = |r: &ResultSet| r.stats.plan.iter().find(|l| l.starts_with("guard: ")).cloned().unwrap_or_else(|| panic!("{:?}", r.stats.plan));
+    for q in [
+        format!("SELECT id FROM t WHERE {guarded} AND a > 2 AND c != 'x' LIMIT 1000"),
+        format!("SELECT id FROM t WHERE a > 2 AND {guarded} AND c != 'x' LIMIT 1000"),
+        format!("SELECT id FROM t WHERE (a > 2 AND {guarded}) AND (c != 'x' AND a IS NOT NULL) LIMIT 1000"),
+    ] {
+        let got = rows(&db, &q);
+        assert_eq!(sorted(&got), sorted(&want), "{q}");
+        assert_eq!(line(&got), line(&want), "{q}");
+    }
+}
+
 #[test]
 fn a_guard_over_a_with_counts_its_rows() {
     let dir = tempfile::tempdir().unwrap();

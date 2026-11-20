@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-experiments"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "Experiments on ChloeDB: simulated users and click models, logging policies with exact propensities, off-policy estimates checked against the truth"
