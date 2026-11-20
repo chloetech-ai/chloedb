@@ -418,10 +418,23 @@ impl Deltas {
         };
         for ((a, b), (next, co)) in pairs {
             let (a, b) = (&names[a as usize], &names[b as usize]);
-            for (field, d) in [("next", next), ("co", co)] {
-                if d != 0.0 {
-                    c.add_or_insert(row(pair_key(a, b), "pair", a, Some(b)), field, &Value::Float(d))?;
+            // A new pair's row is inserted once with both of its changes:
+            // an add to a row this transaction wrote would copy the row
+            // and log a set besides (NADIA-401).
+            let changes: Vec<(usize, &str, f64)> = [(4, "next", next), (5, "co", co)].into_iter().filter(|c| c.2 != 0.0).collect();
+            let Some(&(_, first, d)) = changes.first() else { continue };
+            let key = Value::Str(pair_key(a, b));
+            if c.add(&key, first, &Value::Float(d))? {
+                for &(_, field, d) in &changes[1..] {
+                    c.add(&key, field, &Value::Float(d))?;
                 }
+            } else {
+                let Value::Str(id) = key else { unreachable!("a pair's key") };
+                let mut r = row(id, "pair", a, Some(b));
+                for &(i, _, d) in &changes {
+                    r[i] = Value::Float(d);
+                }
+                c.insert(r)?;
             }
         }
         for (i, d) in n {

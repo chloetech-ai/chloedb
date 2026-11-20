@@ -20,8 +20,13 @@ changes collect under "Unreleased".
   `optimize` without the vacuum), which takes `recommend` back to its
   time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
   counts (a pair is two numbers, not two names), lets go of the events
-  it read as it counts them, flushes the counts once it commits and
-  gives the freed memory back to the system. A slice's device (`nearby`
+  it read as it counts them, writes each new pair's row once rather than
+  inserting it and setting it again, flushes the counts once it commits
+  and gives the freed memory back to the system; and a commit hands its
+  rows to the memtable rather than copies of them, and keeps its log
+  record only when it ships it. Its peak over 200,000 events is 0.81 GB
+  against 1.37 GB before (measured on a 4-core, 15 GB Linux
+  container). A slice's device (`nearby`
   in Python and JavaScript) compacts its database once the rows of the
   tiles it dropped outnumber those it holds, so its folder no longer
   grows with every taste.
