@@ -524,6 +524,10 @@ impl Default for Slo {
     }
 }
 
+/// Why a replica takes no write from a client: also what a copy elected
+/// primary says until its predecessor's lease ends ([`crate::coord::shard_state`]).
+pub const REPLICA_NO_WRITES: &str = "a replica takes no writes from clients";
+
 /// Where a server runs: its name if given (`--node-name`), the machine
 /// and zone (`CHLOEDB_NODE` or `NODE_NAME`, `CHLOEDB_ZONE`), and its image
 /// (`CHLOEDB_IMAGE`, which the operator sets; its digest when it pins one,
@@ -4469,6 +4473,7 @@ impl Service {
                         steps::around(&mut rs.stats.steps, te, started, ended, back);
                         (rs, Vec::new())
                     })
+                    .map_err(ApiError::from)
                 })
             }
             Backend::Cluster(c) => {
@@ -4486,6 +4491,10 @@ impl Service {
                     let _held = permit;
                     // Shards any leaf was answered without (partial answers).
                     let mut missing: Vec<String> = Vec::new();
+                    // A shard's refusal as it was (503 when every copy of a
+                    // shard failed, 504, 429), not as the statement's own
+                    // mistake, a 400 (KENJI-405): clients retry the first.
+                    let mut failed: Option<ApiError> = None;
                     // The shards run the leaves; DataFusion or the operators
                     // run the rest here, on this server's cores.
                     let checks = ExecOptions { deadline: Some(deadline), cancel: Some(stop.clone()), memory, profile: req.profile, engine, threads, ..ExecOptions::default() };
@@ -4499,7 +4508,13 @@ impl Service {
                         // DataFusion takes Arrow columns past `over` rows.
                         let arrow = (over != usize::MAX).then_some(over);
                         let step = QueryReq { sql, plan: Some(Arc::new(leaf.clone())), partial: req.partial, after: req.after.clone(), profile: req.profile, arrow, ..Default::default() };
-                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| chloedb::Error::Query(e.message))?;
+                        let mut m = rt.block_on(telemetry::within(trace.clone(), obs::scope(id.clone(), c.query(&step, schema, &select, deadline)))).map_err(|e| {
+                            let m = chloedb::Error::Query(e.message.clone());
+                            if e.status != 400 {
+                                failed = Some(e);
+                            }
+                            m
+                        })?;
                         for s in std::mem::take(&mut m.missing) {
                             if !missing.contains(&s) {
                                 missing.push(s);
@@ -4507,14 +4522,18 @@ impl Service {
                         }
                         Ok(m.leaf())
                     }, &checks);
-                    rs.map(|rs| (rs, missing))
+                    rs.map(|rs| (rs, missing)).map_err(|e| match failed.take() {
+                        // The engine passed the shard's error on (perhaps with context).
+                        Some(f) if e.to_string().contains(&f.message) => f,
+                        _ => ApiError::from(e),
+                    })
                 }))
                 .await
             }
         };
         drop(cancel);
         match r {
-            Ok(r) => r.map_err(ApiError::from),
+            Ok(r) => r,
             Err(e) => Err(ApiError::internal(e)),
         }
     }
@@ -6776,7 +6795,7 @@ impl Service {
                     true => Ok(()),
                     false => Err("this replica serves no reads while it catches up with its primary, or has not heard from it".into()),
                 },
-                Err("a replica takes no writes from clients".into()),
+                Err(REPLICA_NO_WRITES.into()),
             ),
         };
         let writes = match self.failing() {

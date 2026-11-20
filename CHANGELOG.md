@@ -36,6 +36,29 @@ changes collect under "Unreleased".
   the database file beside the tables' live data, and `GET
   /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
   its `totals`.
+- **An honest command center in a failover and signed out** (persona
+  study round 4, OLU-401, OLU-303, OLU-402, OLU-403, OLU-407, KENJI-405,
+  KENJI-403). While the copy just elected primary waits for the old
+  primary's lease to run out, `/v1/cluster` says `electing` and the
+  failover window (`failover_window_ms`), and Home, Cluster and
+  `chloedb-server cc` say writes are held, to wait, and not to restart that
+  copy, where they told on-call to restart it. Copies are named by their
+  `--node-name` in the command center, cc, the fleet's texts and alerts'
+  messages (a pod the operator runs keeps `s1-0`); `short` stays the
+  address's, and an alert's `where` gives the name beside it (`name`).
+  Signed out, Home's "Before production" list says "needs a key to tell"
+  for what it could not read, not "One server" or "No alert rules". A built-in rule's paging
+  message carries its runbook's link, and a RESOLVED says how long the
+  alert fired ("after firing for 17 s"). A pair of copies with failover on
+  is still `ok`, and `/v1/cluster` (`can_lose`, `warnings`) and Home now
+  say it survives no loss. **Changed:** a statement the coordinator runs in
+  parts (an aggregation, as the OpenSearch API sends) while every copy of a
+  shard is down is refused 503, not 400 "query error", so clients retry it
+  on another node; so is a search whose shard's copies could not be
+  reached however the connection failed (broken mid-call, its request
+  dropped: a 502 "transport error" or "operation was canceled" before), as
+  one whose copies refused the connection already was
+  ([server.md](docs/chloedb/server.md#fleet-health)).
 - **The command center designs a search stage by stage, as a template
   apps call by name** (`chloedb-server`). The Query designer (Build, key
   `z`) takes the text a person types as its one input and steps through
