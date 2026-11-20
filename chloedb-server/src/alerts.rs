@@ -798,7 +798,8 @@ impl Event {
             metric: r.metric.clone(),
             eval: r.eval.clone(),
             window_s: r.window_s,
-            where_: shown.iter().filter_map(|w| w["short"].as_str().or_else(|| w["name"].as_str()).map(String::from)).collect(),
+            // A copy by the name people read (`--node-name`), else its short name.
+            where_: shown.iter().filter_map(|w| w["name"].as_str().or_else(|| w["short"].as_str()).map(String::from)).collect(),
             place: shown.iter().take(20).map(|w| (*w).clone()).collect(),
             why: None,
             by: None,
@@ -962,6 +963,8 @@ struct CopySt {
     value: Option<f64>,
     since_ms: u64,
     short: String,
+    /// The name people read ([`crate::coord::shown`]).
+    name: String,
     shard: usize,
     /// The copy evaluates another version of the rule.
     differs: bool,
@@ -1868,15 +1871,19 @@ impl Alerts {
             }
             for r in replicas.iter() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                // The name people gave it (`--node-name`), else its short name (OLU-402).
-                let short = if r["short"].is_string() { crate::coord::shown(r) } else { crate::coord::copy_short(i, &url) };
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // `short` stays the copy's short name, as `/v1/cluster` gives
+                // it, which clients match copies by; `name` is what people
+                // read, its `--node-name` when it gave one (OLU-402), and what
+                // the messages say.
+                let name = if r["short"].is_string() { crate::coord::shown(r) } else { short.clone() };
                 if !answers(r) {
                     let since = r["down_since_ms"].as_u64();
-                    places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
+                    places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "name": name, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
                 } else {
                     let seen = r["detail"]["load"]["t"].as_u64().or_else(|| r["last_seen_ms"].as_u64());
                     if seen.is_none_or(|s| t.saturating_sub(s) > SILENT_MS) {
-                        places.entry("copies_silent").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "last_ms": seen}));
+                        places.entry("copies_silent").or_default().push(json!({"copy": url, "short": short, "name": name, "shard": i, "state": "firing", "last_ms": seen}));
                     }
                 }
             }
@@ -1943,8 +1950,9 @@ impl Alerts {
             let i = s["shard"].as_u64().unwrap_or(0) as usize;
             for r in s["replicas"].as_array().into_iter().flatten() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                // The name people gave it (`--node-name`), else its short name (OLU-402).
-                let short = if r["short"].is_string() { crate::coord::shown(r) } else { crate::coord::copy_short(i, &url) };
+                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // The name people read (`--node-name`), beside the short name clients match by (OLU-402).
+                let name = if r["short"].is_string() { crate::coord::shown(r) } else { short.clone() };
                 let reported = &r["detail"]["alerts"]["rules"];
                 if answers(r) {
                     for f in r["detail"]["alerts"]["firing"].as_array().into_iter().flatten() {
@@ -1952,7 +1960,7 @@ impl Alerts {
                         let id = f["id"].as_str().unwrap_or_default();
                         if !rules.iter().any(|x| x.id == id && x.copies()) {
                             let mut one = f.clone();
-                            (one["copy"], one["short"], one["shard"]) = (json!(url), json!(short), json!(i));
+                            (one["copy"], one["short"], one["name"], one["shard"]) = (json!(url), json!(short), json!(name), json!(i));
                             on_copies.push(one);
                         }
                     }
@@ -1964,8 +1972,8 @@ impl Alerts {
                     present.insert((rule.id.clone(), url.clone()));
                     let key = (rule.id.clone(), url.clone());
                     let mine = &reported[&rule.id];
-                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), shard: i, differs: false, unheard_ms: Some(t), reports: true, own_state: "no_data".into() });
-                    e.short = short.clone();
+                    let e = copies.entry(key).or_insert_with(|| CopySt { state: "no_data".into(), value: None, since_ms: t, short: short.clone(), name: name.clone(), shard: i, differs: false, unheard_ms: Some(t), reports: true, own_state: "no_data".into() });
+                    (e.short, e.name) = (short.clone(), name.clone());
                     match mine["state"].as_str() {
                         Some(state) => {
                             e.value = mine["value"].as_f64();
@@ -2050,7 +2058,7 @@ impl Alerts {
                 .filter(|&j| (mine[j].reports && mine[j].state != "ok") || mine[j].differs)
                 .map(|j| {
                     let c = mine[j];
-                    let mut w = json!({"copy": urls[j], "short": c.short, "shard": c.shard, "state": c.state, "value": c.value, "since_ms": c.since_ms});
+                    let mut w = json!({"copy": urls[j], "short": c.short, "name": c.name, "shard": c.shard, "state": c.state, "value": c.value, "since_ms": c.since_ms});
                     if c.differs {
                         w["rule_differs"] = json!(true);
                         w["copy_state"] = json!(c.own_state);
@@ -2507,7 +2515,7 @@ impl Alerts {
                 if firing.is_empty() {
                     return None;
                 }
-                Some((r, firing.iter().filter_map(|w| w["shard"].as_u64()).collect(), firing.iter().filter_map(|w| w["short"].as_str().map(String::from)).collect()))
+                Some((r, firing.iter().filter_map(|w| w["shard"].as_u64()).collect(), firing.iter().filter_map(|w| w["name"].as_str().or_else(|| w["short"].as_str()).map(String::from)).collect()))
             })
             .collect();
         causes.sort_by_key(|(r, ..)| sev_rank(&r.severity));
@@ -4716,6 +4724,8 @@ mod tests {
             fired = fired.or_else(|| a.check_cluster(&snap(t), t).into_iter().find(|e| e.rule == "copy-down" && e.state == "firing"));
         }
         let e = fired.expect("copy-down fires");
+        // `short` stays `/v1/cluster`'s, which clients match copies by; `name` is what people read.
+        assert_eq!((e.place[0]["short"].as_str(), e.place[0]["name"].as_str()), (Some("127.0.0.1:17754"), Some("s1a")), "{:?}", e.place);
         let text = a.message(&e);
         assert!(text.starts_with("[chloedb FIRING warning] A copy is down on olu-lab/s1a: copies_down = 1"), "{text}");
         assert!(text.ends_with("Runbook: A copy is down https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down"), "{text}");

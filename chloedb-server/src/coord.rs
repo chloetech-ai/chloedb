@@ -2288,7 +2288,18 @@ impl Coordinator {
                             asked_at.push(Instant::now());
                             hedge_at = Instant::now() + hedge_after(next);
                         } else if pending.is_empty() {
+                            // A copy whose connection broke mid-call (killed,
+                            // or cut off) fails with Unknown ("transport
+                            // error"), which a server never answers itself (its
+                            // own failures are Internal): the shard did not
+                            // answer, as when no copy takes the connection
+                            // (Unavailable), so the read is 503 either way, which
+                            // clients send again (KENJI-405). A read only.
+                            let unreached = s.code() == Code::Unknown;
                             let mut e = self.named(&t.replicas[i][r].url, s);
+                            if unreached {
+                                e.status = 503;
+                            }
                             if order.len() > 1 {
                                 e.message = format!("every replica of shard {i} failed; the last: {}", e.message);
                             }
