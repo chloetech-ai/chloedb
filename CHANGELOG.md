@@ -11,6 +11,11 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A server keeps no parameter values unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405).
 - **ChloeCtx believes less of what it reads.** A secret named just before
   its value in a sentence ("the staging password is …", "password: …",
   "api key …") is redacted as `KEY=value` is, and a session whose prompt
