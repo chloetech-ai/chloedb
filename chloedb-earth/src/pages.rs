@@ -117,7 +117,8 @@ pub fn other(r: &str) -> &'static str {
 
 pub const FIRE_CARD: &str = "id, region, name, town, adm1, adm2, place, lat, lon, start, last, state, seen_start, scans, pixels, peak_px, peak_mw, mw_now, mw_1h, energy, area_km2, spread_km, hours, people5, trees, shrubs, grass, built, slope, elev, climate, burned_before, gust, wind, rh, outlook_km2, outlook_lo, outlook_hi";
 
-pub const PLACE_CARD: &str = "id, region, country, adm1, adm2, town, town_km, town_pop, lat, lon, cell, taken, product, kind, trees, shrubs, grass, crops, built, bare, snow, water, wetland, elev, elev_min, elev_max, slope, steep, people, climate, climate_group, mine, crop, crop_pct, fire_years, fire_px, last_fire, twin, twin_sim, words, about";
+pub const PLACE_CARD: &str = "id, region, country, adm1, adm2, town, town_km, town_pop, lat, lon, cell, taken, product, kind, trees, shrubs, grass, crops, built, bare, snow, water, wetland, elev, elev_min, elev_max, slope, steep, people, climate, climate_group, mine, crop, crop_pct, fire_years, fire_px, last_fire, twin, twin_sim, words, about, \
+    sub_km, sub_kv, sub_name, line_km, line_kv, road_km, road_name, solar, solar_km, solar_name, protected, protected_strict, protected_name";
 
 /// A small card of a place, for lists.
 pub const PLACE_SMALL: &str = "id, region, adm1, adm2, town, lat, lon, kind, climate, trees, shrubs, crops, built, bare, water, people, product";
@@ -302,7 +303,7 @@ pub async fn place(c: &Ctx<'_>, id: &str) -> R<Value> {
         c.soft("places here that look like it", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r AND {away} ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": region, "v": me, "s": s, "n": n, "w": w, "e": e})),
         c.soft("its twins in the other region", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": other(&region), "v": me})),
         c.soft("fires near it", format!("SELECT {FIRE_CARD} FROM ea_fires WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e ORDER BY start DESC LIMIT 30"), json!({"s": fs, "n": fnn, "w": fw, "e": fe})),
-        c.soft("its years", "SELECT id, year, taken, scene, cloud, ndvi, label FROM ea_years WHERE place = :p ORDER BY year LIMIT 20", json!({"p": id})),
+        c.soft("its years", "SELECT id, year, taken, scene, cloud, ndvi, label FROM ea_years WHERE place = :p ORDER BY taken LIMIT 40", json!({"p": id})),
         c.soft("how it changed", "SELECT id, first, last, drift, step_year, step, from_label, to_label, arc FROM ea_changes WHERE id = :p", json!({"p": id})),
         c.soft("CAL FIRE's perimeters around it", "SELECT id, name, year, alarm, contained, acres, cause, lat, lon, shape FROM ea_perimeters WHERE s <= :n AND n >= :s AND w <= :e AND e >= :w ORDER BY year DESC LIMIT 40", json!({"s": ps, "n": pn, "w": pw, "e": pe})),
         c.soft("the fires that burned this square", "SELECT perimeter, share FROM ea_burns WHERE place = :p LIMIT 100", json!({"p": id})),
@@ -664,39 +665,92 @@ pub const CHANGE_CARD: &str = "id, region, lat, lon, town, adm1, first, last, dr
 
 /// Changed places: the most changed, by labels, or searched by what they
 /// were and what they became.
-pub async fn changed(c: &Ctx<'_>, q: &str, region: &str, from: &str, to: &str) -> R<Value> {
+/// What Find change is asked: words, a region, a point and a distance, the
+/// labels at the two ends, the year it moved most and how far at least.
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct ChangeAsk {
+    #[serde(default)]
+    pub q: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub to: String,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub km: Option<f64>,
+    /// The year of the picture after the biggest step.
+    pub year: Option<i64>,
+    /// 1 minus the cosine of the first and last looks, at least.
+    pub drift: Option<f64>,
+}
+
+pub async fn changed(c: &Ctx<'_>, a: &ChangeAsk) -> R<Value> {
     let mut p = json!({});
-    let mut wh = Vec::new();
-    if !region.is_empty() {
-        wh.push("region = :r");
-        p["r"] = json!(region_ok(region)?);
+    let mut wh: Vec<String> = Vec::new();
+    if !a.region.is_empty() {
+        wh.push("region = :r".into());
+        p["r"] = json!(region_ok(&a.region)?);
     }
-    if !from.is_empty() {
-        wh.push("from_label = :fl");
-        p["fl"] = json!(from);
+    if !a.from.is_empty() {
+        wh.push("from_label = :fl".into());
+        p["fl"] = json!(a.from);
     }
-    if !to.is_empty() {
-        wh.push("to_label = :tl");
-        p["tl"] = json!(to);
+    if !a.to.is_empty() {
+        wh.push("to_label = :tl".into());
+        p["tl"] = json!(a.to);
+    }
+    if let Some(y) = a.year.filter(|y| (2000..=2100).contains(y)) {
+        wh.push("step_year = :y".into());
+        p["y"] = json!(y);
+    }
+    if let Some(d) = a.drift.filter(|d| d.is_finite() && *d > 0.0) {
+        wh.push("drift >= :d".into());
+        p["d"] = json!(d.min(2.0));
+    }
+    let circle = match (a.lat, a.lon, a.km.filter(|k| k.is_finite()).map(|k| k.clamp(1.0, 400.0))) {
+        (Some(lat), Some(lon), Some(km)) if lat.is_finite() && lon.is_finite() => Some((lat, lon, km)),
+        _ => None,
+    };
+    if let Some((lat, lon, km)) = circle {
+        let (s, n, w, e) = crate::watch::bbox(lat, lon, km);
+        for (k, v) in [("s", s), ("n", n), ("w", w), ("e", e)] {
+            p[k] = json!(v);
+        }
+        wh.push("lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e".into());
     }
     let wh = if wh.is_empty() { String::new() } else { format!("WHERE {}", wh.join(" AND ")) };
+    let limit = if circle.is_some() { 200 } else { 60 };
+    let q = a.q.as_str();
     let (sql, what) = match split_change(q) {
-        Some((a, b)) => {
-            p["a"] = c.words(&a);
-            p["b"] = c.words(&b);
-            (format!("SELECT {CHANGE_CARD}, score() AS score FROM ea_changes {wh} ORDER BY similarity(before, :a) + similarity(after, :b) DESC LIMIT 48"), format!("places that were \u{201c}{a}\u{201d} and became \u{201c}{b}\u{201d}"))
+        Some((x, y)) => {
+            p["a"] = c.words(&x);
+            p["b"] = c.words(&y);
+            (format!("SELECT {CHANGE_CARD}, score() AS score FROM ea_changes {wh} ORDER BY similarity(before, :a) + similarity(after, :b) DESC LIMIT {limit}"), format!("places that were \u{201c}{x}\u{201d} and became \u{201c}{y}\u{201d}"))
         }
         None if !q.trim().is_empty() => {
             p["b"] = c.words(q);
-            (format!("SELECT {CHANGE_CARD}, score() AS score FROM ea_changes {wh} ORDER BY similarity(after, :b) - similarity(before, :b) DESC LIMIT 48"), format!("places that became \u{201c}{}\u{201d}", q.trim()))
+            (format!("SELECT {CHANGE_CARD}, score() AS score FROM ea_changes {wh} ORDER BY similarity(after, :b) - similarity(before, :b) DESC LIMIT {limit}"), format!("places that became \u{201c}{}\u{201d}", q.trim()))
         }
-        None => (format!("SELECT {CHANGE_CARD} FROM ea_changes {wh} ORDER BY drift DESC LIMIT 48"), "the places that changed most".to_string()),
+        None => (format!("SELECT {CHANGE_CARD} FROM ea_changes {wh} ORDER BY drift DESC LIMIT {limit}"), "the places that changed most".to_string()),
     };
-    let (rows, labels) = tokio::join!(
+    let (rows, labels, all) = tokio::join!(
         c.rows(&what, sql, p),
         c.soft("the changes by label", "SELECT from_label, to_label, COUNT(*) AS places FROM ea_changes WHERE from_label <> to_label GROUP BY from_label, to_label ORDER BY places DESC LIMIT 30", json!({})),
+        c.soft("every place with years, for the map", "SELECT id, lat, lon, drift FROM ea_changes LIMIT 10000", json!({})),
     );
-    Ok(json!({"q": q, "what": what, "region": region, "places": rows?, "labels": labels}))
+    let mut rows = rows?;
+    if let Some((lat, lon, km)) = circle {
+        rows.retain(|r| crate::fires::km(lat, lon, r.f("lat"), r.f("lon")) <= km);
+        rows.truncate(60);
+        for r in rows.iter_mut() {
+            let d = crate::fires::km(lat, lon, r.f("lat"), r.f("lon"));
+            r.insert("km".into(), json!((d * 10.0).round() / 10.0));
+            r.insert("dir".into(), json!(crate::watch::direction(lat, lon, r.f("lat"), r.f("lon"))));
+        }
+    }
+    Ok(json!({"q": q, "what": what, "region": a.region, "places": rows, "labels": labels, "all": all, "watch_step": crate::watch::CHANGE_STEP}))
 }
 
 /// The places whose change went the same way: the nearest direction from
@@ -705,7 +759,7 @@ pub async fn same_path(c: &Ctx<'_>, id: &str) -> R<Value> {
     let rows = c.rows("the change", format!("SELECT {CHANGE_CARD} FROM ea_changes WHERE id = :id"), json!({"id": id})).await?;
     let Some(me) = rows.into_iter().next() else { return Err(ApiError(axum::http::StatusCode::NOT_FOUND, format!("no change at {id}"))) };
     let (years, same) = tokio::join!(
-        c.soft("its years", "SELECT id, year, taken, scene, cloud, ndvi, label FROM ea_years WHERE place = :p ORDER BY year LIMIT 20", json!({"p": id})),
+        c.soft("its years", "SELECT id, year, taken, scene, cloud, ndvi, label FROM ea_years WHERE place = :p ORDER BY taken LIMIT 40", json!({"p": id})),
         c.soft("places that changed the same way", format!("SELECT {CHANGE_CARD}, score() AS score FROM ea_changes WHERE id <> :id ORDER BY similarity(delta, :v) DESC LIMIT 24"), json!({"id": id, "v": {"vector_of": id, "table": "ea_changes", "field": "delta"}})),
     );
     Ok(json!({"change": me, "years": years, "same": same}))
@@ -822,6 +876,8 @@ pub const SOURCES: &[(&str, &str, &str, &str)] = &[
     ("GOES GeoColor from NASA GIBS", "Satellite now on Live: the newest picture of the sky, every 10 minutes", "free to use with credit (NOAA, CIRA, NASA GIBS)", "https://www.earthdata.nasa.gov/gibs"),
     ("GOES-18 and -19 Clear Sky Mask and Aerosol Detection (ABI L2 ACM, ADP)", "the clouds and the smoke over each place: CONUS every 5 minutes, the full disk every 10", "public domain (NOAA)", "https://registry.opendata.aws/noaa-goes/"),
     ("CHELSA 2.1 climatologies (Karger et al.)", "each place's climate for 1981-2010 and, from five CMIP6 models under SSP3-7.0, for 2071-2100, at 1 km", "CC BY 4.0", "https://chelsa-climate.org/"),
+    ("OpenStreetMap", "power lines, substations, main roads, solar farms, and Chile's protected land, for the Land finder", "ODbL (© OpenStreetMap contributors)", "https://www.openstreetmap.org/copyright"),
+    ("PAD-US 4.1 (USGS)", "California's protected land and its GAP status", "public domain (USGS)", "https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-overview"),
     ("Element 84 Earth Search (Sentinel-2 L2A)", "each place's picture every year, for how it changed", "free licence (Copernicus Sentinel data)", "https://earth-search.aws.element84.com/v1"),
 ];
 
