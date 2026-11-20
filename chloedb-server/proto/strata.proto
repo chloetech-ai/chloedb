@@ -1381,6 +1381,13 @@ message Graph {
   // The edge table walked instead of `field`, which is then the primary
   // key (plan feature "edge_table").
   optional string edges = 13;
+  // `seeds` and `weights` are the walk's result, which the coordinator
+  // found over the shards a round of reads per hop: each key's hop
+  // distance, place on the path or PageRank score. The shard walks
+  // nothing; it answers for the rows of those keys it holds (plan feature
+  // "graph_given"; a shard from before it refuses the plan by its
+  // feature).
+  bool given = 14;
 }
 
 message Reachable {

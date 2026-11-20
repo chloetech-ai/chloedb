@@ -21,6 +21,18 @@ changes collect under "Unreleased".
   `[` as JSON without a `format`; `/v1/query` refusing a write points to
   `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
   table's search by words and meaning no longer reads "1–20 of 4 rows".
+- **Graph walks and recommenders run through a coordinator.** `REACHABLE`,
+  `PATH`, `hops()` and `ppr()` over an `EDGES` column or an edge table are
+  walked by the coordinator, a round of reads by key over every shard per
+  hop, and answer as one database does; joins along links run on a cluster
+  too, and a coordinator of one shard leaves the walk to it. A recommender
+  runs on a cluster when its events table is placed by its user column
+  (`OPTIONS(shard_by = 'usr')`): each shard counts its own events and
+  `recommend()` reads the counts summed over the shards. Plans that carry a
+  walk's answer need the plan feature `graph_given` (shard protocol:
+  `Graph.given`), which older shards refuse. Walks over a `VECTOR` column
+  are still refused on a cluster ([cluster limits](docs/chloedb/cluster-limits.md#graphs-and-recommenders)).
+
 - **Keys bound to a tenant on the OpenSearch API (KENJI-402).** One index
   shared by tenants now gets a key per tenant: `POST /v1/admin/keys
   {"name": "tenant-t007", "scope": "write", "tenant": {"index": "tickets",

@@ -61,8 +61,11 @@ pub fn check(svc: &Service, sql: &str, params: &Params) -> Json {
                 }
                 let schema = tables.iter().find(|t| t.table.eq_ignore_ascii_case(plan.table())).ok_or_else(|| ApiError::bad(format!("query error: no such table: {}", plan.table())))?;
                 let select = chloedb::query::bind(&chloedb::query::profile::written_out(sql, &profiles)?, schema, params)?;
-                if !select.graphs.is_empty() {
-                    return Err(ApiError::bad(crate::coord::GRAPHS_ON_SHARDS));
+                if let Some(e) = crate::coord::graph::refusal(schema, &select) {
+                    return Err(e);
+                }
+                if !select.graphs.is_empty() && !crate::coord::graph::shard_local(schema, &select) {
+                    return Ok(vec!["a graph walk over several shards runs on the coordinator, a round of reads by key over every shard per hop (ppr: per step its pushes spread)".to_string()]);
                 }
                 Ok(Vec::new())
             });

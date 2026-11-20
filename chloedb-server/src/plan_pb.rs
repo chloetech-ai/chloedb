@@ -305,6 +305,7 @@ fn graph(g: &Graph) -> pb::Graph {
         k: g.k,
         min_sim: g.min_sim,
         weights: g.weights.clone(),
+        given: g.given,
     }
 }
 
@@ -667,6 +668,7 @@ fn from_graph(g: pb::Graph) -> Result<Graph, ApiError> {
         k: g.k,
         min_sim: g.min_sim.map(|x| finite(x, "min_sim")).transpose()?,
         weights: g.weights.into_iter().map(|w| finite(w, "a seed's weight")).collect::<Result<_, ApiError>>()?,
+        given: g.given,
     })
 }
 

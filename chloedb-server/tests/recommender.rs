@@ -1,7 +1,8 @@
 //! A recommender over HTTP: `CREATE RECOMMENDER` through `/v1/sql`, events
 //! written by `/v1/write` feeding its counts, `recommend(...)` ranking a
-//! table's rows through `/v1/query`; a coordinator refuses both, and runs
-//! a `FULL JOIN` as one database does.
+//! table's rows through `/v1/query`; through a coordinator of two shards,
+//! a recommender over events placed by user, and a `FULL JOIN`, answer as
+//! one database does.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -127,7 +128,7 @@ fn local(db: &Db, sql: &str) -> Vec<Vec<Value>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_coordinator_full_joins_and_refuses_recommenders() {
+async fn a_coordinator_full_joins_and_recommends() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let urls = vec![shard(create(d, "s0.strata")).await, shard(create(d, "s1.strata")).await];
@@ -157,9 +158,41 @@ async fn a_coordinator_full_joins_and_refuses_recommenders() {
         assert_eq!(got, local(&one, q), "{q}");
         assert!(!got.is_empty(), "{q}");
     }
-    run("CREATE TABLE events (id KEYWORD PRIMARY KEY, usr KEYWORD, item KEYWORD, ts INT)".into()).await.unwrap();
-    let e = run("CREATE RECOMMENDER shop ON events(usr, item, ts)".into()).await.err().expect("refused");
-    assert!(e.contains("does not run through a coordinator"), "{e}");
-    let e = svc.query(QueryReq { sql: "SELECT id FROM l ORDER BY recommend('shop', 'u1') DESC".into(), ..Default::default() }).await.err().expect("refused").message;
-    assert!(e.contains("does not run through a coordinator"), "{e}");
+    // A recommender over several shards counts each user's events where
+    // they are: the events table must be placed by its user column.
+    run("CREATE TABLE loose (id KEYWORD PRIMARY KEY, usr KEYWORD, item KEYWORD, ts INT)".into()).await.unwrap();
+    let e = run("CREATE RECOMMENDER drift ON loose(usr, item, ts)".into()).await.err().expect("refused");
+    assert!(e.contains("shard_by = 'usr'"), "{e}");
+    let mut setup = vec![
+        "CREATE TABLE goods (id KEYWORD PRIMARY KEY, title TEXT)".to_string(),
+        format!("INSERT INTO goods VALUES {}", (0..12).map(|i| format!("('g{i}', 'good {i}')")).collect::<Vec<_>>().join(", ")),
+        "CREATE TABLE events (id KEYWORD PRIMARY KEY, usr KEYWORD NOT NULL, item KEYWORD, ts INT) OPTIONS(shard_by = 'usr')".to_string(),
+    ];
+    // Users walk the goods in strides, so what comes next depends on what
+    // came before, and some goods are more popular than others.
+    let event = |u: usize, j: usize| format!("('u{u}-{j}', 'u{u}', 'g{}', {})", (u * 3 + j * (1 + u % 3)) % 12, 1_000 * u + j);
+    setup.push(format!("INSERT INTO events VALUES {}", (0..30).flat_map(|u| (0..4).map(move |j| (u, j))).map(|(u, j)| event(u, j)).collect::<Vec<_>>().join(", ")));
+    setup.push("CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS goods".to_string());
+    // Events written after it are counted as they arrive, on their shard.
+    setup.push(format!("INSERT INTO events VALUES {}", (0..30).flat_map(|u| (4..7).map(move |j| (u, j))).map(|(u, j)| event(u, j)).collect::<Vec<_>>().join(", ")));
+    for s in setup {
+        run(s.clone()).await.unwrap_or_else(|e| panic!("{s}: {e}"));
+        local(&one, &s);
+    }
+    let mut queries = vec![
+        "SELECT id FROM goods ORDER BY recommend('shop', 'u1') DESC, id LIMIT 4".to_string(),
+        "SELECT id, recommend('shop', 'u7') AS r FROM goods ORDER BY r DESC, id LIMIT 5".to_string(),
+        "SELECT * FROM recommend('shop', 'nobody', k => 5)".to_string(),
+    ];
+    queries.extend((0..30).step_by(4).map(|u| format!("SELECT * FROM recommend('shop', 'u{u}', k => 6)")));
+    for q in &queries {
+        let got = svc.query(QueryReq { sql: q.clone(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{q}: {}", e.message)).rs.rows;
+        assert_eq!(got, local(&one, q), "{q}");
+        assert!(!got.is_empty(), "{q}");
+    }
+    let a = svc.query(QueryReq { sql: queries[3].clone(), ..Default::default() }).await.unwrap();
+    assert!(a.rs.stats.plan.iter().any(|l| l.contains("counts summed over the shards")), "{:?}", a.rs.stats.plan);
+    run("DROP RECOMMENDER shop".into()).await.unwrap();
+    let e = svc.query(QueryReq { sql: queries[0].clone(), ..Default::default() }).await.err().expect("dropped").message;
+    assert!(e.contains("no recommender named shop"), "{e}");
 }

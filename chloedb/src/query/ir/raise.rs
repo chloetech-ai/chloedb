@@ -722,6 +722,12 @@ impl<'a> Raise<'a> {
             return Err(err(format!("a traversal follows one vector per row: {} is a multi-vector field", self.schema.fields[field].name)));
         }
         let seeds = match (self.seeds(&g.seeds)?, g.weights.as_slice()) {
+            // A coordinator's result: a value per key, one key once.
+            (Seeds::Keys(keys), ws) if g.given => match keys.len() == ws.len() && ws.iter().all(|w| !w.is_nan()) {
+                true => Seeds::Given(keys.into_iter().zip(ws.iter().copied()).collect()),
+                false => return Err(err("a graph's result given holds a value per key")),
+            },
+            _ if g.given => return Err(err("a graph's result given is a list of keys")),
             (s, []) => s,
             (Seeds::Keys(keys), ws) if keys.len() == ws.len() && ws.iter().all(|w| w.is_finite()) => Seeds::Weighted(keys.into_iter().zip(ws.iter().copied()).collect()),
             _ => return Err(err("a traversal's weights are finite numbers, one per key of its seeds")),

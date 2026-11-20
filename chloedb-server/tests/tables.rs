@@ -249,12 +249,10 @@ async fn three_shards_answer_like_one_database() {
         same(q, ordered, &query(&whole, q).await, &query(&coord, q).await);
     }
 
-    // The coordinator refuses a graph query, saying what to do instead. A
-    // walk from the application, a round of reads by key per hop, finds
-    // the rows the whole database's walk does.
+    // A walk from the application, a round of reads by key per hop, finds
+    // the rows the whole database's walk does, and so does the
+    // coordinator's own walk ([`graph_walks_answer_like_one_database`]).
     let walk = |seed: &str| format!("SELECT id FROM items WHERE REACHABLE(cooc, '{seed}', hops => 2) ORDER BY id LIMIT 1000");
-    let e = coord.query(QueryReq { sql: walk("i1"), ..Default::default() }).await.err().unwrap();
-    assert!(e.status == 400 && e.message.contains("not supported through a coordinator") && e.message.contains("On a cluster"), "{}", e.message);
     let ids = |j: Json| j["rows"].as_array().unwrap().iter().map(|r| r[0].as_str().unwrap().to_string()).collect::<std::collections::BTreeSet<String>>();
     let mut seeds = 0;
     for i in 0..ITEMS {
@@ -263,6 +261,7 @@ async fn three_shards_answer_like_one_database() {
         if want.len() < 3 {
             continue;
         }
+        assert_eq!(ids(query(&coord, &walk(&seed)).await), want, "the coordinator's walk from {seed}");
         let mut seen = std::collections::BTreeSet::from([seed.clone()]);
         let mut frontier = vec![seed.clone()];
         for _ in 0..2 {
@@ -357,6 +356,113 @@ async fn three_shards_answer_like_one_database() {
     assert_eq!(names(&again), ["items", "users", "events"]);
     for s in &shards {
         assert!(!names(s).contains(&"notes".to_string()));
+    }
+}
+
+/// Graph queries whose rows the shards hold apart, walked by the
+/// coordinator a round of reads per hop: the same rows at the same hops
+/// as one database's walk, shortest paths of the same length, PageRank
+/// within a millionth, over an EDGES field and over an edge table; and the
+/// cluster's only shard walking them itself.
+const GRAPH_QUERIES: [&str; 14] = [
+    "SELECT id, hops() FROM items WHERE REACHABLE(cooc, 'i19', hops => 2) ORDER BY hops(), id LIMIT 1000",
+    "SELECT id, hops() FROM items WHERE REACHABLE(cooc, 'i145', hops => 3, dir => 'in') ORDER BY hops(), id LIMIT 1000",
+    "SELECT id, hops() FROM items WHERE REACHABLE(cooc, ('i1', 'i2', 'i200'), hops => 2, min_hops => 1, dir => 'both') ORDER BY hops(), id LIMIT 1000",
+    "SELECT id FROM items WHERE REACHABLE(cooc, (SELECT id FROM items WHERE cat = 'c1' ORDER BY price LIMIT 3), hops => 1) ORDER BY id LIMIT 1000",
+    "SELECT id, hops() FROM items WHERE REACHABLE(cooc, 'i5', hops => 4, through => cat <> 'c2') ORDER BY hops(), id LIMIT 1000",
+    "SELECT COUNT(*) FROM items WHERE REACHABLE(cooc, 'i7', hops => 3, dir => 'both')",
+    "SELECT cat, COUNT(*) FROM items WHERE REACHABLE(cooc, 'i8', hops => 3) GROUP BY cat ORDER BY cat",
+    "SELECT id, title FROM items WHERE REACHABLE(cooc, 'i1', hops => 4, dir => 'both') AND MATCH(title, 'red') ORDER BY bm25(title, 'red') DESC, id LIMIT 10",
+    "SELECT id FROM items WHERE NOT REACHABLE(cooc, 'i4', hops => 2) AND cat = 'c3' ORDER BY id LIMIT 1000",
+    "SELECT id, ppr(cooc, 'i20', eps => 1e-6) FROM items ORDER BY ppr(cooc, 'i20', eps => 1e-6) DESC, id LIMIT 25",
+    "SELECT id FROM items WHERE cat = 'c2' ORDER BY ppr(cooc, ('i1', 'i9'), eps => 1e-5, dir => 'both') DESC, id LIMIT 10",
+    "SELECT a.id, b.id FROM items a JOIN items b ON b.cooc = a.id WHERE a.id IN ('i1', 'i2', 'i3', 'i4') ORDER BY a.id, b.id",
+    "SELECT id, hops() FROM items WHERE REACHABLE(pairs, 'i20', hops => 2) ORDER BY hops(), id LIMIT 1000",
+    "SELECT id, ppr(pairs, ('i2', 'i3'), eps => 1e-6) FROM items ORDER BY ppr(pairs, ('i2', 'i3'), eps => 1e-6) DESC, id LIMIT 20",
+];
+
+/// Whether two answers hold the same rows, scores within a millionth:
+/// PageRank's pushes go in the order its rows were met, and that moves
+/// the last digits.
+fn alike(a: &Json, b: &Json) -> bool {
+    let rows = |j: &Json| j["rows"].as_array().cloned().unwrap_or_default();
+    let (a, b) = (rows(a), rows(b));
+    a.len() == b.len()
+        && a.iter().zip(&b).all(|(x, y)| {
+            let (x, y) = (x.as_array().unwrap(), y.as_array().unwrap());
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(v, w)| match (v.as_f64(), w.as_f64()) {
+                    (Some(p), Some(q)) if p.fract() != 0.0 || q.fract() != 0.0 => (p - q).abs() < 1e-6,
+                    _ => v == w,
+                })
+        })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graph_walks_answer_like_one_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let whole = local(dir.path(), "whole.strata");
+    let mut urls = Vec::new();
+    for s in 0..3 {
+        urls.push(grpc(local(dir.path(), &format!("s{s}.strata"))).await);
+    }
+    let one = grpc(local(dir.path(), "only.strata")).await;
+    let coord = cluster(Coordinator::connect(urls).await.unwrap());
+    let single = cluster(Coordinator::connect(vec![one]).await.unwrap());
+    // An edge table of the items' links, weighted, beside the EDGES field.
+    let pairs = "CREATE TABLE pairs (id KEYWORD PRIMARY KEY, src KEYWORD, dst KEYWORD, w FLOAT) OPTIONS(edges = 'src, dst, w')";
+    let (items, _, _) = rows();
+    let mut edges = Vec::new();
+    for it in &items {
+        let src = it["doc"]["id"].as_str().unwrap();
+        for (j, to) in it["doc"]["cooc"].as_array().unwrap().iter().enumerate() {
+            let to = to.as_str().unwrap();
+            edges.push(format!("('{src}>{to}#{j}', '{src}', '{to}', {})", 1 + (src.len() + j) % 3));
+        }
+    }
+    for svc in [&whole, &coord, &single] {
+        for ddl in [USERS_DDL, EVENTS_DDL, pairs] {
+            sql(svc, ddl).await.unwrap();
+        }
+        load(svc).await;
+        for c in edges.chunks(100) {
+            sql(svc, &format!("INSERT OR REPLACE INTO pairs VALUES {}", c.join(", "))).await.unwrap();
+        }
+        // A link to a key of no row, which every walk passes over.
+        svc.write_ops(vec![json!({"op": "upsert", "doc": {"id": "i299", "title": "red rope", "cat": "c1", "price": 1.0, "cooc": ["i1", "gone", "i2"]}})], None).await.unwrap();
+    }
+    for q in GRAPH_QUERIES {
+        let want = query(&whole, q).await;
+        assert!(!want["rows"].as_array().unwrap().is_empty(), "{q}: finds rows");
+        for (svc, what) in [(&coord, "three shards"), (&single, "one shard")] {
+            let got = query(svc, q).await;
+            assert_eq!(want["columns"], got["columns"], "{q} on {what}");
+            assert!(alike(&want, &got), "{q} on {what}:\n{want}\n{got}");
+        }
+    }
+    // The coordinator says it walked, and in how many rounds.
+    let a = coord.query(QueryReq { sql: GRAPH_QUERIES[0].into(), ..Default::default() }).await.unwrap();
+    let rounds = a.rs.stats.plan.iter().find_map(|l| l.split("walked by the coordinator in ").nth(1)?.split(' ').next()?.parse::<usize>().ok());
+    assert!(rounds.is_some_and(|r| (2..=4).contains(&r)), "{:?}", a.rs.stats.plan);
+    // A shortest path: one of the same length, from the start to the end.
+    let path = "SELECT id, hops() FROM items WHERE PATH(cooc, 'i1', 'i40', max_hops => 8, dir => 'both') ORDER BY hops()";
+    let (want, got) = (query(&whole, path).await, query(&coord, path).await);
+    let (w, g) = (want["rows"].as_array().unwrap(), got["rows"].as_array().unwrap());
+    assert!(w.len() > 1 && w.len() == g.len(), "{want} {got}");
+    assert_eq!((&g[0][0], &g[g.len() - 1][0]), (&json!("i1"), &json!("i40")), "{got}");
+    // PageRank that lowers its eps: the same best rows, scores within a
+    // thousandth.
+    let adapt = "SELECT id, ppr(cooc, 'i20') AS s FROM items ORDER BY s DESC, id LIMIT 5";
+    let (want, got) = (query(&whole, adapt).await, query(&coord, adapt).await);
+    for (w, g) in want["rows"].as_array().unwrap().iter().zip(got["rows"].as_array().unwrap()) {
+        assert!((w[1].as_f64().unwrap() - g[1].as_f64().unwrap()).abs() < 1e-3, "{want} {got}");
+    }
+    // A walk that meets more than max_nodes rows is refused, as on one
+    // database.
+    let many = "SELECT id FROM items WHERE REACHABLE(cooc, 'i1', hops => 50, dir => 'both', max_nodes => 3)";
+    for svc in [&whole, &coord] {
+        let e = svc.query(QueryReq { sql: many.into(), ..Default::default() }).await.err().map(|e| e.message);
+        assert!(e.as_ref().is_some_and(|e| e.contains("max_nodes")), "{e:?}");
     }
 }
 
