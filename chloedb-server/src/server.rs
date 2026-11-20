@@ -1219,16 +1219,46 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
             db = Some(pq.import(shown, file, db.take(), |schema| Ok(created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)))?);
             continue;
         }
-        let d = match db.take() {
-            Some(d) => d,
-            None => {
-                let (s, text) = schema.as_ref().ok_or_else(|| format!("{} does not exist: pass --schema (a JSON file, or the JSON) to create it", path.display()))?;
-                let schema = Schema::from_json(text).map_err(|e| format!("{s}: {e}"))?;
-                created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?)
+        // Rows (CSV, TSV, JSON, JSON Lines) go to --table; else to the
+        // table named as the file (movies.csv: movies); else to the only
+        // table, when it has most of the file's columns (the command
+        // center's import asks the same); else to a new table named as the
+        // file, made from its columns and values. A table that is not there
+        // is made so too, and the log says with what statement.
+        let rows_format = format.or_else(|| Format::of_path(file)).ok_or_else(|| format!("{shown}: name its format with --format (jsonl, json, csv, tsv, sqlite or parquet): the file's name does not say"))?;
+        let sample = || sample_of(file, rows_format).map_err(|e| format!("{shown}: {e}"));
+        let named = table.map(String::from).unwrap_or_else(|| chloedb::ingest::table_name_of(Path::new(shown)));
+        let (d, into) = match db.take() {
+            Some(d) => {
+                let into = match table {
+                    Some(t) => t.to_string(),
+                    None => pick_table(&d, &named, &chloedb::ingest::columns_of(&sample()?, rows_format).map_err(|e| format!("{shown}: {e}"))?),
+                };
+                (d, into)
             }
+            None => match schema.as_ref() {
+                Some((s, text)) => {
+                    let schema = Schema::from_json(text).map_err(|e| format!("{s}: {e}"))?;
+                    let into = table.map_or_else(|| schema.table.clone(), String::from);
+                    (created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?), into)
+                }
+                None => {
+                    let schema = chloedb::ingest::schema_for(&named, &sample()?, rows_format, None).map_err(|e| format!("{shown}: no table could be made from its rows: {e}"))?;
+                    tracing::info!(file = %shown, table = %named, sql = %one_line(&chloedb::query::ddl::create_sql(&schema)), "made the database and its table from the file's columns (--schema gives one of your own)");
+                    (created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?), named.clone())
+                }
+            },
         };
-        let into = table.map_or_else(|| d.schema().table.clone(), String::from);
-        let r = chloedb::ingest::import_file_into(&d, &into, file, format).map_err(|e| format!("{shown}: {e}"));
+        if !d.catalog().iter().any(|t| t.table.eq_ignore_ascii_case(&into)) {
+            let made = sample().and_then(|data| chloedb::ingest::schema_for(&into, &data, rows_format, None).map_err(|e| format!("{shown}: no table {into}, and none could be made from its rows: {e}")));
+            let made = made.and_then(|s| {
+                let sql = one_line(&chloedb::query::ddl::create_sql(&s));
+                d.create_table(s).map(|_| sql).map_err(|e| format!("{shown}: create table {into}: {e}"))
+            });
+            let sql = made?;
+            tracing::info!(file = %shown, table = %into, sql = %sql, "made the table from the file's columns");
+        }
+        let r = chloedb::ingest::import_file_into(&d, &into, file, Some(rows_format)).map_err(|e| format!("{shown}: {e}"));
         db = Some(d);
         let r = r?;
         let how = if r.bulk { "loaded" } else { "upserted" };
@@ -1244,6 +1274,47 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
     let rows: u64 = snap.schemas().filter_map(|s| snap.table(&s.table)).map(|t| t.n_live_docs()).sum();
     tracing::info!(db = %path.display(), tables = snap.schemas().count(), rows, "imported every file");
     Ok(())
+}
+
+/// A statement on one line, for a log line.
+fn one_line(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ").replace("( ", "(").replace(" )", ")")
+}
+
+/// The start of a file of rows, enough for [`chloedb::ingest::create_for`]
+/// to read its columns and their values from: a JSON array whole, other
+/// formats their first 4 MiB, cut after the last line in it.
+fn sample_of(file: &Path, format: Format) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    if format == Format::Json {
+        return std::fs::read(file);
+    }
+    let mut data = Vec::new();
+    std::fs::File::open(file)?.take(4 << 20).read_to_end(&mut data)?;
+    if data.len() == 4 << 20 {
+        if let Some(end) = data.iter().rposition(|b| *b == b'\n') {
+            data.truncate(end + 1);
+        }
+    }
+    Ok(data)
+}
+
+/// The table an import of rows with these `columns` goes to when no
+/// `--table` names one: the table `named` as the file, else the only table
+/// of the database (the apps' own left out) when it has at least half of
+/// the columns, else a new one, `named`.
+fn pick_table(db: &Db, named: &str, columns: &[String]) -> String {
+    let tables: Vec<std::sync::Arc<Schema>> = db.catalog().into_iter().filter(|t| !chloedb::query::hint::internal_table(&t.table)).collect();
+    if let Some(t) = tables.iter().find(|t| t.table.eq_ignore_ascii_case(named)) {
+        return t.table.clone();
+    }
+    if let [only] = tables.as_slice() {
+        let shared = columns.iter().filter(|c| only.fields.iter().any(|f| f.name.eq_ignore_ascii_case(c))).count();
+        if shared > 0 && shared * 2 >= columns.len() {
+            return only.table.clone();
+        }
+    }
+    named.to_string()
 }
 
 /// How `chloedb-server import` reads Parquet files
