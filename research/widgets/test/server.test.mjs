@@ -250,3 +250,16 @@ test('what was kept with no signal goes on top of what the others kept meanwhile
   assert.deepEqual(merged({ budget: 600, month: 'Nov' }, { budget: 650, month: 'Nov' }, { budget: 600, month: 'Dec' }), { budget: 650, month: 'Dec' }, 'only what changed here')
   assert.equal(merged(5, 5, 7), 7, 'nothing changed here: theirs')
 })
+
+test('what a link made is its own to change, and hidden fields are put back (PRIYA-1, MARCUS-1)', async () => {
+  const { madeBy, withoutMade, changesWhatIsThere: changes, hideIn, withHidden } = await import('../server/apps.mjs')
+  const before = [{ id: 1, note: '' }, { id: 2, note: 'x' }]
+  const made = new Set(madeBy(before, [{ id: 1, note: 'N' }, before[1], { id: 3 }]))
+  assert.ok(made.has('[1]/note') && made.has('[3]') && !made.has('[2]/note'))
+  const now = [{ id: 1, note: 'N' }, before[1], { id: 3 }]
+  assert.equal(changes(withoutMade(now, made), [{ id: 1, note: 'No' }, before[1], { id: 3 }]), false, 'its own word is extended')
+  assert.equal(changes(withoutMade(now, made), [{ id: 1, note: 'N' }, { id: 2, note: 'y' }, { id: 3 }]), true, 'the owner’s is not')
+  const jobs = [{ id: 1, price: 5, c: 'a' }]
+  assert.deepEqual(hideIn(jobs, ['price']), [{ id: 1, c: 'a' }])
+  assert.deepEqual(withHidden(jobs, [{ id: 1, c: 'b' }], ['price']), [{ id: 1, c: 'b', price: 5 }])
+})

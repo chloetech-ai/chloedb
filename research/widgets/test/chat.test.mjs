@@ -597,3 +597,84 @@ test('a link for one person says who added what, can show only their part, and s
   assert.equal((await read(`s-${dave.token}`)).length, 3)
   assert.equal((await read(`s-${share.helper}`)).length, 5)
 })
+
+test('a helper types a whole word, one key at a time, and still can’t change what the owner kept (PRIYA-1, TOM-1, INES-4)', { skip }, async () => {
+  const me = 'a'.repeat(32)
+  const app = await chat.apps.put({ name: 'Notes list', about: 'Rooms.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('notes'), args: { request: 'notes' }, saved: true }, 'made by hand')
+  const rooms = [{ id: 'r1', name: 'Hall', note: '' }, { id: 'r2', name: 'Kitchen', note: 'old' }]
+  await post('/api/call', { app: app.id, me, name: 'app_keep', arguments: { key: 'rooms', value: rooms } })
+  const share = await post('/api/share', { app: app.id, me })
+  const keep = value => post('/api/call', { app: app.id, me: `s-${share.helper}`, name: 'app_keep', arguments: { key: 'rooms', value } })
+  const read = async () => (await post('/api/call', { app: app.id, me: `s-${share.token}`, name: 'app_kept', arguments: { key: 'rooms' } })).structuredContent.value
+  for (const text of ['N', 'No', 'No h']) {
+    const out = await keep([{ ...rooms[0], note: text }, rooms[1]])
+    assert.equal(out.isError, undefined, `"${text}" is kept`)
+    assert.equal((await read())[0].note, text)
+  }
+  // What was there stays the owner's.
+  assert.equal((await keep([rooms[0], { ...rooms[1], note: 'new' }])).isError, true, 'the owner’s note is not the helper’s to change')
+  // And an entry the helper added, they go on editing.
+  const withNew = [{ ...rooms[0], note: 'No h' }, rooms[1], { id: 'r3', name: 'Loft' }]
+  assert.equal((await keep(withNew)).isError, undefined)
+  assert.equal((await keep([withNew[0], withNew[1], { id: 'r3', name: 'Loft', note: 'x' }])).isError, undefined)
+  assert.equal((await keep([withNew[0], withNew[1], { id: 'r3', name: 'Loft 2', note: 'xy' }])).isError, undefined)
+})
+
+test('what an app held before comes back: a keep that drops entries is undone from its history (LENA-1, INES-1)', { skip }, async () => {
+  const me = 'b'.repeat(32)
+  const app = await chat.apps.put({ name: 'Visits log', about: 'Visits.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('visits'), args: { request: 'visits' }, saved: true }, 'made by hand')
+  const three = [{ id: 'a', t: 1 }, { id: 'b', t: 2 }, { id: 'c', t: 3 }]
+  const call = (name, args, who = me) => post('/api/call', { app: app.id, me: who, name, arguments: args })
+  await call('app_keep', { key: 'visits', value: three })
+  await call('app_keep', { key: 'visits', value: [three[0]] }) // the wipe: 3 became 1
+  assert.equal((await call('app_kept', { key: 'visits' })).structuredContent.value.length, 1)
+  const hist = await post('/api/history', { app: app.id, me, self: me })
+  assert.ok(hist.moments.length >= 1, 'a moment before the wipe is listed')
+  assert.match(hist.now, /1 in visits/)
+  assert.match(hist.moments[0].says, /3 in visits/)
+  const done = await post('/api/restore', { app: app.id, me, self: me, at: hist.moments[0].at })
+  assert.deepEqual(done.restored, ['visits'])
+  assert.deepEqual((await call('app_kept', { key: 'visits' })).structuredContent.value, three, 'all three are back')
+  // Only the owner or a full link brings things back; a helper can't.
+  const share = await post('/api/share', { app: app.id, me })
+  assert.equal((await fetch(`${chat.url}api/restore`, { method: 'POST', body: JSON.stringify({ app: app.id, me: `s-${share.helper}`, at: hist.moments[0].at }) })).status, 403)
+  assert.ok((await post('/api/history', { app: app.id, me: `s-${share.token}` })).moments, 'a full link may')
+  // Making it private forgets what it held before.
+  assert.equal((await post('/api/history', { app: app.id, me, self: me, forget: true })).forgot, true)
+  assert.equal((await post('/api/history', { app: app.id, me, self: me })).moments.length, 0)
+})
+
+test('a link can hide fields such as prices, and a stopped link opens nothing (MARCUS-1, PRIYA-2, TOM-7)', { skip }, async () => {
+  const me = 'c'.repeat(32)
+  const app = await chat.apps.put({ name: 'Quotes', about: 'Jobs and prices.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('quotes'), args: { request: 'quotes' }, saved: true }, 'made by hand')
+  const jobs = [{ id: 'j1', client: 'Smith', price: 900 }, { id: 'j2', client: 'Lee', price: 450 }]
+  await post('/api/call', { app: app.id, me, name: 'app_keep', arguments: { key: 'jobs', value: jobs } })
+  const share = await post('/api/share', { app: app.id, me })
+  const lead = (await post('/api/share', { app: app.id, me: `s-${share.token}`, person: { name: 'Lead', role: 'helper', hide: ['price'] } })).people.at(-1)
+  assert.deepEqual(lead.hide, ['price'])
+  const read = async () => (await post('/api/call', { app: app.id, me: `s-${lead.token}`, name: 'app_kept', arguments: { key: 'jobs' } })).structuredContent.value
+  assert.deepEqual(await read(), [{ id: 'j1', client: 'Smith' }, { id: 'j2', client: 'Lee' }], 'prices are not sent')
+  const out = await post('/api/call', { app: app.id, me: `s-${lead.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 'j1', client: 'Smith', done: true }, { id: 'j2', client: 'Lee' }] } })
+  assert.ok(!out.isError, out.content?.[0]?.text)
+  const owner = (await post('/api/call', { app: app.id, me: `s-${share.token}`, name: 'app_kept', arguments: { key: 'jobs' } })).structuredContent.value
+  assert.deepEqual(owner.map(j => j.price), [900, 450], 'prices stay as they were')
+  assert.equal(owner[0].done, true)
+  // Stopped: the open says so and sends no app.
+  await post('/api/unshare', { app: app.id, me: `s-${share.token}`, self: me })
+  const text = await (await fetch(`${chat.url}api/apps/${app.id}/open`, { method: 'POST', body: JSON.stringify({ talk: 't', links: { [app.id]: share.helper } }) })).text()
+  assert.match(text, /"type":"stopped"/)
+  assert.doesNotMatch(text, /"type":"app"/)
+})
+
+test('a page watching a shared app hears when another phone keeps something (MARCUS-4, LENA-5)', { skip }, async () => {
+  const me = 'd'.repeat(32)
+  const app = await chat.apps.put({ name: 'Live list', about: 'Items.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('live'), args: { request: 'live' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const res = await fetch(`${chat.url}api/watch?apps=${app.id}|s-${share.token}`)
+  const reader = res.body.getReader()
+  await reader.read() // ": watching"
+  await post('/api/call', { app: app.id, me: `s-${share.helper}`, self: 'other', name: 'app_keep', arguments: { key: 'items', value: [{ id: 'x' }] } })
+  const got = await Promise.race([reader.read(), new Promise(r => setTimeout(() => r(null), 5000))])
+  await reader.cancel()
+  assert.ok(got && /"app":"/.test(new TextDecoder().decode(got.value)), 'told of the keep')
+})

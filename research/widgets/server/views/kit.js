@@ -71,6 +71,7 @@ let role = null
 // make, so a helper's screen doesn't show an item gone that is still there.
 let redraw = null
 let restored = 0
+let redrawn = []
 function drawing(draw, connection, keeps = true) {
   let queue = Promise.resolve()
   let first = true
@@ -85,12 +86,18 @@ function drawing(draw, connection, keeps = true) {
         await tick()
       }
       let kept = {}
+      let gone = false
       try {
         if (keeps) kept = (await globalThis.Kit.call(app, 'app_kept', { all: true }))?.values ?? {}
       } catch (error) {
         // An app whose host keeps nothing gets none; a stopped link says so.
-        if (/stopped/i.test(error?.message ?? '')) banner(error.message)
+        if (/stopped/i.test(error?.message ?? '')) {
+          banner(error.message)
+          gone = true
+        }
       }
+      // A stopped link shows the notice and none of the app's own content (PRIYA-2, TOM-7).
+      if (gone) return
       // Shared by a link: what it keeps is not in this browser alone, and its words say so.
       if (data?.shared && !sharedKept) {
         sharedKept = true
@@ -273,8 +280,12 @@ async function keep(app, key, value) {
     banner(error.message)
     // A viewer may try things on screen; a helper sees what is kept again
     // (at most every few seconds, so an app that keeps as it draws can't loop).
-    if (role !== 'viewer' && redraw && Date.now() - restored > 3000) {
-      restored = Date.now()
+    // Every refusal is drawn at once, but an app that keeps as it draws can't loop: five in ten seconds at most.
+    const now = Date.now()
+    redrawn = redrawn.filter(t => now - t < 10000)
+    if (role !== 'viewer' && redraw && redrawn.length < 5) {
+      redrawn.push(now)
+      restored = now
       redraw()
     }
     return false

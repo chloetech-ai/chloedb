@@ -122,6 +122,7 @@
   .morebox .moment { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
   .sharebox input { flex: 1 1 220px; min-width: 0; font: 12px ui-monospace, monospace; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }
   .sharebox .people { display: contents; }
+  .sharebox .hides { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; font-size: 13px; }
   .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
   .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
   .sharebox select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); max-width: 100%; }
@@ -256,9 +257,47 @@ window.events = []
 // for its conversation, which a reload or the next day opens again. Both
 // are random and stay in this browser, so no one else sees either. Where
 // the browser keeps nothing, they last as long as the page.
+// What this browser keeps of the chat (who it is, its conversation, its
+// links) is in localStorage, which a browser killed from outside can lose
+// whole, seconds after it was written: the chat then opened as a stranger's
+// and its apps as empty (LENA-1, INES-1). A copy goes to IndexedDB, which
+// is written at once, and comes back when localStorage has nothing.
+const MIRROR = 'instant-apps-mirror'
+const mirrorDb = () => new Promise((resolve, reject) => {
+  const r = indexedDB.open(MIRROR, 1)
+  r.onupgradeneeded = () => r.result.createObjectStore('local')
+  r.onsuccess = () => resolve(r.result)
+  r.onerror = () => reject(r.error)
+})
+let mirrorTimer = 0
+const mirror = () => {
+  clearTimeout(mirrorTimer)
+  mirrorTimer = setTimeout(async () => {
+    try {
+      const all = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i)
+        if (k?.startsWith('instant-apps-')) all[k] = localStorage.getItem(k)
+      }
+      const db = await mirrorDb()
+      db.transaction('local', 'readwrite').objectStore('local').put(all, 'all')
+    } catch {}
+  }, 200)
+}
+try {
+  if (!localStorage.getItem('instant-apps-me')) {
+    const db = await Promise.race([mirrorDb(), new Promise((_, no) => setTimeout(no, 1500))])
+    const all = await new Promise(resolve => {
+      const get = db.transaction('local').objectStore('local').get('all')
+      get.onsuccess = () => resolve(get.result ?? null)
+      get.onerror = () => resolve(null)
+    })
+    if (all?.['instant-apps-me']) for (const [k, v] of Object.entries(all)) localStorage.setItem(k, v)
+  }
+} catch {}
 const local = {
   get: key => { try { return localStorage.getItem(key) } catch { return null } },
-  set: (key, value) => { try { localStorage.setItem(key, value) } catch {} },
+  set: (key, value) => { try { localStorage.setItem(key, value); mirror() } catch {} },
 }
 const newId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('')
 // Apps shared by a link keep what they keep with everyone who has the
@@ -344,7 +383,16 @@ const textOf = result => result?.content?.find(c => c.type === 'text')?.text ?? 
 // A turn of the conversation, kept for this browser.
 const record = turn => {
   remember(turn.request || turn.shown?.[0]?.name)
-  return fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) }).catch(() => {})
+  // After every turn the conversation, and what it showed, are asked for again
+  // so the copy kept for no signal is the newest, not the one from before the
+  // app existed (MAYA-2).
+  return fetch('/api/talk', { method: 'POST', body: JSON.stringify({ talk, ...turn }) })
+    .then(async () => {
+      const drain = r => r.text().catch(() => '')
+      await fetch(`/api/talk?talk=${talk}`).then(drain)
+      for (const s of turn.shown ?? []) if (s?.id) await fetch(`/api/shown/${encodeURIComponent(s.id)}?talk=${talk}`).then(drain)
+    })
+    .catch(() => {})
 }
 // The conversations this browser had, newest first, to open again: their
 // ids and first words stay in this browser alone.
@@ -657,7 +705,7 @@ const saveOffline = () => {
   local.set(CACHE, JSON.stringify(cache))
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-function merged(base, mine, theirs) {
+function merged(base, mine, theirs, said) {
   if (same(mine, base)) return theirs
   const listed = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && e.id != null)
   if (listed(mine) && listed(base ?? []) && listed(theirs ?? [])) {
@@ -667,17 +715,35 @@ function merged(base, mine, theirs) {
     for (const e of mine) {
       const at = out.findIndex(x => x.id === e.id)
       if (!was.has(e.id)) at < 0 && out.push(e)
-      else if (!same(e, was.get(e.id))) at < 0 ? out.push(e) : (out[at] = merged(was.get(e.id), e, out[at]))
+      else if (!same(e, was.get(e.id))) at < 0 ? out.push(e) : (out[at] = merged(was.get(e.id), e, out[at], said))
     }
     return out
   }
   const plain = v => v && typeof v === 'object' && !Array.isArray(v)
   if (plain(mine) && plain(base) && plain(theirs)) {
     const out = { ...theirs }
-    for (const k of new Set([...Object.keys(mine), ...Object.keys(base)])) if (!same(mine[k], base[k])) out[k] = merged(base[k], mine[k], theirs[k])
+    for (const k of new Set([...Object.keys(mine), ...Object.keys(base)])) {
+      if (same(mine[k], base[k])) continue
+      // Both sides changed the same field: the one saved first stays, and the
+      // other is said, so neither goes silently (DEV-3).
+      const leaf = v => v === undefined || v === null || typeof v !== 'object'
+      if (said && leaf(mine[k]) && leaf(theirs[k]) && !same(theirs[k], base[k]) && !same(theirs[k], mine[k])) said.push({ field: k, mine: mine[k], theirs: theirs[k] })
+      else out[k] = merged(base[k], mine[k], theirs[k], said)
+    }
     return out
   }
   return mine
+}
+// Both phones changed the same field: the first one saved stays, and what
+// this phone had is said, with no signal or not (DEV-3).
+function conflictNote(id, said) {
+  const text = said.slice(0, 3).map(c => `“${String(c.field)}” was changed on both: kept ${JSON.stringify(c.theirs)}, this phone had ${JSON.stringify(c.mine)}`).join('; ')
+  for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node)) {
+    w.node.querySelector('.conflict-note')?.remove()
+    const box = el('offline-note conflict-note', esc(`${text}.`), w.node)
+    w.node.querySelector('.wbar').after(box)
+    setTimeout(() => box.remove(), 20000)
+  }
 }
 const offlineSaid = 'Kept on this phone with no signal. It goes to everyone else when there is signal.'
 function offlineNote(id) {
@@ -708,7 +774,9 @@ async function flush() {
       const o = outbox[0]
       try {
         const now = (await viaServer({ app: o.app, me: o.me, self: o.self, name: 'app_kept', arguments: { key: o.key } })).structuredContent?.value ?? null
-        const value = merged(o.base, o.value, now)
+        const said = []
+        const value = merged(o.base, o.value, now, said)
+        if (said.length) conflictNote(o.app, said)
         const out = await viaServer({ app: o.app, me: o.me, self: o.self, name: 'app_keep', arguments: { key: o.key, value } })
         if (out.isError) touched.add(o.app)
         ;(cache[`${o.app}|${o.me}`] ??= {})[o.key] = out.isError ? now : value
@@ -1062,7 +1130,7 @@ function bar(w) {
     box = document.createElement('div')
     box.className = 'sharebox'
     const LINK = [
-      ['full', 'Can change everything', 'for your other phone or computer, or someone who runs it with you'],
+      ['full', 'Can change everything', 'opens the whole chat with every app of yours, not only this one: only for your own other phone or computer'],
       ['helper', 'Can add and tick', 'they add entries and tick them; they can’t change, untick or take out what is there'],
       ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
       ['copy', 'A copy, empty', 'the app without anything it keeps: theirs keeps its own, on their phone'],
@@ -1074,12 +1142,14 @@ function bar(w) {
     for (const list of Object.values(kept)) {
       if (!Array.isArray(list) || !list.some(e => e && typeof e === 'object')) continue
       const fields = new Map()
-      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!/^(id|by)$/.test(k) && (typeof v === 'string' || typeof v === 'number') && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
+      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!/^(id|by)$/.test(k) && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
       for (const [field, values] of fields) if (values.size >= 2 && values.size <= 12 && values.size < list.length) for (const value of values) if (!parts.some(p => p.field === field && p.value === value)) parts.push({ field, value })
     }
+    // Fields of the kept lists a person's link could be kept from, such as prices (MARCUS-1).
+    const hideable = [...new Set(Object.values(kept).flatMap(list => (Array.isArray(list) ? list : []).flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k)).slice(0, 24)
     const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
-    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? ` · only ${esc(p.only.field)} ${esc(p.only.value)}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
-    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add says it was them, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${parts.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? ` · only ${esc(p.only.field)} ${esc(p.only.value)}` : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
+    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add says it was them, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${parts.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
     const wirePeople = () => {
       for (const button of box.querySelectorAll('button[data-person]')) {
         button.onclick = async () => {
@@ -1104,7 +1174,7 @@ function bar(w) {
       const name = form.elements.name.value.trim()
       if (!name) return form.elements.name.focus()
       const only = form.elements.only?.value ? parts[Number(form.elements.only.value)] : null
-      const made = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), person: { name, role: form.elements.role.value, only } }) })).json().catch(error => ({ error: error.message }))
+      const made = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), person: { name, role: form.elements.role.value, only, hide: [...form.querySelectorAll('input[name=hide]:checked')].map(i => i.value) } }) })).json().catch(error => ({ error: error.message }))
       if (!made.people) return (form.querySelector('button').textContent = made.error ?? 'Could not make it')
       people = made.people
       form.reset()
@@ -1378,8 +1448,22 @@ async function openFromRail(id, name, how) {
   const body = bot()
   const status = el('status', `<span class="spin"></span><span>Opening ${esc(name)}</span>`, body)
   openedHere.add(id)
-  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) })
+  const res = await fetch(`/api/apps/${encodeURIComponent(id)}/open`, { method: 'POST', body: JSON.stringify({ talk }) }).catch(() => null)
+  if (!res) {
+    // No signal, and this phone never opened it: say so instead of waiting (PRIYA-14).
+    status.remove()
+    el('reply offline', 'No signal, and this phone has not opened this app before, so it has nothing of it to show. Try again when there is signal.', body)
+    openedHere.delete(id)
+    return
+  }
   await events(res, async ev => {
+    // A stopped link opens nothing: say so, and draw nothing of the app (PRIYA-2, TOM-7).
+    if (ev.type === 'stopped') {
+      status.remove()
+      el('reply stopped', esc(ev.text), body)
+      scroll()
+      return
+    }
     if (ev.type === 'app') {
       status.remove()
       if (how) ev = { ...ev, how }
@@ -1503,6 +1587,34 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return
   for (const w of widgets) if (!w.folded && !w.stub && !w.removed && shared[w.app.id]) draw(w)
 })
+// A shared app open here hears when another phone keeps something in it and
+// draws it again; while the person is typing in it, once they stop (MARCUS-4, LENA-5).
+let watching = { key: '', source: null }
+const pending = new Set()
+function redrawShared(id) {
+  const w = widgets.find(x => x.app.id === id && !x.folded && !x.stub && !x.removed && x.node)
+  if (!w) return pending.delete(id)
+  if (document.activeElement?.tagName === 'IFRAME' && document.activeElement.name === w.frameName) return setTimeout(() => redrawShared(id), 3000)
+  pending.delete(id)
+  draw(w)
+}
+function syncWatch() {
+  const pairs = widgets.filter(w => !w.folded && !w.stub && !w.removed && shared[w.app.id]).map(w => `${w.app.id}|${ownerOf(w.app.id)}`).filter(p => /\|s-[0-9a-f]{32}$/.test(p))
+  const key = [...new Set(pairs)].sort().join(',')
+  if (key === watching.key) return
+  watching.source?.close()
+  watching = { key, source: null }
+  if (!key || typeof EventSource === 'undefined') return
+  watching.source = new EventSource(`/api/watch?apps=${encodeURIComponent(key)}`)
+  watching.source.onmessage = e => {
+    let ev = {}
+    try { ev = JSON.parse(e.data) } catch {}
+    if (!ev.app || ev.self === me || pending.has(ev.app)) return
+    pending.add(ev.app)
+    setTimeout(() => redrawShared(ev.app), 400)
+  }
+}
+setInterval(syncWatch, 3000)
 rail()
 // The page opens with no signal too, with what it showed last (MAYA-8).
 // On the first visit the worker starts after the page loaded, so what it
