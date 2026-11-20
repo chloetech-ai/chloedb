@@ -29,8 +29,10 @@ changes collect under "Unreleased".
   a fire year that needs three detections (one was often a hot roof).
   The replays play over GOES's own pictures of the sky (true colour by day,
   infrared by night, every 10 minutes, drawn from NOAA's archive by
-  `tools/frames.py` and served with `serve --frames`), and fire pixels
-  glow, fading with age, rather than show as red squares.
+  `tools/frames.py` and served with `serve --frames`), with the fires'
+  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
+  the replays are one field of heat per fire, fading with age, and a
+  "Fire pixels" button hides them to show the fire as the picture has it.
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:

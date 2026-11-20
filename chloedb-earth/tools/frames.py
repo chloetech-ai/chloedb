@@ -2,7 +2,8 @@
 """The pictures under a replay: what GOES saw of the sky, one frame every
 few minutes, cut to the replay's box and drawn as the eye would see it by
 day (true colour from the visible bands) and as heat by night (clean
-infrared for clouds and smoke). The fires are left to the app.
+infrared for clouds and smoke), and the fires' own heat (the 3.9 um band)
+glowing over both, deep red where faint to yellow where hottest.
 
 NASA GIBS keeps GOES GeoColor for about 90 days, so an older replay draws
 its own from NOAA's archive of the Cloud and Moisture Imagery product
@@ -137,7 +138,7 @@ def draw(path, t, lon, lat):
         return sample(np.ma.filled(v.astype("f4"), fill), fx, fy)
 
     red, blue, veg = band("CMI_C02", 0), band("CMI_C01", 0), band("CMI_C03", 0)
-    ir, swir = band("CMI_C13", 300), None
+    ir, swir = band("CMI_C13", 300), band("CMI_C07", 300)
     d.close()
     del hgt
     # By day: true colour, the green made from red, blue and the
@@ -155,9 +156,14 @@ def draw(path, t, lon, lat):
     sza = sun_zenith(t, lat, lon)
     w = np.clip((92 - sza) / 12, 0, 1)[..., None]
     img = day * w + night * (1 - w)
-    # The fires themselves are left to the app, which draws GOES's fire
-    # pixels over the picture: drawn here too, smoothed, they smear.
-    del swir
+    # The fires as the satellite feels them: the 3.9 um band far warmer
+    # than the 10.3 um one, more so than sunlight on bare ground makes it
+    # by day, laid over the picture as light (a screen blend), deep red
+    # where faint to yellow where hottest.
+    excess = swir - ir - (8 + 14 * w[..., 0])
+    hot = np.clip(excess / 150, 0, 1) ** 0.6
+    glow = np.stack([np.clip(2.2 * hot, 0, 1), np.clip(1.6 * hot - 0.5, 0, 1) * 0.85, np.clip(2 * hot - 1.4, 0, 1) * 0.5], -1)
+    img = 1 - (1 - img) * (1 - glow)
     return (np.clip(img, 0, 1) * 255).astype("u1"), float(w.mean())
 
 

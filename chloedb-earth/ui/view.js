@@ -338,28 +338,50 @@ function pixelFeatures(rows, half = 0.009) {
     }),
   };
 }
-/// Fire pixels as heat: a soft halo the size of the pixel and more, and a
-/// bright core while the pixel is fresh, both fading with age and growing
-/// with power. Points, so they stay round at every zoom.
+/// Fire pixels as heat: one field summed over the pixels near each other
+/// (a MapLibre heatmap), so a fire reads as one burning area, hottest where
+/// its pixels are freshest and most powerful, and fading with their age.
 function glowFeatures(rows) {
+  // A spot is seen again every scan: keep its freshest, hottest look, so
+  // heat does not pile up where a fire merely lasted.
+  const spots = new Map();
+  for (const p of rows) {
+    const fresh = Math.max(0, 1 - (p.age ?? 0));
+    const w = fresh ** 1.5 * (0.45 + 0.55 * Math.sqrt(Math.min(1, (p.mw || 0) / 250)));
+    const k = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    const o = spots.get(k);
+    if (!o || o.w < w) spots.set(k, { w, lat: p.lat, lon: p.lon });
+  }
   return {
     type: "FeatureCollection",
-    features: rows.map((p) => ({ type: "Feature", properties: { mw: p.mw || 0, age: p.age ?? 0, s: 0.75 + 0.75 * Math.sqrt(Math.min(1, (p.mw || 0) / 300)) }, geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
+    features: [...spots.values()].map((p) => ({ type: "Feature", properties: { w: p.w }, geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
   };
 }
-/// About a GOES pixel's half width (1.1 km) in screen pixels at each zoom,
-/// times `k` and the point's own size.
-const glowRadius = (k) => ["interpolate", ["exponential", 2], ["zoom"], 3, ["*", 1.4 * k, ["get", "s"]], 8, ["*", 2.6 * k, ["get", "s"]], 13, ["*", 70 * k, ["get", "s"]], 17, ["*", 1120 * k, ["get", "s"]]];
 const GLOW_LAYERS = [
-  { id: "px-halo", type: "circle", paint: {
-    "circle-radius": glowRadius(2.2), "circle-blur": 1, "circle-pitch-alignment": "map",
-    "circle-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffb300", 80, "#ff7a00", 400, "#ff3d00"],
-    "circle-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.42, 0.5, 0.2, 1, 0.06] } },
-  { id: "px-core", type: "circle", paint: {
-    "circle-radius": glowRadius(0.55), "circle-blur": 0.9, "circle-pitch-alignment": "map",
-    "circle-color": ["interpolate", ["linear"], ["get", "age"], 0, "#fff8e1", 0.15, "#ffd54f", 0.5, "#ff8f00", 1, "#b71c1c"],
-    "circle-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.9, 0.5, 0.45, 1, 0.1] } },
+  { id: "px-heat", type: "heatmap", paint: {
+    "heatmap-weight": ["get", "w"],
+    // About four GOES pixels (2 to 3 km apart) in screen pixels at each zoom,
+    // so that neighbours run together.
+    "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 4, 7, 8, 15, 10, 56, 13, 450, 16, 3600],
+    "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 1.3, 10, 1.05, 13, 1],
+    "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+      0, "rgba(0,0,0,0)", 0.08, "rgba(110,0,0,0)", 0.2, "rgba(150,12,0,.55)", 0.4, "rgba(215,40,0,.8)",
+      0.6, "rgba(255,110,0,.9)", 0.8, "rgba(255,190,40,.95)", 1, "rgba(255,245,200,1)"],
+    "heatmap-opacity": 0.95 } },
 ];
+/// A button over a map that hides GOES's fire pixels, so the fire shows as
+/// the picture under them has it.
+function pixelButton(map) {
+  map.ea.pxOn = true;
+  const b = h("button", { class: "ea-mapbtn on", title: "Show or hide GOES's fire pixels, to see the fire in the satellite's own picture" }, "Fire pixels");
+  b.onclick = () => {
+    map.ea.pxOn = !map.ea.pxOn;
+    b.classList.toggle("on", map.ea.pxOn);
+    for (const l of GLOW_LAYERS) if (map.getLayer(l.id)) map.setLayoutProperty(l.id, "visibility", map.ea.pxOn ? "visible" : "none");
+  };
+  map.ea.tr.prepend(b);
+}
+const glowLayers = (map) => GLOW_LAYERS.map((l) => ({ ...l, layout: { visibility: map.ea?.pxOn === false ? "none" : "visible" } }));
 const PIXEL_PAINT = {
   "fill-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffd54f", 20, "#ffa000", 80, "#f4511e", 250, "#d50000", 1000, "#7f0000"],
   "fill-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.92, 1, 0.25],
@@ -595,12 +617,13 @@ async function live(app, page, region) {
   const tl = h("div", { class: "ea-maptl" });
   box.append(tl);
   const skyNote = await addSky(app, map, region);
+  pixelButton(map);
   let fitted = false;
   const draw = async (fresh) => {
     const j = await app.api(`/v1/live?region=${region}`, { fresh, keep: 15000 });
     const now = Date.parse(j.now) || 0;
     const pixels = j.pixels.map((p) => ({ ...p, age: now ? Math.min(1, (now - Date.parse(p.ts)) / 3600e3) : 0 }));
-    setData(map, "px", glowFeatures(pixels), GLOW_LAYERS);
+    setData(map, "px", glowFeatures(pixels), glowLayers(map));
     const pts = { type: "FeatureCollection", features: j.fires.map((f) => ({ type: "Feature", properties: { id: f.id, mw: f.mw_now }, geometry: { type: "Point", coordinates: [f.lon, f.lat] } })) };
     setData(map, "fires", pts, [{ id: "fires", type: "circle", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 5, 10, 12], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#fff", "circle-stroke-width": 1.6 } }]);
     if (!fitted && j.fires.length) {
@@ -694,6 +717,7 @@ async function replay(app, page, id) {
       if (map.getLayer("sky")) map.setLayoutProperty("sky", "visibility", skyOn ? "visible" : "none");
     };
     map.ea.tr.prepend(bs);
+    pixelButton(map);
     const first = await load(0).catch(() => null);
     if (first) {
       map.addSource("sky", { type: "image", url: first, coordinates: [[W, N], [E, N], [E, S], [W, S]] });
@@ -725,7 +749,7 @@ async function replay(app, page, id) {
       lastI = i;
       const rows = [];
       for (let k = 0; k < i; k++) { const p = px[k]; const age = (s.t - p[0]) / 10800; if (age <= 1) rows.push({ lat: p[1], lon: p[2], mw: p[3], age }); }
-      setData(map, "px", glowFeatures(rows), GLOW_LAYERS);
+      setData(map, "px", glowFeatures(rows), glowLayers(map));
     }
     showSky(t0 + s.t * 1000);
     tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${sat} fire pixels`),
