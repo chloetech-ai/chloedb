@@ -281,6 +281,11 @@ pub struct LiveQuery {
     stop: AtomicBool,
     wake: Notify,
     trace: Option<Arc<Trace>>,
+    /// Its caller stopped waiting (its [`Live`] was dropped) while work it
+    /// started still runs ([`Live::hold`]).
+    left: AtomicBool,
+    /// The [`LiveHold`]s of work that still runs.
+    holds: std::sync::atomic::AtomicUsize,
 }
 
 impl LiveQuery {
@@ -301,6 +306,11 @@ impl LiveQuery {
             "started_ms": self.started_ms, "elapsed_ms": self.t0.elapsed().as_secs_f64() * 1e3,
             "cancelled": self.stop.load(Ordering::Relaxed), "deadline_ms": self.meta.deadline_ms,
         });
+        if self.left.load(Ordering::SeqCst) {
+            // Listed until its work reaches a check and stops, which
+            // `DELETE /v1/queries/<id>` cannot hasten.
+            j["caller_left"] = json!(true);
+        }
         if let Some(c) = &self.meta.caller {
             for (k, v) in json!(c).as_object().into_iter().flatten() {
                 j[k] = v.clone();
@@ -334,7 +344,35 @@ pub struct Live {
 
 impl Drop for Live {
     fn drop(&mut self) {
-        lock(&self.reg.running).remove(&self.query.id);
+        self.query.left.store(true, Ordering::SeqCst);
+        if self.query.holds.load(Ordering::SeqCst) == 0 {
+            lock(&self.reg.running).remove(&self.query.id);
+        }
+    }
+}
+
+impl Live {
+    /// Keeps the query listed while the work this is moved into runs,
+    /// after its caller stopped waiting: a blocking thread's work goes on
+    /// until its next check of the query's cancellation, and until then it
+    /// holds a core that `/v1/queries` would otherwise not account for.
+    pub fn hold(&self) -> LiveHold {
+        self.query.holds.fetch_add(1, Ordering::SeqCst);
+        LiveHold { reg: self.reg.clone(), query: self.query.clone() }
+    }
+}
+
+/// Work of a running query ([`Live::hold`]).
+pub struct LiveHold {
+    reg: Arc<LiveQueries>,
+    query: Arc<LiveQuery>,
+}
+
+impl Drop for LiveHold {
+    fn drop(&mut self) {
+        if self.query.holds.fetch_sub(1, Ordering::SeqCst) == 1 && self.query.left.load(Ordering::SeqCst) {
+            lock(&self.reg.running).remove(&self.query.id);
+        }
     }
 }
 
@@ -391,6 +429,8 @@ impl LiveQueries {
             stop: AtomicBool::new(false),
             wake: Notify::new(),
             trace: trace(),
+            left: AtomicBool::new(false),
+            holds: Default::default(),
         });
         lock(&self.running).insert(id, query.clone());
         Live { reg: self.clone(), query }

@@ -507,6 +507,14 @@ impl<'b, B: Boost> Boosted<'b, B> {
         let mut hi = self.max;
         while hi - lo > hi * CUT_SLACK {
             let mid = lo + (hi - lo) * 0.5;
+            // A threshold below the least positive f32 (a decay far from its
+            // origin gives one) halves `hi` down to that float, where
+            // `hi * CUT_SLACK` is 0 and `mid` rounds to `lo`: nothing lies
+            // between the two, and `lo`'s bound is known to be at most
+            // `theta`.
+            if mid <= lo || mid >= hi {
+                break;
+            }
             if self.boost.bound(mid) <= theta {
                 lo = mid;
             } else {

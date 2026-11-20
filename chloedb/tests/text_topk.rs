@@ -402,3 +402,52 @@ fn boosts_rank_like_scoring_every_match() {
         assert!(lost > 10, "a bound 30% too low lost rows in only {lost} queries");
     }
 }
+
+/// A boost whose values are far below the least positive f32 (a gauss
+/// decay many scales from its origin multiplies BM25 by 1e-150) still
+/// answers, with every algorithm, and ranks as scoring every match does:
+/// the threshold's cut on BM25 is found by bisection, which once never
+/// ended when the threshold was too small for an f32.
+#[test]
+fn boosts_far_below_f32_answer() {
+    // A search that never ends fails the run rather than holding it.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = done.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        if !watch.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("boosts_far_below_f32_answer: no answer in 60 s");
+            std::process::abort();
+        }
+    });
+    let texts: Vec<String> = (0..200).map(|i| format!("outage t{} t{}", i % 7, i % 13)).collect();
+    let n = texts.len() as u32;
+    // One row near the origin (1), the rest far from it.
+    let v: Vec<f64> = (0..n).map(|d| if d == 150 { 1.0 } else { 1e-150 * (1.0 + d as f64) }).collect();
+    let seg = build(&texts, chloedb::text::PostingsFormat::Loom, 32, false);
+    let r = TextFieldReader::open(&seg, "body").unwrap();
+    let q = vec!["outage".to_string(), "t3".to_string()];
+    let stats = r.stats(&q);
+    let p = Bm25Params::default();
+    let terms: Vec<(String, f32)> = q.iter().map(|t| (t.clone(), 1.0)).collect();
+    let f: fn(f64, f64) -> f64 = |t, v| t * v;
+    let b: fn(f64, f64, f64) -> f64 = |t, _, hi| t * hi;
+    for k in [1, 3, 50] {
+        let mut want = None;
+        for algo in ALGOS {
+            for floor in [f64::NEG_INFINITY, 0.0, 1e-200] {
+                let mut boost = Hand { v: &v, lo: 1e-150, hi: 1.0, f, b };
+                let got = r.top_k_boosted_above(&terms, &stats, p, k, None, algo, &mut boost, floor).0;
+                let got: Vec<(u32, u64)> = got.iter().map(|&(d, x)| (d, x.to_bits())).collect();
+                if floor == f64::NEG_INFINITY {
+                    assert_eq!(got.first().map(|g| g.0), Some(150), "{algo:?} k={k}");
+                    match &want {
+                        None => want = Some(got),
+                        Some(w) => assert_eq!(&got, w, "{algo:?} k={k}"),
+                    }
+                }
+            }
+        }
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+}
