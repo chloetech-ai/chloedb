@@ -659,11 +659,21 @@ impl<'a> Raise<'a> {
         let not = |p: Pred| Pred::Not(Box::new(p));
         Ok(match fld.ty {
             FieldType::Keyword => {
-                let p = Pred::In { field: f, values: vec![v] };
+                let p = Pred::In { field: f, values: vec![v.clone()] };
                 match op {
                     CmpOp::Eq => p,
                     CmpOp::Ne => not(p),
-                    _ => return Err(err("keyword fields support =, != and IN")),
+                    _ if fld.multi || fld.logical.is_some() => return Err(err("keyword fields support =, != and IN")),
+                    op => {
+                        let Value::Str(v) = v else { return Err(err(format!("{} is a KEYWORD: a range of it compares with text", fld.name))) };
+                        let (lo, hi) = match op {
+                            CmpOp::Gt => (Some((v, false)), None),
+                            CmpOp::Ge => (Some((v, true)), None),
+                            CmpOp::Lt => (None, Some((v, false))),
+                            _ => (None, Some((v, true))),
+                        };
+                        Pred::KeyRange { field: f, lo, hi }
+                    }
                 }
             }
             FieldType::Int => {

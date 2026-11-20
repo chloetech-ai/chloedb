@@ -21,6 +21,21 @@ changes collect under "Unreleased".
   `[` as JSON without a `format`; `/v1/query` refusing a write points to
   `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
   table's search by words and meaning no longer reads "1–20 of 4 rows".
+- **A key that only appends, for a log shipper.** A key limited to tables
+  takes a grant of `append` (`{"tables": {"logs_*": "append"}}`): it
+  inserts new rows into those tables through `POST /v1/logs`, `POST
+  /v1/import`, `/v1/write`'s `insert` operations and `INSERT ... VALUES`,
+  and reads nothing, not even them: no query, feed, alerts, schema or
+  export. It never replaces or deletes a row: an `INSERT` of a key a row
+  has fails, its imports are strict, and `UPDATE`, `DELETE`, `INSERT OR
+  REPLACE`, `ON CONFLICT DO UPDATE` and upserts are refused, each refusal
+  naming the grant. The logs guide and the Log explorer's "Send logs here"
+  now give the Collector such a key (`CHLOEDB_SHIP_KEY`) rather than the
+  oncall key, whose `write` grant reads every line it sends, and the docs
+  say that a `write` key reads. The command center's key editor offers
+  `append`. The keys file keeps such a grant as `read` of `append:<tables>`,
+  a name no table can have, so a server from before this release reads
+  the file and reads such a key as one that covers no table.
 - **Fewer pages until you need them, and fixes you can run.** On a single
   server the command center's sidebar shows the twelve pages a newcomer
   uses and folds the others under "More pages" until one is opened (then
@@ -329,6 +344,25 @@ changes collect under "Unreleased".
   (KENJI-402); the cluster guide says what a frozen primary costs and not to
   restart the copy just elected while it waits out the old lease (OLU-401,
   OLU-205).
+
+- **OpenSearch: array facets, keyword tie-breakers, 503s (KENJI-401, 403,
+  404).** A `terms` aggregation on a field of arrays (`tags`) counts from
+  the index of `_source` as one on a single keyword does, rather than reading
+  each document: a JSON field's new segments mark a path whose values are a
+  list of plain values (the term `path \0 v`, beside the mark `x`), and a
+  `GROUP BY` of such a path counts those rows from its terms, natively too
+  (`GROUP BY attrs.tags`); segments written before are read as before, and an
+  older version reads such a row from its object. A sort by a date and then
+  another key (`[created_at desc, id.keyword asc]`) finds the date of its
+  page's last row first and sorts only the rows from there on. A search with
+  aggregations that a shard down fails is answered 503, as a plain search is,
+  not 400 `query error`, and so is any statement the operators run over
+  shards (`WITH`, joins, subqueries) on a coordinator. **Changed:** a
+  single-valued `KEYWORD` compares with `<`, `<=`, `>`, `>=` and `BETWEEN`
+  (one run of its dictionary), so keyset paging by `created_at DESC, id`
+  needs no other column; such a plan names the feature `keyword_ranges`,
+  which an older shard refuses.
+
 - **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
   SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
   database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)

@@ -50,9 +50,9 @@ python3 -c 'import json; print(json.dumps({"sql": open("logs_syslog.sql").read()
 made
 ```
 
-## A key for the on-call engineer and the log shipper
+## A key for the on-call engineer, and one for the log shipper
 
-The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and `chloedb-server cc` offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise. Since it can silence an alert, give the Collector a key of its own that only writes these tables (`POST /v1/admin/keys {"name": "collector", "tables": {"logs_*": "write"}}`, which `POST /v1/logs` takes): a key read from a shipper's config file should not be able to quiet the pages. This page uses one key for both, to stay short.
+The `oncall` preset makes a key [limited to tables](../chloedb/server.md#security): it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its [ChloeCtx](../chloectx/app.md) spaces `ctx_logs_*`, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and `chloedb-server cc` offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise. This is the key the people on call search with:
 
 ```sh
 export CHLOEDB_LOGS_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H "authorization: Bearer $ADMIN_KEY" \
@@ -66,11 +66,25 @@ curl -s localhost:7700/v1/whoami -H "authorization: Bearer $CHLOEDB_LOGS_KEY" \
 netops oncall {'ctx_incidents': 'read', 'ctx_logs_*': 'write', 'logs_*': 'write'}
 ```
 
+The Collector gets a key of its own. Its copy sits in the config of every host that ships logs, and log lines carry user ids, email addresses and tokens: a key that may `write` a table reads it too (every query, the feed, the alerts), so a key read from one host's config would read every line of every host. A grant of `append` inserts new rows into its tables (`POST /v1/logs`, `POST /v1/import`, `INSERT`) and reads nothing, not even those tables; it never replaces or deletes a row, and cannot acknowledge or silence an alert:
+
+```sh
+export CHLOEDB_SHIP_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H "authorization: Bearer $ADMIN_KEY" \
+  -H 'content-type: application/json' -d '{"name": "collector", "tables": {"logs_*": "append"}}' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["secret"])')
+curl -s localhost:7700/v1/sql -H "authorization: Bearer $CHLOEDB_SHIP_KEY" -H 'content-type: application/json' \
+  -d '{"sql": "SELECT body FROM logs_syslog LIMIT 1"}' | python3 -c 'import json, sys; print(json.load(sys.stdin)["error"])'
+```
+
+```text output
+this statement needs a key with the read scope or more; the key "collector" has append: it inserts new rows into logs_* (append) and does nothing else
+```
+
 ## Send the lines
 
 ### From an OpenTelemetry Collector
 
-`POST /v1/logs` takes OTLP over HTTP (protobuf or JSON, gzip or not), the protocol every OpenTelemetry SDK and the Collector export; `?table=` names the table, and a table that does not exist is made with [OTLP's columns](../chloedb/server.md#opentelemetry-logs). This Collector listens for syslog on UDP port 5514 and for OTLP from your applications, and sends both to `logs_syslog` with the key above in its environment (`otelcol-contrib --config collector.yaml`):
+`POST /v1/logs` takes OTLP over HTTP (protobuf or JSON, gzip or not), the protocol every OpenTelemetry SDK and the Collector export; `?table=` names the table, and a table that does not exist is made with [OTLP's columns](../chloedb/server.md#opentelemetry-logs). This Collector listens for syslog on UDP port 5514 and for OTLP from your applications, and sends both to `logs_syslog` with the shipper's key in its environment (`otelcol-contrib --config collector.yaml`):
 
 ```yaml norun
 receivers:
@@ -91,7 +105,7 @@ exporters:
     logs_endpoint: http://127.0.0.1:7700/v1/logs?table=logs_syslog
     encoding: json
     headers:
-      Authorization: Bearer ${env:CHLOEDB_LOGS_KEY}
+      Authorization: Bearer ${env:CHLOEDB_SHIP_KEY}
 
 service:
   pipelines:
@@ -109,7 +123,7 @@ What the Collector sends is OTLP JSON, which `curl` can send too:
 
 ```sh
 now=$(python3 -c 'import time; print(time.time_ns())')
-curl -s "localhost:7700/v1/logs?table=logs_syslog" -H "authorization: Bearer $CHLOEDB_LOGS_KEY" \
+curl -s "localhost:7700/v1/logs?table=logs_syslog" -H "authorization: Bearer $CHLOEDB_SHIP_KEY" \
   -H 'content-type: application/json' -d '{"resourceLogs": [{
     "resource": {"attributes": [{"key": "host.name", "value": {"stringValue": "edge-sw-11"}}]},
     "scopeLogs": [{"logRecords": [{"timeUnixNano": "'$now'", "severityText": "WARN",
@@ -189,7 +203,7 @@ print(len(lines), "lines")
 
 ```sh
 python3 make_logs.py
-curl -s "localhost:7700/v1/import?table=logs_syslog&format=jsonl" -H "authorization: Bearer $CHLOEDB_LOGS_KEY" \
+curl -s "localhost:7700/v1/import?table=logs_syslog&format=jsonl" -H "authorization: Bearer $CHLOEDB_SHIP_KEY" \
   -H 'content-type: application/x-ndjson' --data-binary @syslog.jsonl
 echo
 ```

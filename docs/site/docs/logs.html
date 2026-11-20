@@ -121,7 +121,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#a-server">A server</a></li><li><a href="#a-table-for-log-lines">A table for log lines</a></li><li><a href="#a-key-for-the-on-call-engineer-and-the-log-shipper">A key for the on-call engineer and the log shipper</a></li><li><a href="#send-the-lines">Send the lines</a></li><li><a href="#the-first-five-queries-of-an-incident">The first five queries of an incident</a></li><li><a href="#alert-on-your-logs">Alert on your logs</a></li><li><a href="#the-log-explorer">The Log explorer</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#a-server">A server</a></li><li><a href="#a-table-for-log-lines">A table for log lines</a></li><li><a href="#a-key-for-the-on-call-engineer-and-one-for-the-log-shipper">A key for the on-call engineer, and one for the log shipper</a></li><li><a href="#send-the-lines">Send the lines</a></li><li><a href="#the-first-five-queries-of-an-incident">The first five queries of an incident</a></li><li><a href="#alert-on-your-logs">Alert on your logs</a></li><li><a href="#the-log-explorer">The Log explorer</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeDB keeps log lines in an ordinary table and finds them the way an on-call engineer looks at 3 a.m.: any part of a line (an interface name, an IP, an error code) from a substring index, the last 15 minutes with <code>now() - INTERVAL '15 minutes'</code>, counts per host and minute with <code>time_bucket</code>. This page starts a server, makes a table for syslog, a key that may only write and read those tables, sends lines to it, and runs the first five queries of an incident. The command center's <strong>Log explorer</strong> does the same with a search box.</p>
@@ -149,17 +149,24 @@ until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; don
 | curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; -d @- \
 | python3 -c &#x27;import json, sys; print(json.load(sys.stdin).get(&quot;error&quot;, &quot;made&quot;))&#x27;</pre>
 <pre data-lang="text" data-title="Output" class="output">made</pre>
-<h2 id="a-key-for-the-on-call-engineer-and-the-log-shipper">A key for the on-call engineer and the log shipper<a class="anchor" href="#a-key-for-the-on-call-engineer-and-the-log-shipper" aria-label="Link to this section">#</a></h2>
-<p>The <code>oncall</code> preset makes a key <a href="server.html#security">limited to tables</a>: it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its <a href="chloectx-app.html">ChloeCtx</a> spaces <code>ctx_logs_*</code>, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and <code>chloedb-server cc</code> offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise. Since it can silence an alert, give the Collector a key of its own that only writes these tables (<code>POST /v1/admin/keys {"name": "collector", "tables": {"logs_*": "write"}}</code>, which <code>POST /v1/logs</code> takes): a key read from a shipper's config file should not be able to quiet the pages. This page uses one key for both, to stay short.</p>
+<h2 id="a-key-for-the-on-call-engineer-and-one-for-the-log-shipper">A key for the on-call engineer, and one for the log shipper<a class="anchor" href="#a-key-for-the-on-call-engineer-and-one-for-the-log-shipper" aria-label="Link to this section">#</a></h2>
+<p>The <code>oncall</code> preset makes a key <a href="server.html#security">limited to tables</a>: it writes and reads the tables its prefix names (rows, imports and OpenTelemetry logs alike), writes notes into its <a href="chloectx-app.html">ChloeCtx</a> spaces <code>ctx_logs_*</code>, reads the fleet's health, events, alerts and metrics, and acknowledges, silences and notes an alert, as the alert's page and <code>chloedb-server cc</code> offer it. It cannot read other tables, change alert rules or routes, or change the server otherwise. This is the key the people on call search with:</p>
 <pre data-lang="sh">export CHLOEDB_LOGS_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H &quot;authorization: Bearer $ADMIN_KEY&quot; \
   -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;name&quot;: &quot;netops&quot;, &quot;preset&quot;: &quot;oncall&quot;, &quot;prefix&quot;: &quot;logs_*&quot;}&#x27; \
   | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;secret&quot;])&#x27;)
 curl -s localhost:7700/v1/whoami -H &quot;authorization: Bearer $CHLOEDB_LOGS_KEY&quot; \
   | python3 -c &#x27;import json, sys; w = json.load(sys.stdin); print(w[&quot;name&quot;], w.get(&quot;preset&quot;), w[&quot;tables&quot;])&#x27;</pre>
 <pre data-lang="text" data-title="Output" class="output">netops oncall {&#x27;ctx_incidents&#x27;: &#x27;read&#x27;, &#x27;ctx_logs_*&#x27;: &#x27;write&#x27;, &#x27;logs_*&#x27;: &#x27;write&#x27;}</pre>
+<p>The Collector gets a key of its own. Its copy sits in the config of every host that ships logs, and log lines carry user ids, email addresses and tokens: a key that may <code>write</code> a table reads it too (every query, the feed, the alerts), so a key read from one host's config would read every line of every host. A grant of <code>append</code> inserts new rows into its tables (<code>POST /v1/logs</code>, <code>POST /v1/import</code>, <code>INSERT</code>) and reads nothing, not even those tables; it never replaces or deletes a row, and cannot acknowledge or silence an alert:</p>
+<pre data-lang="sh">export CHLOEDB_SHIP_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H &quot;authorization: Bearer $ADMIN_KEY&quot; \
+  -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;name&quot;: &quot;collector&quot;, &quot;tables&quot;: {&quot;logs_*&quot;: &quot;append&quot;}}&#x27; \
+  | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;secret&quot;])&#x27;)
+curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $CHLOEDB_SHIP_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;SELECT body FROM logs_syslog LIMIT 1&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;error&quot;])&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">this statement needs a key with the read scope or more; the key &quot;collector&quot; has append: it inserts new rows into logs_* (append) and does nothing else</pre>
 <h2 id="send-the-lines">Send the lines<a class="anchor" href="#send-the-lines" aria-label="Link to this section">#</a></h2>
 <h3 id="from-an-opentelemetry-collector">From an OpenTelemetry Collector<a class="anchor" href="#from-an-opentelemetry-collector" aria-label="Link to this section">#</a></h3>
-<p><code>POST /v1/logs</code> takes OTLP over HTTP (protobuf or JSON, gzip or not), the protocol every OpenTelemetry SDK and the Collector export; <code>?table=</code> names the table, and a table that does not exist is made with <a href="server.html#opentelemetry-logs">OTLP's columns</a>. This Collector listens for syslog on UDP port 5514 and for OTLP from your applications, and sends both to <code>logs_syslog</code> with the key above in its environment (<code>otelcol-contrib --config collector.yaml</code>):</p>
+<p><code>POST /v1/logs</code> takes OTLP over HTTP (protobuf or JSON, gzip or not), the protocol every OpenTelemetry SDK and the Collector export; <code>?table=</code> names the table, and a table that does not exist is made with <a href="server.html#opentelemetry-logs">OTLP's columns</a>. This Collector listens for syslog on UDP port 5514 and for OTLP from your applications, and sends both to <code>logs_syslog</code> with the shipper's key in its environment (<code>otelcol-contrib --config collector.yaml</code>):</p>
 <pre data-lang="yaml">receivers:
   syslog:
     udp:
@@ -178,7 +185,7 @@ exporters:
     logs_endpoint: http://127.0.0.1:7700/v1/logs?table=logs_syslog
     encoding: json
     headers:
-      Authorization: Bearer ${env:CHLOEDB_LOGS_KEY}
+      Authorization: Bearer ${env:CHLOEDB_SHIP_KEY}
 
 service:
   pipelines:
@@ -190,7 +197,7 @@ service:
 <p>The server also writes severity in one spelling whoever sent it (<code>warning</code> and <code>WARN</code> are <code>WARN</code>, <code>err</code> is <code>ERROR</code>, <code>critical</code> is <code>FATAL</code>; a text it does not know stays as written) and fills <code>severity_number</code> (INFO 9, WARN 13, ERROR 17, FATAL 21) when the record has none, so <code>severity_number &gt;= 17</code> finds the errors of every source. The lines the next sections import are in the same form.</p>
 <p>What the Collector sends is OTLP JSON, which <code>curl</code> can send too:</p>
 <pre data-lang="sh">now=$(python3 -c &#x27;import time; print(time.time_ns())&#x27;)
-curl -s &quot;localhost:7700/v1/logs?table=logs_syslog&quot; -H &quot;authorization: Bearer $CHLOEDB_LOGS_KEY&quot; \
+curl -s &quot;localhost:7700/v1/logs?table=logs_syslog&quot; -H &quot;authorization: Bearer $CHLOEDB_SHIP_KEY&quot; \
   -H &#x27;content-type: application/json&#x27; -d &#x27;{&quot;resourceLogs&quot;: [{
     &quot;resource&quot;: {&quot;attributes&quot;: [{&quot;key&quot;: &quot;host.name&quot;, &quot;value&quot;: {&quot;stringValue&quot;: &quot;edge-sw-11&quot;}}]},
     &quot;scopeLogs&quot;: [{&quot;logRecords&quot;: [{&quot;timeUnixNano&quot;: &quot;&#x27;$now&#x27;&quot;, &quot;severityText&quot;: &quot;WARN&quot;,
@@ -251,7 +258,7 @@ with open(&quot;syslog.jsonl&quot;, &quot;w&quot;) as f:
     f.writelines(json.dumps(x) + &quot;\n&quot; for x in lines)
 print(len(lines), &quot;lines&quot;)</pre>
 <pre data-lang="sh">python3 make_logs.py
-curl -s &quot;localhost:7700/v1/import?table=logs_syslog&amp;format=jsonl&quot; -H &quot;authorization: Bearer $CHLOEDB_LOGS_KEY&quot; \
+curl -s &quot;localhost:7700/v1/import?table=logs_syslog&amp;format=jsonl&quot; -H &quot;authorization: Bearer $CHLOEDB_SHIP_KEY&quot; \
   -H &#x27;content-type: application/x-ndjson&#x27; --data-binary @syslog.jsonl
 echo</pre>
 <pre data-lang="text" data-title="Output" class="output">648 lines

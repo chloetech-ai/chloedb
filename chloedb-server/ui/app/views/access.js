@@ -936,12 +936,12 @@ function render(page, r) {
     const grantList = h("div", { class: "f", style: { maxHeight: "240px", overflowY: "auto", gap: "6px" } }, h("div", { class: "small muted" }, "Reading the tables…"));
     const pattern = h("input", { class: "input grow", placeholder: "logs_* (optional)", maxLength: 128, "aria-label": "A pattern of tables, a prefix and *" });
     let patternScope = "read";
-    const patternSeg = seg([["read", "read"], ["write", "write"], ["admin", "admin"]], patternScope, (v) => (patternScope = v), { "aria-label": "What it may do to the tables of the pattern" });
+    const patternSeg = seg([["append", "append", "inserts new rows, reads nothing: a log shipper's key"], ["read", "read"], ["write", "write", "reads and writes"], ["admin", "admin"]], patternScope, (v) => (patternScope = v), { "aria-label": "What it may do to the tables of the pattern" });
     const grantRow = (t) => h("div", { class: "row nw", style: { gap: "8px", justifyContent: "space-between" } },
       h("span", { class: "mono" }, t),
-      seg([["", "none"], ["read", "read"], ["write", "write"], ["admin", "admin"]], grants.get(t) || "", (v) => (v ? grants.set(t, v) : grants.delete(t)), { "aria-label": `What it may do to ${t}` }));
+      seg([["", "none"], ["append", "append", "inserts new rows, reads nothing"], ["read", "read"], ["write", "write", "reads and writes"], ["admin", "admin"]], grants.get(t) || "", (v) => (v ? grants.set(t, v) : grants.delete(t)), { "aria-label": `What it may do to ${t}` }));
     const tablesBox = h("div", { class: "f", style: { display: "none" } },
-      h("span", { class: "small muted" }, "What it may do to each table. It cannot see the others, nor the server's settings."),
+      h("span", { class: "small muted" }, "What it may do to each table: append inserts new rows and reads nothing (a log shipper's key), write reads what it writes. It cannot see the others, nor the server's settings."),
       grantList,
       h("div", { class: "row nw", style: { gap: "8px" } }, pattern, patternSeg));
     catalogTables().then((ts) => {

@@ -66,11 +66,16 @@ pub(crate) use fuse::paths as fuse_paths;
 pub const VERSION: u32 = 1;
 
 /// The plan features this version of Strata reads.
-pub const FEATURES: [&str; 37] = [
+pub const FEATURES: [&str; 38] = [
     OPERATORS, SEQ_NO, RANK_EXPRESSIONS, SEMANTIC_ID, RANK_PHASES, RANK_FEATURES, MAXSIM, RANK_PROFILES, RANK_MODELS, DISTINCT_ON, EDGE_TABLE, RANKED, TEXT_OPERATORS, PREFIX, CORRELATED, PREFIX_EDITS, MIN_MATCH, AT_LEAST, GUARD, PER_CAP, ENCODE,
     SCORE_NORMS, JSON, WINDOW, SET_OPS, JSON_COLUMNS, DATES, PERCENTILES, HASH, PHRASE_PREFIX, DISTANCE, ASOF_JOIN, TERMS_SYNTAX, DATE_BIN, APPROX_PERCENTILES,
-    FULL_JOIN, SQL_FUNCTIONS,
+    FULL_JOIN, SQL_FUNCTIONS, KEYWORD_RANGES,
 ];
+
+/// The feature of a plan that compares a field with text by order
+/// (`id > 'k'`: [`Expr::Cmp`] of a KEYWORD field and a string), which a
+/// Strata from before it refuses in a Search.
+pub const KEYWORD_RANGES: &str = "keyword_ranges";
 
 /// The feature of a plan with operators over rows in memory: a join,
 /// `WITH`, a subquery, `DISTINCT`, or a node over another's rows than a
@@ -2288,6 +2293,15 @@ impl Plan {
         });
         if gbdt {
             features.push(RANK_MODELS.to_string());
+        }
+        let mut keyword_ranges = false;
+        root.visit_exprs(&mut |e| {
+            if let Expr::Cmp { op: CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge, left, right } = e {
+                keyword_ranges |= matches!((&**left, &**right), (Expr::Field(_), Expr::Lit(Value::Str(_))) | (Expr::Lit(Value::Str(_)), Expr::Field(_)));
+            }
+        });
+        if keyword_ranges {
+            features.push(KEYWORD_RANGES.to_string());
         }
         let (mut prefix, mut edits) = (false, false);
         root.visit_exprs(&mut |e| {
