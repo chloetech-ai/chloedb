@@ -481,8 +481,12 @@ async fn an_append_key_inserts_and_reads_nothing() {
     // What it may: OTLP logs (into a table it makes, too), JSON lines, an
     // insert, an INSERT, and an INSERT that skips a key a row has.
     let logs = json!({"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": [{"timeUnixNano": "1700000000000000000", "severityText": "ERROR", "body": {"stringValue": "Gi0/1 down"}}]}]}]});
-    for table in ["logs_otel", "logs_otel"] {
-        let (s, j) = call(&base, "POST", &format!("/v1/logs?table={table}"), k, Some(logs.clone())).await;
+    // Two lines, sent apart: the first makes the table. (A request sent
+    // again is a retry and writes nothing more.)
+    for line in ["Gi0/1 down", "Gi0/2 down"] {
+        let mut req = logs.clone();
+        req["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["body"]["stringValue"] = json!(line);
+        let (s, j) = call(&base, "POST", "/v1/logs?table=logs_otel", k, Some(req)).await;
         assert_eq!(s, 200, "{j}");
     }
     let c = chloedb_server::http_client().build().unwrap();
