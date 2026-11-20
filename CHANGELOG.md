@@ -27,6 +27,15 @@ changes collect under "Unreleased".
   own heat from the 3.9 µm band glowing in them; fire pixels on Live and
   the replays are one field of heat per fire, fading with age, and a
   "Fire pixels" button hides them to show the fire as the picture has it.
+- **Earth explorer: Fire watch.** Keep an eye on a home, a parent's house
+  or a farm in California or Chile: Earth checks every GOES scan and
+  raises an alert once when a fire comes within the distance picked,
+  within 5 km, over the place, 2 km closer in an hour or past 1,000 MW.
+  Each place has a page with the heat near it, how far the nearest fire
+  was over 12 hours, its alerts and the official sources; alerts reach
+  the browser as notifications and an Atom feed. There are no accounts:
+  watches belong to a random key the browser keeps. An example plays the
+  Park Fire's first 12 hours over three made-up places.
 
 ## 0.3.9
 

@@ -1,6 +1,6 @@
 # Earth Explorer: California and Chile from orbit, on ChloeDB
 
-`chloedb-earth` is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come; 103,664 places of 3.84 km a side, each with its Sentinel-2 picture's [SigLIP](https://huggingface.co/google/siglip-so400m-patch14-384) vector from [Major TOM](https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP) and what is on it (land cover, terrain, people, climate, crops, mines, the years it burned); and the pictures of a few hundred of them every other year since 2017. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app `earth` (`chloedb-server --app earth=URL`). Every request needs the token the command center's app proxy sends, unless the app runs with `--public`: then it serves its page at `/` and the page's reads to anyone, at most `--per-minute` (120) requests a minute from one address, and a picture searched for (`POST /v1/picture`) is the only POST it takes. Readers never send SQL: each page asks its own statements, and shows them under SQL.
+`chloedb-earth` is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come; 103,664 places of 3.84 km a side, each with its Sentinel-2 picture's [SigLIP](https://huggingface.co/google/siglip-so400m-patch14-384) vector from [Major TOM](https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP) and what is on it (land cover, terrain, people, climate, crops, mines, the years it burned); and the pictures of a few hundred of them every other year since 2017. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app `earth` (`chloedb-server --app earth=URL`). Every request needs the token the command center's app proxy sends, unless the app runs with `--public`: then it serves its page at `/` and the page's reads to anyone, at most `--per-minute` (120) requests a minute from one address, and the only POSTs it takes are a picture searched for (`POST /v1/picture`) and a browser's own fire watches. Readers never send SQL: each page asks its own statements, and shows them under SQL.
 
 Three things on it are ChloeDB's own:
 
@@ -15,6 +15,7 @@ Three things on it are ChloeDB's own:
 | Home | a search box for a town, a county or "lat, lon" (and "use my location") that opens a place's report, then each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read | `ea_fires`, `ea_alerts`, `ea_places`, `ea_backtest`, `ea_scans` |
 | Live | the region's map with the fire pixels of the last hours (a red light when the newest scan is under three hours old), the fires burning with their alerts, refreshed every 30 seconds | `ea_detections`, `ea_fires`, `ea_alerts`, `ea_scans` |
 | A replay | a night of the archive played back on the map, a scan at a time, over GOES's picture of the sky at that moment (with `--frames`): Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024 | `ea_detections`, `ea_scans`, `ea_fires` |
+| Fire watch | places a browser keeps an eye on (a home, a parent's house, a farm: found by name, by "lat, lon", with "use my location", or many at once as lines of a name and coordinates), each with where the nearest fire is now; a place's page with the heat near it, how far the nearest fire was scan by scan over 12 hours, the alerts sent, what to be told about (a fire within 5 to 50 km, 2 km closer in an hour, past 1,000 MW), the official sources, the ground and the fires that started near it; the browser's notifications while a tab is open and an Atom feed of its alerts; and an example that plays the Park Fire's first 12 hours (24 July 2024) over three made-up places | `ea_watches`, `ea_watch_alerts`, `ea_detections`, `ea_scans`, `ea_fires` |
 | A fire | its pixels on the map, its first hours drawn, the fires that began like it with the outlook they give, its alerts, and how well the outlook has done before | `ea_fires`, `ea_detections`, `ea_backtest` |
 | Past fires | a region's fires by size, year or name | `ea_fires` |
 | Explore | the map with a layer over it (people, trees, shrubs, grass, crops, built, bare, water, snow, terrain, slope, mines, fire history, climate, land cover, crops by kind), and the place under a click | `ea_places` |
@@ -38,6 +39,22 @@ Each rule is one statement over the fires, run every minute; its rows are the al
 | `steep-windy` | a fire that started on slopes of 15 degrees or more, half trees and shrubs, with gusts of 35 mph or more |
 | `could-grow` | a fire whose twenty nearest fires by their first hours mostly grew past 20 km² |
 | `first-in-years` | a fire on ground with no fire in NASA FIRMS's records since 2001 |
+
+## Fire watch
+
+A watch is a row of `ea_watches`: a point, a name, the distance it asks about and two choices. There are no accounts: the page makes a long random key (a UUID) the first time, keeps it in the browser, and a watch belongs to the key that made it (25 at most a key, 20,000 in all). Every route takes the key as `?w=`, and the feed has it in its address, `/v1/watches/feed/<key>`, so a feed reader needs nothing else. The page's writes are `POST /v1/watches` (a new watch) and `POST /v1/watch/<id>` (a change, or `{"remove": true}`, which takes its alerts too).
+
+Every minute `serve` reads each region's scans since it last looked (at most the last six hours after a pause) and, for each watch of the region, the nearest fire pixel of the hour up to each scan. It writes to `ea_watch_alerts`, once per watch, fire and kind:
+
+| kind | when |
+|---|---|
+| `in` | a fire within the distance the watch asks about (5, 10, 15, 25 or 50 km) |
+| `near` | a fire within 5 km |
+| `here` | a fire pixel within 1.5 km (a GOES pixel is 2 to 3 km across) |
+| `power` | a fire within 50 km past 1,000 MW in one scan, when asked |
+| `closer` | the same fire 2 km closer than 40 to 90 minutes before, once an hour, when asked |
+
+`/v1/watches` (a key's watches, where each stands, and its alerts), `/v1/watch/<id>` (one, with 12 hours of distances, the heat within 55 km and the fires GOES saw start within 25 km since June 2023), `/v1/watches/feed/<key>` (Atom) and `/v1/watches/example` (the Park Fire's first 12 hours, worked out once) are what the page reads. The browser is told of an alert while Earth is open in a tab; pushes to a closed phone are not built yet.
 
 ## Running it
 

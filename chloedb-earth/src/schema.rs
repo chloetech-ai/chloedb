@@ -89,6 +89,15 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
   id KEYWORD PRIMARY KEY, region KEYWORD, window KEYWORD, hours FLOAT, fires INT,
   covered FLOAT, base_covered FLOAT, width FLOAT, base_width FLOAT, error FLOAT, base_error FLOAT, spearman FLOAT, at TIMESTAMP
 )".to_string(), "How well the fires like each one foretold its size: each fire watched from its start, matched only against fires out before that moment"),
+        ("ea_watches", "CREATE TABLE IF NOT EXISTS ea_watches (
+  id KEYWORD PRIMARY KEY, watcher KEYWORD, name KEYWORD OPTIONS(indexed = false), lat FLOAT, lon FLOAT, km FLOAT,
+  region KEYWORD, closer BOOL, power BOOL, place KEYWORD, created TIMESTAMP
+) OPTIONS(cluster_by = 'watcher')".to_string(), "Fire watch: places people keep an eye on, each a point, a name and the distance it asks about, owned by a browser's random key"),
+        ("ea_watch_alerts", "CREATE TABLE IF NOT EXISTS ea_watch_alerts (
+  id KEYWORD PRIMARY KEY, watch KEYWORD, watcher KEYWORD, region KEYWORD, kind KEYWORD, t TIMESTAMP, sent TIMESTAMP,
+  title KEYWORD OPTIONS(indexed = false), body KEYWORD OPTIONS(indexed = false),
+  km FLOAT, dir KEYWORD, fire KEYWORD, lat FLOAT, lon FLOAT, name KEYWORD OPTIONS(indexed = false)
+) OPTIONS(cluster_by = 'watcher')".to_string(), "What fire watch raised: one row per watch, fire and kind (within the distance, within 5 km, over the place, past 1,000 MW, 2 km closer in an hour)"),
         ("ea_feed", "CREATE TABLE IF NOT EXISTS ea_feed (
   id KEYWORD PRIMARY KEY, kind KEYWORD, at TIMESTAMP, rows INT, note KEYWORD OPTIONS(indexed = false)
 )".to_string(), "Where each feed stands: the last scan read, and when"),
