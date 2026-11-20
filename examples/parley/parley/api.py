@@ -389,8 +389,11 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
             if cache:
                 self.send_header("cache-control", "public, max-age=31536000, immutable")
                 self.send_header("content-security-policy", "default-src 'none'; sandbox")
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.end_headers()
+                self.wfile.write(data)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the client went away (a probe that timed out, a closed tab)
 
         def _file(self, path, ctype):
             if not path.exists():

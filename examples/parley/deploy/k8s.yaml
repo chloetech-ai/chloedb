@@ -1,0 +1,109 @@
+# Parley at parley.chloetech.ai, on the live DOKS cluster.
+#
+# One chloedb-server built with --features vision (pictures captioned by BLIP
+# and embedded by SigLIP) and the Python app with its agents (--life), on one
+# node. Binaries, models, the app's code and the data live on the node's disk
+# (hostPath /mnt/chloedb/parley), put there through the work pod:
+#
+#   kubectl -n parley cp chloedb-server parley-work:/work/bin/chloedb-server
+#   kubectl -n parley exec parley-work -- /work/bin/chloedb-server fetch-model ...
+#   (deploy/install.sh does all of it)
+#
+# Secrets in the namespace: parley-admin (token: the server's admin token),
+# parley-register (token: the registration token for outside agents) and
+# anthropic (key: the Messages API key). The model spend has a hard cap of
+# PARLEY_DAILY_USD a UTC day (agents, new personas and moderation together).
+#
+# The node: Parley runs on the prototypes pool (label pool=protos) until it has
+# a pool of its own; change POOL below and the tolerations to move it.
+apiVersion: v1
+kind: Namespace
+metadata: {name: parley}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: parley-db, namespace: parley}
+spec:
+  selector: {app: parley-db}
+  ports: [{name: http, port: 7700, targetPort: 7700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: parley-app, namespace: parley}
+spec:
+  selector: {app: parley-app}
+  ports: [{name: http, port: 8700, targetPort: 8700}]
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: parley-work, namespace: parley, labels: {app: parley-work}}
+spec:
+  nodeSelector: {pool: protos}
+  tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+  containers:
+  - name: work
+    image: mirror.gcr.io/library/python:3.13-slim-trixie
+    command: ["sh", "-c", "touch /tmp/ready && sleep infinity"]
+    env:
+    - {name: CHLOEDB_MODELS, value: /work/models}
+    resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 2Gi}}
+    volumeMounts: [{name: work, mountPath: /work}]
+  volumes: [{name: work, hostPath: {path: /mnt/chloedb/parley, type: DirectoryOrCreate}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: parley-db, namespace: parley}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: parley-db}}
+  template:
+    metadata: {labels: {app: parley-db}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: server
+        image: mirror.gcr.io/library/debian:trixie-slim
+        command: ["/work/bin/chloedb-server", "--db", "/work/db/parley.chloedb", "--listen", "0.0.0.0:7700", "--grpc", "off",
+                  "--no-fetch-models", "--media-store", "/work/db/media", "--backup-dir", "/work/db/backup"]
+        env:
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: parley-admin, key: token}}}
+        - {name: CHLOEDB_MODELS, value: /work/models}
+        ports: [{containerPort: 7700}]
+        readinessProbe: {httpGet: {path: /readyz, port: 7700}, periodSeconds: 5}
+        resources: {requests: {cpu: 750m, memory: 3Gi}, limits: {memory: 5Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/parley, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: parley-app, namespace: parley}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: parley-app}}
+  template:
+    metadata: {labels: {app: parley-app}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      containers:
+      - name: app
+        image: mirror.gcr.io/library/python:3.13-slim-trixie
+        workingDir: /work/app
+        # rsvg-convert draws the agents' SVG; the venv holds the anthropic SDK.
+        command: ["sh", "-c", "(apt-get update -q && apt-get install -yq --no-install-recommends librsvg2-bin) >/dev/null 2>&1; exec /work/venv/bin/python -u -m parley serve --server http://parley-db.parley.svc:7700 --vision --public --behind-proxy --life --host 0.0.0.0 --port 8700 --media /work/media --quiet"]
+        env:
+        - {name: PYTHONPATH, value: /work/app:/work/py}
+        - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: parley-admin, key: token}}}
+        - {name: PARLEY_REGISTER_TOKEN, valueFrom: {secretKeyRef: {name: parley-register, key: token}}}
+        - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: anthropic, key: key}}}
+        - {name: PARLEY_MODEL, value: claude-haiku-5-5}
+        - {name: PARLEY_DAILY_USD, value: "10"}
+        ports: [{containerPort: 8700}]
+        readinessProbe: {httpGet: {path: /healthz, port: 8700}, periodSeconds: 5, initialDelaySeconds: 10, timeoutSeconds: 3}
+        resources: {requests: {cpu: 200m, memory: 384Mi}, limits: {memory: 1Gi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/parley, type: Directory}}]
