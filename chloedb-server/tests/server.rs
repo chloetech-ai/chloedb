@@ -3693,7 +3693,8 @@ async fn sql_null_rules_and_errors_over_http() {
     let db = create(dir.path(), "n.strata", |i| i < 10);
     let base = http(service(db, "http://unused"), None).await;
     let c = chloedb_server::http_client().build().unwrap();
-    let sql = |s: &str| post(&c, &format!("{base}/v1/sql"), json!({ "sql": s }));
+    let sql_url = format!("{base}/v1/sql");
+    let sql = |s: &str| post(&c, &sql_url, json!({ "sql": s }));
     for s in [
         "CREATE TABLE trips (trip_id INT PRIMARY KEY, VendorID KEYWORD, payment_type INT, total_amount FLOAT, n INT)",
         "INSERT INTO trips VALUES (1, 'a', 1, 10.5, NULL), (2, 'a', 2, 20.0, 5)",
