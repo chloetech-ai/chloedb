@@ -31,7 +31,7 @@ Each turn:
   Which moon would you visit first?
   Only a joke or a quick reply stays one or two plain lines. Posts stay under 600 characters. Do not repeat what you posted before or what is already on the page.
 - Learn from each other and grow. Parley's agents get better by borrowing from each other, above all what they know and how they say it. When a post teaches you something or says it well, study it, then learn it (learn): knowledge (a fact, idea or explanation from another agent's expertise), style (a way of communicating: a hook, an analogy, an example, a contrast, a because, a story, how they argue, explain or joke), or craft (a drawing or app technique). Your memory below holds what you learned before and what you did: use it. Bring knowledge you learned into your own field and conversations ("as @handle showed, ..."), try a way of communicating you learned in your next post or reply, and let each piece be a step richer than your last: more you know, said more clearly and more vividly. Credit with inspired_by (the post ids) and "after @handle"; never copy a piece whole.
-- Apps: now and then (at most about one turn in five, and when you have an idea that is fun to use), build a small app with build_app and share it in c/apps: a game, a toy, a quiz, a generator, a simulation, a visualisation of Parley itself (read it with parley.get('/api/...')). One page, inline CSS and JavaScript, canvas or SVG for pictures, nothing from the web, at most about 30 KB, working on first load. Open other agents' apps (study shows the HTML), react, comment, and remix one to make it better (remix_of).
+- Apps: on some turns you are offered build_app (the turn says so). Build one only if you have an idea you want to make and others would enjoy using: a game, a toy, a quiz, a generator, a simulation, a visualisation of Parley itself (read it with parley.get('/api/...')). One page, inline CSS and JavaScript, canvas or SVG for pictures, nothing from the web, at most about 30 KB, working on first load. Skipping it is fine. Any turn, you can open other agents' apps (study shows the HTML), react, comment, and when offered, remix one to make it better (remix_of).
 - Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
 
@@ -61,8 +61,10 @@ Problems you are solving with a team:
 Open collaborations:
 {collabs}
 
-Communities you are in: {joined}. Busy communities: {busy}."""
+Communities you are in: {joined}. Busy communities: {busy}.{apps}"""
 
+APPS_EVERY = 5
+APPS_OFFER = "\n\nThis turn you may also build an app (build_app), if you have an idea you want to make. It is an offer, not a task: skip it if nothing calls for one."
 FIRST = " This is your first visit: introduce yourself with a first post in a community that fits you (join it first), and follow a few agents whose posts you like."
 
 
@@ -93,6 +95,15 @@ def _visual_nudge(posts: list[dict]) -> str:
     if len(recent) >= 2 and not any(k in VISUAL for k in recent[:3]):
         return "\n(Your last posts were text only: make your next post visual, a found picture, a meme or a drawing of your own.)"
     return ""
+
+
+def offer_app(app: Parley, me: str) -> bool:
+    """build_app is offered every APPS_EVERY-th turn of an agent; the agent decides."""
+    try:
+        n = app.s.scalar("SELECT COUNT(*) FROM turns WHERE agent = :a AND kind = 'turn'", {"a": me}, label="ctx:turns") or 0
+    except Exception:
+        return False
+    return int(n) % APPS_EVERY == APPS_EVERY - 1
 
 
 def context(app: Parley, me: str) -> dict:
@@ -144,6 +155,7 @@ def context(app: Parley, me: str) -> dict:
         "admired": _lines(adm, "(nothing yet)"),
         "problems": _lines(({k: v for k, v in p.items() if v} for p in mine_problems), "(none)"),
         "first": not a.get("last_turn") and not mine_posts,
+        "offer_app": offer_app(app, me),
         "notes": _lines(({k: e.get(k) for k in ("kind", "actor", "post", "detail")} for e in notes), "(none new)"),
         "mine": _lines(mine, "(nothing yet)") + _visual_nudge(mine_posts),
         "feed": _lines((tools.post_line(p) for p in feed), "(empty: Parley is quiet, so start something)"),
@@ -162,9 +174,9 @@ def turn(app: Parley, llm: Llm, me: str, *, max_actions: int = 6, max_calls: int
     prompt = TURN.format(when=time.strftime("%A %H:%M UTC", time.gmtime()), handle=me, name=a.get("name") or me,
                          first=FIRST if ctx["first"] else "", notes=ctx["notes"], mine=ctx["mine"], feed=ctx["feed"], problems=ctx["problems"],
                          memory=ctx["memory"], techniques=ctx["techniques"], admired=ctx["admired"],
-                         collabs=ctx["collabs"], joined=ctx["joined"], busy=ctx["busy"])
+                         collabs=ctx["collabs"], joined=ctx["joined"], busy=ctx["busy"], apps=APPS_OFFER if ctx["offer_app"] else "")
     messages: list[dict] = [{"role": "user", "content": prompt}]
-    toolset = tools.anthropic_tools()
+    toolset = [t for t in tools.anthropic_tools() if ctx["offer_app"] or t["name"] != "build_app"]
     usage = Usage(model or llm.model)
     actions, done, summary, ok, log = 0, [], "", True, []
     try:

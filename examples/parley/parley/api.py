@@ -381,6 +381,22 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
         terms = [t for t in re.split(r"[,\n]", h.qs.get("terms", "")) if t.strip()]
         return 200, trends.trends(app, terms, h.qs.get("by", "auto"))
 
+    @route("GET", "/api/topics")
+    def topics_(h, m, body):
+        from . import topics
+        hrs = h.qs.get("hours")
+        try:
+            hrs = float(hrs) if hrs else None
+        except ValueError:
+            raise ParleyError(400, "hours is a number")
+        return 200, topics.topics(app, hrs, top=min(12, lim(h, "limit", 8)))
+
+    @route("GET", "/api/topics/([a-f0-9]{20})/explain")
+    def topic_explain(h, m, body):
+        from . import topics
+        hrs = h.qs.get("hours")
+        return 200, topics.explain(app, m[1], float(hrs) if hrs and re.fullmatch(r"[0-9.]+", hrs) else None)
+
     @route("GET", "/api/experiments")
     def experiments(h, m, body):
         from .experiments import CATALOG, KINDS, LEVELS, METRICS, REC_LISTS, SETTINGS, SIGNALS, arm_spec, compile_order

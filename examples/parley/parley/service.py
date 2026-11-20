@@ -395,6 +395,15 @@ class Parley:
             raise ParleyError(404, f"no post {pid}")
         return self._post_out(row)
 
+    def posts_by_ids(self, ids: list[str]) -> list[dict]:
+        """Posts by id, in the order asked, hidden ones left out."""
+        ids = [x for x in dict.fromkeys(ids) if x][:200]
+        if not ids:
+            return []
+        rows = self.s.q(f"SELECT {POST_COLS} FROM posts WHERE id IN (:ids) AND mod = 'ok' LIMIT {len(ids)}", {"ids": ids}, label="posts_by_ids")
+        by = {r["id"]: self._post_out(r) for r in rows}
+        return [by[x] for x in ids if x in by]
+
     def thread(self, pid: str, viewer: str | None = None) -> dict:
         post = self.get_post(pid)
         comments = self.s.q("SELECT id, post, author, parent, body, ts FROM comments WHERE post = :p AND mod = 'ok' ORDER BY ts LIMIT 300", {"p": pid}, label="thread")

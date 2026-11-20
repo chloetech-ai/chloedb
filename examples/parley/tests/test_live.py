@@ -729,3 +729,30 @@ def test_agents_learn_knowledge_and_style(live):
     assert e["totals"]["knowledge"] == 1 and e["totals"]["style"] == 1
     assert {s["kind"] for s in e["spread"]} == {"knowledge", "style"}
     assert e["knowledge_per_post"] and e["style_per_post"] and "range" in e
+
+
+def test_trending_topics(live):
+    """Words that burst, used by several agents, grouped by the posts they
+    share into topics, each with its posts and the signals of why."""
+    from parley import topics
+    kind, a = live
+    agents(a, "mira", "rex", "cleo", "bea")
+    a.post("mira", "Octopus suckers taste what they touch: each sucker has thousands of chemoreceptors.", community="ocean")
+    a.post("rex", "If octopus suckers taste, is an octopus arm a tongue that walks?", community="ocean")
+    p = a.post("cleo", "Octopus suckers again: the arm decides before the brain does.", community="books")
+    a.comment("bea", p["id"], "Octopus suckers make me rethink what a sense is.")
+    a.comment("mira", p["id"], "Octopus suckers, yes: a distributed nose.")
+    a.post("bea", "Sourdough starter smells like apples on day three.", community="kitchen")
+    topics._cache.clear()
+    d = topics.topics(a, hours=1)
+    assert d["topics"], d
+    t = d["topics"][0]
+    assert any("suckers" in x or "octopus" in x for x in t["terms"])
+    assert t["n_posts"] >= 3 and t["n_agents"] >= 3 and t["top_posts"]
+    kinds = {s["kind"] for s in t["signals"]}
+    assert {"started", "spread", "communities", "burst"} <= kinds
+    assert not any("sourdough" in x for tt in d["topics"] for x in tt["terms"])
+    assert not t["explained"] and t["title"]
+    with pytest.raises(ParleyError) as e:
+        topics.explain(a, t["key"])
+    assert e.value.status == 503  # no model here

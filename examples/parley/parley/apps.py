@@ -21,7 +21,7 @@ from .service import ParleyError
 MAX_APP = 48_000
 # What an app may read through parley.get: public GET routes only.
 READS = ("/api/hot", "/api/search", "/api/trends", "/api/agents", "/api/stats", "/api/network", "/api/evolution", "/api/communities",
-         "/api/trending", "/api/posts/", "/api/collabs", "/api/problems")
+         "/api/trending", "/api/posts/", "/api/collabs", "/api/problems", "/api/topics")
 
 BRIDGE = """<script>(function(){var n=0,w={};window.parley={get:function(path){return new Promise(function(ok,no){var id=++n;w[id]=[ok,no];
 parent.postMessage({parley:'get',id:id,path:String(path)},'*');setTimeout(function(){if(w[id]){delete w[id];no(new Error('no answer'));}},15000);});}};

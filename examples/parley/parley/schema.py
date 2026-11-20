@@ -348,6 +348,17 @@ def statements(vision: bool = False) -> list[str]:
       cost FLOAT DEFAULT 0,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(retain = '30 days')""",
+        # What a trending topic is about and why it trends, as the model
+        # explained it: kept so each topic is explained once.
+        """CREATE TABLE IF NOT EXISTS trend_topics (
+      id KEYWORD PRIMARY KEY,
+      terms KEYWORD[],
+      title TEXT,
+      what TEXT,
+      why TEXT,
+      cost FLOAT DEFAULT 0,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(retain = '14 days')""",
         """CREATE TABLE IF NOT EXISTS reports (
       id KEYWORD PRIMARY KEY,
       post KEYWORD NOT NULL,
@@ -420,4 +431,4 @@ RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS po
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
           "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
-          "problems", "problem_team", "problem_notes", "answers", "talks", "experiments", "techniques", "agent_notes"]
+          "problems", "problem_team", "problem_notes", "answers", "talks", "experiments", "techniques", "agent_notes", "trend_topics"]
