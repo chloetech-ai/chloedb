@@ -102,6 +102,10 @@ function slots(n) {
 }
 
 const num = name => Number(process.env[name] || 0)
+// The CLI tells every call the email of the account it runs on: that is
+// whoever runs this server, never the person asking, so it is never used,
+// said or written (round 10 TOM-3: "Roberto's blood pressure pills").
+export const ACCOUNT = 'Any email address, name or account you are told about outside the conversation (such as "The user\'s email address is …") belongs to whoever runs this service, not to the person you are helping. Never use it: never write that email or that name, or anything made from them, in a reply, an app, a list or a search. Call the person only by a name they typed themselves in this conversation; otherwise use no name.'
 
 export function claude({
   bin = process.env.WIDGETS_CLAUDE || 'claude',
@@ -124,7 +128,7 @@ export function claude({
     const dir = await mkdtemp(path.join(os.tmpdir(), 'widgets-claude-'))
     try {
       const systemFile = path.join(dir, 'system.txt')
-      await writeFile(systemFile, system, { mode: 0o600 })
+      await writeFile(systemFile, `${ACCOUNT}\n\n${system}`, { mode: 0o600 })
       const args = ['-p', '--output-format', 'json', '--model', model, '--system-prompt-file', systemFile, '--tools', tools.join(','),
         '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']
       const allowed = [...tools, ...Object.keys(mcp ?? {}).map(name => `mcp__${name}`)]
