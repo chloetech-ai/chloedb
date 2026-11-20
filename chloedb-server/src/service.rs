@@ -4931,6 +4931,9 @@ impl Service {
         if let Command::Write { table, .. } = &command {
             self.may_write_followed([table.as_str()]).await?;
         }
+        // Nor may its columns be dropped or renamed here, or the table
+        // dropped (ROSA-401).
+        self.may_change_followed(&command).await?;
         // A dictionary's derived field on a coordinator: each shard would
         // tag its rows from its own slice of the dictionary's table, not
         // from the dictionary the preview shows (audit 4, X-C2).
@@ -5662,9 +5665,60 @@ impl Service {
     /// its copy, and stops once it leaves the publication or the slot is
     /// dropped (`--drop-slot`).
     pub async fn may_write_followed<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Result<(), ApiError> {
+        let Some((t, by)) = self.followed_by(tables).await else { return Ok(()) };
+        Err(ApiError {
+            code: Some("followed_table"),
+            status: 409,
+            message: format!(
+                "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+            ),
+        })
+    }
+
+    /// Refuses (409, `followed_table`) a `DROP TABLE` of a table a
+    /// Postgres follower follows, and an `ALTER TABLE` of one that drops or
+    /// renames a column the follower writes (any but one ChloeDB derives,
+    /// as an embedded vector), unless the follower sends it (ROSA-401,
+    /// ROSA-305): the follower would stop on the table, or write the
+    /// column again without the values it held. Adding a column stays
+    /// allowed.
+    pub async fn may_change_followed(&self, command: &Command) -> Result<(), ApiError> {
+        let (tables, what): (Vec<String>, String) = match command {
+            Command::DropTable { tables, .. } => (tables.clone(), "DROP TABLE".into()),
+            Command::AlterTable { table, alters } => {
+                let schema = match table {
+                    Some(t) => self.catalog().into_iter().find(|s| s.table.eq_ignore_ascii_case(t)),
+                    None => self.default_table().ok(),
+                };
+                let Some(schema) = schema else { return Ok(()) };
+                let derived = |c: &str| schema.field_index(c).is_some_and(|i| schema.fields[i].derive.is_some());
+                let Some(a) = alters.iter().find(|a| !matches!(a, Alter::AddField(_)) && !derived(a.column())) else { return Ok(()) };
+                let what = match a {
+                    Alter::DropField(c) => format!("ALTER TABLE ... DROP COLUMN {c}"),
+                    Alter::RenameField { from, to } => format!("ALTER TABLE ... RENAME COLUMN {from} TO {to}"),
+                    Alter::AddField(_) => unreachable!("adding a column is allowed"),
+                };
+                (vec![schema.table.clone()], what)
+            }
+            _ => return Ok(()),
+        };
+        let Some((t, by)) = self.followed_by(tables.iter().map(String::as_str)).await else { return Ok(()) };
+        Err(ApiError {
+            code: Some("followed_table"),
+            status: 409,
+            message: format!(
+                "nothing was changed: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which writes its columns as Postgres has them; after {what} the follower would stop on the table, or write the column again without the values it held. Change the table in Postgres (the follower adds a column Postgres adds, and follows a column Postgres renames or drops); ADD COLUMN here stays allowed. To change it here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
+            ),
+        })
+    }
+
+    /// The first of `tables` that a Postgres follower follows, and that
+    /// follower's name, unless the request is that follower's own
+    /// ([`POSTGRES_FOLLOWER_HEADER`]).
+    async fn followed_by<'a>(&self, tables: impl IntoIterator<Item = &'a str>) -> Option<(String, String)> {
         let tables: Vec<&str> = tables.into_iter().collect();
         if tables.is_empty() {
-            return Ok(());
+            return None;
         }
         let (cached, fresh) = match &*self.followed.lock().unwrap_or_else(|e| e.into_inner()) {
             Some((at, f)) => (Some(f.clone()), at.elapsed() < FOLLOWED_EVERY),
@@ -5688,7 +5742,7 @@ impl Service {
             }
         };
         if followed.is_empty() {
-            return Ok(());
+            return None;
         }
         let me = postgres_follower();
         for t in tables {
@@ -5696,15 +5750,9 @@ impl Service {
             if me.as_deref() == Some(by.as_str()) {
                 continue;
             }
-            return Err(ApiError {
-                code: Some("followed_table"),
-                status: 409,
-                message: format!(
-                    "nothing was written: table {t} follows Postgres (chloedb-server follow-postgres --name {by}), which alone writes it. A write here would answer what Postgres does not, until Postgres changes the row again and the follower undoes it. Write the change in Postgres; to write here, take the table out of the publication, or stop following (follow-postgres --name {by} --drop-slot)"
-                ),
-            });
+            return Some((t.to_string(), by.clone()));
         }
-        Ok(())
+        None
     }
 
     /// Each stream source's offset for the slots moving from this shard,
@@ -6363,6 +6411,10 @@ impl Service {
         let lags = self.follow_lags();
         if !lags.is_empty() {
             g.insert("follow_lag_s", lags.iter().map(|l| l.lag_s).fold(0.0, f64::max));
+            // The tables Postgres followers hold (the alert follow-table-held's).
+            if lags.iter().any(|l| l.kind == "postgres") {
+                g.insert("follow_tables_held", lags.iter().map(|l| l.tables.iter().filter(|t| t.held).count() as f64).sum());
+            }
             if lags.iter().any(|l| l.behind.is_some()) {
                 g.insert("follow_behind", lags.iter().filter_map(|l| l.behind).fold(0.0, f64::max));
             }
@@ -6753,6 +6805,25 @@ impl Service {
                     family("chloedb_follow_up", "1 while a follow process writing through this server says it follows (or copies, or catches up), and said so within the last 10 s; 0 while it retries, failed or is silent.", |l| Some(if l.up { 1.0 } else { 0.0 })),
                     family("chloedb_follow_behind_transactions", "Transactions of the source a cluster's follow process writing through this server has not applied, over the source's shards.", |l| l.behind),
                     family("chloedb_follow_behind_bytes", "Bytes of Postgres's WAL a Postgres follower writing through this server has not confirmed: Postgres's position (pg_current_wal_lsn()) less the follower's, as it last said.", |l| l.behind_bytes),
+                    family("chloedb_follow_tables_held", "Tables a Postgres follower writing through this server holds: each failed (a value or a change ChloeDB refused, a key it cannot make), so it stopped following it and tries it again while the others go on.", |l| (l.kind == "postgres").then(|| l.tables.iter().filter(|t| t.held).count() as f64)),
+                    family("chloedb_follow_last_error_timestamp_seconds", "When a follow process writing through this server last met an error (a table's, or its own), in seconds since the epoch.", |l| l.last_error_s),
+                ]
+                .into_iter()
+                .filter(|f| !f.values.is_empty()),
+            );
+            // Per table a Postgres follower follows or holds (ROSA-406).
+            let per_table = |f: &dyn Fn(&crate::service::feed::FollowTable) -> Option<f64>| -> Vec<(String, f64)> {
+                lags.iter().flat_map(|l| l.tables.iter().filter_map(move |t| Some((format!("{},table=\"{}\"", label(l), metrics::esc(&t.table)), f(t)?)))).collect()
+            };
+            let errors: Vec<(String, f64)> = lags
+                .iter()
+                .flat_map(|l| l.tables.iter().filter(|t| t.held).map(move |t| (format!("{},table=\"{}\",error=\"{}\"", label(l), metrics::esc(&t.table), metrics::esc(&t.error.clone().unwrap_or_default().chars().take(200).collect::<String>())), 1.0)))
+                .collect();
+            more.extend(
+                [
+                    Family { name: "chloedb_follow_table_up", ty: "gauge", help: "1 while a Postgres follower writing through this server follows the table, 0 while it holds it (it failed: chloedb_follow_table_error_info says why).", values: per_table(&|t| Some(if t.held { 0.0 } else { 1.0 })) },
+                    Family { name: "chloedb_follow_table_lag_seconds", ty: "gauge", help: "How far behind Postgres a table a Postgres follower writing through this server follows is: the follower's lag, and while the table is held, since it was held if longer.", values: per_table(&|t| Some(t.lag_s)) },
+                    Family { name: "chloedb_follow_table_error_info", ty: "gauge", help: "1 per table a Postgres follower writing through this server holds, with the error that holds it (its first 200 characters).", values: errors },
                 ]
                 .into_iter()
                 .filter(|f| !f.values.is_empty()),

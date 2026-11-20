@@ -11,7 +11,7 @@ import { h, icon, clear, api, card, empty, failure, fmt, toast, copy, seg, gate,
 import { tables, cached, table as tableOf, isStored, isTestModel, typeBadge, invalidate } from "../catalog.js";
 import { ownerOf, isMine, folded } from "../owners.js";
 import { quoteName } from "../sqledit.js";
-import { grid, answerStats, exportMenu } from "../results.js";
+import { grid, answerStats, exportMenu, rowDrawer, plainInts } from "../results.js";
 import { useFromCode, saveSearch, slug } from "./saved.js";
 import { bestText } from "./builder.js";
 import { NOT_PROSE } from "./models.js";
@@ -61,17 +61,26 @@ export function shownFields(t, text, vec = null) {
 }
 
 /**
- * The search a box runs: {sql, params, body, fnParams}. `mode`: words,
- * meaning or both. Words alone over one field rank by bm25 with a guard
- * (all the words while 20 rows have them, else fewer), so a sentence
- * finds rows; over several, a row needs a word of one of them and the
- * scores add up. A word in no row is taken for a typo of the words near
- * it (fuzzy => 'auto'), as the search page a shop or a recipe site has
- * does (MAYA-202). Meaning ranks every row by similarity; both fuse the
- * rankings (rrf). `body` and `fnParams` are the same search as a stored
- * function's (the words :q, the vector :v, the count :k).
+ * The search a box runs: {sql, params, body, fnParams, count, exact,
+ * all}. `mode`: words, meaning or both. Words alone over one field rank
+ * by bm25 with a guard (all the words while 20 rows have them, else
+ * fewer), so a sentence finds rows; over several, a row needs a word of
+ * one of them and the scores add up. A word in no row is taken for a typo
+ * of the words near it (fuzzy => 'auto'), as the search page a shop or a
+ * recipe site has does (MAYA-202). Meaning ranks every row by similarity;
+ * both fuse the rankings (rrf), and a row with every word comes first
+ * (GRACE-402): fused by rank alone, a row found by its words but far in
+ * meaning fell below rows halfway down both lists, so the ticket whose
+ * subject was typed whole was not in the top 20. `offset` pages.
+ *
+ * `count` counts the rows the words keep (GRACE-401: the rows that
+ * match, not the page or the rows scored), `exact` those with the words
+ * as typed, no typo allowed, and `all` reads every one of them for an
+ * export; all three are null by meaning alone, which ranks every row.
+ * `body` and `fnParams` are the same search as a stored function's (the
+ * words :q, the vector :v, the count :k).
  */
-export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
+export function searchSql(t, { q, fields, vec, mode, limit = 20, offset = 0 }) {
   const shown = shownFields(t, fields, mode !== "words" ? vec : null);
   const cols = shown.cols.map(quoteName);
   const from = quoteName(t.table);
@@ -80,10 +89,15 @@ export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
   const words = mode !== "meaning" && W.length;
   const meaning = mode !== "words" && vec;
   const fz = ", fuzzy => 'auto'";
-  if (words && meaning) order = `rrf(${W.map((f) => `bm25(${f}, :q${fz})`).join(", ")}, similarity(${quoteName(vec.name)}, :v))`;
-  else if (meaning) order = `similarity(${quoteName(vec.name)}, :v)`;
+  // The rows the words keep: those the guard keeps over one field, a word
+  // of one of the fields over several.
+  const matched = (opt) => !words ? null : W.length === 1 ? `MATCH(${W[0]}, :q${opt}, min => 1, min_rows => 20)` : W.map((f) => `MATCH(${f}, :q${opt}, min => 1)`).join("\n   OR ");
+  if (words && meaning) {
+    const every = W.map((f) => `MATCH(${f}, :q${fz}, min => '100%')`).join(" OR ");
+    order = `rrf(${W.map((f) => `bm25(${f}, :q${fz})`).join(", ")}, similarity(${quoteName(vec.name)}, :v))\n  + CASE WHEN ${every} THEN 1 ELSE 0 END`;
+  } else if (meaning) order = `similarity(${quoteName(vec.name)}, :v)`;
   else if (W.length === 1) order = `bm25(${W[0]}, :q${fz}, min => 1, min_rows => 20)`;
-  else if (W.length) { where = `\nWHERE ${W.map((f) => `MATCH(${f}, :q${fz}, min => 1)`).join("\n   OR ")}`; order = W.map((f) => `bm25(${f}, :q${fz})`).join(" + "); }
+  else if (W.length) { where = `\nWHERE ${matched(fz)}`; order = W.map((f) => `bm25(${f}, :q${fz})`).join(" + "); }
   else return null;
   const head = `SELECT ${[...cols, "score()"].join(", ")}\nFROM ${from}${where}\nORDER BY ${order} DESC`;
   const params = {};
@@ -93,7 +107,33 @@ export function searchSql(t, { q, fields, vec, mode, limit = 20 }) {
   if (words) fnParams.push({ name: "q", ty: "TEXT" });
   if (meaning) fnParams.push({ name: "v", ty: `VECTOR(${vec.dim || ""})`.replace("()", "") });
   fnParams.push({ name: "k", ty: "INT", default: 10 });
-  return { sql: `${head}\nLIMIT ${limit}`, params, body: `${head}\nLIMIT :k`, fnParams, shown };
+  const page = `\nLIMIT ${limit}${offset ? ` OFFSET ${offset}` : ""}`;
+  const words1 = words ? { q } : null;
+  return {
+    sql: `${head}${page}`, params, body: `${head}\nLIMIT :k`, fnParams, shown,
+    count: words ? { sql: `SELECT COUNT(*) FROM ${from}\nWHERE ${matched(fz)}`, params: words1 } : null,
+    exact: words ? { sql: `SELECT COUNT(*) FROM ${from}\nWHERE ${matched("")}`, params: words1 } : null,
+    all: words ? { sql: `SELECT ${cols.join(", ")}\nFROM ${from}\nWHERE ${matched(fz)}`, params: words1 } : null,
+  };
+}
+
+/**
+ * What the head of a search's results says of its rows (GRACE-401):
+ * how many match, and of them how many have the words as typed; by
+ * meaning alone, that every row is ranked. `n` the rows of this page,
+ * `offset` where it starts.
+ */
+export function matchLine({ mode, matched, exact, rows, n, offset = 0 }) {
+  const shown = n ? `${fmt.n(offset + 1)}–${fmt.n(offset + n)}` : "none";
+  if (mode === "meaning") return `${shown} · by meaning, every one of the ${fmt.n(rows)} rows is ranked, the closest first`;
+  if (matched == null) return n ? `${shown}` : "";
+  const typos = exact != null && exact < matched ? ` (${fmt.n(exact)} with the words as typed, the others with a word a letter or two from one)` : "";
+  return `${shown} of ${fmt.n(matched)} ${matched === 1 ? "row that has" : "rows that have"} the words${typos}${mode === "both" ? ", those with every word first, then by words and meaning" : ""}`;
+}
+
+/** The Data tab's rows: `fields` of a table, kept by `where`, sorted, and a page of them with `limit`. */
+export function dataSql(t, fields, { where = "", by = "", desc = false, limit = null, offset = 0 } = {}) {
+  return `SELECT ${fields.map((f) => quoteName(f.name)).join(", ") || "*"} FROM ${quoteName(t.table)}${where.trim() ? ` WHERE ${where.trim()}` : ""}${by ? ` ORDER BY ${quoteName(by)}${desc ? " DESC" : ""}` : ""}${limit != null ? ` LIMIT ${limit}${offset ? ` OFFSET ${offset}` : ""}` : ""}`;
 }
 
 // ------------------------------------------------------------ a table's profile
@@ -284,7 +324,10 @@ function render(page, r) {
     const meaningBox = h("div");
     const out = h("div");
     const tail = h("div", { class: "stack" });
-    let running = null, last = null;
+    let running = null, last = null, offset = 0;
+    const PAGE = 20;
+    let tableRows = null;
+    api("/v1/query", { body: { sql: `SELECT COUNT(*) FROM ${quoteName(t.table)}` }, timeout: 5000 }).then((j) => { tableRows = j.rows?.[0]?.[0] ?? null; }).catch(() => {});
     function drawControls() {
       vecs = meaningFields(tableOf(t.table) || t);
       if (!vecs.length && mode !== "words") mode = "words";
@@ -294,20 +337,30 @@ function render(page, r) {
       clear(meaningBox, vecs.length || !text.length ? null : meaningOffer(t, () => { invalidate(); tables(true).then(() => { mode = "both"; drawControls(); go(); }); }));
     }
     const keep = () => store.set(key, { q: inp.value, mode, fields: [...picked] });
-    async function go() {
+    // A new search starts at its first page; Prev and Next keep the words.
+    const counts = new Map();
+    async function go(at = 0) {
       const q = inp.value.trim();
       keep();
       if (!q) { clear(out, empty("search", "Type what you are looking for", "A question works: rows with some of its words come back, those with all of them first.")); clear(tail); return; }
-      const s = searchSql(t, { q, fields: text.filter((f) => picked.has(f.name)), vec: vecs[0], mode });
+      offset = typeof at === "number" ? at : 0;
+      const s = searchSql(t, { q, fields: text.filter((f) => picked.has(f.name)), vec: vecs[0], mode, limit: PAGE, offset });
       if (!s) return;
       running?.abort();
       const mine = running = new AbortController();
       out.classList.add("loading");
+      // The counts of these words, once for every page.
+      const countOf = (c) => {
+        if (!c) return Promise.resolve(null);
+        const k = c.sql + "\u0000" + q;
+        if (!counts.has(k)) counts.set(k, api("/v1/query", { body: c, signal: mine.signal, timeout: 15000 }).then((x) => x.rows?.[0]?.[0] ?? null).catch(() => { counts.delete(k); return null; }));
+        return counts.get(k);
+      };
       try {
-        const j = await api("/v1/query", { body: { sql: s.sql, params: s.params }, signal: mine.signal });
+        const [j, matched, exact] = await Promise.all([api("/v1/query", { body: { sql: s.sql, params: s.params }, signal: mine.signal }), countOf(s.count), countOf(s.exact)]);
         if (mine !== running) return;
-        last = { s, j, q };
-        clear(out, results(t, j, q, s.shown));
+        last = { s, j, q, matched, exact };
+        clear(out, results(t, j, q, s.shown, { mode, matched, exact, offset, all: s.all ? { ...s.all, total: matched } : null, page: PAGE, tableRows, go }));
         drawTail();
         // No rows for words: "did you mean" the words the field holds.
         const field = [...picked][0];
@@ -337,8 +390,8 @@ function render(page, r) {
         ? h("span", {}, "Did you mean ", h("button", { class: "btn sm", onclick: () => { inp.value = fix; go(); } }, fix), "?")
         : "Other words, fewer of them, or search by meaning. Typos are forgiven, one in a short word and two in a long one; word~2 allows two in any word.");
     }
-    inp.oninput = debounce(go, 250);
-    inp.onkeydown = (e) => { if (e.key === "Enter") go(); };
+    inp.oninput = debounce(() => go(0), 250);
+    inp.onkeydown = (e) => { if (e.key === "Enter") go(0); };
     pane.append(h("section", { class: "card" }, h("div", { class: "bd stack", style: { gap: "10px" } }, h("div", { class: "row nw search-row", style: { gap: "8px" } }, icon("search"), inp, modeBox), fieldsBox)), meaningBox, out, tail);
     drawControls();
     go();
@@ -346,9 +399,14 @@ function render(page, r) {
     return () => running?.abort();
   }
 
-  /** The answer of a search as a list: a title, the text with the words marked, the other fields. */
-  function results(t, j, q, shown) {
+  /**
+   * The answer of a search as a list: a title, the text with the words
+   * marked, the other fields; how many rows match, Prev and Next, and each
+   * result opens with every field (GRACE-401), by a click or Enter.
+   */
+  function results(t, j, q, shown, { mode, matched, exact, offset = 0, all = null, page: PAGE = 20, tableRows = null, go = () => {} } = {}) {
     const rows = j.rows || [], cols = j.columns || [];
+    if (!rows.length && offset > 0) return h("section", { class: "card" }, h("div", { class: "bd" }, empty("search", "No more rows", "The ranking ends before this page.", h("button", { class: "btn", onclick: () => go(Math.max(0, offset - PAGE)) }, icon("left"), "Prev"))));
     if (!rows.length) return empty("search", "No rows", "Other words, fewer of them, or search by meaning. Typos are forgiven, one in a short word and two in a long one; word~2 allows two in any word.");
     const words = q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const start = words.length ? `(?<![\\p{L}\\p{N}])(${words.join("|")})` : null;
@@ -371,11 +429,35 @@ function render(page, r) {
       const from = at > 80 ? at - 60 : 0;
       return (from ? "…" : "") + s.slice(from, from + 260) + (s.length > from + 260 ? "…" : "");
     };
-    return h("section", { class: "card hits-card" }, h("div", { class: "hd" }, h("h3", {}, "Results"), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`))),
-      h("div", { class: "bd flush" }, h("ol", { class: "hits" }, rows.map((r) => h("li", {},
+    const total = mode === "meaning" ? tableRows : matched;
+    const more = rows.length === PAGE && !j.truncated && (total == null || offset + rows.length < total);
+    const line = matchLine({ mode, matched, exact, rows: tableRows ?? 0, n: rows.length, offset });
+    const open = (r) => () => openRow(t, cols, r);
+    const pager = h("div", { class: "ft row", style: { gap: "8px", padding: "8px 14px" } }, h("span", { class: "small muted grow" }, line),
+      h("button", { class: "btn sm", disabled: offset === 0, title: "The page before", onclick: () => go(Math.max(0, offset - PAGE)) }, icon("left"), "Prev"),
+      h("button", { class: "btn sm", disabled: !more, title: "The page after", onclick: () => go(offset + PAGE) }, "Next", icon("right")));
+    return h("section", { class: "card hits-card" }, h("div", { class: "hd" }, h("h3", {}, matched != null ? `${fmt.plural(matched, "match", "matches")}` : "Results"), h("span", { class: "sub" }, answerStats(j)), h("div", { class: "tools" }, exportMenu(j, `chloedb-${t.table}`, { all }))),
+      h("div", { class: "small muted hits-line", style: { padding: "0 14px 8px" } }, line),
+      h("div", { class: "bd flush" }, h("ol", { class: "hits", start: offset + 1 }, rows.map((r) => h("li", { class: "click", tabIndex: 0, role: "button", title: "Open it: every field", onclick: open(r), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(r)(); } } },
         h("div", { class: "row nw" }, h("b", { class: "grow" }, ti >= 0 ? marked(r[ti]) : ki >= 0 ? String(r[ki]) : "row"), si >= 0 ? h("span", { class: "small muted mono", title: "score" }, Number(r[si]).toFixed(3)) : null),
         bi >= 0 ? h("div", { class: "small dim" }, marked(snip(r[bi]))) : null,
-        h("div", { class: "small muted hit-f" }, cols.map((c, i) => i === ti || i === bi || i === si || r[i] == null || String(r[i]).length > 80 ? null : h("span", {}, h("span", { class: "k" }, c), " ", typeof r[i] === "number" ? fmt.num(r[i]) : String(r[i])))))))));
+        h("div", { class: "small muted hit-f" }, cols.map((c, i) => i === ti || i === bi || i === si || r[i] == null || String(r[i]).length > 80 ? null : h("span", {}, h("span", { class: "k" }, c), " ", typeof r[i] === "number" ? (plainInts(c) || c === t.short?.key ? String(r[i]) : fmt.num(r[i])) : String(r[i])))))))),
+      pager);
+  }
+
+  /**
+   * One result with every field, as the Data tab opens a row: read again
+   * by its key (a result shows a few fields), or as it is without a key.
+   */
+  async function openRow(t, cols, r) {
+    const key = t.short?.key, ki = cols.indexOf(key);
+    if (ki < 0) { rowDrawer(0, { columns: cols, rows: [r] }); return; }
+    const fields = (t.short?.fields || []).filter((f) => !["vector", "sparse", "edges"].includes(f.type) && isStored(f));
+    try {
+      const j = await api("/v1/query", { body: { sql: `SELECT ${fields.map((f) => quoteName(f.name)).join(", ") || "*"} FROM ${quoteName(t.table)} WHERE ${quoteName(key)} = :k LIMIT 1`, params: { k: r[ki] } } });
+      if (j.rows?.length) rowDrawer(0, j, { title: `${key} ${r[ki]}` });
+      else toast(`${t.table} no longer has ${key} ${r[ki]}`, "bad");
+    } catch (e) { toast(e.message, "bad"); }
   }
 
   /** A model the server is fetching for a field (its `fetch`), as a line. */
@@ -444,7 +526,9 @@ function render(page, r) {
     const saved = store.get(`table.data.${t.table}`, {}) || {};
     let where = saved.where || "", by = sortable.some((f) => f.name === saved.by) ? saved.by : key || sortable[0]?.name || "", desc = !!saved.desc, size = [25, 50, 100].includes(saved.size) ? saved.size : 50, page = 0, total = null, seq = 0, last = null;
     const keep = () => store.set(`table.data.${t.table}`, { where, by, desc, size });
-    const sqlOf = (n = size, off = page * size) => `SELECT ${shown.map((f) => quoteName(f.name)).join(", ") || "*"} FROM ${tq}${where.trim() ? ` WHERE ${where.trim()}` : ""}${by ? ` ORDER BY ${quoteName(by)}${desc ? " DESC" : ""}` : ""} LIMIT ${n}${off ? ` OFFSET ${off}` : ""}`;
+    /** Every row the filter keeps, in the order shown: what an export writes. */
+    const allSql = () => dataSql(t, shown, { where, by, desc });
+    const sqlOf = (n = size, off = page * size) => dataSql(t, shown, { where, by, desc, limit: n, offset: off });
     const filter = h("input", { class: "input mono grow", value: where, placeholder: sortable.length ? `a condition, e.g. ${sortable.find((f) => f.type === "keyword")?.name || sortable[0].name} = '…'${sortable.find((f) => /int|float/.test(f.type)) ? ` AND ${sortable.find((f) => /int|float/.test(f.type)).name} > 10` : ""}` : "a condition, as after WHERE", "aria-label": "Filter: a condition, as after WHERE", spellcheck: "false", autocomplete: "off" });
     const sortSel = h("select", { class: "input", "aria-label": "Sort by", title: "Sort by" }, h("option", { value: "" }, "no order"), sortable.map((f) => h("option", { value: f.name, selected: f.name === by }, f.name)));
     const dirBtn = h("button", { class: "btn sm", title: "Ascending or descending" });
@@ -487,7 +571,9 @@ function render(page, r) {
         const from = page * size + (n ? 1 : 0), to = page * size + n;
         count.textContent = n ? `rows ${fmt.n(from)}–${fmt.n(to)}${total != null ? ` of ${fmt.n(total)}${where.trim() ? " matching" : ""}` : ""}` : where.trim() ? "no row matches" : "";
         next.disabled = n < size || (total != null && to >= total);
-        clear(exp, n ? exportMenu(j, t.table) : null);
+        // CSV and JSONL write every row the filter keeps, not the page
+        // on screen (GRACE-403); Copy is the page, and says so.
+        clear(exp, n ? exportMenu(j, t.table, { all: { sql: allSql(), total } }) : null);
         clear(out, n ? h("div", { class: "tbl-wrap" }, grid(j, { max: size, first: page * size + 1 })) : where.trim() ? empty("search", "No row matches", `Nothing in ${t.table} has ${where.trim()}.`, h("button", { class: "btn", onclick: () => { filter.value = where = ""; page = 0; keep(); load(); } }, "Clear the filter")) : empty("table", "No rows yet", "Import a file into it, or write rows from code.", gate(h("a", { class: "btn", href: "#/import" }, icon("import"), "Import into it"), "write")));
       } catch (e) {
         if (my !== seq) return;

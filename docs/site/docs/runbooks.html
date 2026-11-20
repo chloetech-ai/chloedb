@@ -118,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
       <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#a-postgres-follower-holds-a-table">A Postgres follower holds a table</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
     <div class="doc-body">
 
 <p>What to do when an alert fires or the fleet view names a problem, written
@@ -234,6 +234,27 @@ servers outside Kubernetes, is for no alert.</p>
 <li>A replica out of sync must not become the primary: do not promote it.
    Replace it (tier 2: a plan and a change request) if it does not catch
    up.</li>
+</ol>
+<h2 id="a-postgres-follower-holds-a-table">A Postgres follower holds a table<a class="anchor" href="#a-postgres-follower-holds-a-table" aria-label="Link to this section">#</a></h2>
+<p>For: <code>follow-table-held</code></p>
+<p>A table <code>chloedb-server follow-postgres</code> could not write is held: it is not
+followed (its rows stay as they were), the other tables are, and it is tried
+again after 30 seconds, then twice as long each time up to 15 minutes
+(<a href="postgres.html#when-one-table-fails">postgres.md</a>).</p>
+<ol>
+<li>Read which and why: Data &gt; Connectors, or <code>GET /v1/admin/connectors</code>
+   (the follower's <code>table_states</code> with <code>state</code> <code>held</code>, and its <code>error</code>,
+   which names the table, the column and the row's key); on <code>/metrics</code>,
+   <code>chloedb_follow_tables_held</code> and <code>chloedb_follow_table_error_info</code>.</li>
+<li>Fix the cause where it is: a value ChloeDB refuses, in the row in
+   Postgres; a table without a primary key, by giving it one in Postgres
+   (<code>ALTER TABLE ... ADD PRIMARY KEY</code>) or taking it out of the publication;
+   a ChloeDB table someone made with a type that cannot read Postgres's
+   values, by fixing it in ChloeDB. Changing data in Postgres is the
+   owner's (tier 2: a change request).</li>
+<li>Then wait for the next try (<code>retry_in_s</code>), or start the follower again
+   with <code>--copy-table &lt;table&gt;</code> to copy it now (tier 1): its rows stay
+   readable throughout, and the other tables keep following.</li>
 </ol>
 <h2 id="the-disk-is-filling">The disk is filling<a class="anchor" href="#the-disk-is-filling" aria-label="Link to this section">#</a></h2>
 <p>For: <code>disk-full</code>, <code>disk-critical</code>, <code>disk-filling</code>, <code>disk</code></p>
