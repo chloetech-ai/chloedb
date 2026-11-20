@@ -16,8 +16,8 @@
 //!   query (`shard`), its `sql`, `fingerprint` (its statement's shape,
 //!   [`crate::telemetry::fingerprint`]), `ms`, `n_rows`, `error`, who sent
 //!   it (`key_name`, `key_id`, `addr`, `app`, and `client`:
-//!   `command-center` for the UI's own), its `params` (JSON, capped; only
-//!   their types with `--redact-params`), its `deadline_ms`, and the rest
+//!   `command-center` for the UI's own), its `params` (their types; JSON values, capped,
+//!   with `--keep-params`), its `deadline_ms`, and the rest
 //!   of what the query log keeps of it, its trace among them, as a JSON
 //!   object (`detail`). A store an older server made gets the columns it
 //!   lacks.
