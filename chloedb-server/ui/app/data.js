@@ -40,6 +40,12 @@ export const state = {
 export const isCoordinator = () => state.health?.role === "coordinator" || state.system?.backend === "coordinator" || state.cluster?.role === "coordinator";
 /** Whether the health read says what this server is: read with no key, it says only whether it is up (OLU-308). */
 export const healthSays = () => !!state.health && Object.keys(state.health).some((k) => k !== "status");
+/**
+ * Whether the page knows what this server is (one server or a coordinator):
+ * signed out, every read that says so is refused, and the page says it
+ * cannot tell rather than "one server" (OLU-403).
+ */
+export const roleKnown = () => healthSays() || !!state.system || !!state.cluster;
 
 // ---------------------------------------------------------------- the time range
 /**

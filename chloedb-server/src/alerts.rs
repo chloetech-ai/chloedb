@@ -1868,7 +1868,8 @@ impl Alerts {
             }
             for r in replicas.iter() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // The name people gave it (`--node-name`), else its short name (OLU-402).
+                let short = if r["short"].is_string() { crate::coord::shown(r) } else { crate::coord::copy_short(i, &url) };
                 if !answers(r) {
                     let since = r["down_since_ms"].as_u64();
                     places.entry("copies_down").or_default().push(json!({"copy": url, "short": short, "shard": i, "state": "firing", "since_ms": since, "error": r["error"]}));
@@ -1942,7 +1943,8 @@ impl Alerts {
             let i = s["shard"].as_u64().unwrap_or(0) as usize;
             for r in s["replicas"].as_array().into_iter().flatten() {
                 let url = r["url"].as_str().unwrap_or_default().to_string();
-                let short = r["short"].as_str().map(String::from).unwrap_or_else(|| crate::coord::copy_short(i, &url));
+                // The name people gave it (`--node-name`), else its short name (OLU-402).
+                let short = if r["short"].is_string() { crate::coord::shown(r) } else { crate::coord::copy_short(i, &url) };
                 let reported = &r["detail"]["alerts"]["rules"];
                 if answers(r) {
                     for f in r["detail"]["alerts"]["firing"].as_array().into_iter().flatten() {
@@ -2973,7 +2975,9 @@ impl Alerts {
         let window = duration(e.window_s * 1000);
         let mut text = match e.state {
             "resolved" => {
-                let after = e.fired_ms.map(|f| format!(" after {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
+                // How long the alert fired, not how long its cause lasted (a rule
+                // fires once its window has held: OLU-407).
+                let after = e.fired_ms.map(|f| format!(" after firing for {}", duration(e.ts_ms.saturating_sub(f)))).unwrap_or_default();
                 let why = e.why.as_ref().map(|w| format!(" ({w}{})", e.by.as_ref().map(|b| format!(" by {b}")).unwrap_or_default())).unwrap_or_default();
                 format!("[chloedb RESOLVED {}] {} on {}{place}: {value}{after}{why}.", e.severity, e.name, id.name)
             }
@@ -3002,6 +3006,10 @@ impl Alerts {
         }
         if !e.runbook.is_empty() {
             text.push_str(&format!(" Runbook: {}", e.runbook));
+        } else if let Some(b) = crate::runbooks::for_id(&e.rule) {
+            // A built-in rule's runbook is compiled in: the person paged
+            // gets its page too (OLU-407).
+            text.push_str(&format!(" Runbook: {} {}#{}", b.title, crate::runbooks::PAGE, b.anchor));
         }
         if let Some(u) = &id.public_url {
             text.push_str(&format!(" {u}/#/alert/{}", e.rule));
@@ -4687,6 +4695,33 @@ mod tests {
         assert!(changes.iter().any(|e| e.rule == "disk-full" && e.state == "resolved"));
     }
 
+    /// OLU-407, OLU-402: a built-in rule's page carries its runbook's link
+    /// and names the copy by its `--node-name`, without `--public-url`.
+    #[test]
+    fn a_built_in_page_names_the_server_and_links_its_runbook() {
+        let a = Alerts::new(None, None).unwrap();
+        a.set_coordinator(true);
+        a.set_identity(Some("olu-lab".into()), None);
+        let up = |port: u16, name: &str| json!({"url": format!("http://127.0.0.1:{port}"), "short": format!("127.0.0.1:{port}"), "name": name, "status": "ok", "role": "replica", "detail": {"load": {"t": 1_000}}});
+        let down = json!({"url": "http://127.0.0.1:17754", "short": "127.0.0.1:17754", "name": "s1a", "status": "down", "role": "unknown", "down_since_ms": 1_000});
+        let snap = |t: u64| {
+            let mut s = json!({"shards": [{"shard": 1, "replicas": [down.clone(), up(17755, "s1b"), up(17756, "s1c")]}]});
+            for r in s["shards"][0]["replicas"].as_array_mut().unwrap().iter_mut().filter(|r| r["status"] == "ok") {
+                r["detail"]["load"]["t"] = json!(t);
+            }
+            s
+        };
+        let mut fired = None;
+        for t in (1_000..=60_000).step_by(5_000) {
+            fired = fired.or_else(|| a.check_cluster(&snap(t), t).into_iter().find(|e| e.rule == "copy-down" && e.state == "firing"));
+        }
+        let e = fired.expect("copy-down fires");
+        let text = a.message(&e);
+        assert!(text.starts_with("[chloedb FIRING warning] A copy is down on olu-lab/s1a: copies_down = 1"), "{text}");
+        assert!(text.ends_with("Runbook: A copy is down https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-copy-is-down"), "{text}");
+        assert!(!text.contains("17754"), "{text}");
+    }
+
     #[test]
     fn messages_name_the_cluster_the_place_and_the_runbook() {
         let a = Alerts::new(None, None).unwrap();
@@ -4702,7 +4737,7 @@ mod tests {
         );
         let mut r2 = Event::of(&r, "resolved", &st, 600_010);
         (r2.fired_ms, r2.why, r2.by) = (Some(10), Some("the rule was deleted".into()), Some("ana".into()));
-        assert_eq!(a.message(&r2), "[chloedb RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
+        assert_eq!(a.message(&r2), "[chloedb RESOLVED warning] Disk almost full on prod/search/s1-0: disk_used_ratio = 0.934 after firing for 10 min (the rule was deleted by ana). Runbook: https://wiki/disk https://cc.example/#/alert/disk-full");
     }
 
     fn peer(url: &str, this: bool, seen: u64) -> crate::peers::Peer {

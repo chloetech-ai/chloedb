@@ -7,7 +7,7 @@
 // bytes and reads are its drill-down, the index inspector
 // (#/inspector?table=).
 
-import { h, s, clear, fmt, api, card, empty, failure, icon, signInNeeded, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, can } from "../core.js";
+import { h, s, clear, fmt, api, card, empty, failure, icon, signInNeeded, store, bus, tipOn, hideTip, showTip, seg, ApiError, copyName, copyTitle, shownName, can } from "../core.js";
 import { state } from "../data.js";
 import { shardTrouble } from "../sqlguard.js";
 import { tables as catalog, table as tableOf } from "../catalog.js";
@@ -182,7 +182,7 @@ function render(page, r) {
   // table's rows of its shard, so it counts for each table.
   const downCopies = () => (state.cluster?.shards || state.health?.shards || []).flatMap((sh, i) => (sh.replicas || []).map((rep, j) => ({ rep, shard: sh.shard ?? i, j })))
     .filter(({ rep }) => rep.status && rep.status !== "ok" || rep.role === "unknown")
-    .map(({ rep, shard, j }) => ({ copy: rep.short || `s${shard}-${j}`, url: rep.url, shard, down: true, why: rep.avoided_why || rep.error || "does not answer", since: rep.down_since_ms }));
+    .map(({ rep, shard, j }) => ({ copy: shownName(rep) || `s${shard}-${j}`, url: rep.url, shard, down: true, why: rep.avoided_why || rep.error || "does not answer", since: rep.down_since_ms }));
   const g = (t) => growth === "d7" ? t.g7 : t.g1;
   const gb = (t) => growth === "d7" ? t.d7 : t.d1;
   const worstTable = () => [...rows].sort((a, b) => (b.staleList.length - a.staleList.length) || ((material(b) ? b.skew || 0 : 0) - (material(a) ? a.skew || 0 : 0)))[0]?.table;
@@ -375,7 +375,7 @@ function render(page, r) {
     const staleBy = new Map((t.staleList || []).map((x) => [x.copy, x]));
     const cells = [];
     shards.forEach((sh, i) => (sh.replicas || []).forEach((rep, j) => {
-      const short = rep.short || `s${sh.shard ?? i}-${j}`;
+      const short = shownName(rep) || `s${sh.shard ?? i}-${j}`;
       const st = staleBy.get(short) || staleBy.get(rep.url) || (rep.status && rep.status !== "ok" || rep.role === "unknown" ? { copy: short, down: true } : null);
       cells.push({ i, j, shard: sh.shard ?? i, short, url: rep.url, primary: rep.takes_writes || rep.role === "primary", st, level: lagLevel(st), why: rep.avoided_why || rep.error || (rep.role === "unknown" ? `does not answer${rep.down_since_ms ? " since " + fmt.time(rep.down_since_ms) : ""}` : null) });
     }));
