@@ -407,8 +407,11 @@ def test_filters_index_what_fits(target):
 # ---------------------------------- N-H13: no database-wide toggle around a write
 
 
-def test_items_without_text_need_no_model(tmp_path):
+def test_items_without_text_need_no_model(tmp_path, monkeypatch):
     from chloedb.langgraph import ChloeDBStore
+
+    # Not downloaded on first use, as the package would otherwise.
+    monkeypatch.setenv("CHLOEDB_FETCH_MODELS", "0")
 
     db = chloedb.connect(str(tmp_path / "nomodel.chloedb"))
     # potion-retrieval-32M is a model the field knows and this process has
