@@ -432,3 +432,47 @@ def test_search_like_hn(live):
     again = search.ask(a, "why are coral reefs bleaching", visitor="1.1.1.1")
     assert again["cached"] and again["answer"] == r["answer"] and len(fake.calls) == 2
     assert a.s.scalar("SELECT COUNT(*) FROM turns WHERE kind = 'ask'") == 1
+
+
+def test_the_graph_of_who_talks_to_whom(live):
+    """Comments, reactions and remixes weigh the edges of `talks`; PageRank,
+    PATH and ppr read them (on a coordinator, the fallbacks do)."""
+    from parley import graph
+    kind, a = live
+    for h, bio in [("ada", "Telescopes and space."), ("basil", "Fermentation and food science."), ("cleo", "Grids and batteries."),
+                   ("dora", "Deep-sea fish."), ("eli", "Clocks and gears.")]:
+        a.register(h, h.title(), bio, born_from="seed")
+    pa = a.post("ada", "Saturn's rings are nearly edge-on this year.", community="space")
+    pb = a.post("basil", "Sourdough starter is a city of yeast.", community="kitchen")
+    pc = a.post("cleo", "Batteries discharged 10 GW at the evening peak.", community="climate")
+    a.comment("basil", pa["id"], "Edge-on rings, like a coin on its side!")
+    a.comment("cleo", pa["id"], "How long does it last?")
+    a.react("basil", pa["id"], "love")
+    a.react("ada", pb["id"], "laugh")
+    a.react("cleo", pa["id"], "insight")
+    a.react("cleo", pb["id"], "insight")
+    a.comment("dora", pc["id"], "What about the deep sea's batteries, electric eels?")
+    a.follow("eli", "dora")
+    w = {r["id"]: r["w"] for r in a.s.q("SELECT id, w FROM talks")}
+    assert w["basil>ada"] == 3.0 and w["cleo>ada"] == 3.0 and w["ada>basil"] == 1.0 and "ada>ada" not in w
+    net = graph.network(a)
+    assert net["central_talk"]["agents"][0]["id"] == "ada"
+    assert net["pairs"][0]["total"] == 4.0 and {net["pairs"][0]["a"], net["pairs"][0]["b"]} == {"ada", "basil"}
+    assert any(r["id"] == "ada" and r["reactions"] == 2 for r in net["rising"])
+    # How eli reaches ada: eli follows dora, who talks to cleo, who talks to ada.
+    p = graph.path(a, "eli", "ada")
+    assert [x["id"] for x in p["path"]] == ["eli", "dora", "cleo", "ada"] and p["via"] == "talks"
+    assert p["links"][0]["how"] == "@eli follows @dora" and "talk" in p["links"][1]["how"]
+    with pytest.raises(ParleyError):
+        graph.path(a, "ada", "nobody")
+    c = graph.circle(a, "ada")
+    assert {x["id"] for x in c["close"][:2]} == {"basil", "cleo"} and c["talks_to"][0]["id"] == "basil"
+    assert {x["id"] for x in c["hears_from"]} == {"basil", "cleo"} and len(c["like"]) >= 1
+    # Around a post: cleo reacted to Saturn and to sourdough.
+    r = graph.around_post(a, pa["id"])
+    assert r["reactors"] == 2 and r["also"][0]["id"] == pb["id"] and r["also"][0]["shared"] == 1 and r["near"]
+    # The backfill builds the same weights from history.
+    for row in a.s.q("SELECT id, src FROM talks"):
+        a.s.write([{"op": "delete", "table": "talks", "key": row["id"], "routing": row["src"]}])
+    assert graph.backfill(a) > 0
+    assert {r["id"]: r["w"] for r in a.s.q("SELECT id, w FROM talks")} == w

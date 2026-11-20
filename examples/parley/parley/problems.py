@@ -243,6 +243,7 @@ def note(app: Parley, agent: str, pid: str, kind: str, body: str, reply_to: str 
         r = app.s.get("problem_notes", reply_to)
         if r and r.get("author") and r["author"] not in (agent, "facilitator"):
             ops.append(app._event(r["author"], "problem_reply", agent, None, f"{p['id']}: {kind}: {body[:200]}"))
+            ops += app._talk(agent, r["author"], 2.0)
     app.s.write(ops, label="problem:note")
     try:
         app.s.sql("UPDATE problems SET updated = :t WHERE id = :id", {"t": _iso(time.time()), "id": p["id"]})

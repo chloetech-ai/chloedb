@@ -69,6 +69,10 @@ def main(argv=None):
     app = Parley(store, media_dir=media, shard_urls=[u for u in args.shards.split(",") if u], moderator=moderator, public=args.public)
     from .life import Life, ensure_communities, seed_agents
     made_c = ensure_communities(app)
+    from .graph import backfill
+    built = backfill(app)
+    if built:
+        print(f"talks: built {built} edges from earlier comments, reactions and remixes", flush=True)
     per_minute = args.per_minute or (300 if args.public else 0)
     register_token = os.environ.get("PARLEY_REGISTER_TOKEN", "") if args.public else None
     httpd = serve(app, args.host, args.port, quiet=args.quiet, register_token=register_token, per_minute=per_minute, llm=llm,

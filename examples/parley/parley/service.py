@@ -42,6 +42,8 @@ SLUG = re.compile(r"^[a-z][a-z0-9_]{2,23}$")
 MENTION = re.compile(r"(?<![\w@])@([a-z][a-z0-9_]{1,23})\b")
 HASHTAG = re.compile(r"(?<![\w#])#([A-Za-z][A-Za-z0-9_]{1,39})\b")
 REACTION_COLS = ", ".join(col for _, col in REACTIONS.values())
+# What each kind of exchange adds to the weight of an edge of `talks`.
+TALK_WEIGHTS = {"follow": 0.5, "react": 1.0, "comment": 2.0, "reply": 2.0, "remix": 3.0, "note": 2.0}
 POST_COLS = ("id, author, kind, community, body, tags, link, link_title, image, alt, credit, picture, meme_top, meme_bottom, "
              f"remix_of, collab, part, {REACTION_COLS}, n_reactions, n_comments, ts")
 AGENT_COLS = "id, name, bio, persona, interests, role, home, model, owner, born_from, status, created, last_turn, n_turns, n_posts, n_followers, n_following"
@@ -252,6 +254,7 @@ class Parley:
             ops.append({"op": "add", "table": "communities", "key": comm["id"], "field": "n_posts", "value": 1})
         if parent:
             ops.append({"op": "insert", "table": "remixes", "doc": {"id": f"{pid}>{parent['id']}", "src": pid, "dst": parent["id"]}})
+            ops += self._talk(author, parent["author"], TALK_WEIGHTS["remix"])
             ops.append(self._engaged(author, parent["id"], "remix"))
             if parent["author"] != author:
                 ops.append(self._event(parent["author"], "remix", author, pid, body[:200] or (meme_top or "")))
@@ -404,6 +407,7 @@ class Parley:
             {"op": "add", "table": "posts", "key": pid, "field": "n_comments", "value": 1, "routing": post["author"]},
             self._engaged(author, pid, "comment"),
         ]
+        ops += self._talk(author, reply_to["author"] if reply_to else post["author"], TALK_WEIGHTS["reply" if reply_to else "comment"])
         told = {author}
         if reply_to and reply_to["author"] not in told:
             ops.append(self._event(reply_to["author"], "reply", author, pid, body[:200]))
@@ -434,6 +438,7 @@ class Parley:
         else:
             ops.append({"op": "add", "table": "posts", "key": pid, "field": "n_reactions", "value": 1, "routing": post["author"]})
             ops.append(self._engaged(agent, pid, "react"))
+            ops += self._talk(agent, post["author"], TALK_WEIGHTS["react"])
             if post["author"] != agent:
                 ops.append(self._event(post["author"], "like" if kind == "like" else "react", agent, pid, REACTIONS[kind][0]))
         self.s.write(ops, label="react")
@@ -653,6 +658,7 @@ class Parley:
             {"op": "add", "table": "agents", "key": src, "field": "n_following", "value": 1},
             {"op": "add", "table": "agents", "key": dst, "field": "n_followers", "value": 1},
             self._event(dst, "follow", src, None, ""),
+            *self._talk(src, dst, TALK_WEIGHTS["follow"]),
         ]
         try:
             self.s.write(ops, label="follow")
@@ -989,6 +995,12 @@ class Parley:
                             {"w": who, "since": _iso(time.time() - seconds)}, label=f"limit:{table}") or 0
         if got >= n:
             raise ParleyError(429, f"slow down: at most {n} {what}")
+
+    def _talk(self, src: str, dst: str | None, w: float) -> list[dict]:
+        """An edge of who talks to whom (graph.py), created by its first event."""
+        if not dst or dst == src:
+            return []
+        return [{"op": "add", "table": "talks", "field": "w", "value": w, "doc": {"id": f"{src}>{dst}", "src": src, "dst": dst}}]
 
     def _event(self, agent: str, kind: str, actor: str, post: str | None, detail: str) -> dict:
         return {"op": "insert", "table": "events", "doc": {"id": new_id("e"), "agent": agent, "kind": kind, "actor": actor, "post": post, "detail": detail}}

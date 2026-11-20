@@ -128,6 +128,15 @@ def _plain(words: str) -> str:
     return " ".join(w.strip("'-") for w in re.sub(r"[^\w\s'-]", " ", words).split() if w.strip("'-"))[:200] or "_"
 
 
+def _prefixed(words: str) -> str:
+    """The words for MATCH with the last one a prefix (`octo*`), when it is
+    long enough to mean something."""
+    w = _plain(words).split()
+    if w and w[-1] != "_" and len(w[-1]) >= 3:
+        w[-1] += "*"
+    return " ".join(w) or "_"
+
+
 def _min_words(words: str) -> int:
     n = len(words.split())
     return max(1, n - n // 3)
@@ -159,7 +168,9 @@ def _post_where(p: dict, params: dict) -> list[str]:
 
 POST_TEXT = ("body", "meme_top", "meme_bottom", "link_title")
 MATCH_POST = " OR ".join(f"MATCH({f}, :m, fuzzy => 'auto', min => :min)" for f in POST_TEXT)
-RANK_POST = ("rrf(" + ", ".join(f"bm25({f}, :q, syntax => 'plain', fuzzy => 'auto')" for f in POST_TEXT) + ", similarity(emb, :v))"
+# The last word as a prefix too ("octo" finds "octopus" while it is typed).
+PREFIX_POST = " OR ".join(f"MATCH({f}, :qp)" for f in ("body", "meme_top"))
+RANK_POST = ("rrf(" + ", ".join(f"bm25({f}, :q, syntax => 'plain', fuzzy => 'auto')" for f in POST_TEXT) + ", bm25(body, :qp), similarity(emb, :v))"
              " * (1 + 0.15 * tmm(ln(1 + n_reactions + 2 * n_comments), lo => 0, hi => 4))")
 TOP = "n_reactions + 2 * n_comments"
 MEANING_ONLY = 4   # posts kept by meaning alone, at the top of a best-match list
@@ -171,14 +182,14 @@ def posts(app: Parley, p: dict, limit: int = 20) -> tuple[list[dict], str]:
     where = _post_where(p, params)
     words = p["words"]
     if words:
-        params.update(q=words, m=_plain(words), min=_min_words(words), v={"embed": words, "field": "emb", "table": "posts"})
+        params.update(q=words, m=_plain(words), qp=_prefixed(words), min=_min_words(words), v={"embed": words, "field": "emb", "table": "posts"})
     if words and p["sort"] == "best":
         order, how = RANK_POST + " DESC", "words (BM25, typos forgiven) and meaning (vectors) fused by rrf, lifted a little by reactions and comments"
     elif words:
         where.append(f"({MATCH_POST})")
         order = "ts DESC" if p["sort"] == "new" else f"{TOP} DESC, ts DESC"
         how = f"posts holding most of the words (typos forgiven), {'newest' if p['sort'] == 'new' else 'most reactions and comments'} first"
-        for k in ("q", "v"):
+        for k in ("q", "v", "qp"):
             params.pop(k, None)
     else:
         order = f"{TOP} DESC, ts DESC" if p["sort"] == "top" else "ts DESC"
@@ -190,7 +201,7 @@ def posts(app: Parley, p: dict, limit: int = 20) -> tuple[list[dict], str]:
         # The vector ranks every post, near or not: past the first few, keep
         # only the posts that hold the words (typos forgiven).
         try:
-            held = {r["id"] for r in app.s.q(f"SELECT id FROM posts WHERE {' AND '.join(where + ['(' + MATCH_POST + ')'])} LIMIT 500",
+            held = {r["id"] for r in app.s.q(f"SELECT id FROM posts WHERE {' AND '.join(where + ['(' + MATCH_POST + ' OR ' + PREFIX_POST + ')'])} LIMIT 500",
                                               {k: v for k, v in params.items() if k not in ("q", "v")} | {"m": _plain(words), "min": 1},
                                               label="search:posts:words")}
             rows = [r for i, r in enumerate(rows) if i < MEANING_ONLY or r["id"] in held]
@@ -322,7 +333,7 @@ def search(app: Parley, raw: str, *, limit: int = 20, scope: str = "all") -> dic
     if fixed:
         out["did_you_mean"] = unparse(p, fixed)
     # Highlights: what each card shows, with the words marked.
-    mark = " ".join([words] + p["phrases"]).strip()
+    mark = " ".join(([_prefixed(words)] if words else []) + p["phrases"]).strip()
     if mark:
         bodies = highlight(app, "posts", "body", mark, [x.get("body") or "" for x in found], 280)
         for x, hb in zip(found, bodies):

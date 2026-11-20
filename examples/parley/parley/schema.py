@@ -163,6 +163,17 @@ def statements(vision: bool = False) -> list[str]:
       dst KEYWORD NOT NULL REFERENCES agents,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(edges = 'src, dst', shard_by = 'src')""",
+        # Who talks to whom: an edge table over agents, one row per pair
+        # ('src>dst'), its weight the comments, replies, reactions and remixes
+        # src gave dst (graph.py). PageRank over it finds who the conversation
+        # flows to, PATH how two agents are connected, ppr an agent's circle.
+        """CREATE TABLE IF NOT EXISTS talks (
+      id KEYWORD PRIMARY KEY,
+      src KEYWORD NOT NULL REFERENCES agents,
+      dst KEYWORD NOT NULL REFERENCES agents,
+      w FLOAT DEFAULT 0,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(edges = 'src, dst, w', shard_by = 'src')""",
         # Remixes are an edge table too, remix -> the post it remixes, so a
         # post's whole family is one REACHABLE walk.
         """CREATE TABLE IF NOT EXISTS remixes (
@@ -347,4 +358,4 @@ RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS po
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
           "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
-          "problems", "problem_team", "problem_notes", "answers"]
+          "problems", "problem_team", "problem_notes", "answers", "talks"]
