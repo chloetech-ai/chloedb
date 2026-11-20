@@ -925,12 +925,17 @@ fn read_capped(path: &Path, max: u64) -> Result<Vec<u8>> {
 }
 
 /// Keeps `data` in the media store as `<sha256>`, unless it is there.
+/// Each call writes a temporary file of its own: two rows of one write
+/// giving the same file are resolved at once, and with one name a
+/// process shared, the second's rename found the file already moved.
 fn keep(dir: &Path, sha256: &str, data: &[u8]) -> Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = dir.join(sha256);
     if path.exists() {
         return Ok(());
     }
-    let tmp = dir.join(format!(".{sha256}.{}.tmp", std::process::id()));
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{sha256}.{}.{n}.tmp", std::process::id()));
     std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&tmp, data)).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Error::Io(std::io::Error::new(e.kind(), format!("keep media in {}: {e}", dir.display())))

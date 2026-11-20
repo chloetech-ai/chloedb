@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Earth Explorer: California and Chile from orbit, on ChloeDB · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-earth is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come;…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/earth.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html" aria-current="page">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>Earth Explorer: California and Chile from orbit, on ChloeDB</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/earth.md">docs/chloedb/earth.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-pages">The pages</a></li><li><a href="#the-rules">The rules</a></li><li><a href="#running-it">Running it</a></li><li><a href="#tests">Tests</a></li><li><a href="#sizes">Sizes</a></li></ol></details>
+    <div class="doc-body">
+
+<p><code>chloedb-earth</code> is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come; 103,664 places of 3.84 km a side, each with its Sentinel-2 picture's <a href="https://huggingface.co/google/siglip-so400m-patch14-384">SigLIP</a> vector from <a href="https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP">Major TOM</a> and what is on it (land cover, terrain, people, climate, crops, mines, the years it burned); and the pictures of a few hundred of them every other year since 2017. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app <code>earth</code> (<code>chloedb-server --app earth=URL</code>). Every request needs the token the command center's app proxy sends, unless the app runs with <code>--public</code>: then it serves its page at <code>/</code> and the page's reads to anyone, at most <code>--per-minute</code> (120) requests a minute from one address, and a picture searched for (<code>POST /v1/picture</code>) is the only POST it takes. Readers never send SQL: each page asks its own statements, and shows them under SQL.</p>
+<p>Three things on it are ChloeDB's own:</p>
+<ul>
+<li><strong>Fires like this one.</strong> A fire's first hour, two hours and six hours are each a vector (its power, pixels and spread a quarter hour at a time, then what it started on: slope, trees, shrubs, people, the gusts), and the fires whose first hours were nearest, among those out before it, say how big it got: the median and the middle half of theirs. <code>backtest</code> measures how often that range held the size each past fire reached, beside the range of all fires of the region.</li>
+<li><strong>Climate twins.</strong> Each California place is matched with the place of Chile that looks most like it, in the same Köppen class, and the other way round: the two Mediterranean coasts, about 9,000 km apart, side by side. The match is CSLS (<code>2·sim − r_a − r_b</code>, each <code>r</code> a place's mean similarity to its ten nearest in the other region), so a place that looks like everything does not become everyone's twin.</li>
+<li><strong>Changed places.</strong> A place's look each year is a vector; how far it moved from its first year to its last, and in which year most, finds the fields that became houses, the forests that burned and the pits that grew. A search for "shrubland → houses" ranks by <code>similarity(before, :a) + similarity(after, :b)</code>.</li>
+</ul>
+<h2 id="the-pages">The pages<a class="anchor" href="#the-pages" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>page</th>
+<th>what it shows</th>
+<th>from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Home</td>
+<td>each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read</td>
+<td><code>ea_fires</code>, <code>ea_alerts</code>, <code>ea_places</code>, <code>ea_backtest</code>, <code>ea_scans</code></td>
+</tr>
+<tr>
+<td>Live</td>
+<td>the region's map with the fire pixels of the last hours (a red light when the newest scan is under three hours old), the fires burning with their alerts, refreshed every 30 seconds</td>
+<td><code>ea_detections</code>, <code>ea_fires</code>, <code>ea_alerts</code>, <code>ea_scans</code></td>
+</tr>
+<tr>
+<td>A replay</td>
+<td>a night of the archive played back on the map, a scan at a time: Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024</td>
+<td><code>ea_detections</code>, <code>ea_scans</code>, <code>ea_fires</code></td>
+</tr>
+<tr>
+<td>A fire</td>
+<td>its pixels on the map, its first hours drawn, the fires that began like it with the outlook they give, its alerts, and how well the outlook has done before</td>
+<td><code>ea_fires</code>, <code>ea_detections</code>, <code>ea_backtest</code></td>
+</tr>
+<tr>
+<td>Past fires</td>
+<td>a region's fires by size, year or name</td>
+<td><code>ea_fires</code></td>
+</tr>
+<tr>
+<td>Explore</td>
+<td>the map with a layer over it (people, trees, shrubs, grass, crops, built, bare, water, snow, terrain, slope, mines, fire history, climate, land cover, crops by kind), and the place under a click</td>
+<td><code>ea_places</code></td>
+</tr>
+<tr>
+<td>A place</td>
+<td>its picture, what covers it, its terrain and people, the years it burned, the places that look like it, its twins in the other region, places like it with words added or taken away (<code>/v1/mix</code>), the fires near it and its pictures year by year</td>
+<td><code>ea_places</code>, <code>ea_years</code>, <code>ea_changes</code>, <code>ea_fires</code></td>
+</tr>
+<tr>
+<td>Search</td>
+<td>places by what they look like, in words ("vineyards on hills", "a lithium mine"): by the picture and what covers it (<code>rrf(similarity(look, :v), bm25(about, :q))</code>, the default), by the picture alone, or by the description with names; or by a picture dropped on the page</td>
+<td><code>ea_places</code></td>
+</tr>
+<tr>
+<td>Climate twins</td>
+<td>the closest pairs, those of the same land first, by climate and kind</td>
+<td><code>ea_places</code></td>
+</tr>
+<tr>
+<td>Changed places</td>
+<td>the places that changed most, by what they were and became, or searched by a change in words; a place's years and the places whose change went the same way</td>
+<td><code>ea_changes</code>, <code>ea_years</code></td>
+</tr>
+<tr>
+<td>Rules</td>
+<td>each alert rule's statement, how long it took and what it found</td>
+<td><code>ea_rules</code>, <code>ea_alerts</code></td>
+</tr>
+<tr>
+<td>How it's built</td>
+<td>the tables, their rows, where each feed stands, the backtest, and every source with its licence</td>
+<td>every table</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="the-rules">The rules<a class="anchor" href="#the-rules" aria-label="Link to this section">#</a></h2>
+<p>Each rule is one statement over the fires, run every minute; its rows are the alerts, kept open while it finds them. "Now" is the newest scan read for the region, not the clock, so a replay raises the alerts it would have raised then.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>rule</th>
+<th>finds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>new-fire</code></td>
+<td>a fire GOES saw start in the last three hours, in two scans or more</td>
+</tr>
+<tr>
+<td><code>people-near</code></td>
+<td>a fire burning with 10,000 people or more within 5 km of where it started</td>
+</tr>
+<tr>
+<td><code>growing</code></td>
+<td>a fire past 300 MW and twice its power of an hour ago</td>
+</tr>
+<tr>
+<td><code>big</code></td>
+<td>a fire past 1,000 MW in a scan</td>
+</tr>
+<tr>
+<td><code>steep-windy</code></td>
+<td>a fire that started on slopes of 15 degrees or more, half trees and shrubs, with gusts of 35 mph or more</td>
+</tr>
+<tr>
+<td><code>could-grow</code></td>
+<td>a fire whose twenty nearest fires by their first hours mostly grew past 20 km²</td>
+</tr>
+<tr>
+<td><code>first-in-years</code></td>
+<td>a fire on ground with no fire in NASA FIRMS's records since 2001</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="running-it">Running it<a class="anchor" href="#running-it" aria-label="Link to this section">#</a></h2>
+<p>The places are made once, by <code>tools/places.py</code> (Major TOM's fragments and vectors, and the layers read at each place from WorldCover, the Copernicus DEM, GHSL, Köppen-Geiger, the mining polygons, the Cropland Data Layer and FIRMS), and their years by <code>tools/years.py</code> (a clear Sentinel-2 scene of each dry season from Element 84's Earth Search, embedded by the server). Both need a server built with <code>--features vision</code> and the model <code>siglip-so400m-patch14-384</code> (<code>chloedb-server fetch-model siglip-so400m-patch14-384</code>, a 3.5 GB download), which also turns a search's words and a dropped picture into vectors.</p>
+<pre data-lang="sh">for r in california chile; do for s in pull layers fires; do python3 tools/places.py $s --region $r --out DATA; done; done
+python3 tools/places.py twins --out DATA                   # both regions&#x27; twins
+for r in california chile; do python3 tools/places.py rows --region $r --out DATA; done   # ea_places_&lt;region&gt;.jsonl
+python3 tools/years.py pick --out DATA &amp;&amp; python3 tools/years.py fetch --out DATA
+python3 tools/years.py embed --out DATA &amp;&amp; python3 tools/years.py rows --out DATA
+chloedb-earth load --dir DATA                              # the tables, and their rows
+chloedb-earth goes --region california --from 2025-01-07 --to 2025-01-09   # a stretch of GOES&#x27;s archive
+chloedb-earth goes --region chile --live                   # after the newest scan kept, then each new one
+chloedb-earth backtest --region california                 # how well the fires like each one did
+chloedb-earth serve --public --chips DATA/chips            # the page and its API at 127.0.0.1:7790</pre>
+<p><code>goes</code> reads GOES-West's CONUS product over California (GOES-17 from February 2019, GOES-18 from January 2023) and GOES-East's full disk over Chile (GOES-16, GOES-19 from April 2025), from NOAA's buckets on AWS, keeping only the pixels within 4 km of a place. Low-probability pixels (masks 15 and 35) are left out: most are hot ground and cloud edges with no power worked out, a whole desert valley on a summer night, and beside a real fire they made it look ten times its size. A fire's area is the ground of the pixels GOES saw burning, each 2 to 4 km a side, so a fire spread by embers reads larger than the ground that burned: the Palisades and Eaton fires read 273 and 182 km², inside perimeters of 95 and 57 km², while the York Fire of 2023 read 377 km² and burned about that. A feed started again takes back the fires burning in the 12 hours before where it starts, and marks out those it left burning longer ago. Without <code>vision</code> on the server the app still runs, and searches by the description; searches by a picture or by meaning say why they cannot.</p>
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
+<p><code>cargo test --profile ci</code> runs the unit tests and <code>tests/cluster.rs</code>: made-up places in both regions with their vectors and years, loaded with <code>load</code>, a week of made-up GOES scans through the feed (the tracker and writes the archive goes through, seven fires in it, the last inside the Los Angeles replay), then <code>rules</code>, <code>backtest</code> and every page of <code>serve</code>, with the token and <code>--public</code>. It needs a chloedb-server binary (<code>CHLOEDB_SERVER_BIN</code>, else <code>../chloedb-server/target/{ci,release}/chloedb-server</code>) and no model, and is skipped without one unless <code>CHLOEDB_EARTH_NEED_SERVER</code> is set, as the Demos workflow does.</p>
+<h2 id="sizes">Sizes<a class="anchor" href="#sizes" aria-label="Link to this section">#</a></h2>
+<p>Measured in a cloud session's 4-core container on 18 and 19 November 2026 (not a benchmark): 36,612 places in California and 67,052 in Chile, 1.16 GB of JSON lines with their 1152-number vectors, and 1.2 GB on disk with the fires of the seasons read. A place's page asks six statements and answered in 11.8 ms. A day of GOES's archive at a scan every 15 minutes read in 2 to 3 seconds. SigLIP so400m embeds a 384-pixel picture in about 4.2 seconds and a search's words in 0.75 seconds on that container's CPU when nothing else runs, and in 5 to 8 seconds beside the feeds. With California's summers of 2023 to 2025 and its January 2025 read (5,264 fires) and Chile's three summers from 2023 (4,355), the backtest found the middle half of the sizes of the 20 fires most like one after six hours spanning a factor of 1.9 (its top 1.9 times its bottom) against 3.9 for all earlier fires in California, holding the real size 65% of the time against 53%, and 1.7 against 5.1 in Chile, holding it 59% of the time against 65%; their medians ranked the fires by size with a rank correlation of 0.81 and 0.85.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/earth.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="backbone.html">← Backbone explorer</a><a href="app-engine.html">App engine (prototype) →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
