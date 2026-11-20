@@ -572,5 +572,103 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
 }
 
+// GRACE-401: a search's head says how many rows match (a COUNT with the
+// WHERE the words keep), of them how many have the words as typed, and
+// pages by OFFSET; GRACE-402: in Both, a row with every word comes first
+// (rrf's fused rank plus 1 for it), so the ticket that says "billing" and
+// "refund" is not ranked under rows close in meaning only.
+{
+  const tk = { table: "tickets", short: { key: "id", fields: [{ name: "id", type: "keyword" }, { name: "subject", type: "text" }, { name: "emb", type: "vector", dim: 4 }] } };
+  const [, subject, emb] = tk.short.fields;
+  const both = tableView.searchSql(tk, { q: "billing refund", fields: [subject], vec: emb, mode: "both", offset: 20 });
+  assert.equal(both.sql, "SELECT id, subject, score()\nFROM tickets\nORDER BY rrf(bm25(subject, :q, fuzzy => 'auto'), similarity(emb, :v))\n  + CASE WHEN MATCH(subject, :q, fuzzy => 'auto', min => '100%') THEN 1 ELSE 0 END DESC\nLIMIT 20 OFFSET 20");
+  assert.deepEqual(both.count, { sql: "SELECT COUNT(*) FROM tickets\nWHERE MATCH(subject, :q, fuzzy => 'auto', min => 1, min_rows => 20)", params: { q: "billing refund" } });
+  assert.equal(both.exact.sql, "SELECT COUNT(*) FROM tickets\nWHERE MATCH(subject, :q, min => 1, min_rows => 20)");
+  assert.equal(both.all.sql, "SELECT id, subject\nFROM tickets\nWHERE MATCH(subject, :q, fuzzy => 'auto', min => 1, min_rows => 20)");
+  assert.ok(!/OFFSET/.test(tableView.searchSql(tk, { q: "x", fields: [subject], vec: null, mode: "words" }).sql));
+  assert.equal(tableView.searchSql(tk, { q: "x", fields: [], vec: emb, mode: "meaning" }).count, null, "by meaning every row is ranked: nothing to count");
+  assert.equal(tableView.matchLine({ mode: "words", matched: 7436, exact: 5022, rows: 20000, n: 20, offset: 20 }), "21–40 of 7,436 rows that have the words (5,022 with the words as typed, the others with a word a letter or two from one)");
+  assert.equal(tableView.matchLine({ mode: "both", matched: 1, exact: 1, rows: 9, n: 1 }), "1–1 of 1 row that has the words, those with every word first, then by words and meaning");
+  assert.match(tableView.matchLine({ mode: "meaning", rows: 20000, n: 20 }), /^1–20 · by meaning, every one of the 20,000 rows is ranked/);
+  // GRACE-403: the Data tab's CSV of a filtered list reads every row its
+  // WHERE keeps (no LIMIT), not the 50 on screen.
+  assert.equal(tableView.dataSql(tk, tk.short.fields.slice(0, 2), { where: " status = 'open' ", by: "id", desc: true }), "SELECT id, subject FROM tickets WHERE status = 'open' ORDER BY id DESC");
+  assert.equal(tableView.dataSql(tk, tk.short.fields.slice(0, 2), { limit: 50, offset: 100 }), "SELECT id, subject FROM tickets LIMIT 50 OFFSET 100");
+  const { jsonLines } = big;
+  assert.equal(jsonLines(["id", "tags"], [["t1", ["a", "b"]], ["t2", null]]), '{"id":"t1","tags":["a","b"]}\n{"id":"t2","tags":null}\n');
+}
+
+// GRACE-404: the builder groups a time by week (date_trunc, Monday
+// weeks), measures the median hours between two times and each group's
+// share of its week, in time order; GRACE-417: "is one of" with two picks
+// turned to "is not" is NOT IN of both, not one value "open, new".
+{
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => JSON.stringify({ tables: [{ table: "tickets", short: { key: "id", table: "tickets", fields: [
+    { name: "id", type: "keyword" }, { name: "status", type: "keyword" }, { name: "priority", type: "keyword" }, { name: "subject", type: "text" }, { name: "created", type: "timestamp" }, { name: "solved", type: "timestamp" }] } }] }) });
+  const { tables } = await import(new URL("catalog.js", app));
+  await tables(true);
+  const b = await import(new URL("views/builder.js", app));
+  const st = { table: "tickets", signals: [], fusion: "weighted", filters: [], any: false, boosts: [], sort: null, columns: [], score: true, limit: 1000,
+    group: { by: ["created", "priority"], bins: { created: "week" }, measures: [{ fn: "count" }, { fn: "median", field: "hours:created:solved" }, { fn: "share", within: "created" }], min: 0 } };
+  assert.equal(b.toSql(st).sql, "SELECT date_trunc('week', created) AS created_week, priority, COUNT(*) AS n, MEDIAN(date_diff('minute', created, solved) / 60.0) AS median_hours_to_solved, ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY date_trunc('week', created)), 1) AS pct_of_created\nFROM tickets\nGROUP BY date_trunc('week', created), priority\nORDER BY date_trunc('week', created), priority\nLIMIT 1000;");
+  const month = b.toSql({ ...st, group: { by: ["created"], bins: { created: "month" }, measures: [{ fn: "share" }], min: 0 } }).sql;
+  assert.match(month, /^SELECT date_trunc\('month', created\) AS created_month, ROUND\(100\.0 \* COUNT\(\*\) \/ SUM\(COUNT\(\*\)\) OVER \(\), 1\) AS pct\n/);
+  assert.deepEqual(b.hoursOf("hours:created:solved"), { from: "created", to: "solved" });
+  assert.equal(b.hoursOf("solved"), null);
+  const picks = b.changeOp({ field: "status", op: "in", value: "open, new" }, "!=");
+  assert.equal(picks.op, "notin");
+  assert.match(b.toSql({ ...st, group: null, columns: ["id"], filters: [picks] }).sql, /\nWHERE status NOT IN \('open', 'new'\)\n/);
+  assert.equal(b.changeOp({ field: "status", op: "notin", value: "open, new" }, "=").op, "in");
+  assert.equal(b.changeOp({ field: "status", op: "in", value: "open" }, "!=").op, "!=", "one pick stays one value");
+  assert.equal(b.changeOp({ field: "status", op: "in", value: "a, b" }, "prefix").value, "");
+  const { operators } = await import(new URL("catalog.js", app));
+  assert.ok(operators({ name: "status", type: "keyword" }).some(([op]) => op === "notin"));
+  globalThis.fetch = async () => ({ status: 200, ok: true, text: async () => "{}" });
+}
+
+// GRACE-405: a column whose values list tags ("billing refund web_form")
+// is found and split at import, the separator shown and changeable; names
+// and sentences are not split.
+{
+  const tags = ["billing refund", "refund web_form", "billing", "email us", "billing email", "us", "web_form email", "refund us", "email", "billing us"];
+  assert.equal(imp.listSeparator(tags), " ");
+  assert.equal(imp.listSeparator(["a;b", "b;c", "a", "c;a"]), ";");
+  assert.equal(imp.listSeparator(["Ana Lima", "Bo Chen", "Cy Diaz", "Di Eng", "Ed Fox"]), null);
+  assert.equal(imp.listSeparator(["Please refund me.", "My card was charged twice!", "Where is it?", "Help now please"]), null);
+  assert.deepEqual(imp.LIST_SEPS.map(([s]) => s), [" ", ",", ";", "|"]);
+  assert.equal(imp.splitLists('id,tags,name\n1,billing refund,"Lima, Ana"\n2,email,Bo\n3,,Cy\n', { tags: " " }), 'id,tags,name\n1,billing|refund,"Lima, Ana"\n2,email,Bo\n3,,Cy\n');
+  assert.equal(imp.splitLists("id,tags\n1,a|b;c\n", { tags: ";" }), 'id,tags\n1,"[""a|b"",""c""]"\n', "an item that holds a | is a JSON array");
+}
+
+// GRACE-406: a chart splits its series by a column, a line per value
+// (the most rows first), a missing point NULL; whole days read "18 May".
+{
+  const r = await import(new URL("results.js", app));
+  const cols = ["created_week", "priority", "n"];
+  const rows = [["2026-11-02T00:00:00Z", "high", 3], ["2026-11-02T00:00:00Z", "low", 5], ["2026-11-09T00:00:00Z", "high", 4], ["2026-11-09T00:00:00Z", "urgent", 1], ["2026-11-09T00:00:00Z", "low", 2]];
+  assert.deepEqual(r.chartSeries(cols, rows, { x: "created_week", ys: ["n"], split: "priority" }),
+    { names: ["high", "low", "urgent"], pts: [{ x: "2026-11-02T00:00:00Z", ys: [3, 5, null] }, { x: "2026-11-09T00:00:00Z", ys: [4, 2, 1] }], left: 0 });
+  assert.deepEqual(r.chartSeries(cols, rows, { x: "created_week", ys: ["n"] }).names, ["n"]);
+  const many = Array.from({ length: r.MAX_SERIES + 3 }, (_, i) => ["w", `p${i}`, i]);
+  assert.equal(r.chartSeries(cols, many, { x: "created_week", ys: ["n"], split: "priority" }).left, 3);
+  assert.equal(r.timeLabel([Date.UTC(2026, 4, 18)])(Date.UTC(2026, 4, 18)), "18 May");
+}
+
+// GRACE-407: a team view is a row of cc_views, its id its name's slug
+// (saving the same name replaces it), its chart and the builder's state
+// in spec; a missing table reads as no views yet.
+{
+  const v = await import(new URL("views/views.js", app));
+  const doc = v.viewDoc({ name: " Monday numbers ", kind: "builder", sql: "SELECT 1 ", params: { a: 1 }, chart: { x: "w", ys: ["n"], split: "p", kind: "line" }, by: "grace", at: Date.UTC(2026, 10, 20) });
+  assert.deepEqual(doc, { id: "monday_numbers", name: "Monday numbers", about: "", kind: "builder", sql: "SELECT 1", spec: { params: { a: 1 }, chart: { x: "w", ys: ["n"], split: "p", kind: "line" }, state: null }, by: "grace", at: "2026-11-20T00:00:00.000Z" });
+  assert.throws(() => v.viewDoc({ name: " ", sql: "SELECT 1" }), /needs a name/);
+  assert.throws(() => v.viewDoc({ name: "x", sql: "" }), /needs a query/);
+  assert.ok(v.noTable(new ApiError(404, "no such table: cc_views", { error_code: "table_not_found" })));
+  assert.ok(!v.noTable(new ApiError(404, "no such table: tickets", { error_code: "table_not_found" })));
+  assert.ok(!v.noTable(new Error("no such table: cc_views")));
+  assert.match(v.TABLE_SQL, /^CREATE TABLE cc_views \(id KEYWORD PRIMARY KEY, .*spec JSON/);
+  assert.equal(owners.ownerOf("cc_views")?.owner, "Command center", "the views table is the command center's, folded with the apps' tables");
+}
+
 console.log("ok");
 process.exit(0);

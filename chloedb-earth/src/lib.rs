@@ -16,3 +16,4 @@ pub mod places;
 pub mod rules;
 pub mod schema;
 pub mod strata;
+pub mod watch;

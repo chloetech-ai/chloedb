@@ -346,6 +346,26 @@ pub(crate) struct FollowLag {
     pub behind_bytes: Option<f64>,
     /// Heard within [`SILENT_MS`], and following (or copying, catching up).
     pub up: bool,
+    /// A Postgres follower's tables, as it last said (ROSA-406).
+    pub tables: Vec<FollowTable>,
+    /// When it last met an error (a table's or its own), in seconds since
+    /// the epoch.
+    pub last_error_s: Option<f64>,
+}
+
+/// A table a Postgres follower follows, or holds: one that failed, which
+/// it stopped following and tries again while the others go on
+/// ([`crate::postgres`]).
+#[derive(Clone, Debug)]
+pub(crate) struct FollowTable {
+    pub table: String,
+    pub held: bool,
+    /// How far behind Postgres the table is: the follower's lag while it
+    /// follows it; while held, since it was held, or the follower's lag if
+    /// more.
+    pub lag_s: f64,
+    /// Why it is held.
+    pub error: Option<String>,
 }
 
 /// The key a follow process's status is kept under: a cluster's name, or
@@ -587,7 +607,20 @@ impl Service {
                 let lag_ms = st["lag_ms"].as_u64().unwrap_or(0) + if silent { age_ms } else { 0 };
                 let postgres = st["kind"] == "postgres";
                 let up = !silent && matches!(st["state"].as_str(), Some("following" | "copying" | "catching up"));
+                let now_ms = crate::telemetry::now_ms();
+                let tables = st["table_states"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| {
+                        let held = t["state"] == "held";
+                        let since = t["since_ms"].as_u64().filter(|_| held).map_or(0, |s| now_ms.saturating_sub(s));
+                        Some(FollowTable { table: t["table"].as_str()?.to_string(), held, lag_s: lag_ms.max(since) as f64 / 1e3, error: held.then(|| t["error"].as_str().unwrap_or_default().to_string()) })
+                    })
+                    .collect();
                 FollowLag {
+                    tables,
+                    last_error_s: st["last_error"]["at_ms"].as_u64().map(|ms| ms as f64 / 1e3),
                     name: st["name"].as_str().unwrap_or_default().to_string(),
                     kind: if postgres { "postgres" } else { "cluster" },
                     lag_s: lag_ms as f64 / 1e3,

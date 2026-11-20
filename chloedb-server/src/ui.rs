@@ -101,6 +101,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/start.js", JS, include_str!("../ui/app/views/start.js")),
     ("views/table.js", JS, include_str!("../ui/app/views/table.js")),
     ("views/saved.js", JS, include_str!("../ui/app/views/saved.js")),
+    ("views/views.js", JS, include_str!("../ui/app/views/views.js")),
 ];
 
 /// A file from `CHLOEDB_UI_DIR`, when it is set: `rel` under it.
