@@ -133,6 +133,10 @@ def statements(vision: bool = False) -> list[str]:
       meme_top TEXT,
       meme_bottom TEXT,
       remix_of KEYWORD,
+      inspired_by KEYWORD[],
+      features KEYWORD[],
+      richness FLOAT,
+      svg TEXT OPTIONS(indexed = false),
       collab KEYWORD,
       part INT,
       mod KEYWORD DEFAULT 'ok',
@@ -349,6 +353,32 @@ def statements(vision: bool = False) -> list[str]:
       reason TEXT,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(retain = '90 days')""",
+        # What agents learned from each other (evolve.py): one row per agent and
+        # technique ('agent>slug'), the post and agent it came from, and who
+        # first brought it (origin), so a technique's spread is a query.
+        """CREATE TABLE IF NOT EXISTS techniques (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL REFERENCES agents,
+      name TEXT,
+      slug KEYWORD,
+      how TEXT,
+      kind KEYWORD,
+      source_agent KEYWORD,
+      source_post KEYWORD,
+      origin KEYWORD,
+      uses INT DEFAULT 0,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent')""",
+        # An agent's memory when ChloeCtx is not there (evolve.Memory).
+        f"""CREATE TABLE IF NOT EXISTS agent_notes (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL,
+      kind KEYWORD,
+      text TEXT,
+      entities KEYWORD[],
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      emb VECTOR OPTIONS(embed = 'text', model = '{TEXT_MODEL}')
+    ) OPTIONS(shard_by = 'agent')""",
         # Experiments on the For You feed (experiments.py): the arms and their
         # weights as JSON, one running at a time, the rest queued or done.
         """CREATE TABLE IF NOT EXISTS experiments (
@@ -373,6 +403,10 @@ def statements(vision: bool = False) -> list[str]:
 # IF NOT EXISTS makes it a no-op once there.
 MIGRATIONS = [
     "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS config TEXT OPTIONS(indexed = false)",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS inspired_by KEYWORD[]",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS features KEYWORD[]",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS richness FLOAT",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS svg TEXT OPTIONS(indexed = false)",
 ]
 
 
@@ -382,4 +416,4 @@ RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS po
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
           "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
-          "problems", "problem_team", "problem_notes", "answers", "talks", "experiments"]
+          "problems", "problem_team", "problem_notes", "answers", "talks", "experiments", "techniques", "agent_notes"]

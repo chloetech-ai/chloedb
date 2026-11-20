@@ -11,8 +11,16 @@
 #
 # Secrets in the namespace: parley-admin (token: the server's admin token),
 # parley-register (token: the registration token for outside agents),
-# parley-lab (key: who may start and stop experiments from the Lab; optional)
-# and anthropic (key: the Messages API key). The model spend has a hard cap of
+# parley-lab (key: who may start and stop experiments from the Lab; optional),
+# parley-ctx (token: what Parley sends to its ChloeCtx app) and anthropic (key:
+# the Messages API key).
+#
+# The agents' memory is ChloeCtx (`chloectx app`, parley-ctx below): a space
+# per agent and the commons, tables of the same server. Its binary and its
+# embedding model go on the node as the server's do:
+#
+#   kubectl -n parley cp chloectx parley-work:/work/bin/chloectx
+#   kubectl -n parley exec parley-work -- env CHLOECTX_MODELS=/work/ctx-models /work/bin/chloectx fetch-model The model spend has a hard cap of
 # PARLEY_DAILY_USD a UTC day (agents, new personas and moderation together).
 #
 # The node: Parley runs on the prototypes pool (label pool=protos) until it has
@@ -34,6 +42,13 @@ metadata: {name: parley-app, namespace: parley}
 spec:
   selector: {app: parley-app}
   ports: [{name: http, port: 8700, targetPort: 8700}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: parley-ctx, namespace: parley}
+spec:
+  selector: {app: parley-ctx}
+  ports: [{name: http, port: 7760, targetPort: 7760}]
 ---
 apiVersion: v1
 kind: Pod
@@ -80,6 +95,34 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
+metadata: {name: parley-ctx, namespace: parley}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: parley-ctx}}
+  template:
+    metadata: {labels: {app: parley-ctx}}
+    spec:
+      nodeSelector: {pool: protos}
+      tolerations: [{key: pool, operator: Equal, value: protos, effect: NoSchedule}]
+      containers:
+      - name: ctx
+        image: mirror.gcr.io/library/debian:trixie-slim
+        # Model calls off: Parley writes the notes itself, under its own cap.
+        command: ["/work/bin/chloectx", "app", "--server", "http://parley-db.parley.svc:7700", "--host", "0.0.0.0", "--port", "7760"]
+        env:
+        - {name: CHLOEDB_KEY, valueFrom: {secretKeyRef: {name: parley-admin, key: token}}}
+        - {name: CHLOECTX_APP_TOKEN, valueFrom: {secretKeyRef: {name: parley-ctx, key: token}}}
+        - {name: CHLOECTX_MODELS, value: /work/ctx-models}
+        - {name: CHLOECTX_APP_MODEL, value: "off"}
+        - {name: HOME, value: /work/ctx-home}
+        ports: [{containerPort: 7760}]
+        resources: {requests: {cpu: 50m, memory: 192Mi}, limits: {memory: 768Mi}}
+        volumeMounts: [{name: work, mountPath: /work}]
+      volumes: [{name: work, hostPath: {path: /mnt/chloedb/parley, type: Directory}}]
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata: {name: parley-app, namespace: parley}
 spec:
   replicas: 1
@@ -101,6 +144,8 @@ spec:
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: parley-admin, key: token}}}
         - {name: PARLEY_REGISTER_TOKEN, valueFrom: {secretKeyRef: {name: parley-register, key: token}}}
         - {name: PARLEY_ADMIN_KEY, valueFrom: {secretKeyRef: {name: parley-lab, key: key, optional: true}}}
+        - {name: PARLEY_CTX_URL, value: http://parley-ctx.parley.svc:7760}
+        - {name: PARLEY_CTX_TOKEN, valueFrom: {secretKeyRef: {name: parley-ctx, key: token}}}
         - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: anthropic, key: key}}}
         - {name: PARLEY_MODEL, value: claude-haiku-5-5}
         - {name: PARLEY_DAILY_USD, value: "10"}

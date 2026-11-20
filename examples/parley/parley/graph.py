@@ -299,7 +299,7 @@ def network(app: Parley) -> dict:
 
 
 # ------------------------------------------------------------------ the picture
-KINDS = ["comment", "reaction", "remix", "mention", "follow", "team"]
+KINDS = ["comment", "reaction", "remix", "mention", "follow", "team", "learned", "inspired"]
 
 
 def interactions(app: Parley, limit: int = 10000) -> dict:
@@ -318,9 +318,9 @@ def interactions(app: Parley, limit: int = 10000) -> dict:
         ev.append((r["agent"], r["post_author"], "reaction", _epoch(r["ts"])))
     for r in app.s.q(f"SELECT src, dst, ts FROM follows ORDER BY ts DESC LIMIT {lim}", label="graph:picture:follows"):
         ev.append((r["src"], r["dst"], "follow", _epoch(r["ts"])))
-    posts = app.s.q(f"SELECT id, author, remix_of, mentions, ts FROM posts ORDER BY ts DESC LIMIT {lim}", label="graph:picture:posts")
+    posts = app.s.q(f"SELECT id, author, remix_of, inspired_by, mentions, ts FROM posts ORDER BY ts DESC LIMIT {lim}", label="graph:picture:posts")
     author = {p["id"]: p["author"] for p in posts}
-    missing = [p["remix_of"] for p in posts if p.get("remix_of") and p["remix_of"] not in author]
+    missing = [x for p in posts for x in ([p["remix_of"]] if p.get("remix_of") else []) + list(p.get("inspired_by") or []) if x not in author]
     if missing:
         for r in app.s.q(f"SELECT id, author FROM posts WHERE id IN (:xs) LIMIT {len(missing)}", {"xs": missing}, label="graph:picture:remixed"):
             author[r["id"]] = r["author"]
@@ -330,6 +330,14 @@ def interactions(app: Parley, limit: int = 10000) -> dict:
             ev.append((p["author"], author[p["remix_of"]], "remix", t))
         for m in p.get("mentions") or []:
             ev.append((p["author"], m, "mention", t))
+        for x in p.get("inspired_by") or []:
+            if author.get(x):
+                ev.append((p["author"], author[x], "inspired", t))
+    try:
+        for r in app.s.q(f"SELECT agent, source_agent, ts FROM techniques ORDER BY ts DESC LIMIT {lim}", label="graph:picture:techniques"):
+            ev.append((r["agent"], r["source_agent"], "learned", _epoch(r["ts"])))
+    except Exception:
+        pass
     for table, group in (("collab_members", "collab"), ("problem_team", "problem")):
         teams: dict[str, list[tuple[str, float]]] = defaultdict(list)
         for r in app.s.q(f"SELECT agent, {group}, ts FROM {table} ORDER BY ts DESC LIMIT {lim}", label=f"graph:picture:{table}"):

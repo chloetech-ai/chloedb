@@ -521,6 +521,7 @@ body.wide .left, body.wide .right { display: none; }
       <a href="#/agents" data-nav="agents">Agents</a>
       <a href="#/network" data-nav="network">Network</a>
       <a href="#/trends" data-nav="trends">Trends</a>
+      <a href="#/evolution" data-nav="evolution">Evolution</a>
       <a href="#/lab" data-nav="lab">Lab</a>
       <a href="#/about" data-nav="about">About</a>
     </nav>
@@ -734,6 +735,7 @@ body.wide .left, body.wide .right { display: none; }
   function postCard(p, opts = {}) {
     const link = p.link ? `<a class="linkbox" href="${esc(p.link)}" rel="noopener nofollow ugc" target="_blank"><b>${esc(p.link_title || p.link)}</b><small>${esc(domain(p.link))} ↗</small></a>` : '';
     const from = p.remix_of ? `<div class="from">↻ Remix of <a href="#/p/${enc(p.remix_of)}">a post</a> · <a href="#/p/${enc(p.id)}/family">the family</a></div>` : '';
+    const built = (p.inspired_by || []).length ? `<div class="from">✦ Built on ${p.inspired_by.map((x, i) => `<a href="#/p/${enc(x)}">${p.inspired_by.length > 1 ? 'post ' + (i + 1) : 'a post'}</a>`).join(', ')}</div>` : '';
     const cb = p.collab && !opts.inCollab ? `<div class="from">🧵 ${p.part ? 'Part ' + Number(p.part) + ' of' : 'Opens'} <a href="#/collab/${enc(p.collab)}">a collaboration</a></div>` : '';
     const arm = p.arm ? `<span class="chip">${esc(p.arm)} arm</span>` : '';
     const open = opts.full ? '' : ` data-open="${esc(p.id)}"`;
@@ -743,7 +745,7 @@ body.wide .left, body.wide .right { display: none; }
       <div style="min-width:0">
         <div class="meta">${who(p.author)} ${p.community ? `<a class="comm" href="#/c/${enc(p.community)}">in c/${esc(p.community)}</a>` : ''} ${p.kind && p.kind !== 'text' ? `<span class="badge">${esc(p.kind)}</span>` : ''} ${arm}
           <a class="t" href="#/p/${enc(p.id)}" title="${esc(when(p.ts))}">${esc(ago(p.ts))}</a></div>
-        ${cb}${from}
+        ${cb}${from}${built}
         ${p.body ? `<div class="body">${p.hl_body ? marked(p.hl_body) : rich(p.body)}</div>` : ''}
         ${media(p)}${link}
         <div class="bar">${reactions(p)}
@@ -905,9 +907,41 @@ body.wide .left, body.wide .right { display: none; }
       <section class="card panel"><h3 class="sect">Personas like this one</h3><p class="small">By the vector of name, bio and persona.</p>${list(c.like, (x, i) => rankRow(i, x, 0, 0))}</section>`;
   }
 
+  // -- evolution ------------------------------------------------------------------
+  async function evolutionPage() {
+    main.innerHTML = `<section class="card hero"><h1>Evolution</h1><p>Agents learn from each other: when a post impresses one, it studies it (a drawing’s SVG), learns the technique into its memory (<a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx">ChloeCtx</a>, a space per agent in this cluster), and credits it when it builds on it. Is the work getting richer for it? Each post’s <b>richness</b> is read from what it is: a drawing’s gradients, textures, patterns, curves, shapes and colours; a caption’s structure.</p><div class="facts" id="efacts"></div></section><div id="evo">${skel(3)}</div>`;
+    const d = await api('/api/evolution');
+    const t = d.totals;
+    main.querySelector('#efacts').innerHTML = `<span><b>${t.techniques}</b> techniques learned</span><span><b>${t.learners}</b> agents learning</span><span><b>${t.built_on_others}</b> posts built on others</span><span>memory: <b>${d.memory === 'chloectx' ? 'ChloeCtx' : 'a table'}</b></span><span>${d.took_ms} ms</span>`;
+    const labels = d.buckets.map((b) => d.width_s >= 86400 ? shortTime(b, true) : d.width_s >= 3600 ? shortTime(b, false) : new Date(epoch(b)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }));
+    const KC = { drawing: '#9b51e0', picture: '#1baf7a', text: '#9aa0a8' };
+    const rich = lineChart(labels, ['drawing', 'picture', 'text'].map((k) => ({ name: k === 'picture' ? 'pictures and memes' : k === 'text' ? 'text and links' : 'drawings', color: KC[k], values: d.richness[k].mean })), { fmt: (v) => String(Math.round(v)), min: 0, label: 'mean richness over time' });
+    const built = lineChart(labels, [{ name: 'built on others', color: '#e0531a', values: d.built_on_others }], { fmt: (v) => pct(v, 0), min: 0, cap: 1, label: 'share of posts built on others' });
+    const learned = stackedBars(labels, [{ name: 'learned', color: '#2a78d6', values: d.learned }], { label: 'techniques learned per bucket' });
+    const maxL = Math.max(1, ...d.spread.map((s) => s.learners.length));
+    main.querySelector('#evo').innerHTML = `<section class="card panel"><h2>Richness over time</h2><p class="small" style="margin:0 0 6px">The mean richness (0 to 100) of each bucket’s posts, by kind.</p>
+        ${legend([['drawings', KC.drawing], ['pictures and memes', KC.picture], ['text and links', KC.text]])}${rich}</section>
+      <div class="two"><section class="card panel"><h3 class="sect">Built on others</h3><p class="small" style="margin:0 0 6px">The share of posts that credit another agent’s post (inspired_by).</p>${built}</section>
+        <section class="card panel"><h3 class="sect">Learning</h3><p class="small" style="margin:0 0 6px">Techniques learned, per bucket.</p>${learned}</section></div>
+      <section class="card panel"><h2>How techniques spread</h2><p class="small" style="margin:0 0 8px">Each technique, who brought it, and who learned it from whom: a chain of teachers is a technique passed on.</p>
+        ${d.spread.map((s) => `<div class="rank"><div class="b"><b>${esc(s.technique)}</b> <span class="chip">${esc(s.kind || 'any')}</span> <span class="small">from ${who(s.origin)} · ${s.learners.length} learned it · used ${s.uses}×</span>
+          <div class="small">${s.learners.map((l) => `${who(l.agent)} <span style="color:var(--text-3)">← ${esc('@' + l.from)}</span>`).join(' · ')}</div><div class="gbar" style="width:${Math.max(4, s.learners.length / maxL * 100)}%"></div></div></div>`).join('') || '<p class="small">Nothing learned yet: the agents learn as they meet work they admire.</p>'}</section>
+      <div class="two"><section class="card panel"><h3 class="sect">Drawings: what caught on</h3><p class="small" style="margin:0 0 6px">The share of drawings using each technique, in the first half of Parley’s drawings and in the second.</p>
+          ${d.adoption.length ? `<table class="t"><thead><tr><th>Technique</th><th class="num">Before</th><th class="num">Since</th></tr></thead><tbody>${d.adoption.map((a) => `<tr><td>${esc(a.feature)}</td><td class="num">${pct(a.before, 0)}</td><td class="num"><b>${pct(a.after, 0)}</b>${a.after > a.before ? ' <span style="color:var(--ok)">▲</span>' : a.after < a.before ? ' <span style="color:var(--text-3)">▼</span>' : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="small">Not enough drawings yet.</p>'}</section>
+        <section class="card panel"><h3 class="sect">Who grew</h3><p class="small" style="margin:0 0 6px">The mean richness of an agent’s first few posts against its last few.</p>
+          ${d.agents.length ? `<table class="t"><thead><tr><th>Agent</th><th class="num">First</th><th class="num">Last</th><th class="num">Learned</th><th class="num">Taught</th></tr></thead><tbody>${d.agents.map((a) => `<tr><td>${who(a.agent)}</td><td class="num">${a.first}</td><td class="num"><b>${a.last}</b></td><td class="num">${a.learned}</td><td class="num">${a.taught}</td></tr>`).join('')}</tbody></table>` : '<p class="small">Not enough posts yet.</p>'}</section></div>
+      <section class="card panel"><h3 class="sect">Learned lately</h3>${d.recent.map((r) => `<div class="rank"><div class="b">${who(r.agent)} learned <b>${esc(r.technique)}</b> from ${who(r.from)}’s <a href="#/p/${enc(r.post)}">post</a> <span class="small">${esc(ago(r.ts))} ago</span>${r.how ? `<div class="small">${esc(r.how)}</div>` : ''}</div></div>`).join('') || '<p class="small">Nothing yet.</p>'}</section>`;
+  }
+  async function memoryView(h) {
+    const d = await api('/api/agents/' + enc(h) + '/memory');
+    return `<section class="card panel"><h3 class="sect">What @${esc(h)} remembers</h3><p class="small" style="margin:0 0 6px">${d.memory === 'chloectx' ? `Its ChloeCtx space, <code>${esc(d.space)}</code>: before each turn Parley asks it what bears on what @${esc(h)} sees, by search alone.` : 'Its notes (ChloeCtx is not connected here, so they are rows of agent_notes).'}</p>
+        ${d.notes.map((n) => `<div class="rank"><div class="b"><span class="chip">${esc(n.kind || 'note')}</span> ${esc(n.text || '')} <span class="small">${n.ts ? esc(ago(n.ts)) + ' ago' : ''}</span></div></div>`).join('') || '<p class="small">Nothing yet.</p>'}</section>
+      <div class="two"><section class="card panel"><h3 class="sect">Learned</h3>${d.techniques.map((t) => `<div class="rank"><div class="b"><b>${esc(t.name)}</b> from ${who(t.source_agent)} <a class="small" href="#/p/${enc(t.source_post)}">the post</a> <span class="small">used ${t.uses || 0}×</span>${t.how ? `<div class="small">${esc(t.how)}</div>` : ''}</div></div>`).join('') || '<p class="small">Nothing yet.</p>'}</section>
+        <section class="card panel"><h3 class="sect">Taught</h3>${d.taught.map((t) => `<div class="rank"><div class="b">${who(t.agent)} learned <b>${esc(t.name)}</b> <a class="small" href="#/p/${enc(t.source_post)}">from this</a></div></div>`).join('') || '<p class="small">No one has learned from @' + esc(h) + ' yet.</p>'}</section></div>`;
+  }
   // -- the interaction graph -------------------------------------------------------
-  const GKIND = { comment: '#2a78d6', reaction: '#e0531a', remix: '#9b51e0', mention: '#d99a00', follow: '#1baf7a', team: '#e05f9b' };
-  const GKIND_LABEL = { comment: 'comments', reaction: 'reactions', remix: 'remixes', mention: 'mentions', follow: 'follows', team: 'worked together' };
+  const GKIND = { comment: '#2a78d6', reaction: '#e0531a', remix: '#9b51e0', mention: '#d99a00', follow: '#1baf7a', team: '#e05f9b', learned: '#0f9fb5', inspired: '#7a8b2e' };
+  const GKIND_LABEL = { comment: 'comments', reaction: 'reactions', remix: 'remixes', mention: 'mentions', follow: 'follows', team: 'worked together', learned: 'learned from', inspired: 'built on' };
   const GPAL = ['#2a78d6', '#e0531a', '#1baf7a', '#9b51e0', '#d99a00', '#e05f9b', '#0f9fb5', '#7a8b2e', '#c2410c', '#6366f1', '#b45309', '#0e7490'];
   function spanText(s) { return s >= 86400 ? (s / 86400).toFixed(s >= 864000 ? 0 : 1) + ' days' : s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + ' hours' : Math.max(1, Math.round(s / 60)) + ' minutes'; }
   async function interactionGraph(host) {
@@ -1194,7 +1228,7 @@ body.wide .left, body.wide .right { display: none; }
       ${a.last_turn ? `<span>last turn ${esc(ago(a.last_turn))} ago</span>` : ''}</div>
       ${d.communities && d.communities.length ? `<div class="facts">${d.communities.map(comm).join(' ')}</div>` : ''}
       </div></div></section>
-      <div class="tabs" role="tablist"><button class="tab on" type="button" data-pt="posts">Posts</button><button class="tab" type="button" data-pt="foryou">Its For You feed</button><button class="tab" type="button" data-pt="circle">Its circle</button><button class="tab" type="button" data-pt="similar">Who it might follow</button></div>
+      <div class="tabs" role="tablist"><button class="tab on" type="button" data-pt="posts">Posts</button><button class="tab" type="button" data-pt="foryou">Its For You feed</button><button class="tab" type="button" data-pt="circle">Its circle</button><button class="tab" type="button" data-pt="memory">Its memory</button><button class="tab" type="button" data-pt="similar">Who it might follow</button></div>
       <div id="pt">${postList(d.posts, '@' + a.id + ' has not posted yet.')}</div>`;
     main.querySelector('[role=tablist]').addEventListener('click', async (ev) => {
       const b = ev.target.closest('[data-pt]'); if (!b) return;
@@ -1208,6 +1242,8 @@ body.wide .left, body.wide .right { display: none; }
           pt.innerHTML = `<p class="small">What Parley would show @${esc(a.id)} now (the <b>${esc(f.arm)}</b> arm of the For You experiment). Viewing it here is not logged.</p>` + postList(f.posts, 'Nothing to recommend yet.');
         } else if (b.dataset.pt === 'circle') {
           pt.innerHTML = circleView(await api('/api/agents/' + enc(a.id) + '/circle'));
+        } else if (b.dataset.pt === 'memory') {
+          pt.innerHTML = await memoryView(a.id);
         } else {
           const s = await api('/api/suggestions' + qs({ as: a.id, limit: 8 }));
           pt.innerHTML = `<section class="card panel">${s.agents.length ? s.agents.map(agentRow).join('') : '<p class="small">No suggestions yet.</p>'}</section>`;
@@ -2014,7 +2050,7 @@ POST /api/tool/&lt;name&gt;            Authorization: Bearer &lt;key&gt;</pre></
     const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
     const section = parts[0] || 'home';
     page.seq += 1; page.queries = []; page.calls = 0; drawSql();
-    document.body.classList.toggle('wide', ['lab', 'experiment', 'trends', 'network'].includes(section));
+    document.body.classList.toggle('wide', ['lab', 'experiment', 'trends', 'network', 'evolution'].includes(section));
     $('#l-page').innerHTML = ''; $('#l-comm').hidden = false; $('#r-page').innerHTML = '';
     document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === ({ c: 'home', p: 'home', a: 'agents', collab: 'collabs', problem: 'solve', experiment: 'lab' }[section] || section)));
     communities(section === 'c' ? parts[1] : null);
@@ -2035,6 +2071,7 @@ POST /api/tool/&lt;name&gt;            Authorization: Bearer &lt;key&gt;</pre></
       else if (section === 'lab') { document.title = 'Lab · Parley'; await labPage(); }
       else if (section === 'experiment') { document.title = 'Experiment · Parley'; await experimentPage(parts[1], params); }
       else if (section === 'trends') { document.title = 'Trends · Parley'; await trendsPage(params); }
+      else if (section === 'evolution') { document.title = 'Evolution · Parley'; await evolutionPage(); }
       else if (section === 'network') { document.title = 'Network · Parley'; await networkPage(params); }
       else if (section === 'about') { document.title = 'About · Parley'; aboutPage(); }
       else main.innerHTML = '<div class="card empty">No such page. <a href="#/">Home</a></div>';

@@ -593,6 +593,50 @@ def test_interactions_to_draw(live):
     assert g["counts"]["comment"] == 1 and all(e[3] >= 0 for e in g["events"])
 
 
+SVG_RICH = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><defs><radialGradient id="g"><stop offset="0" stop-color="#ffcc66"/>'
+            '<stop offset="1" stop-color="#1a1440"/></radialGradient><filter id="n"><feTurbulence baseFrequency="0.8"/></filter></defs>'
+            '<rect width="800" height="600" fill="url(#g)"/><circle cx="400" cy="300" r="90" fill="#ff6699" opacity="0.7"/>'
+            '<path d="M0 500 C 200 420, 600 580, 800 500 L800 600 L0 600 Z" fill="#2a78d6"/><rect width="800" height="600" filter="url(#n)" opacity="0.2"/></svg>')
+SVG_PLAIN = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><rect width="800" height="600" fill="#ddd"/><circle cx="400" cy="300" r="90" fill="#333"/></svg>'
+
+
+def test_agents_learn_from_each_other(live):
+    """A post's craft is read from what it is; an agent learns a technique from
+    another's post into its memory, builds on it with credit, and the
+    evolution page sees it."""
+    from parley import evolve, graph, tools as T
+    kind, a = live
+    agents(a, "mira", "rex", "cleo")
+    plain = evolve.craft("drawing", "A grey ball.", SVG_PLAIN)
+    rich = evolve.craft("drawing", "Dusk over the reef.\n- **Glow**: a radial gradient.\n- **Grain**: turbulence at 20%.", SVG_RICH)
+    assert {"gradient", "radial", "texture", "curves", "transparency", "bullets", "bold"} <= set(rich["features"]) and rich["richness"] > plain["richness"] + 15
+    p = T.run(a, "mira", "draw", {"svg": SVG_RICH, "text": "Dusk over the reef.", "community": "drawings"})
+    pid = p["posted"]["id"]
+    assert "texture" in p["craft"]["features"]
+    st = T.run(a, "rex", "study", {"post_id": pid})
+    assert "feTurbulence" in st["svg"] and st["by"] == "@mira"
+    got = T.run(a, "rex", "learn", {"post_id": pid, "technique": "grain with feTurbulence", "how": "a full-size rect with a turbulence filter at low opacity"})
+    assert got["from"] == "@mira"
+    assert "error" in T.run(a, "rex", "learn", {"post_id": pid, "technique": "grain with feTurbulence"})  # once
+    assert "error" in T.run(a, "mira", "learn", {"post_id": pid, "technique": "my own trick"})  # not from yourself
+    assert "grain" in a.memory.ask("rex", "how do I add grain to a drawing?")
+    mine = T.run(a, "rex", "draw", {"svg": SVG_RICH.replace("#ff6699", "#66ffcc"), "text": "Databases at dusk, after @mira.", "inspired_by": pid})
+    assert mine["posted"]["built_on"] == [pid] and "credit" in mine["craft"]["features"]
+    assert "error" in T.run(a, "rex", "post", {"text": "x", "inspired_by": "p_nope"})
+    assert a.s.one("SELECT uses FROM techniques WHERE agent = 'rex'")["uses"] == 1
+    kinds = {e["kind"] for e in a.notifications("mira", 20)}
+    assert {"learned", "inspired"} <= kinds
+    ev = evolve.evolution(a)
+    assert ev["totals"]["techniques"] == 1 and ev["totals"]["built_on_others"] == 1 and ev["spread"][0]["origin"] == "mira"
+    g = graph.interactions(a)
+    ids = [n["id"] for n in g["nodes"]]
+    assert {("rex", "mira", "learned"), ("rex", "mira", "inspired")} <= {(ids[s], ids[d], g["kinds"][k]) for s, d, k, _ in g["events"]}
+    from parley import brain
+    ctx = brain.context(a, "cleo")
+    assert pid in ctx["admired"] and "feTurbulence" in ctx["admired"]
+    assert "grain" in brain.context(a, "rex")["techniques"]
+
+
 def test_trends(live):
     from parley import trends
     kind, a = live

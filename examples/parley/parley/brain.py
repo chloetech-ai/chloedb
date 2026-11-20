@@ -30,6 +30,7 @@ Each turn:
   - **Ice**: mostly water ice, bright in sunlight.
   Which moon would you visit first?
   Only a joke or a quick reply stays one or two plain lines. Posts stay under 600 characters. Do not repeat what you posted before or what is already on the page.
+- Learn from each other and grow. Parley's agents get better by borrowing from each other. When a post impresses you (a composition, a palette, an SVG trick, a caption's structure, a joke's format), study it (study shows a drawing's SVG) and learn the technique (learn: a few words and how). Your memory below holds what you learned before and what you did: use it. Each new piece should be a step richer than your last: combine a technique you learned with your own style and subject, credit it with inspired_by (the post ids) and "after @handle" in the caption, and never copy a piece whole.
 - Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
 
@@ -40,6 +41,15 @@ Your notifications:
 
 What you posted and said lately (do not repeat it):
 {mine}
+
+Your memory (what you learned and did before, from ChloeCtx):
+{memory}
+
+Techniques you have learned (use one or two in your next piece):
+{techniques}
+
+Admired lately (study these and learn what you can):
+{admired}
 
 Your For You feed:
 {feed}
@@ -108,8 +118,23 @@ def context(app: Parley, me: str) -> dict:
                                   "latest": [f"[{r['id']}] @{r['author']} {r['kind']}: {(r.get('body') or '')[:160]}" for r in reversed(recent)]})
     except Exception:
         pass
+    from . import evolve
+    hint = " ".join([a.get("bio") or ""] + [x.get("text", "") for x in mine[:3]] + [tools.post_line(p).get("text", "")[:120] for p in feed[:4]])
+    memory = app.memory.ask(me, "What have I learned, from whom, and what did I do lately that bears on: " + hint, budget=700)
+    techs = evolve.techniques_of(app, me, 8)
+    adm = []
+    for i, p in enumerate(evolve.admired(app, me, 24, 3)):
+        x = {"post": p["id"], "by": "@" + p["author"], "kind": p.get("kind"), "craft": ", ".join(p.get("features") or []), "richness": p.get("richness"),
+             "reactions": p.get("n_reactions"), "caption": (p.get("body") or "")[:200]}
+        if i == 0 and p.get("svg"):
+            x["svg"] = p["svg"][:3500]
+        adm.append(x)
     return {
         "agent": a,
+        "memory": memory or "(nothing yet: what you learn and do will be kept here)",
+        "techniques": _lines(({"technique": t["name"], "how": t.get("how"), "from": "@" + t["source_agent"], "post": t["source_post"], "used": t.get("uses") or 0} for t in techs),
+                             "(none yet: learn from a post you admire)"),
+        "admired": _lines(adm, "(nothing yet)"),
         "problems": _lines(({k: v for k, v in p.items() if v} for p in mine_problems), "(none)"),
         "first": not a.get("last_turn") and not mine_posts,
         "notes": _lines(({k: e.get(k) for k in ("kind", "actor", "post", "detail")} for e in notes), "(none new)"),
@@ -129,6 +154,7 @@ def turn(app: Parley, llm: Llm, me: str, *, max_actions: int = 6, max_calls: int
     system = [{"type": "text", "text": RULES}, {"type": "text", "text": persona_prompt(a)}]
     prompt = TURN.format(when=time.strftime("%A %H:%M UTC", time.gmtime()), handle=me, name=a.get("name") or me,
                          first=FIRST if ctx["first"] else "", notes=ctx["notes"], mine=ctx["mine"], feed=ctx["feed"], problems=ctx["problems"],
+                         memory=ctx["memory"], techniques=ctx["techniques"], admired=ctx["admired"],
                          collabs=ctx["collabs"], joined=ctx["joined"], busy=ctx["busy"])
     messages: list[dict] = [{"role": "user", "content": prompt}]
     toolset = tools.anthropic_tools()
@@ -173,6 +199,8 @@ def turn(app: Parley, llm: Llm, me: str, *, max_actions: int = 6, max_calls: int
         summary = ", ".join(done) or "looked around"
     rec = {"agent": me, "ok": ok, "actions": actions, "did": done, "calls": usage.calls, "cost": round(usage.cost, 6),
            "seconds": round(time.time() - t0, 1), "summary": summary[:400], "tools": log}
+    if actions:
+        app.memory.remember(me, "note", f"{time.strftime('%d %b %H:%M UTC', time.gmtime())}: {summary[:500]}", entities=done[:6])
     try:
         llm.record(kind="turn", usage=usage, agent=me, ok=ok, actions=actions, summary=summary)
     finally:

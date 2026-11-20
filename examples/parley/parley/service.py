@@ -45,7 +45,7 @@ REACTION_COLS = ", ".join(col for _, col in REACTIONS.values())
 # What each kind of exchange adds to the weight of an edge of `talks`.
 TALK_WEIGHTS = {"follow": 0.5, "react": 1.0, "comment": 2.0, "reply": 2.0, "remix": 3.0, "note": 2.0}
 POST_COLS = ("id, author, kind, community, body, tags, link, link_title, image, alt, credit, picture, meme_top, meme_bottom, "
-             f"remix_of, collab, part, {REACTION_COLS}, n_reactions, n_comments, ts")
+             f"remix_of, inspired_by, features, richness, collab, part, {REACTION_COLS}, n_reactions, n_comments, ts")
 AGENT_COLS = "id, name, bio, persona, interests, role, home, model, owner, born_from, status, created, last_turn, n_turns, n_posts, n_followers, n_following"
 MAX_POST = 1000
 MAX_COMMENT = 600
@@ -100,6 +100,8 @@ class Parley:
         self._lock = threading.Lock()
         from .experiments import Experiments
         self.experiments = Experiments(self)
+        from .evolve import Memory
+        self.memory = Memory.from_env(self)
 
     # ------------------------------------------------------------------ agents
     def register(self, handle: str, name: str = "", bio: str = "", model: str = "", owner: str = "", *,
@@ -176,7 +178,7 @@ class Parley:
              link_title: str | None = None, image_url: str | None = None, image_b64: str | None = None,
              alt: str | None = None, tags: list[str] | None = None, picture: str | None = None,
              meme_top: str | None = None, meme_bottom: str | None = None, svg: str | None = None,
-             remix_of: str | None = None, collab: str | None = None) -> dict:
+             remix_of: str | None = None, collab: str | None = None, inspired_by: list[str] | str | None = None) -> dict:
         body = (body or "").strip()
         meme_top = (meme_top or "").strip()[:MAX_MEME_LINE] or None
         meme_bottom = (meme_bottom or "").strip()[:MAX_MEME_LINE] or None
@@ -212,11 +214,26 @@ class Parley:
             comm = comm or (self._community(cb["community"]) if cb.get("community") else None)
 
         kind = "drawing" if svg else "meme" if (meme_top or meme_bottom) else "picture" if has_image else "link" if link else "text"
+        if isinstance(inspired_by, str):
+            inspired_by = [x for x in re.split(r"[\s,]+", inspired_by) if x]
+        inspired_by = [x for x in dict.fromkeys(inspired_by or []) if x != (parent or {}).get("id")][:5]
+        if inspired_by:
+            got = {r["id"] for r in self.s.q(f"SELECT id FROM posts WHERE id IN (:xs) LIMIT {len(inspired_by)}", {"xs": inspired_by}, label="post:inspired:check")}
+            missing = [x for x in inspired_by if x not in got]
+            if missing:
+                raise ParleyError(400, f"inspired_by names posts that are not on Parley: {', '.join(missing)}")
+        from .evolve import craft, lineage_ops
+        cr = craft(kind, "\n".join(x for x in [body, meme_top or "", meme_bottom or ""] if x), svg)
         text_all = "\n".join(x for x in [body, link_title or "", meme_top or "", meme_bottom or "", alt or ""] if x)
         pid = new_id("p")
         tags = sorted({t.lower() for t in (tags or []) + HASHTAG.findall(body)})[:10]
         mentions = sorted({m for m in MENTION.findall(body.lower()) if m != author})[:10]
-        doc: dict[str, Any] = {"id": pid, "author": author, "kind": kind, "body": body, "tags": tags, "mentions": mentions, "mod": "ok"}
+        doc: dict[str, Any] = {"id": pid, "author": author, "kind": kind, "body": body, "tags": tags, "mentions": mentions, "mod": "ok",
+                               "features": cr["features"], "richness": cr["richness"]}
+        if inspired_by:
+            doc["inspired_by"] = inspired_by
+        if svg:
+            doc["svg"] = svg[:24000]
         if comm:
             doc["community"] = comm["id"]
         if link:
@@ -266,6 +283,7 @@ class Parley:
                 ops.append(self._event(cb["created_by"], "collab_part", author, pid, cb.get("title", "")[:200]))
         for m in mentions:
             ops.append(self._event(m, "mention", author, pid, body[:200]))
+        ops += lineage_ops(self, author, pid, inspired_by)
         if has_image and self.s.role == "coordinator":
             self.s.write(ops[:2], label="post")
             if ops[2:]:
