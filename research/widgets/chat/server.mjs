@@ -339,8 +339,10 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // Not connected yet: the person gets the sign-in, and the page asks again
   // once it is done.
   function needsConnect(connect, text, send) {
-    send({ type: 'connect', service: connect.service, name: connect.name, url: connect.url, request: text })
-    send({ type: 'reply', text: `This needs your ${connect.name}. Connect it with the button above, and I'll pick up from there.` })
+    send({ type: 'connect', service: connect.service, name: connect.name, url: connect.url, request: text, ...(connect.thirdParty ? { thirdParty: true, title: connect.title, host: connect.host, asked: connect.asked } : {}) })
+    send({ type: 'reply', text: connect.thirdParty
+      ? `I found no connector made by ${connect.asked ?? "the service"} itself, only one made by someone else (${connect.title ?? connect.name}). If you'd rather not sign in to it, paste or type what you need into an app instead, and I'll work from that.`
+      : `This needs your ${connect.name}. Connect it with the button above, and I'll pick up from there.` })
   }
 
   async function turn({ text, history = [], lastApp, screen, talk, links, guest }, send) {
@@ -531,7 +533,13 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         client = await clientFor(ctx, s)
       } catch (error) {
         if (error instanceof NeedsConnect) {
-          signIn ??= error.connect
+          // Who makes it, when not the service itself: a stranger's server
+          // is never offered as if it were the service's own (round 9 DEV-4).
+          if (!signIn) {
+            const host = (() => { try { return new URL(s.url).hostname } catch { return '' } })()
+            const own_ = host && String(service).toLowerCase().split(/\s+/).some(w => w.length > 2 && host.toLowerCase().includes(w))
+            signIn = { ...error.connect, host, asked: service, ...(own_ ? {} : { thirdParty: true, title: s.title ?? s.name }) }
+          }
           continue
         }
         last = `${s.title ?? s.name}: ${error.message}`
@@ -640,11 +648,29 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   }
 
   // Opens an app from the rail with what it last showed.
-  async function open(appId, send) {
+  async function open(appId, send, who = null) {
     const app = await apps.get(appId)
-    const { result, data } = await run(app.tool, app.args)
-    shown.set(app.id, { args: app.args, result, data, tool: app.tool })
-    send({ type: 'app', app: view(app), html: htmlOf(app), tool: app.tool, args: app.args, result, how: 'opened' })
+    // A link for part of it opens with only that part of what it was made
+    // with too: a phone with no signal draws it from there (round 9 MARCUS-1).
+    const args = who?.only || who?.hide ? forLink(app.args, who) : app.args
+    const { result, data } = await run(app.tool, args)
+    if (args === app.args) shown.set(app.id, { args, result, data, tool: app.tool })
+    send({ type: 'app', app: view(app), html: htmlOf(app), tool: app.tool, args, result, how: 'opened' })
+  }
+  // What a link for part of an app may get of its values: its part of each
+  // list, no field it is kept from, and, for "what is shared with them",
+  // none of the owner's own figures (a budget) (round 9 INES-5, MARCUS-1).
+  function forLink(args, who) {
+    const values = args?.values
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return args
+    return { ...args, values: seenBy(values, who) }
+  }
+  function seenBy(values, who) {
+    const figures = v => typeof v === 'number' || (v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).length > 0 && Object.values(v).every(x => typeof x === 'number'))
+    return Object.fromEntries(Object.entries(values)
+      .filter(([k, v]) => !(who.only?.field === '*' && figures(v) && !isView(k)))
+      .filter(([k]) => !(who.hide ?? []).some(h => String(h).toLowerCase() === String(k).toLowerCase()))
+      .map(([k, v]) => [k, hideIn(partOf(v, who.only), who.hide)]))
   }
 
   // An app shown earlier in a conversation, filled again with what it showed then.
@@ -936,7 +962,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {
               const sc = out.structuredContent
               const seen = v => hideIn(partOf(v, who.only), who.hide)
-              out.structuredContent = sc.values ? { ...sc, values: Object.fromEntries(Object.entries(sc.values).map(([k, v]) => [k, seen(v)])), ...(who.hide ? { hidden: who.hide } : {}) } : { ...sc, value: seen(sc.value) }
+              out.structuredContent = sc.values ? { ...sc, values: seenBy(sc.values, who), ...(who.hide ? { hidden: who.hide } : {}) } : { ...sc, value: Object.keys(seenBy({ [key]: sc.value }, who)).length ? seen(sc.value) : null }
             }
             return out
           }
@@ -1193,9 +1219,10 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           if (typeof token === 'string' && /^[0-9a-f]{32}$/.test(token) && (await owning(appId, `s-${token}`))?.role === 'gone') {
             return stream(res, async send => send({ type: 'stopped', app: appId, text: STOPPED }))
           }
+          const linkWho = typeof token === 'string' && /^[0-9a-f]{32}$/.test(token) ? await owning(appId, `s-${token}`) : null
           return stream(res, async send => {
             const out = recording(own(input.talk), send)
-            await open(appId, out)
+            await open(appId, out, linkWho)
             await out.written()
           })
         }

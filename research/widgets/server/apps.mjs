@@ -94,7 +94,10 @@ export const isView = key => String(key).startsWith('view:')
 // A part of "*" is what names the person in any field (shared with them,
 // paid by them, added by them) (INES-4).
 const named = (entry, value) => Object.values(entry).some(v => (v && typeof v === 'object' ? !Array.isArray(v) && named(v, value) : String(v ?? '').trim().toLowerCase() === value))
-const inPart = (entry, only) => entry && typeof entry === 'object' && (only.field === '*' ? named(entry, String(only.value).trim().toLowerCase()) : String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase())
+// An entry marked shared (shared: true, a split) is shared with the person
+// a "what is shared with them" link is for (round 9 INES-3).
+const marked = entry => Object.entries(entry).some(([k, v]) => /^(shared|joint|split|is_?shared|shared_?with)$/i.test(k) && v != null && v !== false && v !== '' && !/^(no|none|false|personal|mine)$/i.test(String(v)))
+const inPart = (entry, only) => entry && typeof entry === 'object' && (only.field === '*' ? named(entry, String(only.value).trim().toLowerCase()) || marked(entry) : String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase())
 const parted = (value, only) => Array.isArray(value) && value.some(e => e && typeof e === 'object' && (only.field === '*' || only.field in e))
 export function partOf(value, only) {
   if (!only?.field || !parted(value, only)) return value

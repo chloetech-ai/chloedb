@@ -400,7 +400,11 @@ const connectedAt = () => Number(local.get('instant-apps-connected') || 0)
 function connectCard(parent, connect, again, before = null) {
   const card = document.createElement('div')
   card.className = 'offline-note connect-note'
-  card.innerHTML = `<span>${esc(`This needs your ${connect.name}. Sign in once, and it is used only when you ask.`)}</span> <a class="connect-go" href="${esc(connect.url)}" target="_blank" rel="noopener">Connect ${esc(connect.name)}</a>`
+  // A connector someone else made says so, and where it runs (round 9 DEV-4).
+  const theirs = connect.thirdParty
+    ? `This would use “${connect.title ?? connect.name}”, a connector made by someone else${connect.host ? ` (${connect.host})` : ''}, not by ${connect.asked ?? 'the service'} itself. Sign in only if you trust it: it sees what that sign-in allows.`
+    : `This needs your ${connect.name}. Sign in once, and it is used only when you ask.`
+  card.innerHTML = `<span>${esc(theirs)}</span> <a class="connect-go" href="${esc(connect.url)}" target="_blank" rel="noopener">${connect.thirdParty ? 'Sign in anyway' : `Connect ${esc(connect.name)}`}</a>`
   if (before) parent.insertBefore(card, before)
   else parent.append(card)
   const since = connectedAt()
@@ -1428,8 +1432,8 @@ function bar(w) {
     box = document.createElement('div')
     box.className = 'sharebox'
     const LINK = [
-      ['full', 'Can change everything', 'opens the whole chat with every app of yours, not only this one: only for your own other phone or computer'],
-      ['helper', 'Can add and tick', 'they add entries and tick them, and can change or take out only what they added; they can’t change, untick or take out what anyone else put there'],
+      ['full', 'Your own other phone', 'opens your whole chat and every app, as you: never send it to anyone else'],
+      ['helper', 'Can add and tick', 'they add, tick and fill in what is empty; what anyone else put there they can’t change, untick or take out'],
       ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
       ['copy', 'A copy, empty', 'the app without anything it keeps: what they type stays on their phone, and nobody else sees it'],
     ]
@@ -1440,14 +1444,20 @@ function bar(w) {
     for (const list of Object.values(kept)) {
       if (!Array.isArray(list) || !list.some(e => e && typeof e === 'object')) continue
       const fields = new Map()
-      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!/^(id|by)$/.test(k) && (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
-      for (const [field, values] of fields) if (values.size >= 2 && values.size <= 12 && values.size < list.length) for (const value of values) if (!parts.some(p => p.field === field && p.value === value)) parts.push({ field, value })
+      // A part is a group of people's entries (a crew, a person, a team),
+      // never a tick, a date, a time or a step ("Only booked true", "Only
+      // transport Stay") (round 9 TOM-10).
+      const NOT_PART = /^(id|by|.*_by|date|day|night|time|when|at|done|booked|checked|ticked|paid|status|transport|note|notes|amount|price|cost|total|code|demo|party)$/i
+      for (const e of list) for (const [k, v] of Object.entries(e ?? {})) if (!NOT_PART.test(k) && typeof v === 'string' && !/^\d/.test(v) && String(v).trim() && String(v).length <= 24) fields.set(k, (fields.get(k) ?? new Set()).add(String(v).trim()))
+      for (const [field, values] of fields) if (values.size >= 2 && values.size <= 8 && values.size < list.length) for (const value of values) if (!parts.some(p => p.field === field && p.value === value)) parts.push({ field, value })
     }
     // Fields of the kept lists a person's link could be kept from, such as prices (MARCUS-1).
-    const hideable = [...new Set(Object.values(kept).flatMap(list => (Array.isArray(list) ? list : []).flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k)).slice(0, 24)
+    // Only what one would keep from someone: money and private words, not every field (round 9 TOM-10).
+    const PRIVATE = /price|cost|amount|total|fee|rate|pay|salary|budget|margin|profit|note|phone|email|address|token|secret|code/i
+    const hideable = [...new Set(Object.values(kept).flatMap(list => (Array.isArray(list) ? list : []).flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k) && PRIVATE.test(k)).slice(0, 12)
     const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
     const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? (p.only.field === '*' ? ' · only what is shared with them' : ` · only ${esc(p.only.field)} ${esc(p.only.value)}`) : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
-    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust. Each link (but the empty copy) shows what the app keeps now, including anything pasted into it, such as a token or an email: keep fields from a person below, or send the empty copy.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: everything they add or tick carries their name, Earlier versions says what they changed, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${hideable.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (entries with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    box.innerHTML = `<span class="sharehead">Links to <b>${esc(app.name)}</b>. Apart from the first, each opens only this app, never your other apps or the chat. Anyone with a link can do what it says, and sees what the app holds now, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add or tick carries their name, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${Object.values(kept).some(Array.isArray) ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (marked shared, or with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
     const wirePeople = () => {
       for (const button of box.querySelectorAll('button[data-person]')) {
         button.onclick = async () => {

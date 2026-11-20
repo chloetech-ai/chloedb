@@ -917,6 +917,27 @@ test('a request sent just before the browser closes is answered and kept in the 
   assert.equal(turns.at(-1)?.reply, 'Took a while.')
 })
 
+test('a link gets only what it may see: what is marked shared, none of the owner’s figures, and only its part of what the app was made with (AC: round 9 INES-3, INES-5, MARCUS-1)', { skip }, async () => {
+  const me = '3'.repeat(32)
+  const app = await chat.apps.put({ name: 'Budget', about: 'Spending.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('budget'), args: { request: 'budget', values: { jobs: [{ id: 'j1', client: 'Johnson', crew: 'Crew 1', price: 120 }, { id: 'j2', client: 'Patel', crew: 'Crew 2', price: 90 }] } }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  await post('/api/call', { app: app.id, me: owner, name: 'app_keep', arguments: { key: 'expenses', value: [{ id: 'c', item: 'coffee', amount: 1.2 }, { id: 'p', item: 'Pingo Doce', amount: 31.8, shared: true, paid: 'me' }] } })
+  await post('/api/call', { app: app.id, me: owner, name: 'app_keep', arguments: { key: 'budgets', value: { '2026-11': 650 } } })
+  await post('/api/call', { app: app.id, me: owner, name: 'app_keep', arguments: { key: 'currency', value: 'EUR' } })
+  const joana = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Joana', role: 'helper', only: { field: '*', value: 'Joana' } } })).people.at(-1)
+  const seen = (await post('/api/call', { app: app.id, me: `s-${joana.token}`, name: 'app_kept', arguments: { all: true } })).structuredContent.values
+  assert.deepEqual(seen.expenses.map(e => e.item), ['Pingo Doce'], 'what is marked shared is shared with her, her coffee-free')
+  assert.equal(seen.budgets, undefined, 'the owner’s budget never reaches her phone')
+  assert.equal(seen.currency, 'EUR')
+  // A crew lead's link kept from prices opens with only his crew and no price,
+  // even in what the app was first made with (what an offline phone draws).
+  const luis = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Luis', role: 'helper', only: { field: 'crew', value: 'Crew 2' }, hide: ['price'] } })).people.at(-1)
+  const opened = (await events(`/api/apps/${app.id}/open`, { talk: '2'.repeat(32), links: { [app.id]: luis.token } })).find(e => e.type === 'app')
+  assert.deepEqual(opened.args.values.jobs, [{ id: 'j2', client: 'Patel', crew: 'Crew 2' }])
+  assert.doesNotMatch(JSON.stringify(opened.result), /Johnson|120/)
+})
+
 test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { skip }, async () => {
   const talk = '5'.repeat(32)
   const answer = (await events('/api/turn', { text: 'find reviews of quiet headphones', talk })).find(e => e.type === 'app')
