@@ -537,6 +537,10 @@ knows of its tables; no answer changes.
 
 ### Demos
 
+- **Earth explorer** (`chloedb-earth`, a new demo, #691): California and
+  Chile from orbit, with fires as GOES sees them, places found by how they
+  look, their twins across the equator and how they changed
+  ([earth.md](docs/chloedb/earth.md)).
 - **Backbone explorer** (`chloedb-backbone`, a demo): its shared pages
   (Now, the map, the strip) are worked out every 15 s after the rules and
   answered from memory; the rules cost less; `fetch` keeps a source's last
