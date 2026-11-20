@@ -10,6 +10,7 @@ follow graph itself, and the service walks it hop by hop when it cannot.
 from __future__ import annotations
 
 import os
+import math
 import threading
 import time
 import urllib.request
@@ -39,9 +40,11 @@ class Store:
                 self.db = chloedb.open(target, **kw)
             else:
                 self.db = chloedb.open(target, schema=schema.META, **kw)
-        # A coordinator refuses graph queries before asking any shard.
+        # A coordinator refuses graph queries and recommenders before asking
+        # any shard.
         self.graph_in_db = self.role != "coordinator"
         self.vision = bool(vision)
+        self.recommender = False
 
     # -- schema -----------------------------------------------------------
     def ensure_schema(self) -> list[str]:
@@ -55,6 +58,18 @@ class Store:
             if name not in have:
                 self.db.sql(stmt)
                 made.append(name)
+        # The feed's recommender counts engagements as they are written; one
+        # database only. Without it the experiment's second arm is the first.
+        if self.graph_in_db:
+            if "taste_counts" in have:
+                self.recommender = True
+            else:
+                try:
+                    self.db.sql(schema.RECOMMENDER)
+                    self.recommender = True
+                    made.append("recommender taste")
+                except Exception:
+                    self.recommender = False
         return made
 
     def tables(self) -> list[dict]:
@@ -153,11 +168,13 @@ class Store:
         with self.lock:
             for k, xs in self.timings.items():
                 s = sorted(xs)
-                out[k] = {"n": len(s), "p50_ms": round(s[len(s) // 2], 2), "p95_ms": round(s[int(len(s) * 0.95) - 1 if len(s) > 1 else 0], 2)}
+                at = lambda q: s[min(len(s) - 1, max(0, math.ceil(q * len(s)) - 1))]  # nearest rank
+                out[k] = {"n": len(s), "p50_ms": round(at(0.5), 2), "p95_ms": round(at(0.95), 2)}
         return out
 
     def describe(self) -> dict:
-        return {"target": self.target, "role": self.role, "graph_in_db": self.graph_in_db, "vision": self.vision}
+        return {"target": self.target, "role": self.role, "graph_in_db": self.graph_in_db, "vision": self.vision,
+                "recommender": self.recommender}
 
 
 def _create_meta_sql() -> str:

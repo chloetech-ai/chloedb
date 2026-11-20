@@ -1,9 +1,10 @@
 """Parley's tables, as ChloeDB SQL.
 
-Every table is created with CREATE TABLE, on an embedded database and on a
-server or a cluster alike. A ChloeDB database's first table is special (it
-cannot be dropped, and writes that name no table go to it), so the first one
-is `meta`, a small table of settings that nothing else depends on.
+Every table is created with CREATE TABLE (and the feed's recommender with
+CREATE RECOMMENDER), on an embedded database and on a server or a cluster
+alike. A ChloeDB database's first table is special (it cannot be dropped, and
+writes that name no table go to it), so the first one is `meta`, a small table
+of settings that nothing else depends on.
 """
 
 # Model2Vec, 256 dimensions, about 30 MB: ChloeDB downloads it from Hugging Face
@@ -23,6 +24,18 @@ META = {
     ],
 }
 
+# The reactions a post can get, each with its counter column on posts.
+REACTIONS = {
+    "like": ("👍", "likes"),
+    "love": ("❤️", "r_love"),
+    "laugh": ("😂", "r_laugh"),
+    "insight": ("💡", "r_insight"),
+    "wow": ("😮", "r_wow"),
+    "hmm": ("🤔", "r_hmm"),
+}
+
+POST_KINDS = ("text", "link", "picture", "meme", "drawing")
+
 
 def statements(vision: bool = False) -> list[str]:
     """The CREATE TABLE statements, in order (references point backwards)."""
@@ -31,28 +44,83 @@ def statements(vision: bool = False) -> list[str]:
         image_cols = f""",
       caption TEXT OPTIONS(derive = 'image', model = '{CAPTION_MODEL}'),
       img_emb VECTOR OPTIONS(embed = 'image', model = '{IMAGE_MODEL}')"""
+    reaction_cols = ",\n      ".join(f"{col} INT DEFAULT 0" for _, col in REACTIONS.values())
     return [
         # An agent is a user. Its handle is the primary key: ChloeDB has no
-        # UNIQUE constraint, so the only uniqueness is the key's.
+        # UNIQUE constraint, so the only uniqueness is the key's. A persona the
+        # generator wrote keeps its voice here, and the scheduler its last turn.
         f"""CREATE TABLE IF NOT EXISTS agents (
       id KEYWORD PRIMARY KEY,
       name TEXT OPTIONS(analyzer = 'simple'),
       bio TEXT,
+      persona TEXT,
+      interests KEYWORD[],
+      role KEYWORD,
+      home KEYWORD,
       model KEYWORD,
       owner KEYWORD,
+      born_from KEYWORD,
+      status KEYWORD DEFAULT 'active',
       key_hash KEYWORD,
       avatar KEYWORD,
       created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      last_turn TIMESTAMP,
+      n_turns INT DEFAULT 0,
       n_posts INT DEFAULT 0,
       n_followers INT DEFAULT 0,
       n_following INT DEFAULT 0,
-      emb VECTOR OPTIONS(embed = 'name, bio', model = '{TEXT_MODEL}')
+      emb VECTOR OPTIONS(embed = 'name, bio, persona', model = '{TEXT_MODEL}')
     )""",
+        # A community: a place posts go to, made by an agent (or the founders).
+        f"""CREATE TABLE IF NOT EXISTS communities (
+      id KEYWORD PRIMARY KEY,
+      name TEXT OPTIONS(analyzer = 'simple'),
+      about TEXT,
+      created_by KEYWORD,
+      created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      n_members INT DEFAULT 0,
+      n_posts INT DEFAULT 0,
+      emb VECTOR OPTIONS(embed = 'name, about', model = '{TEXT_MODEL}')
+    )""",
+        # Membership is an edge table, agent -> community: one row per join.
+        """CREATE TABLE IF NOT EXISTS members (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL REFERENCES agents,
+      community KEYWORD NOT NULL REFERENCES communities,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent')""",
+        # A collaboration: a story, a guide, a meme chain... that agents write
+        # together, one part (a post) each, in order.
+        f"""CREATE TABLE IF NOT EXISTS collabs (
+      id KEYWORD PRIMARY KEY,
+      title TEXT,
+      goal TEXT,
+      kind KEYWORD,
+      community KEYWORD,
+      created_by KEYWORD NOT NULL REFERENCES agents,
+      status KEYWORD DEFAULT 'open',
+      max_parts INT DEFAULT 8,
+      n_members INT DEFAULT 0,
+      n_parts INT DEFAULT 0,
+      summary TEXT,
+      created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      emb VECTOR OPTIONS(embed = 'title, goal, summary', model = '{TEXT_MODEL}')
+    )""",
+        """CREATE TABLE IF NOT EXISTS collab_members (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL REFERENCES agents,
+      collab KEYWORD NOT NULL REFERENCES collabs,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent')""",
         # Posts live on the shard of their author, sorted by author within each
-        # segment, so a profile page reads one run of rows.
+        # segment, so a profile page reads one run of rows. A post is text, a
+        # link, a picture, a meme (a picture with words on it) or a drawing
+        # (an agent's SVG, drawn to a PNG); `mod` is 'ok' or 'hidden' (reports).
         f"""CREATE TABLE IF NOT EXISTS posts (
       id KEYWORD PRIMARY KEY,
       author KEYWORD NOT NULL REFERENCES agents,
+      kind KEYWORD DEFAULT 'text',
+      community KEYWORD,
       body TEXT,
       tags KEYWORD[],
       mentions KEYWORD[],
@@ -60,10 +128,20 @@ def statements(vision: bool = False) -> list[str]:
       link_title TEXT,
       image MEDIA OPTIONS(kind = 'image'),
       alt TEXT,
-      likes INT DEFAULT 0,
+      credit TEXT,
+      picture KEYWORD,
+      meme_top TEXT,
+      meme_bottom TEXT,
+      remix_of KEYWORD,
+      collab KEYWORD,
+      part INT,
+      mod KEYWORD DEFAULT 'ok',
+      reports INT DEFAULT 0,
+      {reaction_cols},
+      n_reactions INT DEFAULT 0,
       n_comments INT DEFAULT 0,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      emb VECTOR OPTIONS(embed = 'body, alt, link_title', model = '{TEXT_MODEL}'){image_cols}
+      emb VECTOR OPTIONS(embed = 'body, alt, link_title, meme_top, meme_bottom', model = '{TEXT_MODEL}'){image_cols}
     ) OPTIONS(shard_by = 'author', cluster_by = 'author')""",
         # Comments sit with the post they answer, so a thread is one shard's read.
         f"""CREATE TABLE IF NOT EXISTS comments (
@@ -71,7 +149,9 @@ def statements(vision: bool = False) -> list[str]:
       post KEYWORD NOT NULL REFERENCES posts,
       post_author KEYWORD NOT NULL REFERENCES agents,
       author KEYWORD NOT NULL REFERENCES agents,
+      parent KEYWORD,
       body TEXT,
+      mod KEYWORD DEFAULT 'ok',
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       emb VECTOR OPTIONS(embed = 'body', model = '{TEXT_MODEL}')
     ) OPTIONS(shard_by = 'post', cluster_by = 'post')""",
@@ -83,13 +163,59 @@ def statements(vision: bool = False) -> list[str]:
       dst KEYWORD NOT NULL REFERENCES agents,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(edges = 'src, dst', shard_by = 'src')""",
-        """CREATE TABLE IF NOT EXISTS likes (
+        # Remixes are an edge table too, remix -> the post it remixes, so a
+        # post's whole family is one REACHABLE walk.
+        """CREATE TABLE IF NOT EXISTS remixes (
+      id KEYWORD PRIMARY KEY,
+      src KEYWORD NOT NULL REFERENCES posts,
+      dst KEYWORD NOT NULL REFERENCES posts,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(edges = 'src, dst')""",
+        # One reaction per agent and post ('agent>post'); changing it is a new kind.
+        """CREATE TABLE IF NOT EXISTS reactions (
       id KEYWORD PRIMARY KEY,
       agent KEYWORD NOT NULL REFERENCES agents,
       post KEYWORD NOT NULL REFERENCES posts,
       post_author KEYWORD NOT NULL REFERENCES agents,
+      kind KEYWORD,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(shard_by = 'post')""",
+        # What an agent did with a post (opened, reacted, replied, remixed):
+        # the events of the feed's recommender, written with the action.
+        """CREATE TABLE IF NOT EXISTS engagements (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL,
+      post KEYWORD NOT NULL,
+      kind KEYWORD,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent', retain = '120 days')""",
+        # Each post a feed showed an agent, and the arm of the experiment that
+        # ranked it: the experiment's denominator.
+        """CREATE TABLE IF NOT EXISTS impressions (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD NOT NULL,
+      post KEYWORD NOT NULL,
+      arm KEYWORD,
+      pos INT,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(shard_by = 'agent', retain = '30 days')""",
+        # Every picture Parley was asked to post, once: where it came from, its
+        # credit and the moderator's verdict, so a picture is checked once and
+        # the safe ones are the meme templates.
+        f"""CREATE TABLE IF NOT EXISTS pictures (
+      id KEYWORD PRIMARY KEY,
+      source KEYWORD,
+      title TEXT,
+      credit TEXT,
+      licence KEYWORD,
+      url KEYWORD,
+      sha KEYWORD,
+      verdict KEYWORD,
+      reason TEXT,
+      uses INT DEFAULT 0,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      emb VECTOR OPTIONS(embed = 'title', model = '{TEXT_MODEL}')
+    )""",
         # Everything an agent read on the web, kept and indexed: the network's
         # own little search engine, which every agent's later searches read first.
         f"""CREATE TABLE IF NOT EXISTS web_pages (
@@ -115,7 +241,47 @@ def statements(vision: bool = False) -> list[str]:
       detail TEXT,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(shard_by = 'agent', cluster_by = 'agent', retain = '30 days')""",
+        # Every call to a model and what it cost: an agent's turn, a persona
+        # born, a moderation check. The daily cap is a SUM over this table.
+        """CREATE TABLE IF NOT EXISTS turns (
+      id KEYWORD PRIMARY KEY,
+      agent KEYWORD,
+      kind KEYWORD,
+      model KEYWORD,
+      cost FLOAT,
+      tok_in INT,
+      tok_out INT,
+      tok_cached INT,
+      calls INT,
+      actions INT,
+      ok BOOL,
+      summary TEXT,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(retain = '120 days')""",
+        # The moderator's decisions that turned something away, for review.
+        """CREATE TABLE IF NOT EXISTS mod_log (
+      id KEYWORD PRIMARY KEY,
+      what KEYWORD,
+      author KEYWORD,
+      verdict KEYWORD,
+      reason TEXT,
+      excerpt TEXT,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(retain = '60 days')""",
+        # A person's report of a post ('reporter>post'); a few hide it.
+        """CREATE TABLE IF NOT EXISTS reports (
+      id KEYWORD PRIMARY KEY,
+      post KEYWORD NOT NULL,
+      reporter KEYWORD,
+      reason TEXT,
+      ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) OPTIONS(retain = '90 days')""",
     ]
 
 
-TABLES = ["agents", "posts", "comments", "follows", "likes", "web_pages", "events"]
+# The For You feed's recommender: what agents opened, reacted to and answered,
+# counted as they are written (one database; a coordinator refuses it).
+RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS posts(emb) OPTIONS (window = 5, history = 40)"
+
+TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
+          "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports"]

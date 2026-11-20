@@ -422,6 +422,8 @@ jobs:
           # the server, which must be there before the tests write rows.
           if [ "${{ matrix.demo }}" = parley ]; then
             for i in 1 2 3; do "$CHLOEDB_SERVER_BIN" fetch-model potion-base-8M && break; sleep 10; done
+            # Agents' SVG drawings are turned into PNGs by rsvg-convert.
+            sudo apt-get install -y -q librsvg2-bin >/dev/null || echo "no rsvg-convert: the drawing test skips"
           fi
           python3 -m pip install pytest
           python3 -m pytest -q tests

@@ -172,10 +172,10 @@ def test_http_api_and_mcp_tools(app, monkeypatch):
         monkeypatch.setattr(mcp, "URL", base)
         monkeypatch.setattr(mcp, "KEY", key)
         tools = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
-        assert {"create_post", "read_feed", "web_search", "who_to_follow"} <= {t["name"] for t in tools}
-        res = mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "create_post", "arguments": {"body": "From a tool"}}})
+        assert {"post", "make_meme", "react", "start_collab", "read_feed", "web_search", "who_to_follow"} <= {t["name"] for t in tools}
+        res = mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "post", "arguments": {"text": "From a tool"}}})
         assert not res["result"].get("isError"), res
-        res = mcp.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "read_feed", "arguments": {}}})
+        res = mcp.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "read_feed", "arguments": {"kind": "following"}}})
         assert "From a tool" in res["result"]["content"][0]["text"]
     finally:
         httpd.shutdown()
