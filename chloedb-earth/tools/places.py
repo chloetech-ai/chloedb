@@ -29,6 +29,8 @@ Steps, each its own command, so a step can be run again alone:
   fires    the fire history (FIRMS), into the same file
   twins    each place's climate twin in the other region (both regions)
   rows     ea_places.jsonl: a row a place, with its look and its words
+  patch    after fires ran again, the places whose fire years changed, as
+           set ops for POST /v1/write (patch_fires_<region>.jsonl)
 
   python3 -I tools/places.py pull   --region chile --out DIR
   python3 -I tools/places.py layers --region chile --out DIR --data DATA
@@ -345,6 +347,44 @@ def fires(a):
     log("fire history written,", int((years > 0).sum()), "places burned")
 
 
+def fire_words(fy):
+    """The fires in a place's words, as describe() writes them."""
+    return ("burned " + ", ".join(str(y) for y in fy[-6:]) + (", burn scar." if fy[-1] >= 2016 else ".")) if fy else ""
+
+
+def patch(a):
+    """After `fires` ran again: the places whose fire years changed, as
+    `set` ops for a server's `POST /v1/write` (a batch of 1,000 a line),
+    without writing their rows (and vectors) again."""
+    import re
+    L = dict(np.load(f"{a.out}/{a.region}_layers.npz", allow_pickle=False))
+    at = {pid: i for i, pid in enumerate(L["ids"])}
+    clause = re.compile(r" ?burned [0-9, ]+(, burn scar)?\.")
+    ops, changed = [], 0
+    with open(f"{a.out}/ea_places_{a.region}.jsonl", encoding="utf-8") as f:
+        for line in f:
+            r = json.loads(line)
+            i = at.get(r["id"])
+            if i is None:
+                continue
+            bits = int(L["fire_years"][i])
+            fy = [2001 + b for b in range(30) if bits >> b & 1]
+            if fy == r.get("fire_years"):
+                continue
+            changed += 1
+            new = fire_words(fy)
+            sets = {"fire_years": fy, "fire_px": int(L["fire_px"][i]), "last_fire": fy[-1] if fy else None}
+            for k in ("words", "about"):
+                t = clause.sub("", r.get(k) or "").rstrip()
+                sets[k] = (t + " " + new).strip() if new else t
+            ops += [{"op": "set", "table": "ea_places", "key": r["id"], "field": k, "value": v} for k, v in sets.items()]
+    path = f"{a.out}/patch_fires_{a.region}.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        for k in range(0, len(ops), 1000):
+            f.write(json.dumps({"ops": ops[k:k + 1000]}, ensure_ascii=False, separators=(",", ":")) + "\n")
+    log(changed, "places changed,", len(ops), "ops to", path)
+
+
 def gpkg_geom(b):
     """A GeoPackage geometry: its header, then WKB."""
     import shapely
@@ -359,10 +399,16 @@ def gpkg_geom(b):
         return None
 
 
+# Detections a year a place needs for the year to count as a fire there:
+# one is often a hot roof, a flare or a glint, which made a town look
+# burned every year.
+MIN_DETECTIONS = 3
+
+
 def fire_years(a, r, lat, lon, half_lon):
     """For each place: a bit a year from 2001 (MODIS, then VIIRS from 2012),
-    set when a presumed vegetation fire was seen on it; and how many
-    detections there were."""
+    set when FIRMS saw at least MIN_DETECTIONS presumed vegetation fires on
+    it that year; and how many detections there were in those years."""
     from scipy.spatial import cKDTree
     name = {"US": "United_States", "CL": "Chile"}[r["country"]]
     s, n, w, e = r["box"]
@@ -405,10 +451,13 @@ def fire_years(a, r, lat, lon, half_lon):
         j = j[ok]
         inside = (np.abs(la[ok] - lat[j]) <= HALF) & (np.abs(lo[ok] - lon[j]) <= half_lon[j])
         j = j[inside]
-        np.add.at(count, j, 1)
-        bits[np.unique(j)] |= 1 << (year - 2001)
+        this = np.zeros(len(lat), np.int64)
+        np.add.at(this, j, 1)
+        burned = this >= MIN_DETECTIONS
+        count[burned] += this[burned]
+        bits[burned] |= 1 << (year - 2001)
         have.append(year)
-        log("firms", base, len(la), "detections,", len(np.unique(j)), "places")
+        log("firms", base, len(la), "detections,", int(burned.sum()), "places burned")
     log("fire years read:", sorted(set(have)))
     return bits, count
 
@@ -684,20 +733,20 @@ def describe(r, L, i, c, kind, k, fy, crop, mine, people, slope):
     if k:
         parts.append(f"{CLIMATE_WORDS.get(k, k)} climate ({k}).")
     if fy:
-        parts.append("burned " + ", ".join(str(y) for y in fy[-6:]) + (", burn scar." if fy[-1] >= 2016 else "."))
+        parts.append(fire_words(fy))
     about = " ".join(parts)
     return ", ".join(dict.fromkeys(x for x in where if x)) + ". " + about, about
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("step", choices=["pull", "layers", "fires", "twins", "rows"])
+    p.add_argument("step", choices=["pull", "layers", "fires", "twins", "rows", "patch"])
     p.add_argument("--region", choices=sorted(REGIONS), default="california", help="the region (twins does both)")
     p.add_argument("--out", required=True, help="where Major TOM's rows, the layers and ea_places_<region>.jsonl go")
     p.add_argument("--strata", default=os.environ.get("CHLOEDB_URL", "http://127.0.0.1:7700"), help="a ChloeDB server with the model (for the vector of a blank picture)")
     p.add_argument("--data", default="data", help="the inputs: geo/<geoBoundaries>.geojson, ghsl/, koppen/, mines/, cdl/, firms/, cities1000.txt")
     a = p.parse_args()
-    {"pull": pull, "layers": layers, "fires": fires, "twins": twins, "rows": rows}[a.step](a)
+    {"pull": pull, "layers": layers, "fires": fires, "twins": twins, "rows": rows, "patch": patch}[a.step](a)
 
 
 if __name__ == "__main__":
