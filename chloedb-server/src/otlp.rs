@@ -43,7 +43,7 @@ use prost::Message;
 use serde_json::{json, Map, Value as Json};
 use chloedb::schema::Schema;
 
-use crate::keys::{Principal, Scope};
+use crate::keys::Principal;
 use crate::service::{After, Service, IMPORT_OPS};
 use crate::ApiError;
 
