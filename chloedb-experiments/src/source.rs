@@ -220,6 +220,44 @@ impl Source {
         v
     }
 
+    /// The site's logged searches since `since` (seconds), with what people
+    /// opened, when the site logs them (its description has `log`).
+    pub async fn log(&self, since: i64, limit: usize) -> Result<Value> {
+        if self.kind != Kind::App {
+            return Err(format!("{}: a public search keeps no log", self.name));
+        }
+        self.get("/v1/experiment/log", &[("since", since.to_string()), ("limit", limit.to_string())]).await
+    }
+
+    /// Whether the site can interleave two arms on its real visitors'
+    /// searches (its description has `interleave`).
+    pub async fn interleaves(&self) -> bool {
+        self.kind == Kind::App && self.describe().await["interleave"].is_object()
+    }
+
+    /// Starts an interleaving test of `a` (the control) against `b` on
+    /// the site's real visitors, on `share` of the page's searches.
+    pub async fn interleave_start(&self, id: &str, name: &str, a: &Value, b: &Value, share: f64) -> Result<Value> {
+        if !self.interleaves().await {
+            return Err(format!("{} cannot interleave its visitors' searches", self.name));
+        }
+        self.post("/v1/experiment/interleave", &json!({"id": id, "name": name, "a": a, "b": b, "share": share})).await
+    }
+
+    pub async fn interleave_stop(&self, id: &str) -> Result<Value> {
+        self.post("/v1/experiment/interleave/stop", &json!({"id": id})).await
+    }
+
+    /// The test running on the site, if any.
+    pub async fn interleave_running(&self) -> Result<Value> {
+        self.get("/v1/experiment/interleave", &[]).await
+    }
+
+    /// A test's interleaved searches, with what people opened.
+    pub async fn interleave_log(&self, id: &str) -> Result<Value> {
+        self.get("/v1/experiment/interleave/log", &[("test", id.to_string()), ("limit", "10000".into())]).await
+    }
+
     /// The first page of `q`, as an arm with these knobs sees it.
     pub async fn search(&self, q: &str, knobs: &Value, per: usize) -> Result<Page> {
         let t0 = Instant::now();

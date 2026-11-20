@@ -102,6 +102,12 @@ pub struct WriteStats {
 pub struct Footprints {
     /// The keys written so far by table; `None`: any row.
     tables: HashMap<String, Option<HashSet<Part>>>,
+    /// The keys of each table written so far only by UPDATEs of numbers
+    /// by key ([`PreparedWrite::keyed`]), which read the transaction's own
+    /// writes: another such UPDATE of one of them may share the
+    /// transaction, applied after it, as hot counters (`n = n + 1` on one
+    /// row from many clients) want.
+    keyed: HashMap<String, HashSet<Part>>,
     /// Whether a write admitted reads rows beyond its table's (an UPDATE
     /// or DELETE whose pick has a subquery): it has the transaction to
     /// itself, since its pick reads the last commit, not the others'
@@ -119,20 +125,28 @@ impl Footprints {
         }
         self.alone = alone;
         let keys = p.keys_touched();
-        match self.tables.get_mut(&p.schema.table) {
+        let keyed = p.keyed().then(|| keys.as_ref().and_then(|k| k.first().cloned())).flatten();
+        let table = &p.schema.table;
+        let ok = match self.tables.get_mut(table) {
             None => {
-                self.tables.insert(p.schema.table.clone(), keys.map(|k| k.into_iter().collect()));
+                self.tables.insert(table.clone(), keys.map(|k| k.into_iter().collect()));
                 true
             }
-            Some(Some(have)) => match keys {
-                Some(keys) if !keys.iter().any(|k| have.contains(k)) => {
+            Some(Some(have)) => match (keys, &keyed) {
+                // A keyed UPDATE of a row only keyed UPDATEs wrote.
+                (_, Some(k)) if have.contains(k) => self.keyed.get(table).is_some_and(|ks| ks.contains(k)),
+                (Some(keys), _) if !keys.iter().any(|k| have.contains(k)) => {
                     have.extend(keys);
                     true
                 }
                 _ => false,
             },
             Some(None) => false,
+        };
+        if let (true, Some(k)) = (ok, keyed) {
+            self.keyed.entry(table.clone()).or_default().insert(k);
         }
+        ok
     }
 }
 
@@ -158,6 +172,13 @@ impl PreparedWrite {
             _ => false,
         };
         typed.then(|| keys.iter().map(Part::of).collect())
+    }
+
+    /// Whether it is an UPDATE of numbers on the row of one key
+    /// ([`super::keyed_update`]), which reads its row as its transaction
+    /// finds it.
+    pub fn keyed(&self) -> bool {
+        self.backfill.is_none() && super::keyed_update(&self.schema, &self.write).is_some()
     }
 
     /// How much of a group it takes ([`GROUP_OPS`]): an INSERT its rows,
@@ -314,18 +335,27 @@ impl Db {
 fn take(waiting: &mut VecDeque<Arc<Slot<Job>>>) -> Vec<Arc<Slot<Job>>> {
     let first = waiting.pop_front().expect("the leader's own write waits");
     let mut n = first.job.weight();
-    let mut prints = Footprints::default();
-    let sql = match &first.job {
-        Job::Sql(p) => prints.admit(p),
-        Job::Ops(_) => false,
-    };
+    // The first write's footprint is taken when a second may join it: a
+    // write alone (one thread writing) needs none.
+    let mut prints: Option<Footprints> = None;
+    let sql = matches!(first.job, Job::Sql(_));
     let mut group = vec![first];
     while let Some(next) = waiting.front() {
         let w = next.job.weight();
         let fits = n + w <= GROUP_OPS
             && match &next.job {
                 Job::Ops(_) => !sql,
-                Job::Sql(p) => sql && prints.admit(p),
+                Job::Sql(p) => {
+                    sql && prints
+                        .get_or_insert_with(|| {
+                            let mut f = Footprints::default();
+                            if let Job::Sql(first) = &group[0].job {
+                                f.admit(first);
+                            }
+                            f
+                        })
+                        .admit(p)
+                }
             };
         if !fits {
             break;
@@ -538,11 +568,15 @@ mod tests {
             slot(sql("UPDATE t SET n = n + 1 WHERE id = 'a'")),
             slot(sql("UPDATE t SET n = n + 1 WHERE id = 'b'")),
             slot(sql("UPDATE t SET n = n + 1 WHERE id = 'a'")),
+            slot(sql("UPDATE t SET n = 0 WHERE id = 'a' AND n > 5")),
             slot(op()),
         ]
         .into_iter()
         .collect();
+        // Updates by key alone of one key share a group (each reads the
+        // row as the one before left it); one with another filter of that
+        // key does not.
         let sizes: Vec<usize> = std::iter::from_fn(|| (!waiting.is_empty()).then(|| take(&mut waiting).len())).collect();
-        assert_eq!(sizes, [2, 2, 1, 1]);
+        assert_eq!(sizes, [2, 3, 1, 1]);
     }
 }

@@ -645,7 +645,9 @@ struct Args {
     /// The address other coordinators reach this coordinator's HTTP API at
     /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
     /// the others. Default: $CHLOEDB_POD_IP and the --listen port, else the
-    /// --listen address.
+    /// --listen address. A shard's copy gives it in its health too, for
+    /// clients that write straight to each shard's primary
+    /// (`GET /v1/cluster/route` on a coordinator).
     #[arg(long, env = "CHLOEDB_PEER_URL")]
     peer_url: Option<String>,
     /// A coordinator's Contain rules' file, which they are kept in across a
@@ -1876,6 +1878,11 @@ async fn run() {
         per_client: a.max_connections_per_client,
         stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
     } };
+    // Where clients reach this server, which a shard's health gives a
+    // coordinator for shard-aware clients' routes.
+    if let Ok(at) = http.local_addr() {
+        let _ = svc.http_url.set(chloedb_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     // fleet: a coordinator names itself to its shards, which tell the others.
     if coordinator {
         let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));

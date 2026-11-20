@@ -24,7 +24,7 @@ use crate::query::ir::eval::{self, Ref};
 use crate::query::ir::Plan;
 use crate::query::model::Models;
 use crate::query::stats::TermStats;
-use crate::query::{bind_command, compound, ops, profile, sql as qsql, Assign, Command, Conflict, Params, Select, Write};
+use crate::query::{bind_command_cached, compound, ops, profile, sql as qsql, Assign, Command, Conflict, Params, Select, Write};
 use crate::rank_log::{self, Export, Log, Logged};
 use crate::schema::{Alter, Derive, Embed, FieldType, Schema};
 use crate::segment::{DocId, SegmentFile};
@@ -2060,6 +2060,20 @@ impl Db {
 
     /// [`Db::sql_with`] on this thread.
     fn sql_with_here(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        // An UPDATE is none of the statements below, each of which starts
+        // with CREATE, DROP, REFRESH or INSERT: a keyed update by the
+        // thousand a second skips asking each.
+        let update = sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("UPDATE"));
+        if !update {
+            return self.sql_with_probed(sql, params, opts);
+        }
+        self.sql_with_bound(sql, params, opts)
+    }
+
+    /// [`Db::sql_with_here`] of a statement that may be one of the
+    /// statements ChloeDB reads itself (classifiers, recommenders, blends,
+    /// rollups, synonyms, chunk inserts) before SQL's.
+    fn sql_with_probed(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
         }
@@ -2094,12 +2108,17 @@ impl Db {
             }
             return Ok(SqlResult::Written(n));
         }
+        self.sql_with_bound(sql, params, opts)
+    }
+
+    /// [`Db::sql_with_here`] of a statement SQL's binder takes.
+    fn sql_with_bound(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         // A write is held to its budget's shape as written (a query, once
         // written out, as it plans).
         crate::query::compound::check_statement(sql, params)?;
-        match bind_command(sql, &tables, params)? {
+        match bind_command_cached(sql, &tables, params)? {
             Command::Query => self.query_with(sql, params, opts).map(SqlResult::Rows),
             Command::ShowTables => Ok(SqlResult::Rows(qsql::table_list(&tables.iter().map(|t| t.table.as_str()).collect::<Vec<_>>()))),
             Command::Explain { json } => {
@@ -2384,7 +2403,7 @@ impl Db {
     fn prepare_write_here(&self, sql: &str, params: &Params) -> Result<Option<PreparedWrite>> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
-        let Command::Write { table, write } = bind_command(sql, &tables, params)? else { return Ok(None) };
+        let Command::Write { table, write } = bind_command_cached(sql, &tables, params)? else { return Ok(None) };
         let schema = catalog.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
         let write = self.planned_write(schema, write)?;
         Ok(Some(self.prepare(schema.clone(), write)?))
@@ -2395,6 +2414,10 @@ impl Db {
     /// WHERE no SELECT takes is refused before the write waits for the
     /// writer, in the SELECT's words.
     fn planned_write(&self, schema: &Schema, write: Write) -> Result<Write> {
+        // An UPDATE of numbers by key runs as bound: its plan is its key.
+        if keyed_update(schema, &write).is_some() {
+            return Ok(write);
+        }
         let pick = write.pick().cloned();
         if let Some(p) = &pick {
             self.explain_statement(&sqlparser::ast::Statement::Query(p.query.clone()), &p.params)?;
@@ -2559,7 +2582,7 @@ impl Db {
     fn write_prepared_in(&self, t: &mut WriteTxn<'_>, p: &PreparedWrite) -> Result<u64> {
         let schema = &*p.schema;
         let mut tt = t.table(&schema.table)?;
-        if tt.schema() != schema {
+        if !std::ptr::eq(tt.schema(), schema) && tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, {ALTERED}", schema.table)));
         }
         let models = self.write_models_of(schema);
@@ -2573,6 +2596,19 @@ impl Db {
             Some(g) => (g.0)()?,
             None => None,
         };
+        // An UPDATE by key alone reads its row by key in the transaction,
+        // without a snapshot: a mask hides it by its key when the key
+        // places it.
+        if let (None, Some(key), Write::Update { sets, .. }) = (p.backfill, keyed_update(schema, &p.write), &p.write) {
+            let masks: Vec<&Arc<Mask>> = guarded.iter().chain(&p.mask).collect();
+            if masks.is_empty() || schema.shard_by_field().is_none_or(|f| Some(f) == schema.primary_key) {
+                if masks.iter().any(|m| m.hides(schema, &key)) {
+                    return Ok(0);
+                }
+                let rows = keyed_rows(&mut tt, schema, key, sets)?;
+                return set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), sets, (&p.known, &p.derived), &files);
+            }
+        }
         let mut whole = self.snapshot();
         if !matches!(p.write, Write::Insert { .. }) {
             for m in guarded.iter().chain(&p.mask) {
@@ -2633,7 +2669,14 @@ impl Db {
                 }
             }
             Write::Update { select, sets, pick } => {
-                let rows = lacking(schema, p.backfill, self.write_rows(&whole, schema, &select, &pick)?);
+                let rows = match (p.backfill, keyed_update(schema, &p.write)) {
+                    // Masked, in a table its shard_by field places.
+                    (None, Some(key)) => match self.rows_by_key(&snap, std::slice::from_ref(&key), &[], &self.exec)?.pop().flatten() {
+                        Some(_) => keyed_rows(&mut tt, schema, key, &sets)?,
+                        None => Vec::new(),
+                    },
+                    _ => lacking(schema, p.backfill, self.write_rows(&whole, schema, &select, &pick)?),
+                };
                 n += set_rows(&mut tt, schema, (&models, &derivers), rows.into_iter().map(|r| (r, Vec::new())).collect(), &sets, (&p.known, &p.derived), &files)?;
             }
         }
@@ -3819,6 +3862,58 @@ fn lacking(schema: &Schema, backfill: Option<usize>, mut rows: Vec<Vec<Value>>) 
         });
     }
     rows
+}
+
+/// The row an UPDATE by key ([`keyed_update`]) changes, as [`plan_sets`]
+/// reads it: its key, and the fields it adds to, as transaction `tt`
+/// finds them, its own writes included, without running a query; none
+/// when no live row has the key. Reading the transaction's own writes is
+/// what lets two keyed updates of one row share a transaction
+/// ([`Footprints::admit`]): `n = n + 1` twice in a group adds 2, as two
+/// commits would.
+fn keyed_rows(tt: &mut TableTxn, schema: &Schema, key: Value, sets: &[(usize, Assign)]) -> Result<Vec<Vec<Value>>> {
+    let pk = schema.primary_key.expect("a keyed update has a key");
+    let mut row = vec![Value::Null; schema.fields.len()];
+    let read: Vec<usize> = sets.iter().filter(|(_, a)| matches!(a, Assign::Add(_))).map(|(f, _)| *f).collect();
+    if read.is_empty() && !tt.has(&key)? {
+        return Ok(Vec::new());
+    }
+    for f in read {
+        match tt.value(&key, &schema.fields[f].name)? {
+            Some(v) => row[f] = v,
+            None => return Ok(Vec::new()),
+        }
+    }
+    row[pk] = key;
+    Ok(vec![row])
+}
+
+/// The key of an UPDATE that sets numbers in place on the one row with
+/// that primary key (`UPDATE t SET price = :p, n = n + 1 WHERE id = :k`):
+/// its row is read by key under the writer lock rather than by a query,
+/// and its statement runs as bound, without a plan. `None` for any other
+/// write, which runs as before: a WHERE over other columns, a key of
+/// another type than the column's (`'7'` for 7), a LIMIT, a SET of an
+/// expression or of a field that is not a number.
+fn keyed_update(schema: &Schema, write: &Write) -> Option<Value> {
+    use crate::query::logical::Pred;
+    let Write::Update { select, sets, pick: None } = write else { return None };
+    let pk = schema.primary_key?;
+    if sets.is_empty() || !in_place(schema, sets) || !sets.iter().all(|(_, a)| matches!(a, Assign::Value(_) | Assign::Add(_))) {
+        return None;
+    }
+    if select.limit.is_some() || select.offset != 0 || select.order.is_some() || !select.phases.is_empty() || !select.group_by.is_empty() || !select.graphs.is_empty() || select.guard.is_some() || select.per.is_some() {
+        return None;
+    }
+    let key = match &select.filter {
+        Pred::In { field, values } if *field == pk && values.len() == 1 => values[0].clone(),
+        Pred::IntRange { field, lo, hi } if *field == pk && lo == hi => Value::Int(*lo),
+        _ => return None,
+    };
+    match (&schema.fields[pk].ty, &key) {
+        (FieldType::Keyword, Value::Str(_)) | (FieldType::Int, Value::Int(_)) => Some(key),
+        _ => None,
+    }
 }
 
 /// Whether setting `sets` changes rows in place: every field set is a
