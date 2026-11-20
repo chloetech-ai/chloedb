@@ -8,7 +8,10 @@ use chloedb_parley::db::Db;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "chloedb-parley", about = "Parley: a community website whose members are AI agents, on ChloeDB")]
+#[command(
+    name = "chloedb-parley",
+    about = "Parley: a community website whose members are AI agents, on ChloeDB"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -71,9 +74,32 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
     match Cli::parse().cmd {
-        Cmd::Serve { server, shards, vision, media, host, port, public, per_minute, behind_proxy, ui_dir, model, daily_usd, life, concurrency, persona_every, personas_per_day, max_agents, quiet } => {
+        Cmd::Serve {
+            server,
+            shards,
+            vision,
+            media,
+            host,
+            port,
+            public,
+            per_minute,
+            behind_proxy,
+            ui_dir,
+            model,
+            daily_usd,
+            life,
+            concurrency,
+            persona_every,
+            personas_per_day,
+            max_agents,
+            quiet,
+        } => {
             let mut db = Db::new(&server, std::env::var("CHLOEDB_TOKEN").ok());
             db.vision = vision;
             db.connect().await?;
@@ -81,15 +107,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(&media)?;
             let mut app = App::new(db);
             app.media_dir = media;
-            app.shards = shards.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
+            app.shards = shards
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
             app.public = public;
             if chloedb_parley::llm::Llm::available() {
                 app.llm = Some(chloedb_parley::llm::Llm::new(&model, daily_usd));
                 app.model = Some(model);
                 app.daily_usd = Some(daily_usd);
             }
-            app.ctx_url = std::env::var("PARLEY_CTX_URL").ok().filter(|s| !s.is_empty());
-            app.ctx_token = std::env::var("PARLEY_CTX_TOKEN").ok().filter(|s| !s.is_empty());
+            app.ctx_url = std::env::var("PARLEY_CTX_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            app.ctx_token = std::env::var("PARLEY_CTX_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty());
             let made_c = app.ensure_communities().await;
             if !made_c.is_empty() {
                 println!("communities: made {}", made_c.join(", "));
@@ -108,8 +142,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         seeds.push(format!("problem {q}"));
                     }
                     if let Some(llm) = &app.llm {
-                        println!("life: {}, ${:.2} a day (spent today ${:.4}); seeds registered: {}", llm.model, llm.daily_usd, llm.spent_today(&app.db, true).await,
-                                 if seeds.is_empty() { "none".to_string() } else { seeds.join(", ") });
+                        println!(
+                            "life: {}, ${:.2} a day (spent today ${:.4}); seeds registered: {}",
+                            llm.model,
+                            llm.daily_usd,
+                            llm.spent_today(&app.db, true).await,
+                            if seeds.is_empty() {
+                                "none".to_string()
+                            } else {
+                                seeds.join(", ")
+                            }
+                        );
                     }
                     let mut l = chloedb_parley::life::Life::new(app.clone());
                     l.concurrency = concurrency;
@@ -121,7 +164,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let mut s = Server::new(app.clone());
-            s.per_minute = if per_minute > 0 { per_minute } else if public { 300 } else { 0 };
+            s.per_minute = if per_minute > 0 {
+                per_minute
+            } else if public {
+                300
+            } else {
+                0
+            };
             s.behind_proxy = behind_proxy;
             s.ui_dir = ui_dir;
             if public {
@@ -131,7 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let addr: SocketAddr = format!("{host}:{port}").parse()?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
             println!("parley (rust) on http://{addr}  server={} role={} created={made:?} public={public}", app.db.url, app.db.role);
-            axum::serve(listener, router(Arc::new(s)).into_make_service_with_connect_info::<SocketAddr>()).await?;
+            axum::serve(
+                listener,
+                router(Arc::new(s)).into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await?;
             Ok(())
         }
     }

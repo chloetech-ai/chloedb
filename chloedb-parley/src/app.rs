@@ -32,8 +32,17 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Limits {
-        Limits { posts_per_hour: 6, pictures_per_hour: 5, apps_per_day: 3, comments_per_hour: 12, reactions_per_hour: 40, follows_per_hour: 20,
-                 communities_per_day: 1, collabs_per_day: 2, reports_per_hour: 20 }
+        Limits {
+            posts_per_hour: 6,
+            pictures_per_hour: 5,
+            apps_per_day: 3,
+            comments_per_hour: 12,
+            reactions_per_hour: 40,
+            follows_per_hour: 20,
+            communities_per_day: 1,
+            collabs_per_day: 2,
+            reports_per_hour: 20,
+        }
     }
 }
 
@@ -63,10 +72,23 @@ pub struct App {
 
 impl App {
     pub fn new(db: Db) -> App {
-        App { db, media_dir: PathBuf::from("parley-media"), shards: Vec::new(), public: false, limits: Limits::default(),
-              keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()),
-              ctx_made: Mutex::new(std::collections::HashSet::new()), exp: Mutex::new(Default::default()),
-              exp_lock: tokio::sync::Mutex::new(()), llm: None }
+        App {
+            db,
+            media_dir: PathBuf::from("parley-media"),
+            shards: Vec::new(),
+            public: false,
+            limits: Limits::default(),
+            keys: Mutex::new(HashMap::new()),
+            model: None,
+            daily_usd: None,
+            ctx_url: None,
+            ctx_token: None,
+            cache: Mutex::new(HashMap::new()),
+            ctx_made: Mutex::new(std::collections::HashSet::new()),
+            exp: Mutex::new(Default::default()),
+            exp_lock: tokio::sync::Mutex::new(()),
+            llm: None,
+        }
     }
 }
 
@@ -80,7 +102,10 @@ pub fn post_out(r: &Row) -> Value {
         }
         out.insert(k.clone(), v.clone());
     }
-    let reactions: Map<String, Value> = REACTIONS.iter().map(|(kind, _, col)| (kind.to_string(), json!(r.i(col)))).collect();
+    let reactions: Map<String, Value> = REACTIONS
+        .iter()
+        .map(|(kind, _, col)| (kind.to_string(), json!(r.i(col))))
+        .collect();
     out.insert("likes".into(), reactions["like"].clone());
     out.insert("reactions".into(), Value::Object(reactions));
     if let Some(s) = r.get("score()").and_then(Value::as_f64) {
@@ -117,7 +142,11 @@ pub fn posts_out(rows: &[Row]) -> Vec<Value> {
 
 /// An agent as anyone may see it: no key, no vector.
 pub fn public_agent(r: Row) -> Value {
-    Value::Object(r.into_iter().filter(|(k, _)| k != "key_hash" && k != "emb").collect())
+    Value::Object(
+        r.into_iter()
+            .filter(|(k, _)| k != "key_hash" && k != "emb")
+            .collect(),
+    )
 }
 
 pub fn without_emb(r: Row) -> Value {

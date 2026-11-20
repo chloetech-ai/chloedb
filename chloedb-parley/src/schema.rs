@@ -32,14 +32,33 @@ pub fn reaction_cols() -> String {
 
 /// The CREATE TABLE statements, in order.
 pub fn statements(vision: bool) -> Vec<String> {
-    SCHEMA.split("\n;;\n")
-        .map(|s| s.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n"))
+    SCHEMA
+        .split("\n;;\n")
+        .map(|s| {
+            s.lines()
+                .skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
         .filter(|s| s.starts_with("CREATE"))
-        .map(|s| s.replace("{IMAGE_COLS}", if vision { IMAGE_COLS.trim_end() } else { "" })).collect()
+        .map(|s| {
+            s.replace(
+                "{IMAGE_COLS}",
+                if vision { IMAGE_COLS.trim_end() } else { "" },
+            )
+        })
+        .collect()
 }
 
 fn table_of(stmt: &str) -> String {
-    stmt.split("EXISTS").nth(1).unwrap_or("").split('(').next().unwrap_or("").trim().to_string()
+    stmt.split("EXISTS")
+        .nth(1)
+        .unwrap_or("")
+        .split('(')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 /// Creates the tables that are missing, runs the migrations, and makes the
@@ -58,14 +77,20 @@ pub async fn ensure(db: &Db) -> Result<Vec<String>> {
             made.push(name);
         }
     }
-    for m in MIGRATIONS.split("\n;;\n").map(str::trim).filter(|s| !s.is_empty()) {
+    for m in MIGRATIONS
+        .split("\n;;\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let _ = db.sql(m, json!({})).await;
     }
     if db.graph_in_db() {
         if have.iter().any(|t| t == "taste_counts") {
-            db.recommender.store(true, std::sync::atomic::Ordering::Relaxed);
+            db.recommender
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         } else if db.sql(RECOMMENDER.trim(), json!({})).await.is_ok() {
-            db.recommender.store(true, std::sync::atomic::Ordering::Relaxed);
+            db.recommender
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             made.push("recommender taste".into());
         }
     }
@@ -85,7 +110,14 @@ mod tests {
         let posts = plain.iter().find(|s| table_of(s) == "posts").unwrap();
         assert!(!posts.contains("{IMAGE_COLS}") && !posts.contains("img_emb"));
         assert!(vis.iter().any(|s| s.contains("img_emb")));
-        for t in ["agents", "posts", "comments", "techniques", "trend_topics", "experiments"] {
+        for t in [
+            "agents",
+            "posts",
+            "comments",
+            "techniques",
+            "trend_topics",
+            "experiments",
+        ] {
             assert!(plain.iter().any(|s| table_of(s) == t), "{t}");
         }
     }

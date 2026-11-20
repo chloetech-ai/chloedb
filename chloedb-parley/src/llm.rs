@@ -38,7 +38,10 @@ pub struct Usage {
 
 impl Usage {
     pub fn new(model: &str) -> Usage {
-        Usage { model: model.to_string(), ..Default::default() }
+        Usage {
+            model: model.to_string(),
+            ..Default::default()
+        }
     }
     pub fn add(&mut self, o: &Usage) {
         self.tok_in += o.tok_in;
@@ -54,9 +57,24 @@ impl Usage {
 pub fn price(model: &str, usage: &Value) -> Usage {
     let (pin, pout) = prices(model);
     let n = |k: &str| usage[k].as_i64().unwrap_or(0);
-    let (tin, tout, cr, cw) = (n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens"));
-    let cost = (tin as f64 * pin + cw as f64 * pin * 1.25 + cr as f64 * pin * 0.1 + tout as f64 * pout) / 1e6;
-    Usage { model: model.to_string(), tok_in: tin + cr + cw, tok_out: tout, tok_cached: cr, tok_cache_write: cw, calls: 1, cost }
+    let (tin, tout, cr, cw) = (
+        n("input_tokens"),
+        n("output_tokens"),
+        n("cache_read_input_tokens"),
+        n("cache_creation_input_tokens"),
+    );
+    let cost =
+        (tin as f64 * pin + cw as f64 * pin * 1.25 + cr as f64 * pin * 0.1 + tout as f64 * pout)
+            / 1e6;
+    Usage {
+        model: model.to_string(),
+        tok_in: tin + cr + cw,
+        tok_out: tout,
+        tok_cached: cr,
+        tok_cache_write: cw,
+        calls: 1,
+        cost,
+    }
 }
 
 pub fn day_start(t: Option<f64>) -> String {
@@ -66,7 +84,13 @@ pub fn day_start(t: Option<f64>) -> String {
 
 /// The text of a response's text blocks.
 pub fn text_of(resp: &Value) -> String {
-    resp["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect()
+    resp["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
+        .collect()
 }
 
 pub struct Llm {
@@ -81,16 +105,31 @@ pub struct Llm {
 
 impl Llm {
     pub fn available() -> bool {
-        std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.is_empty()) || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok_and(|k| !k.is_empty())
+        std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.is_empty())
+            || std::env::var("ANTHROPIC_AUTH_TOKEN").is_ok_and(|k| !k.is_empty())
     }
 
     pub fn new(model: &str, daily_usd: f64) -> Llm {
         Llm {
-            model: model.to_string(), daily_usd,
-            http: reqwest::Client::builder().timeout(Duration::from_secs(120)).connect_timeout(Duration::from_secs(10)).build().expect("an HTTP client"),
-            base: std::env::var("ANTHROPIC_BASE_URL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "https://api.anthropic.com".into()).trim_end_matches('/').to_string(),
-            key: std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()),
-            token: std::env::var("ANTHROPIC_AUTH_TOKEN").ok().filter(|s| !s.is_empty()),
+            model: model.to_string(),
+            daily_usd,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .expect("an HTTP client"),
+            base: std::env::var("ANTHROPIC_BASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "https://api.anthropic.com".into())
+                .trim_end_matches('/')
+                .to_string(),
+            key: std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            token: std::env::var("ANTHROPIC_AUTH_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
             state: Mutex::new((0.0, None)),
         }
     }
@@ -105,7 +144,16 @@ impl Llm {
                 }
             }
         }
-        let v = db.scalar("spend", "SELECT SUM(cost) FROM turns WHERE ts >= :d", json!({"d": day})).await.ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let v = db
+            .scalar(
+                "spend",
+                "SELECT SUM(cost) FROM turns WHERE ts >= :d",
+                json!({"d": day}),
+            )
+            .await
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         let mut st = self.state.lock().unwrap();
         st.1 = Some((now(), v, day));
         v + st.0
@@ -117,7 +165,14 @@ impl Llm {
 
     pub async fn check(&self, db: &Db, reserve: f64) -> Result<()> {
         if self.spent_today(db, false).await + reserve >= self.daily_usd {
-            return Err(Error::new(429, format!("today's model budget (${:.2}) is spent; it resets at 00:00 UTC", self.daily_usd)).budget());
+            return Err(Error::new(
+                429,
+                format!(
+                    "today's model budget (${:.2}) is spent; it resets at 00:00 UTC",
+                    self.daily_usd
+                ),
+            )
+            .budget());
         }
         Ok(())
     }
@@ -136,7 +191,11 @@ impl Llm {
                 tokio::time::sleep(Duration::from_secs_f64(wait)).await;
                 wait = (wait * 2.0).min(8.0);
             }
-            let mut req = self.http.post(format!("{}/v1/messages", self.base)).header("anthropic-version", "2023-06-01").json(&body);
+            let mut req = self
+                .http
+                .post(format!("{}/v1/messages", self.base))
+                .header("anthropic-version", "2023-06-01")
+                .json(&body);
             if let Some(k) = &self.key {
                 req = req.header("x-api-key", k);
             } else if let Some(t) = &self.token {
@@ -150,7 +209,12 @@ impl Llm {
                 }
             };
             let status = r.status().as_u16();
-            if let Some(ra) = r.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<f64>().ok()) {
+            if let Some(ra) = r
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<f64>().ok())
+            {
                 wait = ra.clamp(0.5, 30.0);
             }
             let j: Value = r.json().await.unwrap_or(Value::Null);
@@ -159,7 +223,10 @@ impl Llm {
                 self.state.lock().unwrap().0 += u.cost;
                 return Ok((j, u));
             }
-            last = format!("APIStatusError {status}: {}", j["error"]["message"].as_str().unwrap_or(""));
+            last = format!(
+                "APIStatusError {status}: {}",
+                j["error"]["message"].as_str().unwrap_or("")
+            );
             if !(status == 408 || status == 409 || status == 429 || status >= 500) {
                 return Err(Error::new(502, last));
             }
@@ -169,11 +236,25 @@ impl Llm {
 
     /// One row of `turns`: what a turn, a persona or a check cost.
     #[allow(clippy::too_many_arguments)]
-    pub async fn record(&self, db: &Db, kind: &str, usage: &Usage, agent: Option<&str>, ok: bool, actions: i64, summary: &str) {
+    pub async fn record(
+        &self,
+        db: &Db,
+        kind: &str,
+        usage: &Usage,
+        agent: Option<&str>,
+        ok: bool,
+        actions: i64,
+        summary: &str,
+    ) {
         let doc = json!({"id": new_id("t"), "agent": agent, "kind": kind, "model": usage.model, "cost": round(usage.cost, 6),
                          "tok_in": usage.tok_in, "tok_out": usage.tok_out, "tok_cached": usage.tok_cached, "calls": usage.calls,
                          "actions": actions, "ok": ok, "summary": summary.chars().take(500).collect::<String>()});
-        let _ = db.write("turns", vec![json!({"op": "insert", "table": "turns", "doc": doc})]).await;
+        let _ = db
+            .write(
+                "turns",
+                vec![json!({"op": "insert", "table": "turns", "doc": doc})],
+            )
+            .await;
         let mut st = self.state.lock().unwrap();
         st.1 = None;
         st.0 = (st.0 - usage.cost).max(0.0);

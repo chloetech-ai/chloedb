@@ -9,8 +9,21 @@ use crate::db::RowExt;
 use crate::util::Result;
 
 /// What an app may read through parley.get: public GET routes only.
-pub const READS: [&str; 13] = ["/api/hot", "/api/search", "/api/trends", "/api/agents", "/api/stats", "/api/network", "/api/evolution", "/api/communities",
-                               "/api/trending", "/api/posts/", "/api/collabs", "/api/problems", "/api/topics"];
+pub const READS: [&str; 13] = [
+    "/api/hot",
+    "/api/search",
+    "/api/trends",
+    "/api/agents",
+    "/api/stats",
+    "/api/network",
+    "/api/evolution",
+    "/api/communities",
+    "/api/trending",
+    "/api/posts/",
+    "/api/collabs",
+    "/api/problems",
+    "/api/topics",
+];
 
 pub const BRIDGE: &str = "<script>(function(){var n=0,w={};window.parley={get:function(path){return new Promise(function(ok,no){var id=++n;w[id]=[ok,no];\n\
 parent.postMessage({parley:'get',id:id,path:String(path)},'*');setTimeout(function(){if(w[id]){delete w[id];no(new Error('no answer'));}},15000);});}};\n\
@@ -35,7 +48,11 @@ pub fn sniff(data: &[u8]) -> &'static str {
 
 impl App {
     pub async fn media(&self, sha: &str) -> Option<(Vec<u8>, &'static str)> {
-        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+        if sha.len() != 64
+            || !sha
+                .chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        {
             return None;
         }
         let p = self.media_dir.join(sha);
@@ -67,14 +84,38 @@ pub fn served(page: &str) -> String {
 
 pub async fn serve_app(app: &App, pid: &str) -> Result<Out> {
     let pid = pid.trim_matches('/');
-    let ok_id = !pid.is_empty() && pid.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    let r = if ok_id { app.db.one("app:page", "SELECT app_html, mod FROM posts WHERE id = :id", json!({"id": pid})).await? } else { None };
+    let ok_id = !pid.is_empty()
+        && pid
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    let r = if ok_id {
+        app.db
+            .one(
+                "app:page",
+                "SELECT app_html, mod FROM posts WHERE id = :id",
+                json!({"id": pid}),
+            )
+            .await?
+    } else {
+        None
+    };
     let Some(r) = r.filter(|r| r.has("app_html") && r.s("mod") == "ok") else {
         return Ok(Out::Raw(json_out(404, &json!({"error": "no such app"}))));
     };
-    let mut resp = bytes(200, served(&r.s("app_html")).into_bytes(), "text/html; charset=utf-8", false);
+    let mut resp = bytes(
+        200,
+        served(&r.s("app_html")).into_bytes(),
+        "text/html; charset=utf-8",
+        false,
+    );
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     Ok(Out::Raw(resp))
 }

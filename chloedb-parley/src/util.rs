@@ -29,7 +29,11 @@ impl Error {
         self.answer.as_ref().is_some_and(|a| a["budget"] == true)
     }
     pub fn new(status: u16, message: impl Into<String>) -> Error {
-        Error { status, message: message.into(), answer: None }
+        Error {
+            status,
+            message: message.into(),
+            answer: None,
+        }
     }
 }
 
@@ -44,7 +48,11 @@ impl std::error::Error for Error {}
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(json!({"error": self.message, "queries": crate::db::trace()}))).into_response()
+        (
+            status,
+            Json(json!({"error": self.message, "queries": crate::db::trace()})),
+        )
+            .into_response()
     }
 }
 
@@ -55,7 +63,10 @@ pub fn err<T>(status: u16, message: impl Into<String>) -> Result<T> {
 }
 
 pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Sortable by time (microseconds, hex), unique by the random tail.
@@ -75,7 +86,9 @@ pub fn sha256_hex(s: &str) -> String {
 
 /// A UTC time as ISO 8601, to the second.
 pub fn iso(t: f64) -> String {
-    chrono::DateTime::from_timestamp(t as i64, 0).map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string()).unwrap_or_default()
+    chrono::DateTime::from_timestamp(t as i64, 0)
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_default()
 }
 
 /// Seconds since the epoch of a row's time (text, or micro/seconds).
@@ -83,7 +96,11 @@ pub fn epoch(v: &Value) -> f64 {
     match v {
         Value::Number(n) => {
             let x = n.as_f64().unwrap_or(0.0);
-            if x > 1e12 { x / 1e6 } else { x }
+            if x > 1e12 {
+                x / 1e6
+            } else {
+                x
+            }
         }
         Value::String(s) => epoch_str(s),
         _ => 0.0,
@@ -95,10 +112,15 @@ pub fn epoch_str(s: &str) -> f64 {
     if let Ok(d) = chrono::DateTime::parse_from_rfc3339(&s.replace(' ', "T")) {
         return d.timestamp() as f64 + f64::from(d.timestamp_subsec_micros()) / 1e6;
     }
-    if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f") {
-        return d.and_utc().timestamp() as f64 + f64::from(d.and_utc().timestamp_subsec_micros()) / 1e6;
+    if let Ok(d) =
+        chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f")
+    {
+        return d.and_utc().timestamp() as f64
+            + f64::from(d.and_utc().timestamp_subsec_micros()) / 1e6;
     }
-    if let Ok(d) = chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y-%m-%d %H:%M:%S%.f") {
+    if let Ok(d) =
+        chrono::NaiveDateTime::parse_from_str(s.trim_end_matches('Z'), "%Y-%m-%d %H:%M:%S%.f")
+    {
         return d.and_utc().timestamp() as f64;
     }
     0.0
@@ -112,9 +134,14 @@ fn rx(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
 pub fn slug(name: &str) -> String {
     static R: OnceLock<Regex> = OnceLock::new();
     let s = name.trim().to_lowercase();
-    let s = s.strip_prefix("r/").or_else(|| s.strip_prefix("c/")).unwrap_or(&s);
+    let s = s
+        .strip_prefix("r/")
+        .or_else(|| s.strip_prefix("c/"))
+        .unwrap_or(&s);
     let s = s.trim_start_matches('#');
-    rx(&R, "[^a-z0-9_]").replace_all(&s.replace('-', "_").replace(' ', "_"), "").into_owned()
+    rx(&R, "[^a-z0-9_]")
+        .replace_all(&s.replace('-', "_").replace(' ', "_"), "")
+        .into_owned()
 }
 
 pub fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
@@ -139,7 +166,15 @@ pub fn round(x: f64, d: i32) -> f64 {
 mod round_tests {
     #[test]
     fn rounds_as_python() {
-        for (x, d, want) in [(26.05, 1, 26.1), (0.125, 2, 0.12), (2.675, 2, 2.67), (0.5, 0, 0.0), (1.5, 0, 2.0), (-0.35, 1, -0.3), (1234.5678, 3, 1234.568)] {
+        for (x, d, want) in [
+            (26.05, 1, 26.1),
+            (0.125, 2, 0.12),
+            (2.675, 2, 2.67),
+            (0.5, 0, 0.0),
+            (1.5, 0, 2.0),
+            (-0.35, 1, -0.3),
+            (1234.5678, 3, 1234.568),
+        ] {
             assert_eq!(super::round(x, d), want, "round({x}, {d})");
         }
     }

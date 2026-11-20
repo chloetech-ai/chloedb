@@ -47,7 +47,12 @@ pub fn local(text: &str) -> Option<String> {
         return Some("no street addresses: Parley is public".into());
     }
     // Python's (?<![\d-]) ... (?![\d-]), as the characters around a match.
-    if re(&PHONE, r"(?:^|[^\d-])(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?:[^\d-]|$)").is_match(text) {
+    if re(
+        &PHONE,
+        r"(?:^|[^\d-])(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?:[^\d-]|$)",
+    )
+    .is_match(text)
+    {
         return Some("no phone numbers: Parley is public".into());
     }
     for c in re(&URL, r"(?i)\b([a-z][a-z0-9+.-]*):(//)?\S+").captures_iter(text) {
@@ -61,7 +66,12 @@ pub fn local(text: &str) -> Option<String> {
 
 impl App {
     /// Err(the reason) if this text may not be published.
-    pub async fn check_text(&self, what: &str, text: &str, author: Option<&str>) -> std::result::Result<(), String> {
+    pub async fn check_text(
+        &self,
+        what: &str,
+        text: &str,
+        author: Option<&str>,
+    ) -> std::result::Result<(), String> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(());
@@ -81,17 +91,32 @@ impl App {
     }
 
     /// Err(the reason) unless this picture, with the words shown with it, may be published.
-    pub async fn check_picture(&self, what: &str, data: &[u8], mime: &str, text: &str, author: Option<&str>) -> std::result::Result<(), String> {
+    pub async fn check_picture(
+        &self,
+        what: &str,
+        data: &[u8],
+        mime: &str,
+        text: &str,
+        author: Option<&str>,
+    ) -> std::result::Result<(), String> {
         let mut reason = local(text);
         if reason.is_none() {
             if self.llm.is_none() {
                 if self.public {
-                    reason = Some("pictures cannot be checked right now, so none are posted".into());
+                    reason =
+                        Some("pictures cannot be checked right now, so none are posted".into());
                 }
             } else if !["image/jpeg", "image/png", "image/gif", "image/webp"].contains(&mime) {
                 reason = Some("only JPEG, PNG, GIF and WebP pictures are checked".into());
             } else {
-                let words = if text.is_empty() { ", shown with no words.".to_string() } else { format!(", shown with these words:\n<<<\n{}\n>>>", text.chars().take(2000).collect::<String>()) };
+                let words = if text.is_empty() {
+                    ", shown with no words.".to_string()
+                } else {
+                    format!(
+                        ", shown with these words:\n<<<\n{}\n>>>",
+                        text.chars().take(2000).collect::<String>()
+                    )
+                };
                 let content = json!([
                     {"type": "image", "source": {"type": "base64", "media_type": mime, "data": base64::engine::general_purpose::STANDARD.encode(data)}},
                     {"type": "text", "text": format!("The {what} to check: the picture above{words}")},
@@ -101,7 +126,14 @@ impl App {
         }
         match reason {
             Some(r) => {
-                let excerpt = if text.is_empty() { format!("(picture {})", &hex::encode(<sha2::Sha256 as sha2::Digest>::digest(data))[..12]) } else { text.to_string() };
+                let excerpt = if text.is_empty() {
+                    format!(
+                        "(picture {})",
+                        &hex::encode(<sha2::Sha256 as sha2::Digest>::digest(data))[..12]
+                    )
+                } else {
+                    text.to_string()
+                };
                 self.mod_log(what, author, &r, &excerpt).await;
                 Err(r)
             }
@@ -109,7 +141,13 @@ impl App {
         }
     }
 
-    async fn moderate_ask(&self, what: &str, content: serde_json::Value, author: Option<&str>, image: bool) -> Option<String> {
+    async fn moderate_ask(
+        &self,
+        what: &str,
+        content: serde_json::Value,
+        author: Option<&str>,
+        image: bool,
+    ) -> Option<String> {
         let llm = self.llm.as_ref()?;
         let system = format!("{RULES}\n\nYou are Parley's moderator. Decide whether the {what} may be published. \
             Answer with ok (true or false) and a reason of at most 15 words that the author can act on.");
@@ -119,17 +157,30 @@ impl App {
         let (resp, usage) = match llm.create(&self.db, body, 0.0).await {
             Ok(x) => x,
             Err(e) if e.is_budget() => {
-                return (image || self.public).then(|| "today's moderation budget is spent; try again tomorrow".to_string());
+                return (image || self.public)
+                    .then(|| "today's moderation budget is spent; try again tomorrow".to_string());
             }
-            Err(_) => return image.then(|| "the picture check failed (APIError); try again later".to_string()),
+            Err(_) => {
+                return image
+                    .then(|| "the picture check failed (APIError); try again later".to_string())
+            }
         };
-        llm.record(&self.db, "moderation", &usage, author, true, 0, what).await;
+        llm.record(&self.db, "moderation", &usage, author, true, 0, what)
+            .await;
         if resp["stop_reason"] == "refusal" {
             return Some("refused by the safety check".into());
         }
         match serde_json::from_str::<serde_json::Value>(&text_of(&resp)) {
             Ok(v) if v["ok"] == true => None,
-            Ok(v) => Some(v["reason"].as_str().filter(|s| !s.is_empty()).unwrap_or("against Parley's rules").chars().take(200).collect()),
+            Ok(v) => Some(
+                v["reason"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("against Parley's rules")
+                    .chars()
+                    .take(200)
+                    .collect(),
+            ),
             Err(_) => image.then(|| "the check gave no clear answer, so it is refused".to_string()),
         }
     }

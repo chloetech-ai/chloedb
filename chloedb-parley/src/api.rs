@@ -34,7 +34,15 @@ pub struct Server {
 
 impl Server {
     pub fn new(app: Arc<App>) -> Server {
-        Server { app, register_token: None, admin_key: None, per_minute: 0, behind_proxy: false, ui_dir: None, hits: Mutex::new(HashMap::new()) }
+        Server {
+            app,
+            register_token: None,
+            admin_key: None,
+            per_minute: 0,
+            behind_proxy: false,
+            ui_dir: None,
+            hits: Mutex::new(HashMap::new()),
+        }
     }
 
     fn throttle_ok(&self, who: &str) -> bool {
@@ -74,7 +82,10 @@ impl Req {
         self.q(k).unwrap_or(d)
     }
     pub fn lim(&self, k: &str, d: usize, top: usize) -> usize {
-        self.q(k).and_then(|v| v.parse::<i64>().ok()).map(|n| n.clamp(1, top as i64) as usize).unwrap_or(d)
+        self.q(k)
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|n| n.clamp(1, top as i64) as usize)
+            .unwrap_or(d)
     }
     pub fn b(&self, k: &str) -> String {
         match &self.body[k] {
@@ -87,7 +98,10 @@ impl Req {
         Some(self.b(k)).filter(|s| !s.is_empty())
     }
     pub fn header(&self, k: &str) -> &str {
-        self.headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("")
+        self.headers
+            .get(k)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
     }
 }
 
@@ -95,21 +109,41 @@ pub fn router(server: Arc<Server>) -> Router {
     Router::new().fallback(handle).with_state(server)
 }
 
-async fn handle(State(s): State<Arc<Server>>, ConnectInfo(addr): ConnectInfo<SocketAddr>, method: Method, uri: Uri, headers: HeaderMap, body: Bytes) -> Response {
+async fn handle(
+    State(s): State<Arc<Server>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let path = uri.path().to_string();
-    let qs: HashMap<String, String> = url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()).into_owned().collect();
+    let qs: HashMap<String, String> =
+        url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes())
+            .into_owned()
+            .collect();
     if method == Method::GET && (path == "/" || path == "/index.html") {
-        let page = s.ui_dir.as_ref().and_then(|d| std::fs::read_to_string(d.join("index.html")).ok()).unwrap_or_else(|| INDEX.to_string());
+        let page = s
+            .ui_dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join("index.html")).ok())
+            .unwrap_or_else(|| INDEX.to_string());
         return bytes(200, page.into_bytes(), "text/html; charset=utf-8", false);
     }
     if method == Method::GET && (path == "/healthz" || path == "/readyz") {
         return json_out(200, &json!({"ok": true}));
     }
     let client = if s.behind_proxy {
-        headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()).and_then(|v| v.split(',').next()).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+        headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
     } else {
         None
-    }.unwrap_or_else(|| addr.ip().to_string());
+    }
+    .unwrap_or_else(|| addr.ip().to_string());
     if !s.throttle_ok(&client) {
         return json_out(429, &json!({"error": "too many requests: slow down"}));
     }
@@ -125,16 +159,29 @@ async fn handle(State(s): State<Arc<Server>>, ConnectInfo(addr): ConnectInfo<Soc
             Err(_) => return json_out(400, &json!({"error": "the body is not JSON"})),
         }
     };
-    let req = Req { method: method.clone(), path: path.clone(), qs, headers, body, client };
+    let req = Req {
+        method: method.clone(),
+        path: path.clone(),
+        qs,
+        headers,
+        body,
+        client,
+    };
     let trace = Arc::new(Mutex::new(Vec::new()));
     let t0 = Instant::now();
-    let out = TRACE.scope(trace.clone(), async { crate::routes::dispatch(&s, &req).await }).await;
+    let out = TRACE
+        .scope(trace.clone(), async {
+            crate::routes::dispatch(&s, &req).await
+        })
+        .await;
     match out {
         Ok(Out::Json(status, mut v)) => {
             if v.is_object() && (method == Method::GET || path == "/api/ask") {
-                v["queries"] = Value::Array(trace.lock().unwrap_or_else(|e| e.into_inner()).clone());
+                v["queries"] =
+                    Value::Array(trace.lock().unwrap_or_else(|e| e.into_inner()).clone());
                 if v.get("took_ms").is_none() {
-                    v["took_ms"] = json!(crate::util::round(t0.elapsed().as_secs_f64() * 1000.0, 1));
+                    v["took_ms"] =
+                        json!(crate::util::round(t0.elapsed().as_secs_f64() * 1000.0, 1));
                 }
             }
             json_out(status, &v)
@@ -158,21 +205,39 @@ pub fn created(v: Value) -> Result<Out> {
 }
 
 pub fn json_out(status: u16, v: &Value) -> Response {
-    bytes(status, serde_json::to_vec(v).unwrap_or_default(), "application/json; charset=utf-8", false)
+    bytes(
+        status,
+        serde_json::to_vec(v).unwrap_or_default(),
+        "application/json; charset=utf-8",
+        false,
+    )
 }
 
 pub fn bytes(status: u16, data: Vec<u8>, ctype: &str, cache: bool) -> Response {
     let mut r = Response::new(Body::from(data));
     *r.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
     let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(ctype).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(ctype)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     if ctype.starts_with("text/html") {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     if cache {
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'none'; sandbox"));
+        h.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; sandbox"),
+        );
     }
     r
 }
@@ -181,7 +246,11 @@ impl Server {
     /// The agent whose API key came with the request.
     pub async fn agent(&self, r: &Req) -> Result<String> {
         let auth = r.header("authorization");
-        let key = if auth.to_lowercase().starts_with("bearer ") { auth[7..].trim() } else { "" };
+        let key = if auth.to_lowercase().starts_with("bearer ") {
+            auth[7..].trim()
+        } else {
+            ""
+        };
         self.app.authenticate(key).await
     }
 
@@ -200,7 +269,9 @@ impl Server {
     }
 
     pub fn admin(&self, r: &Req) -> Result<()> {
-        let Some(k) = &self.admin_key else { return Ok(()) };
+        let Some(k) = &self.admin_key else {
+            return Ok(());
+        };
         let given = r.header("x-parley-admin");
         if k.is_empty() || !const_eq(given.as_bytes(), k.as_bytes()) {
             return err(403, "starting and stopping experiments needs the admin key");
@@ -222,14 +293,26 @@ impl App {
         if let Some(a) = self.keys.lock().unwrap_or_else(|e| e.into_inner()).get(&h) {
             return Ok(a.clone());
         }
-        let row = self.db.one("auth", "SELECT id, status FROM agents WHERE key_hash = :h LIMIT 1", json!({"h": h})).await?;
-        let Some(row) = row else { return err(401, "unknown API key") };
+        let row = self
+            .db
+            .one(
+                "auth",
+                "SELECT id, status FROM agents WHERE key_hash = :h LIMIT 1",
+                json!({"h": h}),
+            )
+            .await?;
+        let Some(row) = row else {
+            return err(401, "unknown API key");
+        };
         use crate::db::RowExt;
         if row.s("status") == "banned" {
             return err(403, "this agent is banned");
         }
         let id = row.s("id");
-        self.keys.lock().unwrap_or_else(|e| e.into_inner()).insert(h, id.clone());
+        self.keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(h, id.clone());
         Ok(id)
     }
 }

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::app::{post_cols, post_out, posts_out, public_agent, without_emb, App, AGENT_COLS};
 use crate::db::{Row, RowExt};
 use crate::schema::POST_KINDS;
-use crate::util::{err, epoch_str, iso, now, round, slug, Result};
+use crate::util::{epoch_str, err, iso, now, round, slug, Result};
 
 impl App {
     pub async fn agent(&self, handle: &str) -> Result<Value> {
@@ -22,13 +22,28 @@ impl App {
         let a = self.agent(handle).await?;
         let id = a["id"].as_str().unwrap_or("").to_string();
         let posts = self.db.q("profile", &format!("SELECT {} FROM posts WHERE author = :a AND mod = 'ok' ORDER BY ts DESC LIMIT {limit}", post_cols()), json!({"a": id})).await?;
-        let comms = self.db.q("profile:communities", "SELECT community FROM members WHERE agent = :a LIMIT 50", json!({"a": id})).await?;
+        let comms = self
+            .db
+            .q(
+                "profile:communities",
+                "SELECT community FROM members WHERE agent = :a LIMIT 50",
+                json!({"a": id}),
+            )
+            .await?;
         let mut cs: Vec<String> = comms.iter().map(|r| r.s("community")).collect();
         cs.sort();
         let mut out = json!({"agent": a, "posts": posts_out(&posts), "communities": cs});
         if let Some(v) = viewer {
-            out["you_follow"] = json!(self.db.get("follows", &format!("{v}>{id}")).await?.is_some());
-            out["follows_you"] = json!(self.db.get("follows", &format!("{id}>{v}")).await?.is_some());
+            out["you_follow"] = json!(self
+                .db
+                .get("follows", &format!("{v}>{id}"))
+                .await?
+                .is_some());
+            out["follows_you"] = json!(self
+                .db
+                .get("follows", &format!("{id}>{v}"))
+                .await?
+                .is_some());
         }
         Ok(out)
     }
@@ -49,7 +64,17 @@ impl App {
 
     pub async fn get_post_row(&self, pid: &str, hidden_ok: bool) -> Result<Row> {
         let vision = if self.db.vision { ", caption" } else { "" };
-        let row = self.db.one("get_post", &format!("SELECT {}, mod{vision} FROM posts WHERE id = :id LIMIT 1", post_cols()), json!({"id": pid})).await?;
+        let row = self
+            .db
+            .one(
+                "get_post",
+                &format!(
+                    "SELECT {}, mod{vision} FROM posts WHERE id = :id LIMIT 1",
+                    post_cols()
+                ),
+                json!({"id": pid}),
+            )
+            .await?;
         match row {
             Some(r) if hidden_ok || r.s("mod") == "ok" => Ok(r),
             _ => err(404, format!("no post {pid}")),
@@ -63,12 +88,29 @@ impl App {
     /// Posts by id, in the order asked, hidden ones left out.
     pub async fn posts_by_ids(&self, ids: &[String]) -> Result<Vec<Value>> {
         let mut seen = std::collections::HashSet::new();
-        let ids: Vec<String> = ids.iter().filter(|x| !x.is_empty() && seen.insert((*x).clone())).take(200).cloned().collect();
+        let ids: Vec<String> = ids
+            .iter()
+            .filter(|x| !x.is_empty() && seen.insert((*x).clone()))
+            .take(200)
+            .cloned()
+            .collect();
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = self.db.q("posts_by_ids", &format!("SELECT {} FROM posts WHERE id IN (:ids) AND mod = 'ok' LIMIT {}", post_cols(), ids.len()), json!({"ids": ids})).await?;
-        let by: std::collections::HashMap<String, Value> = rows.iter().map(|r| (r.s("id"), post_out(r))).collect();
+        let rows = self
+            .db
+            .q(
+                "posts_by_ids",
+                &format!(
+                    "SELECT {} FROM posts WHERE id IN (:ids) AND mod = 'ok' LIMIT {}",
+                    post_cols(),
+                    ids.len()
+                ),
+                json!({"ids": ids}),
+            )
+            .await?;
+        let by: std::collections::HashMap<String, Value> =
+            rows.iter().map(|r| (r.s("id"), post_out(r))).collect();
         Ok(ids.iter().filter_map(|x| by.get(x).cloned()).collect())
     }
 
@@ -92,7 +134,8 @@ impl App {
     /// the root, found by walking the remixes edge table.
     pub async fn remixes(&self, pid: &str) -> Result<Value> {
         let mut root = self.get_post(pid).await?;
-        let mut seen = std::collections::HashSet::from([root["id"].as_str().unwrap_or("").to_string()]);
+        let mut seen =
+            std::collections::HashSet::from([root["id"].as_str().unwrap_or("").to_string()]);
         while let Some(up) = root["remix_of"].as_str().map(str::to_string) {
             if seen.contains(&up) {
                 break;
@@ -114,14 +157,36 @@ impl App {
                 if frontier.is_empty() {
                     break;
                 }
-                let kids = self.db.q("remixes:hop", "SELECT src FROM remixes WHERE dst IN (:f) LIMIT 200", json!({"f": frontier})).await?;
+                let kids = self
+                    .db
+                    .q(
+                        "remixes:hop",
+                        "SELECT src FROM remixes WHERE dst IN (:f) LIMIT 200",
+                        json!({"f": frontier}),
+                    )
+                    .await?;
                 frontier = kids.iter().map(|k| k.s("src")).collect();
                 if !frontier.is_empty() {
-                    rows.extend(self.db.q("remixes:rows", &format!("SELECT {} FROM posts WHERE id IN (:ids) AND mod = 'ok'", post_cols()), json!({"ids": frontier})).await?);
+                    rows.extend(
+                        self.db
+                            .q(
+                                "remixes:rows",
+                                &format!(
+                                    "SELECT {} FROM posts WHERE id IN (:ids) AND mod = 'ok'",
+                                    post_cols()
+                                ),
+                                json!({"ids": frontier}),
+                            )
+                            .await?,
+                    );
                 }
             }
         }
-        let remixes: Vec<Value> = rows.iter().filter(|r| r.s("id") != rid).map(post_out).collect();
+        let remixes: Vec<Value> = rows
+            .iter()
+            .filter(|r| r.s("id") != rid)
+            .map(post_out)
+            .collect();
         Ok(json!({"root": root, "remixes": remixes}))
     }
 
@@ -131,21 +196,48 @@ impl App {
 
     pub async fn community_row(&self, name: &str) -> Result<Value> {
         let cid = slug(name);
-        let row = if cid.is_empty() { None } else { self.db.get("communities", &cid).await? };
+        let row = if cid.is_empty() {
+            None
+        } else {
+            self.db.get("communities", &cid).await?
+        };
         match row {
             Some(r) => Ok(without_emb(r)),
-            None => err(404, format!("no community c/{}: create_community makes one", if cid.is_empty() { name } else { &cid })),
+            None => err(
+                404,
+                format!(
+                    "no community c/{}: create_community makes one",
+                    if cid.is_empty() { name } else { &cid }
+                ),
+            ),
         }
     }
 
-    pub async fn community(&self, name: &str, sort: &str, limit: usize, viewer: Option<&str>) -> Result<Value> {
+    pub async fn community(
+        &self,
+        name: &str,
+        sort: &str,
+        limit: usize,
+        viewer: Option<&str>,
+    ) -> Result<Value> {
         let c = self.community_row(name).await?;
         let cid = c["id"].as_str().unwrap_or("").to_string();
         let posts = self.ranked(sort, limit, Some(&cid), None, None).await?;
-        let members = self.db.q("community:members", "SELECT agent FROM members WHERE community = :c ORDER BY ts DESC LIMIT 30", json!({"c": cid})).await?;
+        let members = self
+            .db
+            .q(
+                "community:members",
+                "SELECT agent FROM members WHERE community = :c ORDER BY ts DESC LIMIT 30",
+                json!({"c": cid}),
+            )
+            .await?;
         let mut out = json!({"community": c, "posts": posts, "members": members.iter().map(|r| r.s("agent")).collect::<Vec<_>>()});
         if let Some(v) = viewer {
-            out["you_joined"] = json!(self.db.get("members", &format!("{v}>{cid}")).await?.is_some());
+            out["you_joined"] = json!(self
+                .db
+                .get("members", &format!("{v}>{cid}"))
+                .await?
+                .is_some());
         }
         Ok(out)
     }
@@ -156,7 +248,12 @@ impl App {
             json!({"q": q, "v": {"embed": q, "field": "emb", "table": "communities"}})).await
     }
 
-    pub async fn collabs(&self, status: Option<&str>, limit: usize, agent: Option<&str>) -> Result<Vec<Row>> {
+    pub async fn collabs(
+        &self,
+        status: Option<&str>,
+        limit: usize,
+        agent: Option<&str>,
+    ) -> Result<Vec<Row>> {
         let mut wh = Vec::new();
         let mut params = json!({});
         if let Some(st) = status.filter(|s| *s == "open" || *s == "done") {
@@ -164,14 +261,28 @@ impl App {
             params["st"] = json!(st);
         }
         if let Some(a) = agent {
-            let ids: Vec<String> = self.db.q("collabs:mine", "SELECT collab FROM collab_members WHERE agent = :a LIMIT 200", json!({"a": a})).await?.iter().map(|r| r.s("collab")).collect();
+            let ids: Vec<String> = self
+                .db
+                .q(
+                    "collabs:mine",
+                    "SELECT collab FROM collab_members WHERE agent = :a LIMIT 200",
+                    json!({"a": a}),
+                )
+                .await?
+                .iter()
+                .map(|r| r.s("collab"))
+                .collect();
             if ids.is_empty() {
                 return Ok(Vec::new());
             }
             wh.push("id IN (:ids)");
             params["ids"] = json!(ids);
         }
-        let w = if wh.is_empty() { String::new() } else { format!("WHERE {}", wh.join(" AND ")) };
+        let w = if wh.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", wh.join(" AND "))
+        };
         self.db.q("collabs", &format!("SELECT id, title, goal, kind, community, created_by, status, max_parts, n_members, n_parts, summary, created FROM collabs {w} ORDER BY created DESC LIMIT {limit}"), params).await
     }
 
@@ -186,21 +297,57 @@ impl App {
         let cb = self.collab_row(cid).await?;
         let id = cb["id"].as_str().unwrap_or("").to_string();
         let parts = self.db.q("collab:parts", &format!("SELECT {} FROM posts WHERE collab = :c AND mod = 'ok' ORDER BY part, ts LIMIT 100", post_cols()), json!({"c": id})).await?;
-        let members = self.db.q("collab:members", "SELECT agent FROM collab_members WHERE collab = :c ORDER BY ts LIMIT 50", json!({"c": id})).await?;
-        Ok(json!({"collab": cb, "members": members.iter().map(|r| r.s("agent")).collect::<Vec<_>>(), "parts": posts_out(&parts)}))
+        let members = self
+            .db
+            .q(
+                "collab:members",
+                "SELECT agent FROM collab_members WHERE collab = :c ORDER BY ts LIMIT 50",
+                json!({"c": id}),
+            )
+            .await?;
+        Ok(
+            json!({"collab": cb, "members": members.iter().map(|r| r.s("agent")).collect::<Vec<_>>(), "parts": posts_out(&parts)}),
+        )
     }
 
     pub async fn following(&self, handle: &str) -> Result<Vec<String>> {
-        Ok(self.db.q("following", "SELECT dst FROM follows WHERE src = :a LIMIT 5000", json!({"a": handle})).await?.iter().map(|r| r.s("dst")).collect())
+        Ok(self
+            .db
+            .q(
+                "following",
+                "SELECT dst FROM follows WHERE src = :a LIMIT 5000",
+                json!({"a": handle}),
+            )
+            .await?
+            .iter()
+            .map(|r| r.s("dst"))
+            .collect())
     }
 
     pub async fn followers(&self, handle: &str) -> Result<Vec<String>> {
-        Ok(self.db.q("followers", "SELECT src FROM follows WHERE dst = :a LIMIT 5000", json!({"a": handle})).await?.iter().map(|r| r.s("src")).collect())
+        Ok(self
+            .db
+            .q(
+                "followers",
+                "SELECT src FROM follows WHERE dst = :a LIMIT 5000",
+                json!({"a": handle}),
+            )
+            .await?
+            .iter()
+            .map(|r| r.s("src"))
+            .collect())
     }
 
     /// A page of posts: 'hot' (reactions and replies, fading over half a
     /// day), 'new', or 'top' (the week's most reacted and answered).
-    pub async fn ranked(&self, sort: &str, limit: usize, community: Option<&str>, before: Option<&str>, kind: Option<&str>) -> Result<Vec<Value>> {
+    pub async fn ranked(
+        &self,
+        sort: &str,
+        limit: usize,
+        community: Option<&str>,
+        before: Option<&str>,
+        kind: Option<&str>,
+    ) -> Result<Vec<Value>> {
         let mut wh = vec!["mod = 'ok'".to_string()];
         let mut params = json!({});
         if let Some(c) = community.filter(|c| !c.is_empty()) {
@@ -220,16 +367,40 @@ impl App {
             order = "ts DESC";
         } else {
             wh.push("ts >= :since".into());
-            params["since"] = json!(iso(now() - if sort == "top" { 7.0 * 86400.0 } else { 3.0 * 86400.0 }));
-            order = if sort == "top" { "n_reactions + 2 * n_comments DESC, ts DESC" }
-                    else { "0.65 * tmm(ln(1 + n_reactions + 2 * n_comments), lo => 0, hi => 4) + 0.35 * decay(ts, now(), 43200) DESC" };
+            params["since"] = json!(iso(now()
+                - if sort == "top" {
+                    7.0 * 86400.0
+                } else {
+                    3.0 * 86400.0
+                }));
+            order = if sort == "top" {
+                "n_reactions + 2 * n_comments DESC, ts DESC"
+            } else {
+                "0.65 * tmm(ln(1 + n_reactions + 2 * n_comments), lo => 0, hi => 4) + 0.35 * decay(ts, now(), 43200) DESC"
+            };
         }
-        let rows = self.db.q(&format!("ranked:{sort}"), &format!("SELECT {} FROM posts WHERE {} ORDER BY {order} LIMIT {limit}", post_cols(), wh.join(" AND ")), params).await?;
+        let rows = self
+            .db
+            .q(
+                &format!("ranked:{sort}"),
+                &format!(
+                    "SELECT {} FROM posts WHERE {} ORDER BY {order} LIMIT {limit}",
+                    post_cols(),
+                    wh.join(" AND ")
+                ),
+                params,
+            )
+            .await?;
         Ok(posts_out(&rows))
     }
 
     /// Posts of the agents I follow (and mine), newest first.
-    pub async fn feed_following(&self, me: &str, limit: usize, before: Option<&str>) -> Result<Vec<Value>> {
+    pub async fn feed_following(
+        &self,
+        me: &str,
+        limit: usize,
+        before: Option<&str>,
+    ) -> Result<Vec<Value>> {
         let mut authors = self.following(me).await?;
         authors.push(me.to_string());
         let mut wh = "author IN (:authors) AND mod = 'ok'".to_string();
@@ -238,11 +409,26 @@ impl App {
             wh += " AND id < :before";
             params["before"] = json!(b);
         }
-        let rows = self.db.q("feed_following", &format!("SELECT {} FROM posts WHERE {wh} ORDER BY ts DESC LIMIT {limit}", post_cols()), params).await?;
+        let rows = self
+            .db
+            .q(
+                "feed_following",
+                &format!(
+                    "SELECT {} FROM posts WHERE {wh} ORDER BY ts DESC LIMIT {limit}",
+                    post_cols()
+                ),
+                params,
+            )
+            .await?;
         Ok(posts_out(&rows))
     }
 
-    pub async fn notifications(&self, me: &str, limit: usize, since: Option<&str>) -> Result<Vec<Row>> {
+    pub async fn notifications(
+        &self,
+        me: &str,
+        limit: usize,
+        since: Option<&str>,
+    ) -> Result<Vec<Row>> {
         let mut wh = "agent = :me".to_string();
         let mut params = json!({"me": me});
         if let Some(s) = since.filter(|s| !s.is_empty()) {
@@ -264,16 +450,38 @@ impl App {
 
     pub async fn stats(&self) -> Result<Value> {
         let mut counts = serde_json::Map::new();
-        for t in ["agents", "communities", "posts", "comments", "reactions", "follows", "collabs", "remixes", "pictures", "web_pages", "events"] {
-            let v = match self.db.scalar(&format!("count:{t}"), &format!("SELECT COUNT(*) FROM {t}"), json!({})).await {
+        for t in [
+            "agents",
+            "communities",
+            "posts",
+            "comments",
+            "reactions",
+            "follows",
+            "collabs",
+            "remixes",
+            "pictures",
+            "web_pages",
+            "events",
+        ] {
+            let v = match self
+                .db
+                .scalar(
+                    &format!("count:{t}"),
+                    &format!("SELECT COUNT(*) FROM {t}"),
+                    json!({}),
+                )
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => json!(format!("error: {e}")),
             };
             counts.insert(t.into(), v);
         }
-        Ok(json!({"store": {"target": self.db.url, "role": self.db.role, "graph_in_db": self.db.graph_in_db(), "vision": self.db.vision,
+        Ok(
+            json!({"store": {"target": self.db.url, "role": self.db.role, "graph_in_db": self.db.graph_in_db(), "vision": self.db.vision,
                              "recommender": self.db.recommender.load(std::sync::atomic::Ordering::Relaxed), "backend": "rust"},
-                  "counts": counts, "latency": {}}))
+                  "counts": counts, "latency": {}}),
+        )
     }
 
     /// The model's spending: today by kind, and the last seven days.
@@ -286,11 +494,20 @@ impl App {
         for i in (0..7).rev() {
             let a = iso(t0 - f64::from(i) * 86400.0);
             let b = iso(t0 - f64::from(i - 1) * 86400.0);
-            let v = self.db.scalar("spend:day", "SELECT SUM(cost) FROM turns WHERE ts >= :a AND ts < :b", json!({"a": a, "b": b})).await?;
+            let v = self
+                .db
+                .scalar(
+                    "spend:day",
+                    "SELECT SUM(cost) FROM turns WHERE ts >= :a AND ts < :b",
+                    json!({"a": a, "b": b}),
+                )
+                .await?;
             days.push(json!({"day": &a[..10], "cost": round(v.as_f64().unwrap_or(0.0), 4)}));
         }
         let by_kind: serde_json::Map<String, Value> = rows.iter().map(|r| (r.s("kind"), json!({"cost": round(r.f("cost"), 4), "n": r.get("n").cloned().unwrap_or(json!(0))}))).collect();
-        Ok(json!({"day_starts": day, "spent_today": round(total, 4), "cap": self.daily_usd, "model": self.model, "by_kind": by_kind, "last_7_days": days}))
+        Ok(
+            json!({"day_starts": day, "spent_today": round(total, 4), "cap": self.daily_usd, "model": self.model, "by_kind": by_kind, "last_7_days": days}),
+        )
     }
 }
 

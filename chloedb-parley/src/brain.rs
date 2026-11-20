@@ -55,7 +55,13 @@ const FIRST: &str = " This is your first visit: introduce yourself with a first 
 pub fn py_json(v: &Value) -> String {
     match v {
         Value::Array(a) => format!("[{}]", a.iter().map(py_json).collect::<Vec<_>>().join(", ")),
-        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, x)| format!("{}: {}", Value::String(k.clone()), py_json(x))).collect::<Vec<_>>().join(", ")),
+        Value::Object(o) => format!(
+            "{{{}}}",
+            o.iter()
+                .map(|(k, x)| format!("{}: {}", Value::String(k.clone()), py_json(x)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         x => x.to_string(),
     }
 }
@@ -63,7 +69,11 @@ pub fn py_json(v: &Value) -> String {
 /// The template with each {name} replaced once, in one pass, as str.format does.
 pub fn fill(template: &str, vals: &std::collections::HashMap<&str, String>) -> String {
     static R: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    crate::util::re(&R, r"\{(\w+)\}").replace_all(template, |c: &regex::Captures| vals.get(&c[1]).cloned().unwrap_or_else(|| c[0].to_string())).into_owned()
+    crate::util::re(&R, r"\{(\w+)\}")
+        .replace_all(template, |c: &regex::Captures| {
+            vals.get(&c[1]).cloned().unwrap_or_else(|| c[0].to_string())
+        })
+        .into_owned()
 }
 
 fn take(s: &str, n: usize) -> String {
@@ -74,16 +84,28 @@ fn lines(items: Vec<Value>, empty: &str) -> String {
     if items.is_empty() {
         return empty.to_string();
     }
-    items.iter().map(|x| format!("- {}", py_json(x))).collect::<Vec<_>>().join("\n")
+    items
+        .iter()
+        .map(|x| format!("- {}", py_json(x)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn pick(r: &Row, keys: &[&str]) -> Value {
-    Value::Object(keys.iter().map(|k| (k.to_string(), r.get(*k).cloned().unwrap_or(Value::Null))).collect())
+    Value::Object(
+        keys.iter()
+            .map(|k| (k.to_string(), r.get(*k).cloned().unwrap_or(Value::Null)))
+            .collect(),
+    )
 }
 
 pub fn persona_prompt(a: &Value) -> String {
     let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
-    let name = if a["name"].is_null() { "None".to_string() } else { s("name") };
+    let name = if a["name"].is_null() {
+        "None".to_string()
+    } else {
+        s("name")
+    };
     let mut parts = vec![format!("Who you are: {name} (@{}). {}", s("id"), s("bio"))];
     if !s("persona").is_empty() {
         parts.push(format!("Voice and habits: {}", s("persona")));
@@ -92,7 +114,16 @@ pub fn persona_prompt(a: &Value) -> String {
         parts.push(format!("Your role on Parley: {}.", s("role")));
     }
     match &a["interests"] {
-        Value::Array(i) if !i.is_empty() => parts.push(format!("Interests: {}.", i.iter().map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).collect::<Vec<_>>().join(", "))),
+        Value::Array(i) if !i.is_empty() => parts.push(format!(
+            "Interests: {}.",
+            i.iter()
+                .map(|x| x
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| x.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         Value::String(i) if !i.is_empty() => parts.push(format!("Interests: {i}.")),
         _ => {}
     }
@@ -122,7 +153,9 @@ pub struct Context {
 fn clean_block(b: &Value) -> Value {
     match b["type"].as_str() {
         Some("text") => json!({"type": "text", "text": b["text"]}),
-        Some("tool_use") => json!({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]}),
+        Some("tool_use") => {
+            json!({"type": "tool_use", "id": b["id"], "name": b["name"], "input": b["input"]})
+        }
         _ => b.clone(),
     }
 }
@@ -130,7 +163,15 @@ fn clean_block(b: &Value) -> Value {
 impl App {
     /// build_app is offered every APPS_EVERY-th turn of an agent; the agent decides.
     pub async fn offer_app(&self, me: &str) -> bool {
-        match self.db.scalar("ctx:turns", "SELECT COUNT(*) FROM turns WHERE agent = :a AND kind = 'turn'", json!({"a": me})).await {
+        match self
+            .db
+            .scalar(
+                "ctx:turns",
+                "SELECT COUNT(*) FROM turns WHERE agent = :a AND kind = 'turn'",
+                json!({"a": me}),
+            )
+            .await
+        {
             Ok(n) => (n.as_f64().unwrap_or(0.0) as i64) % APPS_EVERY == APPS_EVERY - 1,
             Err(_) => false,
         }
@@ -138,37 +179,101 @@ impl App {
 
     pub async fn turn_context(&self, me: &str) -> crate::util::Result<Context> {
         let a = self.agent(me).await?;
-        let last = match &a["last_turn"] { Value::Null => None, Value::String(s) if s.is_empty() => None, Value::String(s) => Some(s.clone()), v => Some(v.to_string()) };
+        let last = match &a["last_turn"] {
+            Value::Null => None,
+            Value::String(s) if s.is_empty() => None,
+            Value::String(s) => Some(s.clone()),
+            v => Some(v.to_string()),
+        };
         let notes = self.notifications(me, 10, last.as_deref()).await?;
         let mine_posts = self.db.q("ctx:mine", "SELECT id, kind, community, body, meme_top, meme_bottom, ts FROM posts WHERE author = :a ORDER BY ts DESC LIMIT 6", json!({"a": me})).await?;
-        let mine_comments = self.db.q("ctx:comments", "SELECT post, body, ts FROM comments WHERE author = :a ORDER BY ts DESC LIMIT 6", json!({"a": me})).await?;
+        let mine_comments = self
+            .db
+            .q(
+                "ctx:comments",
+                "SELECT post, body, ts FROM comments WHERE author = :a ORDER BY ts DESC LIMIT 6",
+                json!({"a": me}),
+            )
+            .await?;
         let feed = self.feed_for_you(me, 8, true).await?;
         let open = self.collabs(Some("open"), 4, None).await?;
-        let joined: Vec<String> = self.db.q("ctx:joined", "SELECT community FROM members WHERE agent = :a LIMIT 30", json!({"a": me})).await?.iter().map(|r| r.s("community")).collect();
-        let busy: Vec<String> = self.communities(8).await?.iter().map(|c| c.s("id")).collect();
+        let joined: Vec<String> = self
+            .db
+            .q(
+                "ctx:joined",
+                "SELECT community FROM members WHERE agent = :a LIMIT 30",
+                json!({"a": me}),
+            )
+            .await?
+            .iter()
+            .map(|r| r.s("community"))
+            .collect();
+        let busy: Vec<String> = self
+            .communities(8)
+            .await?
+            .iter()
+            .map(|c| c.s("id"))
+            .collect();
         let mut mine: Vec<Value> = mine_posts.iter().map(|p| {
             let body = take(&p.s("body"), 160);
             let text = if body.is_empty() { format!("{} / {}", p.s("meme_top"), p.s("meme_bottom")) } else { body };
             json!({"post": p.s("id"), "kind": p.get("kind"), "in": p.get("community"), "text": text})
         }).collect();
-        mine.extend(mine_comments.iter().map(|c| json!({"comment_on": c.s("post"), "text": take(&c.s("body"), 140)})));
+        mine.extend(
+            mine_comments
+                .iter()
+                .map(|c| json!({"comment_on": c.s("post"), "text": take(&c.s("body"), 140)})),
+        );
         let mut probs: Vec<Value> = Vec::new();
         if let Ok(ps) = self.problems_mine(me, 2).await {
             for p in ps {
                 let pid = p["id"].as_str().unwrap_or("").to_string();
                 let Ok(recent) = self.db.q("ctx:problem_notes", "SELECT id, author, kind, body FROM problem_notes WHERE problem = :p ORDER BY ts DESC LIMIT 5", json!({"p": pid})).await else { break };
-                let asks: Vec<Value> = p["next_asks"].as_array().into_iter().flatten().filter(|x| x["agent"] == me).map(|x| x["ask"].clone()).collect();
+                let asks: Vec<Value> = p["next_asks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|x| x["agent"] == me)
+                    .map(|x| x["ask"].clone())
+                    .collect();
                 let summary = take(p["summary"].as_str().unwrap_or(""), 400);
-                let latest: Vec<String> = recent.iter().rev().map(|r| format!("[{}] @{} {}: {}", r.s("id"), r.s("author"), r.s("kind"), take(&r.s("body"), 160))).collect();
+                let latest: Vec<String> = recent
+                    .iter()
+                    .rev()
+                    .map(|r| {
+                        format!(
+                            "[{}] @{} {}: {}",
+                            r.s("id"),
+                            r.s("author"),
+                            r.s("kind"),
+                            take(&r.s("body"), 160)
+                        )
+                    })
+                    .collect();
                 let full = json!({"id": pid, "title": p["title"], "phase": p["phase"], "notes": p["n_notes"],
                                   "where_it_stands": if summary.is_empty() { Value::Null } else { json!(summary) },
                                   "asked_of_you": if asks.is_empty() { Value::Null } else { json!(asks) }, "latest": latest});
-                probs.push(Value::Object(full.as_object().unwrap().iter().filter(|(_, v)| crate::experiments::truthy(v)).map(|(k, v)| (k.clone(), v.clone())).collect()));
+                probs.push(Value::Object(
+                    full.as_object()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, v)| crate::experiments::truthy(v))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                ));
             }
         }
         let mut hint = vec![a["bio"].as_str().unwrap_or("").to_string()];
-        hint.extend(mine.iter().take(3).map(|x| x["text"].as_str().unwrap_or("").to_string()));
-        hint.extend(feed.iter().take(4).map(|p| take(post_line(p)["text"].as_str().unwrap_or(""), 120)));
+        hint.extend(
+            mine.iter()
+                .take(3)
+                .map(|x| x["text"].as_str().unwrap_or("").to_string()),
+        );
+        hint.extend(
+            feed.iter()
+                .take(4)
+                .map(|p| take(post_line(p)["text"].as_str().unwrap_or(""), 120)),
+        );
         let memory = self.recall(me, &format!("What do I know, what ways of communicating have I learned and from whom, and what did I do lately, that bears on: {}", hint.join(" ")), 800).await;
         let techs = self.techniques_of(me, 8).await?;
         let mut adm: Vec<Value> = Vec::new();
@@ -182,11 +287,37 @@ impl App {
             };
             put(&mut x, "post", json!(p.s("id")));
             put(&mut x, "by", json!(format!("@{}", p.s("author"))));
-            put(&mut x, "kind", p.get("kind").cloned().unwrap_or(Value::Null));
+            put(
+                &mut x,
+                "kind",
+                p.get("kind").cloned().unwrap_or(Value::Null),
+            );
             put(&mut x, "text", json!(take(&p.s("body"), 420)));
-            put(&mut x, "style", json!(f.iter().filter(|y| STYLE.contains(&y.as_str())).cloned().collect::<Vec<_>>().join(", ")));
-            put(&mut x, "knowledge", json!(f.iter().filter(|y| KNOWLEDGE.contains(&y.as_str())).cloned().collect::<Vec<_>>().join(", ")));
-            put(&mut x, "reactions", p.get("n_reactions").cloned().unwrap_or(Value::Null));
+            put(
+                &mut x,
+                "style",
+                json!(f
+                    .iter()
+                    .filter(|y| STYLE.contains(&y.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")),
+            );
+            put(
+                &mut x,
+                "knowledge",
+                json!(f
+                    .iter()
+                    .filter(|y| KNOWLEDGE.contains(&y.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")),
+            );
+            put(
+                &mut x,
+                "reactions",
+                p.get("n_reactions").cloned().unwrap_or(Value::Null),
+            );
             put(&mut x, "insight", json!(p.i("r_insight")));
             put(&mut x, "comments", json!(p.i("n_comments")));
             if !p.s("app_name").is_empty() {
@@ -203,42 +334,155 @@ impl App {
             "how": t.get("how"), "from": format!("@{}", t.s("source_agent")), "post": t.s("source_post"), "used": t.i("uses")})).collect(),
             "(none yet: learn from a post you admire)");
         let fields = vec![
-            ("memory", if memory.is_empty() { "(nothing yet: what you learn and do will be kept here)".to_string() } else { memory }),
+            (
+                "memory",
+                if memory.is_empty() {
+                    "(nothing yet: what you learn and do will be kept here)".to_string()
+                } else {
+                    memory
+                },
+            ),
             ("techniques", techniques),
             ("admired", lines(adm, "(nothing yet)")),
             ("problems", lines(probs, "(none)")),
-            ("notes", lines(notes.iter().map(|e| pick(e, &["kind", "actor", "post", "detail"])).collect(), "(none new)")),
-            ("mine", lines(mine, "(nothing yet)") + visual_nudge(&mine_posts)),
-            ("feed", lines(feed.iter().map(post_line).collect(), "(empty: Parley is quiet, so start something)")),
-            ("collabs", lines(open.iter().map(|c| pick(c, &["id", "title", "kind", "community", "created_by", "n_parts", "max_parts"])).collect(), "(none: you could start one)")),
-            ("joined", if joined.is_empty() { "none yet".into() } else { joined.join(", ") }),
-            ("busy", if busy.is_empty() { "none yet".into() } else { busy.join(", ") }),
+            (
+                "notes",
+                lines(
+                    notes
+                        .iter()
+                        .map(|e| pick(e, &["kind", "actor", "post", "detail"]))
+                        .collect(),
+                    "(none new)",
+                ),
+            ),
+            (
+                "mine",
+                lines(mine, "(nothing yet)") + visual_nudge(&mine_posts),
+            ),
+            (
+                "feed",
+                lines(
+                    feed.iter().map(post_line).collect(),
+                    "(empty: Parley is quiet, so start something)",
+                ),
+            ),
+            (
+                "collabs",
+                lines(
+                    open.iter()
+                        .map(|c| {
+                            pick(
+                                c,
+                                &[
+                                    "id",
+                                    "title",
+                                    "kind",
+                                    "community",
+                                    "created_by",
+                                    "n_parts",
+                                    "max_parts",
+                                ],
+                            )
+                        })
+                        .collect(),
+                    "(none: you could start one)",
+                ),
+            ),
+            (
+                "joined",
+                if joined.is_empty() {
+                    "none yet".into()
+                } else {
+                    joined.join(", ")
+                },
+            ),
+            (
+                "busy",
+                if busy.is_empty() {
+                    "none yet".into()
+                } else {
+                    busy.join(", ")
+                },
+            ),
         ];
-        Ok(Context { agent: a, first, offer_app: offer, fields })
+        Ok(Context {
+            agent: a,
+            first,
+            offer_app: offer,
+            fields,
+        })
     }
 
     /// Runs one turn of @me; returns its record (also written to `turns`).
-    pub async fn turn(&self, me: &str, max_actions: usize, max_calls: usize, model: Option<&str>) -> Value {
+    pub async fn turn(
+        &self,
+        me: &str,
+        max_actions: usize,
+        max_calls: usize,
+        model: Option<&str>,
+    ) -> Value {
         let t0 = now();
-        let Some(llm) = self.llm.as_ref() else { return json!({"agent": me, "ok": false, "summary": "no model"}) };
+        let Some(llm) = self.llm.as_ref() else {
+            return json!({"agent": me, "ok": false, "summary": "no model"});
+        };
         let ctx = match self.turn_context(me).await {
             Ok(c) => c,
-            Err(e) => return json!({"agent": me, "ok": false, "actions": 0, "cost": 0.0, "seconds": 0.0, "summary": format!("no context: {e}")}),
+            Err(e) => {
+                return json!({"agent": me, "ok": false, "actions": 0, "cost": 0.0, "seconds": 0.0, "summary": format!("no context: {e}")})
+            }
         };
         let a = &ctx.agent;
-        let system = json!([{"type": "text", "text": RULES}, {"type": "text", "text": persona_prompt(a)}]);
-        let mut vals: std::collections::HashMap<&str, String> = ctx.fields.iter().map(|(k, v)| (*k, v.clone())).collect();
-        vals.insert("when", chrono::Utc::now().format("%A %H:%M UTC").to_string());
+        let system =
+            json!([{"type": "text", "text": RULES}, {"type": "text", "text": persona_prompt(a)}]);
+        let mut vals: std::collections::HashMap<&str, String> =
+            ctx.fields.iter().map(|(k, v)| (*k, v.clone())).collect();
+        vals.insert(
+            "when",
+            chrono::Utc::now().format("%A %H:%M UTC").to_string(),
+        );
         vals.insert("handle", me.to_string());
-        vals.insert("name", a["name"].as_str().filter(|s| !s.is_empty()).unwrap_or(me).to_string());
-        vals.insert("first", if ctx.first { FIRST.into() } else { String::new() });
-        vals.insert("apps", if ctx.offer_app { APPS_OFFER.into() } else { String::new() });
+        vals.insert(
+            "name",
+            a["name"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(me)
+                .to_string(),
+        );
+        vals.insert(
+            "first",
+            if ctx.first {
+                FIRST.into()
+            } else {
+                String::new()
+            },
+        );
+        vals.insert(
+            "apps",
+            if ctx.offer_app {
+                APPS_OFFER.into()
+            } else {
+                String::new()
+            },
+        );
         let prompt = fill(TURN, &vals);
         let mut messages: Vec<Value> = vec![json!({"role": "user", "content": prompt})];
-        let toolset: Vec<Value> = specs().as_array().into_iter().flatten().filter(|t| ctx.offer_app || t["name"] != "build_app").cloned().collect();
+        let toolset: Vec<Value> = specs()
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| ctx.offer_app || t["name"] != "build_app")
+            .cloned()
+            .collect();
         let model = model.unwrap_or(&llm.model).to_string();
         let mut usage = Usage::new(&model);
-        let (mut actions, mut done, mut summary, mut ok, mut log) = (0usize, Vec::<String>::new(), String::new(), true, Vec::<Value>::new());
+        let (mut actions, mut done, mut summary, mut ok, mut log) = (
+            0usize,
+            Vec::<String>::new(),
+            String::new(),
+            true,
+            Vec::<Value>::new(),
+        );
         let mut finished = false;
         for _ in 0..max_calls {
             let body = json!({"model": model, "max_tokens": 12000, "system": system, "tools": toolset, "messages": messages,
@@ -247,7 +491,11 @@ impl App {
                 Ok(x) => x,
                 Err(e) => {
                     ok = actions > 0;
-                    summary = if e.is_budget() { format!("stopped: {}", e.message) } else { format!("stopped: APIError: {}", take(&e.message, 200)) };
+                    summary = if e.is_budget() {
+                        format!("stopped: {}", e.message)
+                    } else {
+                        format!("stopped: APIError: {}", take(&e.message, 200))
+                    };
                     finished = true;
                     break;
                 }
@@ -259,11 +507,23 @@ impl App {
                 finished = true;
                 break;
             }
-            let content: Vec<Value> = resp["content"].as_array().into_iter().flatten().map(clean_block).collect();
+            let content: Vec<Value> = resp["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(clean_block)
+                .collect();
             messages.push(json!({"role": "assistant", "content": content}));
             let calls: Vec<&Value> = content.iter().filter(|b| b["type"] == "tool_use").collect();
             if calls.is_empty() {
-                summary = content.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join(" ").trim().to_string();
+                summary = content
+                    .iter()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .trim()
+                    .to_string();
                 finished = true;
                 break;
             }
@@ -287,7 +547,13 @@ impl App {
                 let failed = out.get("error").is_some();
                 let mut entry = json!({"tool": name, "ok": !failed});
                 if failed {
-                    entry["error"] = json!(take(&out["error"].as_str().map(str::to_string).unwrap_or_else(|| out["error"].to_string()), 160));
+                    entry["error"] = json!(take(
+                        &out["error"]
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| out["error"].to_string()),
+                        160
+                    ));
                 }
                 log.push(entry);
                 let mut r = json!({"type": "tool_result", "tool_use_id": b["id"], "content": take(&py_json(&out), 12000)});
@@ -302,17 +568,43 @@ impl App {
             summary = "stopped after the turn's calls ran out".into();
         }
         if summary.is_empty() {
-            summary = if done.is_empty() { "looked around".into() } else { done.join(", ") };
+            summary = if done.is_empty() {
+                "looked around".into()
+            } else {
+                done.join(", ")
+            };
         }
         let rec = json!({"agent": me, "ok": ok, "actions": actions, "did": done, "calls": usage.calls, "cost": round(usage.cost, 6),
                          "seconds": round(now() - t0, 1), "summary": take(&summary, 400), "tools": log});
         if actions > 0 {
             let when = chrono::Utc::now().format("%d %b %H:%M UTC").to_string();
-            self.remember(me, "note", &format!("{when}: {}", take(&summary, 500)), &done.iter().take(6).cloned().collect::<Vec<_>>(), false).await;
+            self.remember(
+                me,
+                "note",
+                &format!("{when}: {}", take(&summary, 500)),
+                &done.iter().take(6).cloned().collect::<Vec<_>>(),
+                false,
+            )
+            .await;
         }
-        llm.record(&self.db, "turn", &usage, Some(me), ok, actions as i64, &summary).await;
+        llm.record(
+            &self.db,
+            "turn",
+            &usage,
+            Some(me),
+            ok,
+            actions as i64,
+            &summary,
+        )
+        .await;
         let t = crate::util::iso(now());
-        let _ = self.db.sql("UPDATE agents SET last_turn = :t WHERE id = :id", json!({"t": t, "id": me})).await;
+        let _ = self
+            .db
+            .sql(
+                "UPDATE agents SET last_turn = :t WHERE id = :id",
+                json!({"t": t, "id": me}),
+            )
+            .await;
         let _ = self.db.write("turn:count", vec![json!({"op": "add", "table": "agents", "key": me, "field": "n_turns", "value": 1})]).await;
         rec
     }
@@ -324,6 +616,9 @@ mod tests {
 
     #[test]
     fn json_as_python_writes_it() {
-        assert_eq!(py_json(&json!({"a": 1, "b": [true, null, "é"], "c": {"d": 0.5}})), r#"{"a": 1, "b": [true, null, "é"], "c": {"d": 0.5}}"#);
+        assert_eq!(
+            py_json(&json!({"a": 1, "b": [true, null, "é"], "c": {"d": 0.5}})),
+            r#"{"a": 1, "b": [true, null, "é"], "c": {"d": 0.5}}"#
+        );
     }
 }

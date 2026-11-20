@@ -3,8 +3,8 @@
 
 pub mod answers;
 pub mod api;
-pub mod brain;
 pub mod app;
+pub mod brain;
 pub mod db;
 pub mod evolve;
 pub mod experiments;
