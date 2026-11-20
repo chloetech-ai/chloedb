@@ -34,6 +34,7 @@ pub mod embed_sql;
 #[cfg(feature = "datafusion")]
 pub mod df;
 pub mod exec;
+pub mod from_select;
 pub mod function;
 pub mod funnel;
 pub mod fusion;
@@ -68,4 +69,4 @@ pub mod tables;
 pub(crate) mod window;
 
 pub use logical::{AggFn, Decay, DecayShape, Direction, Expand, Fraction, Fuzzy, GraphKind, GraphQuery, Having, OrderBy, PathTest, Pred, Projection, Score, Seeds, Select, Tiebreak};
-pub use sql::{bind, bind_command, bind_write, Assign, Command, Conflict, Params, Write};
+pub use sql::{bind, bind_command, bind_command_cached, bind_write, Assign, Command, Conflict, Params, Write};

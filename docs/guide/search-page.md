@@ -176,7 +176,7 @@ p01 Waterproof hiking jacket 129.0
 p04 Fleece jacket 69.0
 ```
 
-Typos are forgiven only where a query asks for it: `db.search(text)` searches the words as written (the search box on a table's page in the command center asks for `fuzzy => 'auto'` itself), so a search box should send its text through a query with `fuzzy => 'auto'`, as `shop.search` does. Every word of the search must be there; for a box where any word will do, rank with `bm25(body, :q, fuzzy => 'auto')` and leave the `MATCH` out (a ranked `bm25` returns the rows that have any of its words).
+Typos are forgiven where a query asks for it: `db.search(text)` asks for it itself (`typos=False` turns it off), as the search box on a table's page in the command center does, and a query of your own should send the box's text with `fuzzy => 'auto'`, as `shop.search` does. Every word of the search must be there; for a box where any word will do, rank with `bm25(body, :q, fuzzy => 'auto')` and leave the `MATCH` out (a ranked `bm25` returns the rows that have any of its words).
 
 ### A filter, with its counts
 

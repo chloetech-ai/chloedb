@@ -46,6 +46,13 @@ const ROWS: [&str; 12] = [
 
 const TOKEN: &str = "site-token";
 
+/// The interleaving test running on the made-up site.
+static TEST: Mutex<Option<&'static str>> = Mutex::new(None);
+
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
 fn words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric()).filter(|w| w.len() >= 3).map(|w| w.to_lowercase()).collect()
 }
@@ -66,28 +73,76 @@ async fn site() -> String {
         .route("/v1/experiment", get(|h: HeaderMap| async move {
             authed(&h)?;
             Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"protocol": 1, "site": "made-up", "title": "A made-up news site", "about": "Stories of a made-up news site.", "rows": "stories",
-                "knobs": [{"key": "broken", "group": "Ranking", "title": "Worst first", "kind": "bool", "default": false}],
-                "presets": [{"name": "As it is", "knobs": {}}, {"name": "Broken", "knobs": {"broken": true}}]})))
+                "knobs": [{"key": "broken", "group": "Ranking", "title": "Worst first", "kind": "bool", "default": false}, {"key": "noise", "group": "Ranking", "title": "Noise", "kind": "number", "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.05}],
+                "presets": [{"name": "As it is", "knobs": {}}, {"name": "Broken", "knobs": {"broken": true}}],
+                "log": {"policy": {"policy": "epsilon", "epsilon": 0.5, "top": 4}, "path": "/v1/experiment/log"},
+                "interleave": {"path": "/v1/experiment/interleave", "test": TEST.lock().unwrap().map(|id| json!({"id": id}))}})))
         }))
         .route("/v1/experiment/search", post(|h: HeaderMap, Json(b): Json<Value>| async move {
             authed(&h)?;
-            if b["knobs"].as_object().is_some_and(|o| o.keys().any(|k| k != "broken")) {
+            if b["knobs"].as_object().is_some_and(|o| o.keys().any(|k| k != "broken" && k != "noise")) {
                 return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "not a knob of this site"}))));
             }
             let q = words(b["q"].as_str().unwrap_or(""));
             let mut scored: Vec<(usize, usize)> = (0..ROWS.len()).map(|i| (words(ROWS[i]).iter().filter(|w| q.contains(w)).count(), i)).collect();
             scored.sort_by_key(|&(s, i)| (std::cmp::Reverse(s), i));
+            // Noise: each row's matches less noise × a fixed jitter of it (0 to 2),
+            // and rows that match nothing are shown too.
+            let noise = b["knobs"]["noise"].as_f64().unwrap_or(0.0);
+            let jitter = |i: usize| ((i * 7919) % 13) as f64 / 13.0 * 2.0;
+            scored.sort_by(|a, b| (b.0 as f64 - noise * jitter(b.1)).total_cmp(&(a.0 as f64 - noise * jitter(a.1))).then(a.1.cmp(&b.1)));
             if b["knobs"]["broken"] == true {
                 scored.reverse();
             }
             let per = b["per"].as_u64().unwrap_or(10) as usize;
-            let rows: Vec<Value> = scored.iter().filter(|(s, _)| b["knobs"]["broken"] == true || *s > 0).take(per).map(|&(_, i)| row(i)).collect();
+            let rows: Vec<Value> = scored.iter().filter(|(s, _)| b["knobs"]["broken"] == true || noise > 0.0 || *s > 0).take(per).map(|&(_, i)| row(i)).collect();
             Ok(Json(json!({"q": b["q"], "rows": rows, "understood": []})))
         }))
         .route("/v1/experiment/item/:id", get(|h: HeaderMap, Path(id): Path<String>| async move {
             authed(&h)?;
             let i: usize = id.trim_start_matches('s').parse::<usize>().unwrap_or(1).saturating_sub(1).min(ROWS.len() - 1);
             Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"id": id, "title": ROWS[i], "url": "", "text": format!("{}\n\nThe whole story.", ROWS[i])})))
+        }))
+        .route("/v1/experiment/log", get(|h: HeaderMap| async move {
+            authed(&h)?;
+            // 40 searches of the page, half exploring, the first story opened each time.
+            let reqs: Vec<Value> = (0..40).map(|i| {
+                let shown = if i % 2 == 0 { json!(["s1", "s2", "s3", "s4"]) } else { json!(["s3", "s1", "s4", "s2"]) };
+                json!({"request": format!("r{i}"), "ts": 1, "q": "rust compiler", "explored": i % 2 == 1, "ranked": ["s1", "s2", "s3", "s4"], "shown": shown, "clicks": ["s1"]})
+            }).collect();
+            Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"policy": {"policy": "epsilon", "epsilon": 0.5, "top": 4}, "requests": reqs, "clicks": 40})))
+        }))
+        .route("/v1/experiment/interleave", get(|h: HeaderMap| async move {
+            authed(&h)?;
+            Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"test": TEST.lock().unwrap().map(|id| json!({"id": id}))})))
+        }).post(|h: HeaderMap, Json(b): Json<Value>| async move {
+            authed(&h)?;
+            if b["a"] == b["b"] {
+                return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "the two arms search alike"}))));
+            }
+            *TEST.lock().unwrap() = Some(leak(b["id"].as_str().unwrap_or("")));
+            Ok(Json(json!({"test": {"id": b["id"]}})))
+        }))
+        .route("/v1/experiment/interleave/stop", post(|h: HeaderMap| async move {
+            authed(&h)?;
+            *TEST.lock().unwrap() = None;
+            Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"test": null})))
+        }))
+        .route("/v1/experiment/interleave/log", get(|h: HeaderMap| async move {
+            authed(&h)?;
+            // 300 interleaved searches over three days: a story of the
+            // control opened in 6 of 10, the treatment's in 2, none in 2;
+            // the coin fair, every other one on a phone.
+            let reqs: Vec<Value> = (0..300).map(|i| {
+                let teams = if i % 2 == 0 { "abab" } else { "baba" };
+                let shown = json!(["s1", "s2", "s3", "s4"]);
+                let a_at = if i % 2 == 0 { "s1" } else { "s2" };
+                let b_at = if i % 2 == 0 { "s2" } else { "s1" };
+                let clicks = match i % 10 { 0..=5 => json!([a_at]), 6 | 7 => json!([b_at]), _ => json!([]) };
+                json!({"request": format!("i{i}"), "ts": 1_700_000_000 + i * 864, "q": if i % 3 == 0 { "rust compiler speeds" } else { "rust" }, "a": ["s1", "s3"], "b": ["s2", "s4"],
+                    "shown": shown, "teams": teams, "dev": if i % 2 == 0 { "m" } else { "d" }, "a_ms": 10.0, "b_ms": 10.5, "clicks": clicks})
+            }).collect();
+            Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"requests": reqs})))
         }))
         .route("/v1/experiment/sample", get(|h: HeaderMap, Query(_q): Query<Value>| async move {
             authed(&h)?;
@@ -215,6 +270,10 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
     assert_eq!(st, 400, "{v}");
     let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": "Bad knob", "source": "made-up", "knobs": {"nope": 1}}], "brain": "scripted"})), Some("t")).await;
     assert_eq!(st, 400, "a knob the site refuses: {v}");
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": "Other", "source": arms[0]["source"], "knobs": {}}], "brain": "scripted"})), Some("t")).await;
+    assert!(st == 400 && v.to_string().contains("same settings"), "two arms that search alike: {v}");
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/studies", Some(json!({"name": "x", "personas": id, "arms": [arms[0], {"name": arms[0]["name"], "source": arms[1]["source"], "knobs": arms[1]["knobs"]}], "brain": "scripted"})), Some("t")).await;
+    assert!(st == 400 && v.to_string().contains("named"), "two arms of one name: {v}");
     let s = c.post("/v1/studies", json!({"name": "Broken ranking", "personas": id, "arms": arms, "brain": "scripted", "budget": 1, "workers": 2})).await;
     let sid = s["id"].as_str().unwrap().to_string();
     let v = until(&c, &format!("/v1/studies/{sid}"), "the study", |v| v["status"] != "running").await;
@@ -245,6 +304,80 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
         assert!(t0.elapsed() < Duration::from_secs(10), "the study is kept: {a}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    // A tune: from a noisy base, the search lowers the noise on the study's
+    // needs and grades, and proves it on the needs held out.
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/tunes", Some(json!({"study": sid, "source": "closed", "brain": "scripted"})), Some("t")).await;
+    assert_eq!(st, 400, "a site that takes no experiments: {v}");
+    let t = c.post("/v1/tunes", json!({"study": sid, "source": "made-up", "base": {"noise": 2.0}, "brain": "scripted", "rounds": 3})).await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let v = until(&c, &format!("/v1/tunes/{tid}"), "the tune", |v| v["status"] != "running").await;
+    assert_eq!(v["status"], "done", "{v}");
+    let r = &v["report"];
+    assert_eq!(v["needs"], 6, "every need searched in the study: {v}");
+    assert!(v["held_out"].as_u64().unwrap() >= 1, "{v}");
+    let ch = r["changed"].as_array().unwrap();
+    assert!(ch.len() == 1 && ch[0]["key"] == "noise" && ch[0]["to"].as_f64().unwrap() < 2.0, "less noise: {r}");
+    assert!(r["train"]["after"].as_f64().unwrap() > r["train"]["before"].as_f64().unwrap(), "{r}");
+    assert_eq!(r["proposal"]["noise"], ch[0]["to"], "{r}");
+    assert!(r["held_out"]["verdict"].is_string() && r["held_out"]["sentence"].is_string(), "{r}");
+    assert!(v["searches"].as_u64().unwrap() > 0 && v["steps"].as_array().unwrap().len() > 2, "{v}");
+    assert_eq!(c.get("/v1/tunes").await["tunes"][0]["id"], json!(tid));
+    // The site logs its page's searches: both rankings valued on them.
+    let op = &r["off_policy"];
+    assert_eq!((op["requests"].clone(), op["explored"].clone(), op["clicks"].clone()), (json!(40), json!(20), json!(40)), "{op}");
+    let t = op["targets"].as_array().unwrap();
+    assert_eq!(t.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(), ["as logged", "as it is", "proposed"]);
+    let naive = t[0]["estimates"].as_array().unwrap().iter().find(|e| e["estimator"] == "naive").unwrap();
+    assert_eq!(naive["value"], 1.0, "one story opened a search: {op}");
+
+    // An experiment: the broken ranking against the site as it is, the
+    // side by side at once, the judged queries (scripted), then real
+    // visitors interleaved, and the rule's call on them.
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/trials", Some(json!({"name": "x", "source": "made-up", "treatment_name": "B", "treatment": {}})), Some("t")).await;
+    assert_eq!(st, 400, "a treatment like the control: {v}");
+    let (st, v) = c.call(reqwest::Method::POST, "/v1/trials", Some(json!({"name": "x", "source": "made-up", "treatment_name": "B", "treatment": {"broken": false}})), Some("t")).await;
+    assert_eq!(st, 400, "a knob left at its default changes nothing: {v}");
+    let x = c.post("/v1/trials", json!({"name": "Is worst first worse?", "hypothesis": "Rows worst first make people find less.", "source": "made-up", "treatment_name": "Worst first on", "treatment": {"broken": true}, "personas": id})).await;
+    let xid = x["id"].as_str().unwrap().to_string();
+    let v = until(&c, &format!("/v1/trials/{xid}"), "the side by side", |v| v["steps"]["side"]["status"] == "done").await;
+    let side = &v["steps"]["side"];
+    assert!(side["queries"].as_u64().unwrap() >= 3 && side["changed"].as_u64().unwrap() >= 1, "{side}");
+    assert_eq!(side["rows"][0]["from"], "log", "the site's most asked query first: {side}");
+    assert_eq!(side["rows"][0]["q"], "rust compiler", "{side}");
+    assert_eq!(v["rule"]["call"], "none", "{v}");
+    c.post(&format!("/v1/trials/{xid}/judged"), json!({"brain": "scripted"})).await;
+    let v = until(&c, &format!("/v1/trials/{xid}"), "the judged queries", |v| v["steps"]["judged"]["status"] != "running" && !v["steps"]["judged"].is_null()).await;
+    let j = &v["steps"]["judged"];
+    assert_eq!(j["status"], "done", "{j}");
+    assert_eq!(j["units"].as_array().unwrap().len(), 6, "every need: {j}");
+    assert!(j["delta"].as_f64().unwrap() < 0.0 && j["known_lost"].as_u64().unwrap() >= 1, "worst first loses: {j}");
+    assert!(j["regressions"].as_array().unwrap().len() >= 1, "{j}");
+    assert_eq!(v["rule"]["call"], "dont_ship", "{}", v["rule"]);
+    c.post(&format!("/v1/trials/{xid}/online"), json!({"share": 0.5})).await;
+    let v = c.get(&format!("/v1/trials/{xid}")).await;
+    let on = &v["steps"]["online"];
+    assert_eq!((on["searches"].clone(), on["wins"].clone(), on["losses"].clone(), on["running"].clone()), (json!(300), json!(60), json!(180), json!(true)), "{on}");
+    assert!((on["delta"].as_f64().unwrap() + 0.4).abs() < 1e-9, "{on}");
+    assert!(on["p_always_valid"].as_f64().unwrap() < 0.001 && on["coin"]["ok"] == true, "{on}");
+    assert_eq!(on["days"].as_array().unwrap().len(), 4, "{on}");
+    assert_eq!(on["units"].as_array().unwrap().len(), 300);
+    assert_eq!(v["rule"]["call"], "dont_ship", "{}", v["rule"]);
+    let (st, _) = c.call(reqwest::Method::DELETE, &format!("/v1/trials/{xid}"), None, Some("t")).await;
+    assert_eq!(st, 400, "running on visitors");
+    c.post(&format!("/v1/trials/{xid}/online/stop"), json!({})).await;
+    let d = c.post(&format!("/v1/trials/{xid}/decide"), json!({"call": "dont_ship", "note": "worse everywhere"})).await;
+    assert_eq!(d["override"], false, "{d}");
+    let (st, v) = c.call(reqwest::Method::DELETE, &format!("/v1/trials/{xid}"), None, Some("t")).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(c.call(reqwest::Method::GET, &format!("/v1/trials/{xid}"), None, Some("t")).await.0, 404);
+    let x2 = c.post("/v1/trials", json!({"name": "again", "source": "made-up", "treatment_name": "Worst first on", "treatment": {"broken": true}, "personas": id})).await;
+    let x2 = x2["id"].as_str().unwrap().to_string();
+    c.post(&format!("/v1/trials/{x2}/decide"), json!({"call": "ship"})).await;
+    let list = c.get("/v1/trials").await;
+    assert_eq!(list["trials"].as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list["trials"][0]["decision"]["override"], true, "shipped without the rule's word: {list}");
+    assert!(list["trials"][0]["steps"]["side"]["rows"].is_null(), "the list leaves out the units");
 
     // The same, by Claude: the people written, played and judged.
     let w = c.post("/v1/personas", json!({"source": "made-up", "brain": "claude"})).await;

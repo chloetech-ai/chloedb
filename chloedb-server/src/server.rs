@@ -754,6 +754,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_rollups(&svc, Duration::from_secs(5));
     spawn_key_forgetter(&svc, Duration::from_secs(60));
+    spawn_trimmer(&svc, crate::service::TRIM_EVERY);
     spawn_sampler(&svc);
     spawn_watch(&svc);
     // workdata: every table's counts a minute apart (rates on a first look).
@@ -894,6 +895,9 @@ pub async fn fetch_model_with(name: &str, dir: &std::path::Path, progress: &(dyn
     // repository from its main branch, as it is.
     let pin = chloedb::model_pins::pin(&repo);
     let revision = pin.map_or("main", |p| p.revision);
+    // HF_ENDPOINT names a mirror of Hugging Face, as it does for Hugging
+    // Face's own tools (and ChloeDB's packages, chloedb::fetch).
+    let hub = chloedb::env::var("HF_ENDPOINT").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "https://huggingface.co".into());
     let (mut done, mut size) = (0u64, 0u64);
     for (from, file) in files {
         // A file already here that is the one pinned is kept, so a second
@@ -904,7 +908,7 @@ pub async fn fetch_model_with(name: &str, dir: &std::path::Path, progress: &(dyn
                 continue;
             }
         }
-        let url = format!("https://huggingface.co/{repo}/resolve/{revision}/{from}");
+        let url = format!("{}/{repo}/resolve/{revision}/{from}", hub.trim_end_matches('/'));
         let mut r = client.get(&url).send().await.and_then(|r| r.error_for_status()).map_err(|e| format!("{url}: {e}"))?;
         size += r.content_length().unwrap_or(0);
         progress(done, size);
@@ -970,6 +974,10 @@ pub struct FileImport {
     pub append: bool,
     /// Print the plan as JSON, and write nothing.
     pub plan: bool,
+    /// CSV, TSV, JSON and JSON Lines: a table the import makes from the
+    /// file's columns gets no vector of its prose to search by meaning
+    /// (`--no-meaning`; [`chloedb::ingest::create_for_with`]).
+    pub no_meaning: bool,
 }
 
 /// An import's error `e` about the file `shown` (its local copy at
@@ -1228,6 +1236,10 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         let rows_format = format.or_else(|| Format::of_path(file)).ok_or_else(|| format!("{shown}: name its format with --format (jsonl, json, csv, tsv, sqlite or parquet): the file's name does not say"))?;
         let sample = || sample_of(file, rows_format).map_err(|e| format!("{shown}: {e}"));
         let named = table.map(String::from).unwrap_or_else(|| chloedb::ingest::table_name_of(Path::new(shown)));
+        // A table made here searches by meaning too: its model comes with
+        // the server that serves it, which fetches it and fills the
+        // vectors in.
+        let meaning = (!how.no_meaning).then_some(chloedb::ingest::MEANING_MODEL);
         let (d, into) = match db.take() {
             Some(d) => {
                 let into = match table {
@@ -1243,14 +1255,14 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
                     (created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?), into)
                 }
                 None => {
-                    let schema = chloedb::ingest::schema_for(&named, &sample()?, rows_format, None).map_err(|e| format!("{shown}: no table could be made from its rows: {e}"))?;
+                    let schema = chloedb::ingest::schema_for(&named, &sample()?, rows_format, None, meaning).map_err(|e| format!("{shown}: no table could be made from its rows: {e}"))?;
                     tracing::info!(file = %shown, table = %named, sql = %one_line(&chloedb::query::ddl::create_sql(&schema)), "made the database and its table from the file's columns (--schema gives one of your own)");
                     (created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?), named.clone())
                 }
             },
         };
         if !d.catalog().iter().any(|t| t.table.eq_ignore_ascii_case(&into)) {
-            let made = sample().and_then(|data| chloedb::ingest::schema_for(&into, &data, rows_format, None).map_err(|e| format!("{shown}: no table {into}, and none could be made from its rows: {e}")));
+            let made = sample().and_then(|data| chloedb::ingest::schema_for(&into, &data, rows_format, None, meaning).map_err(|e| format!("{shown}: no table {into}, and none could be made from its rows: {e}")));
             let made = made.and_then(|s| {
                 let sql = one_line(&chloedb::query::ddl::create_sql(&s));
                 d.create_table(s).map(|_| sql).map_err(|e| format!("{shown}: create table {into}: {e}"))
@@ -1544,6 +1556,28 @@ pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
                     listing = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
+            }
+        }
+    });
+}
+
+/// Every `every`, gives the file's free space back ([`Service::trim_due`]),
+/// as a server that takes writes does, so that deleted and expired rows
+/// return disk without a manual vacuum.
+pub fn spawn_trimmer(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || svc.trim_due(crate::service::TRIM_MIN_FREE)).await {
+                Ok(Ok(n)) if n > 0 => tracing::info!(bytes = n, "gave free space in the database file back"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::debug!(error = %e.message, "could not trim the database file; it tries again"),
+                Err(e) => tracing::error!(error = %e, "the file trimmer stopped"),
             }
         }
     });

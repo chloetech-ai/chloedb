@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Search and SQL</span>
       <h1>Next items</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/next-items.md">docs/chloedb/next-items.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#counts-in-a-table">Counts in a table</a></li><li><a href="#reading-with-backoff">Reading with backoff</a></li><li><a href="#measured">Measured</a></li><li><a href="#several-steps-ahead">Several steps ahead</a></li><li><a href="#kept-for-you-create-recommender">Kept for you: CREATE RECOMMENDER</a></li><li><a href="#which-to-use">Which to use</a></li></ol></details>
     <div class="doc-body">
@@ -207,7 +209,7 @@ LIMIT 20;</pre>
 <p>A walk runs on one database: a coordinator refuses <code>ppr</code> and the other graph queries (<a href="graphs.html#on-a-cluster">graphs on a cluster</a>), while the counts above run anywhere.</p>
 <p>Personalized PageRank pushes a row only while its share of the walk is at least <code>eps</code> times its number of edges. Without <code>eps</code>, the walk starts at 1e-4 and lowers it until half of the walk has settled, so seeds whose neighbours have thousands of edges still reach rows past them (<a href="sql.html#how-far-ppr-walks">how far <code>ppr</code> walks</a>); a given <code>eps</code>, as above, walks exactly that far, and a walk that stopped near its seeds says so in its stats (<code>ppr_unsettled</code>).</p>
 <h2 id="kept-for-you-create-recommender">Kept for you: <code>CREATE RECOMMENDER</code><a class="anchor" href="#kept-for-you-create-recommender" aria-label="Link to this section">#</a></h2>
-<p><code>CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)</code> keeps the counts of order 1 and items seen together from the writes of an events table, and <code>ORDER BY recommend('shop', :u)</code> fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last <code>history</code> of them), not every item the user has had (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>). To leave out everything the user has an event for, filter it: <code>SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k =&gt; 500) DESC LIMIT 10</code>. It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.</p>
+<p><code>CREATE RECOMMENDER shop ON events(usr, item, ts) ITEMS items(emb)</code> keeps the counts of order 1 and items seen together from the writes of an events table, and <code>ORDER BY recommend('shop', :u)</code> fuses them with the similarity of the user's recent items and with popularity, leaving out the user's recent items (the last <code>history</code> of them), not every item the user has had (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>). To leave out everything the user has an event for, filter it: <code>SELECT id FROM items WHERE id NOT IN (SELECT item FROM events WHERE usr = :u) ORDER BY recommend('shop', :u, k =&gt; 500) DESC LIMIT 10</code>. Events keep feeding the counts as they are written without slowing the calls, and <code>optimize()</code> (<code>POST /v1/admin/optimize</code> on chloedb-server) merges what they wrote. It runs on one database; a coordinator refuses it, and the tables of this page are what a cluster uses.</p>
 <h2 id="which-to-use">Which to use<a class="anchor" href="#which-to-use" aria-label="Link to this section">#</a></h2>
 <p>Counts are exact and live: an event changes the next answer, and each suggestion is explained by a count. They know only the last one or two items and nothing about a context never seen, where they fall back to the last item alone. A walk over directed edges reaches several steps ahead and related items, at five writes per event. Learned sequence models, which read long histories and combine what they have not seen together, are the next step; these counts are the baseline they have to beat.</p>
     </div>

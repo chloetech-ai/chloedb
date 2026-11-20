@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Search and SQL</span>
       <h1>Build a search page</h1>
       <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#why-the-page-talks-to-a-server">Why the page talks to a server</a></li><li><a href="#the-catalogue">The catalogue</a></li><li><a href="#the-queries-as-functions">The queries, as functions</a></li><li><a href="#the-page">The page</a></li><li><a href="#the-same-page-in-flask">The same page in Flask</a></li><li><a href="#before-other-people-use-it">Before other people use it</a></li><li><a href="#next">Next</a></li></ol></details>
     <div class="doc-body">
@@ -252,7 +254,7 @@ p03 Packable rain jacket 89.0
 p06 Softshell cycling jacket 109.0
 p01 Waterproof hiking jacket 129.0
 p04 Fleece jacket 69.0</pre>
-<p>Typos are forgiven only where a query asks for it: <code>db.search(text)</code> searches the words as written (the search box on a table's page in the command center asks for <code>fuzzy =&gt; 'auto'</code> itself), so a search box should send its text through a query with <code>fuzzy =&gt; 'auto'</code>, as <code>shop.search</code> does. Every word of the search must be there; for a box where any word will do, rank with <code>bm25(body, :q, fuzzy =&gt; 'auto')</code> and leave the <code>MATCH</code> out (a ranked <code>bm25</code> returns the rows that have any of its words).</p>
+<p>Typos are forgiven where a query asks for it: <code>db.search(text)</code> asks for it itself (<code>typos=False</code> turns it off), as the search box on a table's page in the command center does, and a query of your own should send the box's text with <code>fuzzy =&gt; 'auto'</code>, as <code>shop.search</code> does. Every word of the search must be there; for a box where any word will do, rank with <code>bm25(body, :q, fuzzy =&gt; 'auto')</code> and leave the <code>MATCH</code> out (a ranked <code>bm25</code> returns the rows that have any of its words).</p>
 <h3 id="a-filter-with-its-counts">A filter, with its counts<a class="anchor" href="#a-filter-with-its-counts" aria-label="Link to this section">#</a></h3>
 <p>The filter is one more condition in the <code>WHERE</code>, and its counts are a <code>GROUP BY</code> over the same conditions, so each count is the number of products its link shows:</p>
 <pre data-lang="python">import shop

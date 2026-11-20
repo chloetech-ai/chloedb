@@ -203,8 +203,9 @@ pub fn caller() -> Option<Arc<Caller>> {
     CALLER.try_with(|c| c.clone()).ok()
 }
 
-/// Keep only the types of queries' parameters (`--redact-params`).
-static REDACT_PARAMS: AtomicBool = AtomicBool::new(false);
+/// Keep only the types of queries' parameters: the default, until
+/// `--keep-params` turns it off.
+static REDACT_PARAMS: AtomicBool = AtomicBool::new(true);
 
 pub fn set_redact_params(on: bool) {
     REDACT_PARAMS.store(on, Ordering::Relaxed);
@@ -217,8 +218,8 @@ pub fn redacts_params() -> bool {
 /// The most bytes of JSON a query's parameters are kept in.
 pub const PARAMS_BYTES: usize = 1024;
 
-/// A query's parameters as kept with it: their values as JSON (only their
-/// types with `--redact-params`), long texts and lists cut, in at most
+/// A query's parameters as kept with it: their types (with `--keep-params`,
+/// their values as JSON), long texts and lists cut, in at most
 /// [`PARAMS_BYTES`]; `None` without parameters.
 pub fn params_json(p: &chloedb::query::Params) -> Option<Arc<Json>> {
     if p.0.is_empty() {
@@ -1886,16 +1887,18 @@ mod tests {
     #[test]
     fn params_are_kept_capped_or_by_type() {
         use chloedb::value::Value;
+        // The default keeps types only.
+        assert!(redacts_params());
         let p = chloedb::query::Params::new().set("q", Value::Str("x".repeat(500))).set("n", Value::Int(3)).set("v", Value::Vector(vec![0.5f32; 384].into()));
+        let d = params_json(&p).unwrap();
+        assert_eq!(*d, json!({"n": "int", "q": "text", "v": "vector(384)"}));
+        set_redact_params(false);
         let j = params_json(&p).unwrap();
+        set_redact_params(true);
         assert_eq!(j["n"], 3);
         assert!(j["q"].as_str().unwrap().len() < 220, "{j}");
         assert_eq!(j["v"], "[384 values]");
         assert!(j.to_string().len() <= PARAMS_BYTES);
-        set_redact_params(true);
-        let r = params_json(&p).unwrap();
-        set_redact_params(false);
-        assert_eq!(*r, json!({"n": "int", "q": "text", "v": "vector(384)"}));
         assert!(params_json(&chloedb::query::Params::new()).is_none());
         let who = crate::keys::Principal { name: "token".into(), key: None, scope: crate::keys::Scope::Admin, root: true, tables: None, role: None, agent: false, on_behalf_of: None, allow: None };
         let r = crate::keys::Caller { app: Some("shop-ios".into()), client: Some("command-center".into()), ..Default::default() };

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html" aria-current="page">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -116,7 +118,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>What a cluster does differently</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/cluster-limits.md">docs/chloedb/cluster-limits.md</a>.</p>
-      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#refused-on-a-cluster">Refused on a cluster</a></li><li><a href="#different-on-a-cluster">Different on a cluster</a></li><li><a href="#a-table-placed-by-a-column-shard_by">A table placed by a column (shard_by)</a></li></ol></details>
     <div class="doc-body">
@@ -189,6 +191,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <li><strong><code>UPDATE ... LIMIT n</code> and <code>DELETE ... [ORDER BY ...] LIMIT n</code></strong> are two steps: the coordinator reads the keys of the rows the statement's <code>WHERE</code>, <code>ORDER BY</code> and <code>LIMIT</code> pick (over every shard), then runs the statement without its <code>LIMIT</code> over those keys alone (<code>WHERE (...) AND key IN (...)</code>). A row changed in between so that it no longer matches is left alone, so fewer than n rows may change. The table needs a primary key, and the <code>LIMIT</code> is at most 10,000.</li>
 <li><strong>An <code>UPDATE</code> or <code>DELETE</code> whose <code>WHERE</code> has a subquery</strong> (<code>WHERE id IN (SELECT ...)</code>, <code>NOT EXISTS (...)</code>), which reads rows of other shards, is two steps the same way: the coordinator reads the keys of the rows its <code>WHERE</code> picks over every shard, then runs it over those keys alone (<code>WHERE key IN (...)</code>, the subquery read once, in the first step). Without a <code>LIMIT</code> it writes at most 10,000 rows, and one that picks more is refused, with nothing written: narrow its <code>WHERE</code>, or run it in parts. One whose <code>WHERE</code> reads only its own row (a <code>TEXT</code> column compared with <code>=</code>, <code>LIKE</code>) runs on each shard, as any write does.</li>
 <li><strong><code>INSERT ... ON CONFLICT DO NOTHING</code></strong> goes as an <code>insert_if_absent</code> operation (protocol 21: a shard of an older version refuses it as an unknown operation). <strong><code>ON CONFLICT DO UPDATE</code></strong> runs as written on the one shard its rows go to.</li>
+<li><strong><code>INSERT ... SELECT</code> and <code>CREATE TABLE ... AS SELECT</code></strong> run their <code>SELECT</code> over every shard (one that does not answer fails the statement), then make the table on every shard as <code>CREATE TABLE</code> does, then write the rows as <code>INSERT</code>s of 500 rows each through the coordinator, one row each for <code>ON CONFLICT ... DO UPDATE</code>: each <code>INSERT</code> is a write of its own, so a failure part way leaves the rows written before it, and a table made for rows that failed is dropped (<a href="sql.html#rows-from-a-select-insert--select-and-ctas">query language</a>). The table a <code>CREATE TABLE ... AS SELECT</code> makes needs a primary key the statement names (<code>CREATE TABLE t (PRIMARY KEY (id)) AS SELECT ...</code>) or <code>OPTIONS(shard_by = ...)</code>, since the coordinator places each row on a shard by it: one without is refused before its <code>SELECT</code> runs, and <code>POST /v1/sql/check</code> says so. On one server the rows are one transaction, and a table needs no key.</li>
 <li><strong>DDL</strong> (<code>CREATE TABLE</code>, <code>ALTER TABLE</code>, <code>DROP TABLE</code>, rank profiles, functions) runs on every shard, one change a shard: a shard that fails leaves the others changed, and the statement is sent again with <code>IF NOT EXISTS</code>, <code>IF EXISTS</code> or <code>OR REPLACE</code>. <code>ALTER TABLE ... ADD COLUMN c ... NOT NULL</code> without a default is refused by each shard that has rows, and the error counts every such shard's rows.</li>
 <li><strong>A SQLite or Parquet import that creates its table</strong> creates it on every shard by <code>CREATE TABLE</code> through the coordinator, as its plan (<code>plan=true</code>) says.</li>
 <li><strong>Exports</strong>: <code>GET /v1/export?format=jsonl|csv|arrow|parquet&amp;tables=T</code> reads the table by a scroll over every shard, with read on the table. Each page is read from the shards as they are then, not one snapshot of all of them: a write during the export may or may not be in it. Arrow is one batch built in memory (at most 1,000,000 rows); Parquet is written a page at a time and keeps the table's schema.</li>
@@ -209,7 +212,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/cluster-limits.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="operate-cluster.html">← Operate a cluster</a><a href="runbooks.html">Runbooks →</a></span>
+      <span class="pager"><a href="operate-cluster.html">← Operate a cluster</a><a href="backup.html">Back up, restore and upgrade →</a></span>
     </footer>
   </article>
 </div></main>

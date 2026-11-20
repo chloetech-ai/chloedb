@@ -110,3 +110,24 @@ async fn a_coordinator_s_repeated_query_is_answered_from_its_shards_caches() {
     assert_eq!(cached(&again), 2, "{again}");
     assert_eq!((&again["rows"], &again["scores"]), (&first["rows"], &first["scores"]));
 }
+
+/// A query that expands its words (`bm25(.., expand => n)`) first reads
+/// its top rows by the words alone: that read is not the query's answer,
+/// so it must not be cached under the query's key. It was, and the query
+/// then answered those rows (their text columns, n of them) instead of
+/// its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expanded_query_answers_its_own_rows_not_its_feedback_s() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(dir.path(), "one.strata", |_| true);
+    let schema = (*db.schema()).clone();
+    let svc = service(Backend::Local(db.clone()), schema, true);
+    let (l, base) = listen().await;
+    tokio::spawn(server::serve_http(svc.clone(), l, Default::default()));
+    let ask = json!({"sql": "SELECT id FROM products ORDER BY bm25(body, :q, expand => 3) DESC LIMIT 8", "params": {"q": "tent backpack"}});
+    for _ in 0..2 {
+        let j = query(&base, ask.clone()).await;
+        assert_eq!(j["columns"], json!(["id"]), "{j}");
+        assert_eq!(j["rows"].as_array().unwrap().len(), 8, "{j}");
+    }
+}

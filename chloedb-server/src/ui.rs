@@ -52,6 +52,7 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("feedback.js", JS, include_str!("../ui/app/feedback.js")),
     ("owners.js", JS, include_str!("../ui/app/owners.js")),
     ("ask.js", JS, include_str!("../ui/app/ask.js")),
+    ("qtemplate.js", JS, include_str!("../ui/app/qtemplate.js")),
     ("views/index.js", JS, include_str!("../ui/app/views/index.js")),
     ("views/overview.js", JS, include_str!("../ui/app/views/overview.js")),
     ("views/timeline.js", JS, include_str!("../ui/app/views/timeline.js")),
@@ -101,6 +102,8 @@ pub const FILES: &[(&str, &str, &str)] = &[
     ("views/start.js", JS, include_str!("../ui/app/views/start.js")),
     ("views/table.js", JS, include_str!("../ui/app/views/table.js")),
     ("views/saved.js", JS, include_str!("../ui/app/views/saved.js")),
+    ("views/designer.js", JS, include_str!("../ui/app/views/designer.js")),
+    ("views/views.js", JS, include_str!("../ui/app/views/views.js")),
 ];
 
 /// A file from `CHLOEDB_UI_DIR`, when it is set: `rel` under it.

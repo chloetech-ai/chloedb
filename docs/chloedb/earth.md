@@ -1,12 +1,12 @@
 # Earth Explorer: California and Chile from orbit, on ChloeDB
 
-`chloedb-earth` is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come; 103,664 places of 3.84 km a side, each with its Sentinel-2 picture's [SigLIP](https://huggingface.co/google/siglip-so400m-patch14-384) vector from [Major TOM](https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP) and what is on it (land cover, terrain, people, climate, crops, mines, the years it burned); and the pictures of a few hundred of them every other year since 2017. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app `earth` (`chloedb-server --app earth=URL`). Every request needs the token the command center's app proxy sends, unless the app runs with `--public`: then it serves its page at `/` and the page's reads to anyone, at most `--per-minute` (120) requests a minute from one address, and a picture searched for (`POST /v1/picture`) is the only POST it takes. Readers never send SQL: each page asks its own statements, and shows them under SQL.
+`chloedb-earth` is an app of a ChloeDB server built on public pictures and records of the ground: every fire pixel the GOES satellites see over California and Chile, every few minutes, grouped into fires as they come; 103,664 places of 3.84 km a side, each with its Sentinel-2 picture's [SigLIP](https://huggingface.co/google/siglip-so400m-patch14-384) vector from [Major TOM](https://huggingface.co/datasets/Major-TOM/Core-S2RGB-SigLIP) and what is on it (land cover, terrain, people, climate, crops, mines, the years it burned); and the pictures of a few hundred of them every other year since 2017. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app `earth` (`chloedb-server --app earth=URL`). Every request needs the token the command center's app proxy sends, unless the app runs with `--public`: then it serves its page at `/` and the page's reads to anyone, at most `--per-minute` (120) requests a minute from one address, and the only POSTs it takes are a picture searched for (`POST /v1/picture`) and a browser's own fire watches. Readers never send SQL: each page asks its own statements, and shows them under SQL.
 
 Three things on it are ChloeDB's own:
 
 - **Fires like this one.** A fire's first hour, two hours and six hours are each a vector (its power, pixels and spread a quarter hour at a time, then what it started on: slope, trees, shrubs, people, the gusts), and the fires whose first hours were nearest, among those out before it, say how big it got: the median and the middle half of theirs. `backtest` measures how often that range held the size each past fire reached, beside the range of all fires of the region.
 - **Climate twins.** Each California place is matched with the place of Chile that looks most like it, in the same Köppen class, and the other way round: the two Mediterranean coasts, about 9,000 km apart, side by side. The match is CSLS (`2·sim − r_a − r_b`, each `r` a place's mean similarity to its ten nearest in the other region), so a place that looks like everything does not become everyone's twin.
-- **Changed places.** A place's look each year is a vector; how far it moved from its first year to its last, and in which year most, finds the fields that became houses, the forests that burned and the pits that grew. A search for "shrubland → houses" ranks by `similarity(before, :a) + similarity(after, :b)`.
+- **Find change.** A place's look each year is a vector; how far it moved from its first year to its last, and in which year most, finds the fields that became houses, the forests that burned and the pits that grew. A search for "shrubland → houses" ranks by `similarity(before, :a) + similarity(after, :b)`.
 
 ## The pages
 
@@ -15,13 +15,17 @@ Three things on it are ChloeDB's own:
 | Home | a search box for a town, a county or "lat, lon" (and "use my location") that opens a place's report, then each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read | `ea_fires`, `ea_alerts`, `ea_places`, `ea_backtest`, `ea_scans` |
 | Live | the region's map with the fire pixels of the last hours (a red light when the newest scan is under three hours old), the fires burning with their alerts, refreshed every 30 seconds | `ea_detections`, `ea_fires`, `ea_alerts`, `ea_scans` |
 | A replay | a night of the archive played back on the map, a scan at a time, over GOES's picture of the sky at that moment (with `--frames`): Los Angeles on 7 January 2025 (Palisades, Eaton, Hurst) and Valparaíso on 2 February 2024 | `ea_detections`, `ea_scans`, `ea_fires` |
+| Fire watch | places a browser keeps an eye on (a home, a parent's house, a farm: found by name, by "lat, lon", with "use my location", or many at once as lines of a name and coordinates), each with where the nearest fire is now; a place's page with the heat near it, how far the nearest fire was scan by scan over 12 hours, the alerts sent, what to be told about (a fire within 5 to 50 km, 2 km closer in an hour, past 1,000 MW, a clear night over it, a new satellite picture that looks unlike the one before), the official sources, the ground and the fires that started near it; the browser's notifications while a tab is open and an Atom feed of its alerts; and an example that plays the Park Fire's first 12 hours (24 July 2024) over three made-up places | `ea_watches`, `ea_watch_alerts`, `ea_detections`, `ea_scans`, `ea_fires` |
+| Clear sky | the region's map of every place's sky now (clear, partly cloudy, cloudy or smoke, from GOES's last scan), or of its clear nights or days over 30 days; a finder for the clearest places near a town, a point or "use my location", within 5 to 400 km, by the sky now, the most clear nights (for the stars) or days, and what they look like in words ("dark hills", "a lake"); and each place's sky on its page | `ea_sky`, `ea_places` |
+| Land finder | places to build a solar farm on: limits on the slope, the distance to a substation and its voltage, the distance to a main road, protected land and towns, near a town or anywhere in the region, ranked by how much each place's picture looks like the solar farms already built there, by how near the grid is, or by words ("flat dry grassland"); the solar farms built and the places found on the map, a shortlist kept in the browser (as CSV, and a fire watch a click away), and what is around each place for building on it on its page | `ea_places` |
+| Future climate | each place's climate in 2071-2100 if emissions keep rising (SSP3-7.0) against 1981-2010, on a map (hotter summers, milder winters, rain, and how far away its future climate is today, with the places whose future no place has today edged in red); a place's hottest month, coldest nights, rain and climate class now and later, with the five models' range, the places whose climate today is nearest its future one (in California and Chile, or only its own region) and those whose future is nearest its climate today; and the same on each place's page | `ea_climate` |
 | A fire | its pixels on the map, its first hours drawn, the fires that began like it with the outlook they give, its alerts, and how well the outlook has done before | `ea_fires`, `ea_detections`, `ea_backtest` |
 | Past fires | a region's fires by size, year or name | `ea_fires` |
 | Explore | the map with a layer over it (people, trees, shrubs, grass, crops, built, bare, water, snow, terrain, slope, mines, fire history, climate, land cover, crops by kind), and the place under a click | `ea_places` |
 | A place | **what happened here**: a headline and a timeline within 10 km, newest first (CAL FIRE's perimeters with distance, direction, acres, cause and dates; years satellites saw fire heat; fires GOES saw within 25 km; nearby places that changed), over a map that draws the perimeters; then its picture, what covers it, its terrain and people, the years it burned, the places that look like it, its twins in the other region, places like it with words added or taken away (`/v1/mix`), the fires near it and its pictures year by year | `ea_places`, `ea_years`, `ea_changes`, `ea_fires`, `ea_perimeters`, `ea_burns` |
 | Search | places by what they look like, in words ("vineyards on hills", "a lithium mine"): by the picture and what covers it (`rrf(similarity(look, :v), bm25(about, :q))`, the default), by the picture alone, or by the description with names; or by a picture dropped on the page | `ea_places` |
 | Climate twins | the closest pairs, those of the same land first, by climate and kind | `ea_places` |
-| Changed places | the places that changed most, by what they were and became, or searched by a change in words; a place's years and the places whose change went the same way | `ea_changes`, `ea_years` |
+| Find change | the places whose look changed since 2017, on a map: the most changed, or searched by a change in words ("a lake became a dry lake bed"), within a region or near a town, by the two years it changed most between, by how much and by what it was and became; each with its first and last pictures and a button to watch it for change; a place's years and the places whose change went the same way | `ea_changes`, `ea_years`, `ea_watches` |
 | Rules | each alert rule's statement, how long it took and what it found | `ea_rules`, `ea_alerts` |
 | How it's built | the tables, their rows, where each feed stands, the backtest, and every source with its licence | every table |
 
@@ -39,6 +43,73 @@ Each rule is one statement over the fires, run every minute; its rows are the al
 | `could-grow` | a fire whose twenty nearest fires by their first hours mostly grew past 20 km² |
 | `first-in-years` | a fire on ground with no fire in NASA FIRMS's records since 2001 |
 
+## Fire watch
+
+A watch is a row of `ea_watches`: a point, a name, the distance it asks about and two choices. There are no accounts: the page makes a long random key (a UUID) the first time, keeps it in the browser, and a watch belongs to the key that made it (25 at most a key, 20,000 in all). Every route takes the key as `?w=`, and the feed has it in its address, `/v1/watches/feed/<key>`, so a feed reader needs nothing else. The page's writes are `POST /v1/watches` (a new watch) and `POST /v1/watch/<id>` (a change, or `{"remove": true}`, which takes its alerts too).
+
+Every minute `serve` reads each region's scans since it last looked (at most the last six hours after a pause) and, for each watch of the region, the nearest fire pixel of the hour up to each scan. It writes to `ea_watch_alerts`, once per watch, fire and kind:
+
+| kind | when |
+|---|---|
+| `in` | a fire within the distance the watch asks about (5, 10, 15, 25 or 50 km) |
+| `near` | a fire within 5 km |
+| `here` | a fire pixel within 1.5 km (a GOES pixel is 2 to 3 km across) |
+| `power` | a fire within 50 km past 1,000 MW in one scan, when asked |
+| `closer` | the same fire 2 km closer than 40 to 90 minutes before, once an hour, when asked |
+
+`/v1/watches` (a key's watches, where each stands, and its alerts), `/v1/watch/<id>` (one, with 12 hours of distances, the heat within 55 km and the fires GOES saw start within 25 km since June 2023), `/v1/watches/feed/<key>` (Atom) and `/v1/watches/example` (the Park Fire's first 12 hours, worked out once) are what the page reads. The browser is told of an alert while Earth is open in a tab; pushes to a closed phone are not built yet.
+
+## Clear sky
+
+`chloedb-earth sky --region R --live` reads GOES's Clear Sky Mask (ABI-L2-ACMC from GOES-18 over California every 5 minutes, ABI-L2-ACMF from GOES-19's full disk over Chile every 10) and its Aerosol Detection's smoke (ADPC and ADPF) for the same scan, at most one scan every `--every` seconds (600). For each place it takes the share of the pixels inside its square that are clear or probably clear, and with smoke, and keeps a row of `ea_sky`: the last scan's shares, the sun's height, and 30 days of how clear each day's daylight scans (sun above 5 degrees) and each night's dark ones (below -12, past nautical dusk) were, the newest last. A row is written again when a share moved a tenth, a day or night moved five points, a day turned, or three hours passed, so most scans write only the places whose sky changed. `--from 720h` fills the 30 days from the archive first.
+
+`serve` reads each region's rows every two minutes into memory: `/v1/sky?region=R` is the map's layer (every place's share clear now and its nights and days), `/v1/sky/find` ranks the places within `km` of `lat, lon` (or the region) by the sky now, by their clear nights (`want=nights`) or days (`want=days`), and with `q` among the 300 places that look most like the words. A fire watch can ask to be told when the night over it is clear: an alert `clear` once a night, when the sun is 12 degrees down, the last scan is 90% clear and the night so far 80%.
+
+## Future climate
+
+`tools/climate.py` reads CHELSA 2.1 (Karger et al., CC BY 4.0), the climate of every 30 arc-second cell for 1981-2010 and, from five CMIP6 models (GFDL-ESM4, IPSL-CM6A-LR, MPI-ESM1-2-HR, MRI-ESM2-0, UKESM1-0-LL), for 2071-2100 under SSP3-7.0. Of each place's square it takes the mean of six variables (bio1, the year's mean temperature; bio5, the hottest month's highs; bio6, the coldest month's lows; bio12, the year's rain; bio15, how unevenly it falls; bio18, the rain of the warmest three months) and the commonest Köppen-Geiger class (kg0), for now and for each model, into a row of `ea_climate`: today's values, the models' mean later, their lowest and highest for the hottest month, the coldest nights and the rain, and the class most models give.
+
+The six, standardised over every place of both regions today (the rain as its logarithm), are a place's climate as a vector: `clim` for 1981-2010 and `clim70` for 2071-2100. A place's page asks `ORDER BY distance(clim, :clim70) ASC` for the places whose climate today is nearest its future one, and `ORDER BY distance(clim70, :clim) ASC` for those whose future is nearest its climate today, one place a town (`MAX 1 PER town`). The tool keeps the nearest of the first for every place too (`analog`, `analog_km`, `analog_d`), for the map; when it is more than one standard deviation away (167 places), no place of the two regions has a climate close to it today (`novel`).
+
+```bash
+python3 tools/climate.py places --out DATA    # the places' centres, from the server (CHLOEDB_URL, CHLOEDB_KEY)
+python3 tools/climate.py fetch --out DATA     # 42 files of 12 to 490 MB, each cut to the regions and deleted
+python3 tools/climate.py rows --out DATA      # ea_climate_<region>.jsonl
+chloedb-earth load --dir DATA --only ea_climate
+```
+
+## Land finder
+
+`tools/land.py` writes what is around each place for building on it into thirteen columns of `ea_places`: the nearest substation (how far, its voltage, its name) and power line (how far, its voltage) of OpenStreetMap, the nearest motorway, trunk, primary or secondary road, the share of the place covered by solar farms (OpenStreetMap's `power=plant` with `plant:source=solar`, or a generator area with `generator:source=solar`, of a hectare or more) and the nearest one, and the share protected: PAD-US 4.1's fee areas in California (USGS, public domain), strictly when of GAP status 1 or 2, and OpenStreetMap's protected areas in Chile, strictly when a national park, a nature reserve or of IUCN class I to IV. Distances are from the place's centre. In California the median place is 9.9 km from a substation, 1,230 places have a solar farm and 19,840 are mostly protected; in Chile, 30.9 km and 874.
+
+The finder is one statement: the limits as its `WHERE` (and never a place that has a solar farm already, nor one mostly water or snow), ranked by `ORDER BY similarity(look, :v) DESC`, where `:v` is the mean of the looks of the region's places at least a third covered by solar farms, or by `sub_km`, or by the words' vector. Near a town it keeps the places within a box and then within the circle.
+
+```bash
+python3 -I tools/land.py places --out DATA                                   # the places' centres (CHLOEDB_URL, CHLOEDB_KEY)
+python3 -I tools/land.py osm --region california --pbf california-latest.osm.pbf --out DATA   # from download.openstreetmap.fr or Geofabrik
+python3 -I tools/land.py padus --out DATA                                    # California's PAD-US fee areas
+python3 -I tools/land.py rows --region california --out DATA                 # set ops into DATA/land/patch_land_california.jsonl
+chloedb-earth load --dir DATA --only ea_places                               # adds the columns to a table made before them
+python3 -I tools/land.py write --region california --out DATA
+```
+
+## Find change
+
+`tools/years.py` keeps a clear Sentinel-2 picture of every other dry season since 2017 (June to September in California, January to March in Chile) for a set of places, each embedded by the server's SigLIP so400m, the model of the places' pictures: a row of `ea_years` a place and year, and a row of `ea_changes` a place, with its first and last looks, how far it moved (`drift`, 1 minus their cosine), the two years it moved most between (`step_year`, the later) and the words nearest each look. `pick` chose the first places from the places' files; `grow` picks more from the server's own rows (the places with a solar farm first, then the burned, the mines, the edges of towns, the water, the farms and some at random, none next to one already kept), and the steps after it fetch, embed and write only theirs. Embedding is the slow step, about 4 seconds a picture on the earth node.
+
+Find change is one statement over `ea_changes`: the limits as its `WHERE` (a box around the town, cut to the circle after), ranked by `similarity(before, :a) + similarity(after, :b)` for "a became b", `similarity(after, :b) - similarity(before, :b)` for "became b", or by `drift`.
+
+A fire watch can ask to be told of a change (`change`). `years.py watch --loop` fetches its place's years when it has none, then every six hours its newest clear picture since its last, into `ea_years` as `<place>-<YYYYMMDD>`; `serve` compares each new picture of a watched place with the one before it, when the two are at most 120 days apart (the same season), and a move of more than 0.09 (about the 90th centile of the two-yearly moves) is an alert.
+
+```bash
+python3 -I tools/years.py grow  --out DATA --per-region 900 --strata URL     # CHLOEDB_KEY
+python3 -I tools/years.py fetch --out DATA
+python3 -I tools/years.py embed --out DATA --strata URL --parallel 2
+python3 -I tools/years.py rows  --out DATA --strata URL
+chloedb-earth load --dir DATA --only ea_years,ea_changes
+python3 -I tools/years.py watch --out DATA --strata URL --loop    # the watched places every six hours; serve --chips DATA/chips
+```
+
 ## Running it
 
 The places are made once, by `tools/places.py` (Major TOM's fragments and vectors, and the layers read at each place from WorldCover, the Copernicus DEM, GHSL, Köppen-Geiger, the mining polygons, the Cropland Data Layer and FIRMS, a fire year needing three detections), California's fire perimeters by `tools/perimeters.py` (CAL FIRE FRAP's "California Fire Perimeters (all)", public, no warranty from the State: 23,320 fires since 1878 into `ea_perimeters`, and which fire burned how much of which place into `ea_burns`) and `chloedb-earth names`, which gives each GOES fire in California the name of the perimeter it matches (same year, alarm date three days before to two after its start, its centre inside the outline or within 3 km); `serve` does it hourly, and their years by `tools/years.py` (a clear Sentinel-2 scene of each dry season from Element 84's Earth Search, embedded by the server). Both need a server built with `--features vision` and the model `siglip-so400m-patch14-384` (`chloedb-server fetch-model siglip-so400m-patch14-384`, a 3.5 GB download), which also turns a search's words and a dropped picture into vectors.
@@ -52,6 +123,7 @@ python3 tools/years.py embed --out DATA && python3 tools/years.py rows --out DAT
 chloedb-earth load --dir DATA                              # the tables, and their rows
 chloedb-earth goes --region california --from 2025-01-07 --to 2025-01-09   # a stretch of GOES's archive
 chloedb-earth goes --region chile --live                   # after the newest scan kept, then each new one
+chloedb-earth sky --region california --from 720h --live   # 30 days of clouds and smoke, then each new scan
 chloedb-earth backtest --region california                 # how well the fires like each one did
 python3 tools/frames.py --replay la-2025 --sat 18 --product MCMIPC --from 2025-01-07T17:00:00Z --to 2025-01-09T06:00:00Z --box 33.55,34.75,-119.15,-117.55 --out DATA/frames
 chloedb-earth serve --public --chips DATA/chips --frames DATA/frames   # the page and its API at 127.0.0.1:7790
@@ -63,7 +135,7 @@ NASA GIBS keeps GOES's GeoColor pictures for about 90 days, which Live shows und
 
 ## Tests
 
-`cargo test --profile ci` runs the unit tests and `tests/cluster.rs`: made-up places in both regions with their vectors and years, loaded with `load`, a week of made-up GOES scans through the feed (the tracker and writes the archive goes through, seven fires in it, the last inside the Los Angeles replay), then `rules`, `backtest` and every page of `serve`, with the token and `--public`. It needs a chloedb-server binary (`CHLOEDB_SERVER_BIN`, else `../chloedb-server/target/{ci,release}/chloedb-server`) and no model, and is skipped without one unless `CHLOEDB_EARTH_NEED_SERVER` is set, as the Demos workflow does.
+`cargo test --profile ci` runs the unit tests and `tests/cluster.rs`: made-up places in both regions with their vectors and years, loaded with `load`, a week of made-up GOES scans through the feed (the tracker and writes the archive goes through, seven fires in it, the last inside the Los Angeles replay), then `rules`, `backtest`, four places' skies, a row of places' climates and every page of `serve`, with the token and `--public`. It needs a chloedb-server binary (`CHLOEDB_SERVER_BIN`, else `../chloedb-server/target/{ci,release}/chloedb-server`) and no model, and is skipped without one unless `CHLOEDB_EARTH_NEED_SERVER` is set, as the Demos workflow does.
 
 ## Sizes
 

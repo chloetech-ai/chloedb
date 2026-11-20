@@ -73,6 +73,7 @@ const ICONS = {
   classic: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 3"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  stages: '<path d="M3 5h18M5.5 10h13M8 15h8M10.5 20h3"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
   warn: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
@@ -462,6 +463,8 @@ export function needs(scope, route = null) {
 }
 /** Whether the signed-in key is limited to tables (whoami's `tables`). */
 export const limited = () => !!ctx.whoami?.tables;
+/** The signed-in key's name (whoami's), or null: who saved a team view. */
+export const whoName = () => ctx.whoami?.name || null;
 /** A server that takes no token and has no keys: code shown for it sends none. */
 export const isOpenServer = () => !!ctx.whoami?.auth?.open;
 /** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
@@ -524,8 +527,18 @@ export function copyName(url, cluster = ctx.cluster) {
   if (!url) return "–";
   const f = findCopy(url, cluster);
   if (!f) return hostPort(url);
-  // The server's own texts (fleet health, events) say the same name; the node name goes in the title.
-  return f.rep.short || `s${f.shard}-${f.copy}`;
+  return shownName(f.rep) || `s${f.shard}-${f.copy}`;
+}
+/**
+ * A copy's name by the server's rule (crate::coord::shown), which its texts
+ * (fleet health, alerts, cc) say too: the `--node-name` it gave, else its
+ * short name (its address on machines of your own: OLU-402). A pod the
+ * operator runs keeps its short name (s1-0), which its pod name only lengthens.
+ */
+export function shownName(rep) {
+  const short = rep?.short || null;
+  const name = typeof rep?.name === "string" ? rep.name.trim() : "";
+  return name && !(short && /^s\d+-\d+$/.test(short)) ? name : short;
 }
 /** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
 export function copyTitle(url, cluster = ctx.cluster) {
@@ -534,7 +547,8 @@ export function copyTitle(url, cluster = ctx.cluster) {
   if (!f) return String(url);
   const r = f.rep;
   const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
-  return [`${copyName(url, cluster)}: shard ${f.shard}${role ? ", " + role : ""}`, r.name && r.name !== r.node ? `server ${r.name}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+  const shown = copyName(url, cluster);
+  return [`${shown}: shard ${f.shard}${role ? ", " + role : ""}`, r.name && r.name !== shown && r.name !== r.node ? `server ${r.name}` : null, r.short && r.short !== shown ? `copy ${r.short}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
 }
 
 // ---------------------------------------------------------------- links

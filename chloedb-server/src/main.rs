@@ -543,9 +543,13 @@ struct Args {
     /// {"text": ..., "alert": {...}} (a Slack incoming webhook takes it).
     #[arg(long)]
     alert_webhook: Option<String>,
-    /// Keep only the types of queries' parameters (not their values) in
-    /// the running and finished queries, statements and the log store.
-    #[arg(long, env = "CHLOEDB_REDACT_PARAMS")]
+    /// Keep the values of queries' parameters (up to 1 KB each query) in the
+    /// running and finished queries, statements and the log store. Without
+    /// it only their types are kept; the statement's text is kept either way.
+    #[arg(long, env = "CHLOEDB_KEEP_PARAMS")]
+    keep_params: bool,
+    /// The default now (kept so that a script that passes it still starts).
+    #[arg(long, env = "CHLOEDB_REDACT_PARAMS", hide = true)]
     redact_params: bool,
     /// What to log: a level (error, warn, info, debug, trace), or levels
     /// per module ("info,chloedb=debug"). debug logs every request.
@@ -645,7 +649,9 @@ struct Args {
     /// The address other coordinators reach this coordinator's HTTP API at
     /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
     /// the others. Default: $CHLOEDB_POD_IP and the --listen port, else the
-    /// --listen address.
+    /// --listen address. A shard's copy gives it in its health too, for
+    /// clients that write straight to each shard's primary
+    /// (`GET /v1/cluster/route` on a coordinator).
     #[arg(long, env = "CHLOEDB_PEER_URL")]
     peer_url: Option<String>,
     /// A coordinator's Contain rules' file, which they are kept in across a
@@ -1026,6 +1032,13 @@ enum Command {
         /// How many tables are copied at once.
         #[arg(long, default_value_t = 4)]
         copy_workers: usize,
+        /// Copy this table again (its Postgres name, `orders` or
+        /// `sales.orders`, or its ChloeDB name; repeat it or separate names
+        /// by commas) once the follower is following, over the rows
+        /// ChloeDB holds, which stay readable until the new copy is in;
+        /// the other tables keep following meanwhile.
+        #[arg(long, value_delimiter = ',')]
+        copy_table: Vec<String>,
         /// Drop the replication slot and exit: stop following for good, so
         /// that Postgres no longer keeps WAL for the follower.
         #[arg(long)]
@@ -1188,6 +1201,12 @@ enum Command {
         /// nothing. Edit it and give it back with --schema.
         #[arg(long)]
         plan: bool,
+        /// CSV, TSV, JSON and JSON Lines: a table made from the file's
+        /// columns searches by its words only. Without it, a table with
+        /// prose gets a vector of it (`emb`, by potion-retrieval-32M, which
+        /// the server downloads once and fills in), to search by meaning.
+        #[arg(long)]
+        no_meaning: bool,
         /// Where embedded fields' models are (see `fetch-model`).
         #[arg(long, env = "CHLOEDB_MODELS")]
         models: Option<PathBuf>,
@@ -1278,7 +1297,7 @@ const HELP_TOPICS: &[(&str, &[&str])] = &[
         "node_name", "environment", "public_url", "image_repository"
     ]),
     ("Security", &[
-        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "redact_params",
+        "allow_host", "tls_cert", "tls_key", "keys", "audit_log", "trust_proxy", "keep_params", "redact_params",
         "google_client_id", "google_allow"
     ]),
     ("Limits and timeouts", &[
@@ -1493,7 +1512,7 @@ async fn run() {
             }
             return;
         }
-        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, copy_table, drop_slot }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = chloedb_server::postgres::Options {
                 source: source.clone(),
@@ -1507,6 +1526,7 @@ async fn run() {
                 batch: (*batch).max(1),
                 copy: *copy,
                 copy_workers: *copy_workers,
+                copy_tables: copy_table.clone(),
                 crash_after: None,
             };
             if *drop_slot {
@@ -1575,9 +1595,9 @@ async fn run() {
             }
             return;
         }
-        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan }) => {
+        Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan, no_meaning }) => {
             let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
-            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan };
+            let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan, no_meaning: *no_meaning };
             let format = format
                 .as_deref()
                 .filter(|_| !files_of.sqlite && !files_of.parquet)
@@ -1630,7 +1650,12 @@ async fn run() {
     if a.replica && a.grpc == "off" {
         fail("a replica takes its primary's writes over gRPC: --replica needs --grpc");
     }
-    chloedb_server::telemetry::set_redact_params(a.redact_params);
+    // Values are kept only when asked for; --redact-params (the old way to ask for
+    // the default) wins if both are given.
+    chloedb_server::telemetry::set_redact_params(a.redact_params || !a.keep_params);
+    if a.keep_params && !a.redact_params {
+        tracing::info!("keeps the values of queries' parameters (--keep-params): they are in the running and finished queries and the log store");
+    }
     // The apps it starts itself (crate::app_procs).
     let started_apps = {
         let taken: Vec<String> = chloedb_server::apps::parse(&a.apps).unwrap_or_default().into_iter().map(|x| x.name).collect();
@@ -1868,6 +1893,11 @@ async fn run() {
         per_client: a.max_connections_per_client,
         stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
     } };
+    // Where clients reach this server, which a shard's health gives a
+    // coordinator for shard-aware clients' routes.
+    if let Ok(at) = http.local_addr() {
+        let _ = svc.http_url.set(chloedb_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     // fleet: a coordinator names itself to its shards, which tell the others.
     if coordinator {
         let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));

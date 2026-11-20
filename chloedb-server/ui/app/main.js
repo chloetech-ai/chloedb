@@ -5,7 +5,7 @@
 // copies, nodes, tables, statements, alerts and keys, and the shortcuts.
 
 import { h, icon, clear, store, bus, api, at, connectionName, setToken, hasToken, signInNeeded, signedIn, modal, toast, menu, seg, fmt, copy, connection, can, needs, link, when, whenTitle, span, copyName, copyTitle, isNarrow, logsLink, keyLabel, isIdle, IDLE_SLOW } from "./core.js";
-import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, pendingProposals, homeProblems, homeStatus, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, setPolls, overnight, isSandbox } from "./data.js";
+import { state, start, setRange, setWindow, setZoom, setPaused, refreshWho, pendingProposals, homeProblems, homeStatus, RANGES, rangeFromUrl, rangeParams, timeRange, firingAlerts, firingNow, fresh, clusterName, environment, isCoordinator, roleKnown, setPolls, overnight, isSandbox } from "./data.js";
 import { VIEWS, NAV, REDIRECTS } from "./views/index.js";
 import { loadApps, listApps, appIcon } from "./views/apps.js";
 import { openFeedback, setViewOf } from "./feedback.js";
@@ -401,7 +401,7 @@ function drawCluster() {
   const cn = crumbs.querySelector(".cname");
   if (cn && cn.textContent !== (name || location.host)) drawCrumbs();
   const shards = c?.shards?.length;
-  brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? (isSandbox() ? "sandbox" : "environment not set") : "connecting…");
+  brandSub.textContent = [env || null, coords > 1 ? fmt.plural(coords, "coordinator") : shards != null ? fmt.plural(shards, "shard") : state.health && roleKnown() && !isCoordinator() ? "one server" : null].filter(Boolean).join(" · ") || (state.health ? (!roleKnown() ? "sign in to tell what it runs" : isSandbox() ? "sandbox" : "environment not set") : "connecting…");
   brand.title = connectionName ? `${connectionName}: ${name || "a cluster"}${env ? " (" + env + ")" : ""}, through this hub (${location.host}), which adds its key to every call. Click for the other connections` : `${name || "This server"}${env ? " (" + env + ")" : ", environment not set"} at ${location.host}. Click for its other coordinators and the ones you used`;
   const prod = env != null && /^prod/i.test(env);
   const sandbox = isSandbox();
@@ -447,6 +447,10 @@ export function shareLink() {
   const r = parse();
   const p = new URLSearchParams(r.params);
   p.delete("range"); p.delete("from"); p.delete("to");
+  // A view that knows more than its address (the workbench's query, the
+  // builder's team view) puts it in the link (GRACE-407).
+  const extra = current?.mod?.shareParams?.();
+  if (extra) for (const [k, v] of Object.entries(extra)) if (v != null) p.set(k, v);
   if (!top.classList.contains("no-range")) { const { from, to } = rangeParams({ absolute: true }); p.set("from", from); p.set("to", to); }
   return `${location.origin}${location.pathname}#/${[r.id, ...r.rest].map(encodeURIComponent).join("/")}?${p}`;
 }

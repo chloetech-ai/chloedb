@@ -342,6 +342,43 @@ fn vacuum_returns_space_and_spares_snapshots() {
     db.check().unwrap();
 }
 
+/// `trim` is the part of vacuum a server runs by itself: it truncates the
+/// file down to the space deleted and merged-away segments left, spares
+/// snapshots, and keeps every row; it never makes the file grow.
+#[test]
+fn trim_returns_space_without_growing_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.strata");
+    let src = Arc::new(MapSource::default());
+    let db = Database::create(&path, schema(), DbOptions { segment_max_docs: 1000, ..opts(&src) }).unwrap();
+    let docs: Vec<_> = (0..6000).map(|i| doc(i, 0)).collect();
+    docs.iter().for_each(|d| src.put(d));
+    db.bulk_load(docs).unwrap();
+    let mut want = keys(0..6000);
+    let mut tx = db.begin().unwrap();
+    for i in (0..6000).filter(|i| i % 3 != 0) {
+        tx.delete(&Value::Str(key(i))).unwrap();
+        want.remove(&key(i));
+    }
+    tx.commit().unwrap();
+    db.flush().unwrap();
+    let policy = MergePolicy { max_deleted_ratio: 0.5, ..MergePolicy::default() };
+    assert_eq!(db.merge(&policy).unwrap().merges, 6);
+    let before = db.file_stats();
+    assert!(before.free_pages > 0, "{before:?}");
+    let mut peak = before.file_bytes;
+    let mut total = 0;
+    for _ in 0..3 {
+        total += db.trim(std::time::Duration::from_secs(60)).unwrap();
+        peak = peak.max(db.file_stats().file_bytes);
+    }
+    let after = db.file_stats();
+    assert!(total > 0 && after.file_bytes + total <= before.file_bytes, "{} -> {}", before.file_bytes, after.file_bytes);
+    assert!(peak <= before.file_bytes, "the file grew to {peak} from {}", before.file_bytes);
+    assert_keys(&db.snapshot(), &want);
+    db.check().unwrap();
+}
+
 /// A forget's merge: only the segments named are rewritten, and the pages
 /// the old ones freed are written with zeros, so the deleted document's
 /// bytes are in no page of the file (nor in the tail of a page a later

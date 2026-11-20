@@ -538,3 +538,34 @@ async fn a_coordinator_started_on_its_first_list_after_a_copy_was_replaced_serve
     })
     .await;
 }
+
+/// A shard-aware client: `GET /v1/cluster/route` gives the slot map and
+/// each shard's primary by its gRPC and HTTP URLs (its health's
+/// `http_url`), a write sent there straight is taken and read back through
+/// the coordinator, and a key the route's map places elsewhere would be
+/// refused by the shard. A coordinator routing by the hash before slots
+/// has no map to give (409), which a cluster of today never is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_aware_client_writes_to_the_primary_the_route_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Cluster::start(dir.path()).await;
+    let (s, r) = c.call("GET", "/v1/cluster/route", None).await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(r["shards"].as_array().map(Vec::len), Some(1), "{r}");
+    assert_eq!(r["shards"][0]["primary"], c.copies[0].url(), "{r}");
+    assert_eq!(r["shards"][0]["primary_http"], c.copies[0].base(), "{r}");
+    let map = chloedb_server::slots::SlotMap::from_json(&r["map"]).unwrap();
+    assert_eq!(map.shard_of(&chloedb::Value::Str("k1".into())), 0);
+    // Straight to the primary, with the cluster's key, then read through
+    // the coordinator.
+    let (s, w) = http(&c.copies[0].base(), "POST", "/v1/write", CLUSTER, Some(json!({"ops": [{"op": "insert", "table": "acks", "doc": {"id": "k1", "n": 1}}]}))).await;
+    assert_eq!(s, 200, "{w}");
+    c.until("the write reads back through the coordinator", || async {
+        let (s, a) = c.call("POST", "/v1/query", Some(json!({"sql": "SELECT n FROM acks WHERE id = 'k1'"}))).await;
+        s == 200 && a["rows"].as_array().is_some_and(|r| r.len() == 1)
+    })
+    .await;
+    // A replica takes no write.
+    let (s, w) = http(&c.copies[1].base(), "POST", "/v1/write", CLUSTER, Some(json!({"ops": [{"op": "insert", "table": "acks", "doc": {"id": "k2", "n": 1}}]}))).await;
+    assert_ne!(s, 200, "{w}");
+}

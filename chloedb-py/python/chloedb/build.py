@@ -966,7 +966,7 @@ def at_least(n: int | str, *conds: Expr, min_rows: int | None = None, max_rows: 
     return _AtLeast(n, [_expr(c) for c in conds], _rows("at_least", n, min_rows, max_rows))
 
 
-def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | None = None, min_rows: int | None = None, max_rows: int | None = None) -> Expr:
+def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | None = None, min_rows: int | None = None, max_rows: int | None = None, fuzzy: int | str | None = None) -> Expr:
     """BM25 of a TEXT field for `text`, as a score. `text` may weigh a
     word (`word^2`), require one (`+word`, `+"a phrase"`) or exclude one
     (`-word`); `syntax="plain"` reads it as plain words. `min=2` or
@@ -983,6 +983,8 @@ def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | N
         opts: dict[str, Any] = {}
         if syntax is not None:
             opts["syntax"] = {"text": syntax}
+        if fuzzy is not None:
+            opts["fuzzy"] = {"text": fuzzy} if isinstance(fuzzy, str) else {"int": fuzzy}
         if min is not None:
             opts["min"] = {"text": min} if isinstance(min, str) else {"int": min}
         if opts:
@@ -992,10 +994,10 @@ def bm25(field: str, text: str, *, syntax: str | None = None, min: int | str | N
     def sql(s: Any) -> str:
         if rows:
             raise ChloeDBError("bm25's min_rows and max_rows are not in frames yet")
-        opts = "".join(f", {k} => {s.value(v)}" for k, v in (("syntax", syntax), ("min", min)) if v is not None)
+        opts = "".join(f", {k} => {s.value(v)}" for k, v in (("syntax", syntax), ("min", min), ("fuzzy", fuzzy)) if v is not None)
         return f"bm25({s.col(field)}, {s.param(text)}{opts})"
 
-    extra = "".join(f", {k}={v!r}" for k, v in (("syntax", syntax), ("min", min), *rows.items()) if v is not None)
+    extra = "".join(f", {k}={v!r}" for k, v in (("syntax", syntax), ("min", min), ("fuzzy", fuzzy), *rows.items()) if v is not None)
     site = lambda ctx: {"bm25": {"field": ctx.field(field)[0], "text": text}}
     return _Fn(build, f"bm25({field!r}, {text!r}{extra})", guard=_guarded(rows, site, min), sql=sql, fields=[field], fname="bm25")
 

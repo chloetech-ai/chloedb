@@ -16,7 +16,9 @@ import pytest
 HERE = Path(__file__).resolve().parent.parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(REPO / "chloedb-py" / "python"))
+# An installed chloedb (pip install chloedb, or maturin develop) comes first;
+# without one, the client in this checkout talks to the servers.
+sys.path.append(str(REPO / "chloedb-py" / "python"))
 
 SERVER = os.environ.get("CHLOEDB_SERVER") or str(REPO / "chloedb-server" / "target" / "release" / "chloedb-server")
 

@@ -95,6 +95,7 @@
 //! | `POST /v1/logs/query` | `{sql, params?, timeout_ms?, scope?}` (SQL over tables `logs` and `queries`) | rows of the server's log store ([`crate::logstore`]); on a coordinator, of every server's merged, the other coordinators' stores too, with `nodes`: each server's rows, time and error (`"scope": "local"`: its own store alone; with `"partial": true`, in the form another coordinator merges) |
 //! | `GET /v1/logs/store` | | `{store, schemas, nodes?}`: the log store (its path, rows, bytes, retention, what it wrote, dropped and deleted; null without one), its tables, and on a coordinator every server's |
 //! | `GET /v1/system`, `/v1/cluster?brief=1`, `/v1/routes` | | the process and its limits; the cluster's copies (`brief=1`: without each copy's `detail`); requests by route and queries by kind |
+//! | `GET /v1/cluster/route` | | on a coordinator, for clients that write straight to each shard's primary: `{epoch, map, shards: [{shard, primary, primary_http}], moving}` (a write key) |
 //! | `GET /v1/cluster/slots?all=1` | | on a coordinator, what it routed to each slot ([`crate::coord::heat`]): per shard and over the last 1, 5 and 15 minutes, keyed reads and writes a second and requests sent to every shard, the slots most counted, and whether a shard is hot over a range of its slots or because of one (`all=1`: every slot counted since it started; `window=1m`, `5m` or `15m`: every slot counted in that window) |
 //! | `GET /v1/admin/slots/keys` | | on a coordinator started with `--slot-heat-keys`, the keys sampled as routed most, with their slot and shard |
 //! | `GET /v1/coordinators?window=1` | | `{coordinators: [{url, name, this, last_seen_ms, version}], gone, live_ms}`: this cluster's coordinators, from what the shards heard ([`crate::peers`]); `window=1` adds this one's last minute and 5 minutes of searches |
@@ -357,6 +358,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/admin/check", post(admin_check))
         .route("/v1/admin/scrub", post(admin_scrub))
         .route("/v1/admin/vacuum", post(admin_vacuum))
+        .route("/v1/admin/optimize", post(admin_optimize))
         .route("/v1/admin/verify", post(admin_verify))
         .route("/v1/admin/promote", post(admin_promote))
         .route("/v1/admin/follow", get(follow_view))
@@ -433,6 +435,7 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/system", get(system))
         .route("/v1/cluster", get(cluster))
         .route("/v1/cluster/slots", get(cluster_slots))
+        .route("/v1/cluster/route", get(cluster_route))
         .route("/v1/admin/slots/keys", get(admin_slot_keys))
         // Apps: their list, and requests forwarded to them (crate::apps).
         .route("/v1/apps", get(apps_list))
@@ -728,7 +731,8 @@ struct CopyOf {
 fn copy_of(snap: &Json, node: &str) -> Result<CopyOf, ApiError> {
     for s in snap["shards"].as_array().into_iter().flatten() {
         for r in s["replicas"].as_array().into_iter().flatten() {
-            if r["url"] == node || r["short"] == node {
+            // By its URL, its short name or the name the command center shows (OLU-402).
+            if r["url"] == node || r["short"] == node || crate::coord::shown(r) == node {
                 return Ok(CopyOf {
                     shard: s["shard"].as_u64().unwrap_or(0),
                     url: r["url"].as_str().unwrap_or_default().to_string(),
@@ -1317,7 +1321,7 @@ pub(crate) fn route_scope(method: &axum::http::Method, route: &str) -> Scope {
     match route {
         // All a feed key may read: the feed, and whether it is up.
         "/v1/feed" | "/v1/feed/keys" | "/v1/feed/promoted" | "/v1/health" | "/v1/whoami" => Scope::Feed,
-        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" => Scope::Write,
+        "/v1/write" | "/v1/import" | "/v1/stream" | "/v1/agent" | "/v1/judge" | "/v1/cluster/route" => Scope::Write,
         // connectors: a system's push, written with its own key.
         "/v1/connectors/:name/push" => Scope::Write,
         "/v1/kv/:table/:key" if method == Method::PUT || method == Method::DELETE => Scope::Write,
@@ -3252,8 +3256,9 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
 /// when it was not there.
 ///
 /// `?table=NAME` names it, and a table not there is made from the rows'
-/// columns and values ([`chloedb::ingest::create_for`]: an admin's
-/// statement, so it needs an admin key), unless `?create=false`. Without a
+/// columns and values ([`chloedb::ingest::create_for_with`]: an admin's
+/// statement, so it needs an admin key), unless `?create=false`; its prose
+/// gets a vector to search by meaning, unless `?meaning=false`. Without a
 /// table the rows go to the only table of the database when it has at
 /// least half of their columns, as before; rows that do not fit it, or a
 /// database of several tables or none, are refused with what to name,
@@ -3263,7 +3268,11 @@ async fn import_table(app: &App, who: &Principal, q: &std::collections::HashMap<
         if app.svc.table(t).await.is_ok() || !flag(q, "create", true)? {
             return Ok((Some(t.clone()), None));
         }
-        let sql = chloedb::ingest::create_for(t, body, format, q.get("key").map(String::as_str)).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
+        // Prose is searched by meaning too, by a model this server has or
+        // downloads (unless ?meaning=false, or --no-fetch-models without it).
+        let model = chloedb::ingest::MEANING_MODEL;
+        let meaning = (flag(q, "meaning", true)? && (app.svc.fetch_models || chloedb::embed::to_fetch(model, &app.svc.models_dir()).is_none())).then_some(model);
+        let sql = chloedb::ingest::create_for_with(t, body, format, q.get("key").map(String::as_str), meaning).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
         app.svc.sql(who, &sql, &chloedb::query::Params::default(), After::default(), 0).await.map_err(|e| ApiError { message: format!("{} (there is no table {t}: the import makes it from the rows' columns with {sql}; ?create=false refuses instead)", e.message), ..e })?;
         return Ok((Some(t.clone()), Some(sql)));
     }
@@ -3983,6 +3992,35 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let who = who(w);
     reads_ok(&app, &who, sql).await?;
     let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    // `EXPLAIN SELECT ...` as it is typed in /v1/sql explains the statement.
+    let stripped = chloedb::query::sql::explained(sql)?.map(|(inner, _)| inner);
+    let sql = stripped.as_deref().unwrap_or(sql);
+    // An INSERT, UPDATE or DELETE is explained and not run: its plan, and
+    // how it picks its rows.
+    if matches!(sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase().as_str(), "insert" | "update" | "delete") {
+        let t0 = std::time::Instant::now();
+        let (plan, note) = app.svc.explain_plan(sql, &params, body_u64(&b, "timeout_ms")?, app.svc.budget_for(Some(&who), body_budget(&b)?)).await?;
+        let catalog = app.svc.catalog();
+        let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+        let mut lines = plan.explain(&tables);
+        if let Some(n) = note {
+            lines.insert(1.min(lines.len()), n);
+        }
+        return Ok(AxJson(json!({
+            "kind": "explain",
+            "logical": format!("{:#?}", plan.root),
+            "ir": plan.to_json()?,
+            "tree": json!(lines),
+            // Nothing ran: no executor lines, steps or rows.
+            "ran": false,
+            "plan": [],
+            "steps": [],
+            "filter_docs": 0,
+            "scored": 0,
+            "rows": 0,
+            "took_ms": t0.elapsed().as_secs_f64() * 1e3,
+        })));
+    }
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;
@@ -4483,6 +4521,13 @@ async fn admin_check(State(app): State<App>) -> Res {
 
 async fn admin_vacuum(State(app): State<App>) -> Res {
     Ok(AxJson(json!({"bytes_freed": app.svc.vacuum().await?})))
+}
+
+/// Writes what the memtables hold and merges every table's segments into as
+/// few as the merge policy allows ([`Service::optimize`]): what restores the
+/// latency of `recommend(...)` and of searches after many small writes.
+async fn admin_optimize(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.optimize().await?))
 }
 
 async fn admin_verify(State(app): State<App>, w: Option<axum::Extension<Principal>>, body: Option<AxJson<Json>>) -> Result<Response, ApiError> {
@@ -6231,6 +6276,12 @@ async fn cluster_slots(State(app): State<App>, Query(q): Params) -> Res {
         }
     }
     Ok(AxJson(app.svc.coordinator()?.slot_heat(all, window)))
+}
+
+/// `GET /v1/cluster/route`: the slot map and each shard's primary, for a
+/// client that writes straight to the primaries ([`crate::coord::Coordinator::route`]).
+async fn cluster_route(State(app): State<App>) -> Res {
+    Ok(AxJson(app.svc.coordinator()?.route().await?))
 }
 
 /// `GET /v1/admin/slots/keys`: the keys sampled as routed most, which

@@ -121,6 +121,29 @@ For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
    Replace it (tier 2: a plan and a change request) if it does not catch
    up.
 
+## A Postgres follower holds a table
+
+For: `follow-table-held`
+
+A table `chloedb-server follow-postgres` could not write is held: it is not
+followed (its rows stay as they were), the other tables are, and it is tried
+again after 30 seconds, then twice as long each time up to 15 minutes
+([postgres.md](postgres.md#when-one-table-fails)).
+
+1. Read which and why: Data > Connectors, or `GET /v1/admin/connectors`
+   (the follower's `table_states` with `state` `held`, and its `error`,
+   which names the table, the column and the row's key); on `/metrics`,
+   `chloedb_follow_tables_held` and `chloedb_follow_table_error_info`.
+2. Fix the cause where it is: a value ChloeDB refuses, in the row in
+   Postgres; a table without a primary key, by giving it one in Postgres
+   (`ALTER TABLE ... ADD PRIMARY KEY`) or taking it out of the publication;
+   a ChloeDB table someone made with a type that cannot read Postgres's
+   values, by fixing it in ChloeDB. Changing data in Postgres is the
+   owner's (tier 2: a change request).
+3. Then wait for the next try (`retry_in_s`), or start the follower again
+   with `--copy-table <table>` to copy it now (tier 1): its rows stay
+   readable throughout, and the other tables keep following.
+
 ## The disk is filling
 
 For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
@@ -136,7 +159,14 @@ For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
 3. More room (tier 2): add disk in the spec (`POST /v1/admin/kube/plan`),
    or add a shard and move slots to it (`POST /v1/admin/plan`), each filed
    as a change request.
-4. Deleted rows still on disk: `POST /v1/admin/vacuum` frees them for good
+4. Deleted or expired rows still on disk: a server that takes writes gives the
+   free space of its file back by itself, every 5 minutes, once 64 MB and a
+   sixteenth of the file are free (it moves segments from the end of the file
+   into free space below them and truncates the file; it needs no room and
+   loses nothing; not on a replica). **Tables and storage** shows the file
+   (`totals.file_bytes` of `GET /v1/index/tables`) beside the tables' live
+   data. When the free space is in pieces too small for the segments above
+   them, `POST /v1/admin/vacuum` frees them for good
    (tier 3: it loses old versions, and is a person's alone). It needs room
    first: the file grows while it runs, by what lies above its first free
    gap, which is written twice (in a persona study, a 1.4 GB file reached

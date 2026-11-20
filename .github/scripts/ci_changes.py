@@ -68,7 +68,7 @@ documentation site, Markdown files and benchmark results run nothing, as
 before (see the top of ci.yml).
 
 The demos (chloedb-netops, chloedb-hn, chloedb-sound, chloedb-arxiv, chloedb-gh, chloedb-backbone, chloedb-earth,
-chloedb-swarm, chloedb-experiments, examples/feature-store, examples/parley) are on a release train of their own: CI and its required
+chloedb-swarm, chloedb-experiments, chloedb-parley, examples/feature-store, examples/parley) are on a release train of their own: CI and its required
 check `CI result` do not test them, and a change only under them runs
 nothing here. The workflow Demos (demos.yml) tests them, on a pull request
 that touches one and every night, and a failure there does not hold a
@@ -172,7 +172,7 @@ CI_JOBS = {
 NOTHING = re.compile(
     r"^("
     # The demo train (demos.yml).
-    r"chloedb-netops/|chloedb-hn/|chloedb-sound/|chloedb-arxiv/|chloedb-gh/|chloedb-backbone/|chloedb-earth/|chloedb-swarm/|chloedb-experiments/|examples/feature-store/|examples/parley/"
+    r"chloedb-parley/|chloedb-netops/|chloedb-hn/|chloedb-sound/|chloedb-arxiv/|chloedb-gh/|chloedb-backbone/|chloedb-earth/|chloedb-swarm/|chloedb-experiments/|examples/feature-store/|examples/parley/"
     # The other workflows; CI calls none of them.
     r"|\.github/workflows/(?!ci\.yml$)[^/]+\.ya?ml$"
     # Their scripts: door_check.py (doors.yml), nightly_report.py
@@ -393,7 +393,7 @@ def self_test():
     assert on(["chloedb-sound/src/sound.rs", "chloedb-sound/ui/view.js", "chloedb-sound/tools/prepare.py"]) == set()
     assert on(["chloedb-backbone/src/rules.rs", "chloedb-backbone/ui/view.js", "chloedb-backbone/deploy/k8s.yaml"]) == set()
     assert on(["chloedb-earth/src/feed.rs", "chloedb-earth/ui/view.js", "chloedb-earth/tools/places.py", "chloedb-earth/deploy/k8s.yaml"]) == set()
-    assert on(["examples/parley/parley/app.py", "examples/feature-store/featurestore.py"]) == set()
+    assert on(["examples/parley/parley/app.py", "chloedb-parley/src/brain.rs", "examples/feature-store/featurestore.py"]) == set()
     assert on(["chloedb-netops/src/lib.rs", "chloedb-sheets/src/lib.rs"]) == {"any", "test:chloedb-sheets", "smoke", "smoke_sheets", "docs", "server"}
     assert on(["chloedb-crawl/src/lib.rs"]) == {"any", "test:chloedb-crawl", "smoke", "smoke_crawl", "docs", "server"}
     assert on(["chloedb-workbench/src/main.rs"]) == {"any", "test:chloedb-workbench"}
@@ -465,6 +465,10 @@ jobs:
     # Every file a crate compiles in from outside its folder, or that is
     # Markdown, reaches that crate's tests (or its package's jobs).
     for crate, path in sorted(compiled_in()):
+        # A demo that compiles in another demo's file (chloedb-parley,
+        # examples/parley's page) is tested by demos.yml on either change.
+        if NOTHING.match(crate + "/") and NOTHING.match(path) and not path.startswith(".github/"):
+            continue
         r = plan([path])
         if crate in CRATES:
             assert r["full"] or crate in r["crates"], f"{crate} compiles in {path}, which does not reach its tests: add it to COMPILED_IN"
