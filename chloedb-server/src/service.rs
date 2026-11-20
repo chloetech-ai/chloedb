@@ -2725,6 +2725,49 @@ impl Service {
         Ok(r?)
     }
 
+    /// The plan of a query, INSERT, UPDATE or DELETE `sql`, made and not run
+    /// (a write's, with the plan of the query that picks its rows), and the
+    /// line that says how a write picks them.
+    pub async fn explain_plan(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<(Plan, Option<String>), ApiError> {
+        let word = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase();
+        if !matches!(word.as_str(), "insert" | "update" | "delete") {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        }
+        let Some(w) = self.bound(|tables| chloedb::query::sql::write_plan(sql, tables, params)).await? else {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        };
+        let note = w.note.clone();
+        match w.pick.clone() {
+            Some((query, p)) => {
+                let picked = self.plan_for_explain(&query, &p, timeout_ms, budget).await?;
+                Ok((w.picking(picked), note))
+            }
+            None => Ok((w.plan(), note)),
+        }
+    }
+
+    /// `EXPLAIN <statement>` over `/v1/sql`: the plan as rows of text (one
+    /// row of JSON with `FORMAT JSON`), as an embedded database answers it.
+    async fn explain_rows(self: &Arc<Self>, sql: &str, json: bool, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let (inner, _) = chloedb::query::sql::explained(sql)?.ok_or_else(|| ApiError::bad("query error: EXPLAIN takes a statement"))?;
+        let (plan, note) = self.explain_plan(&inner, params, timeout_ms, budget).await?;
+        let rows = match json {
+            true => vec![vec![Value::Str(plan.to_json_text()?)]],
+            false => {
+                let catalog = self.catalog();
+                let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                let mut lines = plan.explain(&tables);
+                if let Some(n) = note {
+                    lines.insert(1.min(lines.len()), n);
+                }
+                lines.into_iter().map(|l| vec![Value::Str(l)]).collect()
+            }
+        };
+        let rs = ResultSet { columns: vec!["plan".into()], rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+        Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "explain", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
     /// The plan of read `sql` for `POST /v1/explain`, made as a query's
     /// is ([`Self::plan_read`]): on a blocking thread when it may take
     /// long, stopped at the request's deadline (`timeout_ms`, 0: the
@@ -4859,6 +4902,38 @@ impl Service {
         idem::forget_expired(db, chloedb::timestamp::now(), Instant::now() + self.timeout)
     }
 
+    /// Gives the database file's free space back to the file system by
+    /// itself ([`chloedb::storage::Database::trim`]), when the free pages
+    /// of its file (what a `DROP TABLE`, a retention that expired rows or a
+    /// merge left) come to `min_free` bytes and a sixteenth of the file:
+    /// a server that takes writes runs it every [`TRIM_EVERY`]
+    /// ([`crate::server::spawn_trimmer`]), so a table under retention
+    /// reaches a steady file size without `POST /v1/admin/vacuum`. It never
+    /// makes the file grow (the vacuum's lift is left to a person), waits
+    /// at most a second for the writer and moves segments for at most
+    /// [`TRIM_BUDGET`] while it holds it, so writes wait briefly (the next
+    /// run moves the rest). Not a replica. Returns the bytes the file
+    /// shrank by.
+    pub fn trim_due(&self, min_free: u64) -> Result<u64, ApiError> {
+        let Backend::Local(db) = &self.backend else { return Ok(0) };
+        if matches!(self.replication(), Replication::Replica(_)) || self.failing().is_some() {
+            return Ok(0);
+        }
+        // Pages a commit freed are reusable two commits on (and a live
+        // snapshot holds them longer): they count, as the trim's own commits
+        // make them free. A server that only appends to its log between
+        // flushes commits no version that would.
+        let f = db.storage().file_stats();
+        let free = (f.free_pages + f.pending_pages) * chloedb::storage::pager::PAGE as u64;
+        if free < min_free || free * 16 < f.file_bytes {
+            return Ok(0);
+        }
+        let _by = self.admit_write()?;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let db = db.clone();
+        wait_for_writer(deadline, || Ok(db.storage().trim(TRIM_BUDGET)?))
+    }
+
     /// Rows of table `table` (the first without one) by primary key,
     /// read without SQL ([`Db::get_many_at`]): per key, its live row as
     /// `SELECT *` answers it and the number of the write that last changed
@@ -5115,7 +5190,7 @@ impl Service {
                 let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), budget, ..Default::default() }).await?;
                 return Ok(SqlAnswer::Rows(a));
             }
-            Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
+            Command::Explain { json } => return self.explain_rows(sql, json, params, timeout_ms, budget).await,
             // ONB-16: the tables' names, as GET /v1/tables lists them for
             // this key (a coordinator's from what its shards hold).
             Command::ShowTables => {
@@ -8039,6 +8114,15 @@ pub(crate) fn checkpoint_name(name: &str) -> Result<&str, ApiError> {
     let ok = !name.is_empty() && name.len() <= 200 && !name.starts_with('.') && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
     ok.then_some(name).ok_or_else(|| ApiError::bad(format!("bad checkpoint name {name:?}: use letters, digits, '.', '_' and '-', not starting with '.'")))
 }
+
+/// How often a server looks for free space in its file to give back ([`Service::trim_due`]).
+pub const TRIM_EVERY: Duration = Duration::from_secs(300);
+
+/// The free space [`Service::trim_due`] waits for: below it, the file keeps it for the writes to come.
+pub const TRIM_MIN_FREE: u64 = 64 << 20;
+
+/// How long [`Service::trim_due`] moves segments for while it holds the writer.
+pub const TRIM_BUDGET: Duration = Duration::from_secs(2);
 
 /// Runs `write` until it gets the writer or `deadline` passes: Strata
 /// answers `Busy` (503) rather than queueing while another write, or a

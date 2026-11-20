@@ -87,6 +87,13 @@ jobs:
         run: |
           v=$(python3 -c 'import tomllib; print(tomllib.load(open("chloedb-py/pyproject.toml", "rb"))["project"]["version"])')
           test "$GITHUB_REF_NAME" = "chloedb-py-v$v" || test "$GITHUB_REF_NAME" = "strata-py-v$v"
+      # The notices of every crate compiled into the extension (LENA-408:
+      # 0.3.8's wheels had LICENSE alone), in the package, so every wheel
+      # carries chloedb/THIRD-PARTY-NOTICES.md. The file is not in
+      # chloedb-py/.gitignore: maturin leaves the files git ignores out of
+      # the wheel.
+      - name: Third-party notices
+        run: python3 packaging/sbom/sbom.py --crate chloedb-py --name chloedb --platform ${{ matrix.platform }} --notices chloedb-py/python/chloedb/THIRD-PARTY-NOTICES.md
       - name: Build the wheel
         if: ${{ !matrix.manylinux }}
         working-directory: chloedb-py
@@ -116,7 +123,7 @@ jobs:
           ! ls chloedb-py/dist/*.whl | grep -v "manylinux_${{ matrix.manylinux }}_"
       # Every wheel carries the licence (LENA-202: 0.3.7's had none) in its
       # dist-info, as pyproject.toml's license-files says.
-      - name: The wheel carries LICENSE
+      - name: The wheel carries LICENSE and the third-party notices
         shell: bash
         run: |
           python3 - chloedb-py/dist/*.whl <<'PY'
@@ -130,6 +137,9 @@ jobs:
                   meta = z.read(names[0].replace("licenses/LICENSE", "METADATA")).decode()
                   assert "License-File: LICENSE" in meta and "License-Expression: Apache-2.0" in meta, meta[:600]
               print(path, "carries", names[0])
+              with zipfile.ZipFile(path) as z:
+                  assert "chloedb/THIRD-PARTY-NOTICES.md" in z.namelist(), f"{path} has no chloedb/THIRD-PARTY-NOTICES.md"
+                  assert b"## " in z.read("chloedb/THIRD-PARTY-NOTICES.md"), f"{path}: its notices are empty"
           PY
       # The wheel installs into an empty virtualenv, with no Rust to build
       # anything with, and the embedded tests run against it there.

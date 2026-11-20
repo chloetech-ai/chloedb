@@ -1,0 +1,595 @@
+{
+ "at": "2026-11-20T11:16:15Z",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "writes_per_s": 50,
+ "reads_per_s": 10,
+ "timeout_s": 30,
+ "kill_down_s": 30,
+ "freeze_s": 20,
+ "steady_s": 10,
+ "preload": 5000,
+ "chloedb": {
+  "version": "chloedb-server 0.3.9 (built from a3283ace6c)",
+  "preload_s": 0.15,
+  "memory_kb": 458137,
+  "drills": [
+   {
+    "drill": "kill",
+    "target": "s0a",
+    "event_s": 30.0,
+    "whole_after_s": 2.04,
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 0.03,
+     "longest_gap_s": 0.04,
+     "p50_ms": 3.787,
+     "p95_ms": 5.486,
+     "p99_ms": 13.1,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 2039,
+     "ok": 2039,
+     "refused": 0,
+     "sent_again": 1,
+     "tries": 2048,
+     "longest_wait_s": 2.28,
+     "longest_gap_s": 2.3,
+     "p50_ms": 4.007,
+     "p95_ms": 6.062,
+     "p99_ms": 16.2,
+     "errors": {
+      "(503, {'docs': 'https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover', 'error': '12": 1
+     }
+    },
+    "reads": {
+     "sent": 421,
+     "ok": 421,
+     "refused": 0,
+     "longest_wait_s": 0.01,
+     "longest_gap_s": 0.11,
+     "p50_ms": 5.129,
+     "p95_ms": 6.357,
+     "p99_ms": 9.2,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.01,
+     "longest_gap_s": 0.11,
+     "p50_ms": 5.084,
+     "p95_ms": 6.561,
+     "p99_ms": 7.7,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "kill-000502",
+      "at_s": 0.04,
+      "wait_s": 2.28,
+      "ok": true,
+      "tries": 10,
+      "first_err": "(503, {'docs': 'https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover', 'error': '127.0.0.1:50179 (shard 0): tcp connect error', 'error_code': 'unavailable', 'hint': 'a copy, a shard or a hosted model did not answer: send it again after Retry-After seconds', 'retryable': True})",
+      "last_err": "(503, {'docs': 'https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover', 'error': '127.0.0.1:50179 (shard 0): tcp connect error', 'error_code': 'unavailable', 'hint': 'a copy, a shard or a hosted model did not answer: send it again after Retry-After seconds', 'retryable': True})"
+     },
+     {
+      "id": "kill-001749",
+      "at_s": 26.24,
+      "wait_s": 0.07,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "kill-002148",
+      "at_s": 34.25,
+      "wait_s": 0.05,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   },
+   {
+    "drill": "freeze",
+    "target": "s0c",
+    "event_s": 20.0,
+    "whole_after_s": 1.52,
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 7.26,
+     "longest_gap_s": 7.26,
+     "p50_ms": 4.073,
+     "p95_ms": 5.741,
+     "p99_ms": 9.4,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 1265,
+     "ok": 1265,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 1265,
+     "longest_wait_s": 7.26,
+     "longest_gap_s": 7.26,
+     "p50_ms": 4.176,
+     "p95_ms": 6.652,
+     "p99_ms": 16.3,
+     "errors": {}
+    },
+    "reads": {
+     "sent": 316,
+     "ok": 316,
+     "refused": 0,
+     "longest_wait_s": 0.11,
+     "longest_gap_s": 0.2,
+     "p50_ms": 5.225,
+     "p95_ms": 6.987,
+     "p99_ms": 106.1,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.11,
+     "longest_gap_s": 0.11,
+     "p50_ms": 5.22,
+     "p95_ms": 7.397,
+     "p99_ms": 12.0,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "freeze-000500",
+      "at_s": -0.0,
+      "wait_s": 7.26,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "freeze-000799",
+      "at_s": 12.22,
+      "wait_s": 0.05,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "freeze-000849",
+      "at_s": 13.22,
+      "wait_s": 0.05,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   },
+   {
+    "drill": "rolling",
+    "target": "s0b",
+    "event_s": 4.48,
+    "whole_after_s": 0.0,
+    "steps": [
+     {
+      "step": "restart s0a",
+      "s": 0.27
+     },
+     {
+      "step": "restart s0c",
+      "s": 0.27
+     },
+     {
+      "step": "handover shard 0 to s0a",
+      "s": 1.54,
+      "status": 200
+     },
+     {
+      "step": "restart s0b",
+      "s": 0.28
+     },
+     {
+      "step": "restart s1b",
+      "s": 0.27
+     },
+     {
+      "step": "restart s1c",
+      "s": 0.27
+     },
+     {
+      "step": "handover shard 1 to s1b",
+      "s": 1.29,
+      "status": 200
+     },
+     {
+      "step": "restart s1a",
+      "s": 0.27
+     }
+    ],
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 0.03,
+     "longest_gap_s": 0.03,
+     "p50_ms": 4.16,
+     "p95_ms": 6.023,
+     "p99_ms": 9.2,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 725,
+     "ok": 725,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 725,
+     "longest_wait_s": 0.04,
+     "longest_gap_s": 0.06,
+     "p50_ms": 4.076,
+     "p95_ms": 7.582,
+     "p99_ms": 19.2,
+     "errors": {}
+    },
+    "reads": {
+     "sent": 145,
+     "ok": 145,
+     "refused": 0,
+     "longest_wait_s": 0.01,
+     "longest_gap_s": 0.11,
+     "p50_ms": 5.39,
+     "p95_ms": 9.652,
+     "p99_ms": 12.3,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.01,
+     "longest_gap_s": 0.1,
+     "p50_ms": 5.289,
+     "p95_ms": 6.44,
+     "p99_ms": 9.4,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "rolling-000607",
+      "at_s": 2.14,
+      "wait_s": 0.04,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "rolling-000832",
+      "at_s": 6.64,
+      "wait_s": 0.03,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "rolling-000602",
+      "at_s": 2.04,
+      "wait_s": 0.02,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   }
+  ],
+  "writes_answered": 5529,
+  "writes_refused": 0,
+  "answered_but_missing": [],
+  "refused_but_there": 0,
+  "rows": 10529,
+  "rows_expected": 10529
+ },
+ "elasticsearch": {
+  "version": "Elasticsearch 9.5.5 (Docker mirror.gcr.io/library/elasticsearch:9.5.5, three nodes, heap 1g each)",
+  "preload_s": 3.04,
+  "memory_kb": 4605344,
+  "drills": [
+   {
+    "drill": "kill",
+    "target": "es3",
+    "target_was_master": true,
+    "event_s": 30.28,
+    "whole_after_s": 21.77,
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 0.12,
+     "longest_gap_s": 0.12,
+     "p50_ms": 7.35,
+     "p95_ms": 21.033,
+     "p99_ms": 49.5,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 3103,
+     "ok": 3103,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 3103,
+     "longest_wait_s": 0.45,
+     "longest_gap_s": 0.45,
+     "p50_ms": 4.19,
+     "p95_ms": 10.612,
+     "p99_ms": 26.9,
+     "errors": {}
+    },
+    "reads": {
+     "sent": 621,
+     "ok": 621,
+     "refused": 0,
+     "longest_wait_s": 0.16,
+     "longest_gap_s": 0.22,
+     "p50_ms": 9.132,
+     "p95_ms": 20.371,
+     "p99_ms": 43.6,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.16,
+     "longest_gap_s": 0.17,
+     "p50_ms": 16.154,
+     "p95_ms": 42.129,
+     "p99_ms": 156.1,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "kill-000502",
+      "at_s": 0.04,
+      "wait_s": 0.45,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "kill-003075",
+      "at_s": 51.64,
+      "wait_s": 0.1,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "kill-003065",
+      "at_s": 51.34,
+      "wait_s": 0.1,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   },
+   {
+    "drill": "freeze",
+    "target": "es1",
+    "target_was_master": false,
+    "event_s": 20.08,
+    "whole_after_s": 0.0,
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 0.03,
+     "longest_gap_s": 0.04,
+     "p50_ms": 3.996,
+     "p95_ms": 8.148,
+     "p99_ms": 12.0,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 554,
+     "ok": 554,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 554,
+     "longest_wait_s": 20.04,
+     "longest_gap_s": 20.06,
+     "p50_ms": 3.855,
+     "p95_ms": 7.302,
+     "p99_ms": 16.1,
+     "errors": {}
+    },
+    "reads": {
+     "sent": 113,
+     "ok": 113,
+     "refused": 0,
+     "longest_wait_s": 19.99,
+     "longest_gap_s": 20.08,
+     "p50_ms": 6.654,
+     "p95_ms": 12.369,
+     "p99_ms": 21.9,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.02,
+     "longest_gap_s": 0.11,
+     "p50_ms": 6.72,
+     "p95_ms": 12.059,
+     "p99_ms": 15.8,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "freeze-000502",
+      "at_s": 0.04,
+      "wait_s": 20.04,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "freeze-000805",
+      "at_s": 25.13,
+      "wait_s": 0.03,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "freeze-000786",
+      "at_s": 24.75,
+      "wait_s": 0.03,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   },
+   {
+    "drill": "rolling",
+    "target": "es1",
+    "target_was_master": false,
+    "event_s": 77.97,
+    "whole_after_s": 0.0,
+    "steps": [
+     {
+      "step": "restart es1",
+      "s": 24.47
+     },
+     {
+      "step": "restart es2",
+      "s": 26.55
+     },
+     {
+      "step": "restart es3",
+      "s": 26.94
+     }
+    ],
+    "before": {
+     "sent": 501,
+     "ok": 501,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 501,
+     "longest_wait_s": 0.05,
+     "longest_gap_s": 0.06,
+     "p50_ms": 3.661,
+     "p95_ms": 6.972,
+     "p99_ms": 12.2,
+     "errors": {}
+    },
+    "writes": {
+     "sent": 4399,
+     "ok": 4399,
+     "refused": 0,
+     "sent_again": 0,
+     "tries": 4399,
+     "longest_wait_s": 0.7,
+     "longest_gap_s": 0.71,
+     "p50_ms": 6.468,
+     "p95_ms": 19.36,
+     "p99_ms": 45.5,
+     "errors": {}
+    },
+    "reads": {
+     "sent": 880,
+     "ok": 880,
+     "refused": 0,
+     "longest_wait_s": 0.2,
+     "longest_gap_s": 0.25,
+     "p50_ms": 14.116,
+     "p95_ms": 36.596,
+     "p99_ms": 73.8,
+     "errors": {}
+    },
+    "steady_reads": {
+     "sent": 101,
+     "ok": 101,
+     "refused": 0,
+     "longest_wait_s": 0.03,
+     "longest_gap_s": 0.13,
+     "p50_ms": 6.363,
+     "p95_ms": 12.258,
+     "p99_ms": 14.8,
+     "errors": {}
+    },
+    "held_longest": [
+     {
+      "id": "rolling-001770",
+      "at_s": 25.4,
+      "wait_s": 0.7,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "rolling-003087",
+      "at_s": 51.96,
+      "wait_s": 0.37,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     },
+     {
+      "id": "rolling-003025",
+      "at_s": 50.5,
+      "wait_s": 0.18,
+      "ok": true,
+      "tries": 1,
+      "first_err": null,
+      "last_err": null
+     }
+    ]
+   }
+  ],
+  "writes_answered": 9556,
+  "writes_refused": 0,
+  "answered_but_missing": [],
+  "refused_but_there": 0,
+  "rows": 14556,
+  "rows_expected": 14556
+ }
+}

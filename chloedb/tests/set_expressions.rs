@@ -106,17 +106,26 @@ fn set_computes_from_the_row() {
 }
 
 #[test]
-fn nulls_follow_sql_but_a_counter_starts_at_zero() {
+fn nulls_follow_sql_in_every_expression() {
     let dir = tempfile::tempdir().unwrap();
     let db = items(&dir.path().join("d.strata"));
-    // `f = f + number` counts: NULL is zero.
-    write(&db, "UPDATE items SET clicks = clicks + 1 WHERE id = 'b'");
-    assert_eq!(col(&db, "clicks")[1], Value::Int(1));
-    // Any other expression gives NULL for NULL, as in SQL.
-    write(&db, "UPDATE items SET clicks = NULL WHERE id = 'b'");
+    // NULL in gives NULL out in every form, in either order, as SELECT
+    // reads it (SAM-401): a counter spells its zero with coalesce.
+    for set in ["clicks + 1", "1 + clicks", "clicks - 1", "1 - clicks", "clicks * 2", "2 * clicks", "clicks + 0", "0 + clicks", "clicks / 2", "-clicks", "clicks + clicks", "(clicks + 1) * 2"] {
+        let select = rows(&db, &format!("SELECT {set} FROM items WHERE id = 'b'"));
+        assert_eq!(select, vec![vec![N]], "SELECT {set}");
+        write(&db, &format!("UPDATE items SET clicks = {set} WHERE id = 'b'"));
+        assert_eq!(col(&db, "clicks")[1], N, "SET clicks = {set}");
+    }
+    write(&db, "UPDATE items SET price = price - 2 WHERE id = 'c'");
+    write(&db, "UPDATE items SET price = 3 + price WHERE id = 'c'");
+    assert_eq!(col(&db, "price")[2], N);
+    write(&db, "UPDATE items SET clicks = clicks + 1 WHERE id = 'a'");
+    write(&db, "UPDATE items SET clicks = 1 + clicks WHERE id = 'a'");
+    assert_eq!(col(&db, "clicks")[0], Value::Int(5));
     write(&db, "UPDATE items SET clicks = clicks * 2, price = price + clicks");
-    assert_eq!(col(&db, "clicks"), [Value::Int(6), N, Value::Int(14)]);
-    assert_eq!(col(&db, "price"), [Value::Float(13.5), N, N]);
+    assert_eq!(col(&db, "clicks"), [Value::Int(10), N, Value::Int(14)]);
+    assert_eq!(col(&db, "price"), [Value::Float(15.5), N, N]);
     write(&db, "UPDATE items SET clicks = coalesce(clicks, 0) + 5 WHERE id = 'b'");
     assert_eq!(col(&db, "clicks")[1], Value::Int(5));
 }
@@ -133,7 +142,7 @@ fn set_refuses_what_a_row_cannot_give() {
         ("UPDATE items SET clicks = count(*)", "COUNT(...) is an aggregate"),
         ("UPDATE items SET clicks = price / 4 WHERE id = 'a'", "clicks is INT, and 2.625 is not an integer"),
         ("UPDATE items SET clicks = title || '' WHERE id = 'a'", "clicks is an INT field: give it a number, not text"),
-        ("UPDATE items SET clicks = title + 1 WHERE id = 'a'", "cannot compute"),
+        ("UPDATE items SET clicks = title + 1 WHERE id = 'a'", "title is a TEXT field, not numeric"),
         ("UPDATE items SET emb = title || '' WHERE id = 'a'", "emb is a VECTOR field"),
         ("UPDATE items SET label = tags WHERE id = 'c'", "label holds one value"),
         ("UPDATE items SET due = clicks WHERE id = 'a'", "due is a TIMESTAMP"),
