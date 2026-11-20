@@ -21,6 +21,22 @@ changes collect under "Unreleased".
   `[` as JSON without a `format`; `/v1/query` refusing a write points to
   `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
   table's search by words and meaning no longer reads "1–20 of 4 rows".
+- **Keys bound to a tenant on the OpenSearch API (KENJI-402).** One index
+  shared by tenants now gets a key per tenant: `POST /v1/admin/keys
+  {"name": "tenant-t007", "scope": "write", "tenant": {"index": "tickets",
+  "field": "tenant_id", "value": "t007"}}`. On the OpenSearch API every read
+  it makes is filtered by `tenant_id = t007` (searches and their
+  aggregations, `global` too, counts, gets by id, `_mget`, `_msearch`,
+  scrolls, deletes by query), every document it writes must hold `t007`,
+  and another tenant's document is neither read, replaced, updated nor
+  deleted by its id; it names its indexes by name (no pattern, `_all` or
+  alias), adds no field to a mapping and changes no index, alias or
+  setting. It is refused everywhere its filter is not enforced: the HTTP
+  API but `/v1/health` and `/v1/whoami`, gRPC, MCP, the feed and apps. The
+  keys file keeps it as a key of no table, which a server from before it
+  admits nowhere. Existing keys are unchanged: a key of every table still
+  reads every index there, and a key limited to tables is still refused.
+  An authentication change: it waits for a maintainer's review.
 - **A key that only appends, for a log shipper.** A key limited to tables
   takes a grant of `append` (`{"tables": {"logs_*": "append"}}`): it
   inserts new rows into those tables through `POST /v1/logs`, `POST

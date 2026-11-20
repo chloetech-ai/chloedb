@@ -201,6 +201,80 @@ pub struct Allow {
     pub routes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
+    /// A key bound to one tenant of shared indexes on the OpenSearch API
+    /// ([`Tenant`], KENJI-402): its only allowance, on a key limited to no
+    /// table at all. A server from before it drops it and reads the key
+    /// as one of no table, which opens nothing ([`Key::principal`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<Tenant>,
+}
+
+/// What a key bound to a tenant reaches (KENJI-402): the documents of
+/// `indices` whose keyword field `field` is `value`, through the
+/// OpenSearch API alone, as document-level security in OpenSearch's
+/// security plugin does. Every read of those indexes is filtered by
+/// `field = value` (searches, aggregations and `global` among them, counts,
+/// gets by id, `_mget`, scrolls, `_msearch`, deletes by query); every
+/// document it writes has `field` equal to `value`, and a document whose
+/// `field` is another's (or none) it neither replaces, updates nor deletes
+/// ([`crate::opensearch`]). It names indexes by name only (no pattern, no
+/// alias), adds no field to their mappings, and changes no index, alias or
+/// setting. Everywhere else the filter is not enforced, so the key is
+/// refused: the HTTP API but `/v1/health` and `/v1/whoami`, gRPC, MCP, the
+/// feed and apps. Its scope is `read` or `write`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tenant {
+    pub indices: Vec<String>,
+    pub field: String,
+    pub value: String,
+}
+
+impl Tenant {
+    /// A binding from the API: `{"index": "tickets", "field": "tenant_id",
+    /// "value": "t007"}` (`indices` for several).
+    pub fn of(j: &Json) -> Result<Tenant, ApiError> {
+        const FIELDS: &[&str] = &["index", "indices", "field", "value"];
+        let Json::Object(m) = j else { return Err(ApiError::bad("tenant is {\"index\": \"tickets\", \"field\": \"tenant_id\", \"value\": \"t007\"}")) };
+        if let Some(k) = m.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+            return Err(ApiError::bad(format!("{k:?} is not a field of a tenant: index (or indices), field and value")));
+        }
+        let mut indices: Vec<String> = match (m.get("index"), m.get("indices")) {
+            (Some(Json::String(s)), None) => vec![s.clone()],
+            (None, Some(Json::Array(a))) => a.iter().map(|v| v.as_str().map(String::from).ok_or_else(|| ApiError::bad("indices is a list of index names"))).collect::<Result<_, _>>()?,
+            _ => return Err(ApiError::bad("a tenant names its index, as \"index\": \"tickets\" (or \"indices\": [...], not both)")),
+        };
+        indices.sort();
+        indices.dedup();
+        if indices.is_empty() || indices.len() > 16 {
+            return Err(ApiError::bad("a tenant names 1 to 16 indexes"));
+        }
+        for i in &indices {
+            // OpenSearch's index names: lowercase, no pattern, no alias's
+            // `-x`, `_x` or `.x` (the server's own), no separator.
+            let ok = !i.is_empty() && i.len() <= 255 && !i.starts_with(['-', '_', '.', '+']) && i.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '+'));
+            if !ok {
+                return Err(ApiError::bad(format!("{i:?} is not an index's name: lowercase letters, digits, '-', '_', '.' and '+', no pattern")));
+            }
+        }
+        let field = m.get("field").and_then(Json::as_str).map(str::trim).unwrap_or_default().to_string();
+        if field.is_empty() || field.len() > 128 || field.starts_with('_') || !field.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) {
+            return Err(ApiError::bad("a tenant's field is the keyword field that holds the tenant, as \"tenant_id\" (letters, digits, '_', '.', '-')"));
+        }
+        let value = match m.get("value") {
+            Some(Json::String(s)) if !s.is_empty() && s.chars().count() <= 256 => s.clone(),
+            _ => return Err(ApiError::bad("a tenant's value is the text its field holds for this tenant, 1 to 256 characters")),
+        };
+        Ok(Tenant { indices, field, value })
+    }
+
+    pub fn json(&self) -> Json {
+        json!({"indices": self.indices, "field": self.field, "value": self.value})
+    }
+
+    /// In words: `tickets where tenant_id = "t007"`.
+    pub fn text(&self) -> String {
+        format!("{} where {} = {:?}", self.indices.join(", "), self.field, self.value)
+    }
 }
 
 /// The groups of routes a key limited to tables may be given
@@ -243,7 +317,11 @@ impl Allow {
     }
 
     pub fn json(&self) -> Json {
-        json!({"preset": self.preset, "routes": self.routes, "apps": self.apps})
+        let mut j = json!({"preset": self.preset, "routes": self.routes, "apps": self.apps});
+        if let Some(t) = &self.tenant {
+            j["tenant"] = t.json();
+        }
+        j
     }
 
     /// An allowance from the API: `routes` (names of [`ROUTE_GROUPS`]) and
@@ -264,11 +342,11 @@ impl Allow {
         if let Some(a) = apps.iter().find(|a| a.is_empty() || a.len() > 64 || !a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')) {
             return Err(ApiError::bad(format!("{a:?} is not an app's name")));
         }
-        Ok(Allow { preset: None, routes, apps })
+        Ok(Allow { preset: None, routes, apps, tenant: None })
     }
 
     fn is_empty(&self) -> bool {
-        self.preset.is_none() && self.routes.is_empty() && self.apps.is_empty()
+        self.preset.is_none() && self.routes.is_empty() && self.apps.is_empty() && self.tenant.is_none()
     }
 }
 
@@ -380,6 +458,9 @@ impl Principal {
             }
             j["allow"] = a.json();
         }
+        if let Some(t) = self.tenant() {
+            j["tenant"] = t.json();
+        }
         if let Some(r) = self.role {
             j["role"] = json!(r.name());
             j["data_scope"] = json!(self.scope.name());
@@ -411,6 +492,13 @@ impl Principal {
     /// A key limited to some tables ([`Grant`]).
     pub fn limited(&self) -> bool {
         self.tables.is_some()
+    }
+
+    /// The tenant a key is bound to on the OpenSearch API ([`Tenant`]);
+    /// such a key is limited to no table.
+    pub fn tenant(&self) -> Option<&Tenant> {
+        self.tables.as_ref()?;
+        self.allow.as_deref().and_then(|a| a.tenant.as_ref())
     }
 
     /// Whether a grant of `append` covers table `table` (MARCO-403).
@@ -852,6 +940,9 @@ impl Key {
                 j["preset"] = json!(p);
             }
             j["allow"] = a.json();
+            if let Some(t) = &a.tenant {
+                j["tenant"] = t.json();
+            }
         }
         if let Some(r) = self.role {
             j["role"] = json!(r.name());
@@ -891,12 +982,20 @@ impl Key {
             return None;
         }
         let marked = self.sha256.starts_with(LIMITED) || delegated;
+        // A key bound to a tenant (KENJI-402) is limited to no table: a
+        // server from before tenants, which drops the binding, reads it as
+        // a key of no table and lets it in nowhere.
+        let tenant = self.allow.as_ref().is_some_and(|a| a.tenant.is_some());
         let tables: Option<Arc<[Grant]>> = match (&self.tables, marked) {
-            (Some(t), true) if !t.is_empty() => Some(t.clone().into()),
+            (Some(t), true) if t.is_empty() && tenant && !delegated && self.role.is_none() => Some(t.clone().into()),
+            (Some(t), true) if !t.is_empty() && !tenant => Some(t.clone().into()),
             (None, false) => None,
             _ => return None,
         };
-        let mut scope = tables.as_deref().map_or(self.scope, |t| widest(t).min(self.scope));
+        let mut scope = match tables.as_deref() {
+            Some([]) => self.scope.min(Scope::Write),
+            t => t.map_or(self.scope, |t| widest(t).min(self.scope)),
+        };
         // A role reads tables, and writes none.
         if self.role.is_some() {
             scope = scope.min(Scope::Read);
@@ -1015,6 +1114,13 @@ impl KeySet {
                     if x.allow.is_none() && k.allow.is_some() {
                         x.allow = k.allow.clone();
                         changed = true;
+                    }
+                    // And a tenant's binding, from an allowance it kept.
+                    if let (Some(xa), Some(t)) = (x.allow.as_mut(), k.allow.as_ref().and_then(|a| a.tenant.as_ref())) {
+                        if xa.tenant.is_none() {
+                            xa.tenant = Some(t.clone());
+                            changed = true;
+                        }
                     }
                     // So do its role and whom it acts for.
                     if x.role.is_none() && k.role.is_some() {
@@ -1322,6 +1428,19 @@ impl Keys {
     #[allow(clippy::too_many_arguments)]
     pub fn create_full(&self, name: &str, scope: Scope, tables: Option<Vec<Grant>>, expires_ms: Option<u64>, owner: Option<String>, note: Option<String>, more: AgentKey, token: bool, in_cluster: bool) -> Result<(Key, String), ApiError> {
         let allow = more.allow.clone().filter(|a| !a.is_empty());
+        // A key bound to a tenant (KENJI-402): limited to no table, with no
+        // other allowance, reading or writing its tenant's documents.
+        let mut tables = tables;
+        if let Some(a) = allow.as_ref().filter(|a| a.tenant.is_some()) {
+            if tables.is_some() || a.preset.is_some() || !a.routes.is_empty() || !a.apps.is_empty() {
+                return Err(ApiError::bad("a key bound to a tenant reaches its tenant's documents on the OpenSearch API and nothing else: give it no tables, routes, apps or preset"));
+            }
+            if more.role.is_some() || !(scope == Scope::Read || scope == Scope::Write) {
+                return Err(ApiError::bad("a key bound to a tenant has the read or the write scope"));
+            }
+            tables = Some(Vec::new());
+        }
+        let tenant = tables.as_ref().is_some_and(|t| t.is_empty());
         if allow.is_some() && tables.is_none() {
             return Err(ApiError::bad("routes, apps and presets are for a key limited to tables: a key of every table reaches every route its scope allows"));
         }
@@ -1335,10 +1454,13 @@ impl Keys {
         if name.starts_with("app:") {
             return Err(ApiError::bad("a key's name does not start with app: (the names of the keys a server makes for the apps it starts)"));
         }
-        if tables.as_ref().is_some_and(|t| t.is_empty()) {
+        if !tenant && tables.as_ref().is_some_and(|t| t.is_empty()) {
             return Err(ApiError::bad("a key limited to tables names one at least"));
         }
-        let scope = tables.as_deref().map_or(scope, |t| widest(t).min(scope));
+        let scope = match tables.as_deref() {
+            Some(t) if !tenant => widest(t).min(scope),
+            _ => scope,
+        };
         if name.is_empty() || name.len() > 64 {
             return Err(ApiError::bad("a key's name has 1 to 64 characters"));
         }
@@ -2135,6 +2257,40 @@ mod tests {
         assert_eq!(at(&named, chloedb::autopilot::PROPOSALS), Some(Read));
         // A bad grant is refused, not ignored.
         assert!(sheets.narrowed("docs=sometimes").is_err());
+    }
+
+    /// A key bound to a tenant (KENJI-402): limited to no table, marked as
+    /// limited (a server from before limits never takes it), read or write
+    /// at most; a copy without its binding (a server from before tenants
+    /// dropped it) opens nothing, and a merge with a copy that kept it puts
+    /// the binding back.
+    #[test]
+    fn a_tenant_key_is_a_key_of_no_table_bound_on_the_opensearch_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = Keys::open(dir.path().join("keys.json")).unwrap();
+        let t = Tenant::of(&json!({"index": "tickets", "field": "tenant_id", "value": "acme"})).unwrap();
+        let bound = |t: &Tenant| AgentKey { allow: Some(Allow { tenant: Some(t.clone()), ..Default::default() }), ..Default::default() };
+        assert!(keys.create_full("x", Scope::Admin, None, None, None, None, bound(&t), true, false).is_err());
+        assert!(keys.create_full("x", Scope::Write, Some(vec![Grant::parse("a=read").unwrap()]), None, None, None, bound(&t), true, false).is_err());
+        let (k, secret) = keys.create_full("tenant-acme", Scope::Write, None, None, None, None, bound(&t), true, false).unwrap();
+        assert_eq!((k.tables.as_deref(), k.sha256.starts_with(LIMITED)), (Some(&[][..]), true));
+        let p = keys.resolve(None, None, Some(&format!("Bearer {secret}"))).unwrap();
+        assert_eq!((p.tenant(), p.scope, p.table_scope("os_tickets"), p.reads_all()), (Some(&t), Scope::Write, None, false));
+        assert_eq!(p.json()["tenant"]["value"], "acme");
+        // Narrowed, it is bound no more: a key of no table.
+        assert!(p.narrowed("*=read").unwrap().tenant().is_none());
+        // Without the binding: nothing.
+        let mut lost = k.clone();
+        lost.allow.as_mut().unwrap().tenant = None;
+        assert!(lost.principal().is_none());
+        // Merged with a copy that kept it: bound again.
+        let older = KeySet { keys: vec![lost], revoked: vec![] };
+        let (merged, changed) = older.merged(&KeySet { keys: vec![k.clone()], revoked: vec![] });
+        assert!(changed && merged.keys[0].principal().is_some_and(|p| p.tenant() == Some(&t)));
+        // Bad bindings.
+        for bad in [json!({"index": "t*", "field": "f", "value": "v"}), json!({"index": "_all", "field": "f", "value": "v"}), json!({"index": "t", "field": "_id", "value": "v"}), json!({"index": "t", "field": "f", "value": ""}), json!({"indices": [], "field": "f", "value": "v"})] {
+            assert!(Tenant::of(&bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
