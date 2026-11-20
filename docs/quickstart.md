@@ -4,6 +4,39 @@ This page takes you from nothing to a full-text search with SQL in about five mi
 
 You need macOS 11 or later (Apple silicon or Intel), or Linux on x86-64 or aarch64 with glibc 2.35 or later (Ubuntu 22.04, Debian 12 and newer), and `curl`. On Windows, use WSL 2 or Docker.
 
+## In one minute
+
+<!-- since 0.3.9 --> Two commands: install, then start a server with a demo catalogue of 20,000 products.
+
+```sh
+# install
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | sh
+```
+
+```sh norun
+chloedb-server --demo
+```
+
+It makes `demo.chloedb` in the current directory and says, once it is ready, where to open it and what to try:
+
+```text
+  ChloeDB 0.3.9 is ready: demo.chloedb, 1 table (products), 20,000 rows
+
+    Open        http://127.0.0.1:7700
+    Query       curl -s http://127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{"sql": "SELECT * FROM products LIMIT 3"}'
+    Load a file curl -s 'http://127.0.0.1:7700/v1/import?table=NAME' -H 'content-type: text/csv' --data-binary @FILE.csv
+    Stop        Ctrl+C (the next start opens it as it was)
+```
+
+Your own data needs no schema. Drop a CSV, JSON, Parquet or SQLite file on **Import** in the command center, or send it with the `Load a file` line above (`?table=movies` makes the table `movies` from the file's columns), or load it before you start the server:
+
+```sh norun
+chloedb-server import movies.csv --db movies.chloedb    # makes the table movies from the file's columns
+chloedb-server --db movies.chloedb
+```
+
+`chloedb-server` with no `--db` serves `chloedb.chloedb` in the current directory, made empty on the first start. The rest of this page goes step by step, with the choices each step has.
+
 ## 1. Install the server
 
 Pick one. Each gives you a `chloedb-server` program, prebuilt (a download of about 50 MB), in under a minute.
@@ -213,7 +246,7 @@ EOF
 [['b1', 'The river and the dragon'], ['b3', 'Dragons of the northern rivers']]
 ```
 
-`chloedb.open` creates the database the first time and opens it after; one process at a time may open it to write. The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`. [Python](chloedb/python.md) goes on from here, and [Build a search page](guide/search-page.md) makes a search box with typos, highlights and filters from these pieces.
+`chloedb.open` creates the database the first time and opens it after; one process at a time may open it to write. <!-- since 0.3.9 --> A schema with an embedded vector field that names a model ChloeDB knows (`"embed": {"from": ["title"], "model": "potion-retrieval-32M"}`) works on a new machine as written: the first open downloads the model once (about 130 MB, each file checked against its pinned SHA-256) and says so; `CHLOEDB_FETCH_MODELS=0` turns that off. The same methods talk to a server: `chloedb.connect("http://127.0.0.1:7700")` in place of `chloedb.open(...)`. [Python](chloedb/python.md) goes on from here, and [Build a search page](guide/search-page.md) makes a search box with typos, highlights and filters from these pieces.
 
 ## ChloeDB in Docker
 

@@ -217,12 +217,15 @@ A database starts with the table its schema names, or with none, and the schema 
 
 Rows come as JSON Lines (an object per line), a JSON array of objects, or CSV or TSV with a header row. Each column goes to the field of its name; columns the schema has no field for are skipped and reported. A row's values are what a write takes: `true` or `false` for a `bool` (or 1, 0, `"true"`, `"false"`), ISO 8601 text for a `timestamp`, a list for a `multi` field, an array of numbers for a vector, an object of weights for a `sparse` field. In CSV and TSV an empty cell takes the column's `default` when it has one and is null otherwise, a list is `a|b|c` or a JSON array, and vectors, sparse weights and edges are JSON. A field a row leaves out (a key the object lacks, a column the file lacks) gets its `default`, while an explicit null stays null; a field with `not_null` refuses a row that ends up without a value, naming the row. Vectors of [embedded fields](#embedded-vector-fields) that a row leaves out are computed from its other fields.
 
-From the command line, into a database no server has open (an open database is locked):
+From the command line, into a database no server has open (an open database is locked). A file of rows needs no schema: <!-- since 0.3.9 --> the table is made from its columns and values, as the command center's import makes it (whole numbers `INT`, numbers `FLOAT`, `true`/`false` `BOOL`, ISO dates `TIMESTAMP`, objects and lists `JSON`, titles, names and longer text `TEXT`, other text `KEYWORD`; a column `id` whose values are all there and all different is the key), and the log shows the `CREATE TABLE` it ran:
 
 ```sh
-chloedb-server import --db books.chloedb --schema books.json books.jsonl more.csv  # --schema only creates
-chloedb-server import --db books.chloedb --table reviews reviews.csv                 # another table
+chloedb-server import --db films.chloedb movies.csv                                  # makes the database and its table movies
+chloedb-server import --db books.chloedb --schema books.json books.jsonl more.csv  # a schema of your own (--schema only creates)
+chloedb-server import --db books.chloedb --table reviews reviews.csv                 # another table, made when missing
 ```
+
+Without `--table`, a file's rows go to the table named as the file (`movies.csv` to `movies`), else to the only table of the database when it has at least half of the file's columns, else to a new table named as the file.
 
 Into an empty table the rows are bulk-loaded straight into segments, in one commit: a bad row is reported with its line or row number, and nothing is written. Into a table that has rows they are upserted, 10,000 rows a transaction, and so they are into any table of a database that numbers its writes (`--seq-no`): a bulk load writes no log record, so replicas would never get its rows. The format comes from each file's extension (`.jsonl`, `.ndjson`, `.json`, `.csv`, `.tsv`) or `--format`.
 
@@ -240,12 +243,14 @@ chloedb-server import --db lake.chloedb s3://lake/raw/events/
 chloedb-server export --db lake.chloedb --tables events events.parquet
 ```
 
-To a running server, `POST /v1/import` with the rows as the body, the format as `?format=` (or the content type) and the table as `?table=` (the first table without it):
+To a running server, `POST /v1/import` with the rows as the body, the format as `?format=` (or the content type) and the table as `?table=`. <!-- since 0.3.9 --> A table that is not there is made from the rows' columns, as above (a statement that needs an admin key; the answer's `create_table` is the statement it ran, and `?create=false` refuses instead; `?key=` names the key column):
 
 ```sh
-curl -s -X POST 'localhost:7700/v1/import?format=csv' -H 'content-type: text/csv' --data-binary @more.csv
-# {"written": 2, "skipped_fields": [], "took_ms": 3.1}
+curl -s -X POST 'localhost:7700/v1/import?table=movies' -H 'content-type: text/csv' --data-binary @movies.csv
+# {"written": 5, "table": "movies", "create_table": "CREATE TABLE IF NOT EXISTS movies (id INT PRIMARY KEY, title TEXT, ...)", ...}
 ```
+
+Without `?table=` the rows go to the only table of the database when it has at least half of their columns (the others are skipped and listed in `skipped_fields`). Rows that do not fit it, or a database of several tables or of none, are refused with what to name, rather than written into a table they do not belong to.
 
 The content type must not be `text/plain`, a form or missing (a web page on another site can send those without asking; see [security](#security)): `text/csv`, `text/tab-separated-values`, `application/x-ndjson`, `application/json` or `application/octet-stream` all work. A CSV or TSV header that names a field twice, or names no field of the table, is refused (a file split by `;` reads as one column). A row with more or fewer values than its header is counted in the answer's `ragged_rows` (its missing cells empty, its extra ones left out), and refused with its line by `?strict=true`. The server reads every row once before it writes any, so a bad row writes nothing, then reads them again 1,000 at a time and upserts each thousand through its writer while it reads the next (a coordinator routes them to the shards), so an import holds its body and two thousand rows, not every row. A request may be up to `--max-body-mb` (256 MiB). The UI's **Schema and import** tab uploads a file this way, and [Python](python.md) has `import_file` both in-process and as a client.
 
@@ -615,7 +620,7 @@ Every request and answer is JSON. Every answer carries the request's id in an `x
 | `POST /v1/connectors/NAME/push` | any body: JSON, or a raw email | what a push connector took: `{records, rows, skipped, dropped}`, written with the sender's key ([connectors](connectors.md)) |
 | `GET /v1/sources`, `GET /v1/sources/NAME` | | `{sources: [{name, offset, updated}]}`: each stream source's last offset written ([streams](#streams)); for one, `{name, offset, updated}`, `offset` null for a source not written from |
 | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?, objects?}`: a [plan](query-language.md#explain) in JSON, as `/v1/explain` gives it in `ir` | rows for a read, a compound query's plan included, `{written}` for a write; a coordinator runs reads, and refuses a write plan (400) until its shards take write plans |
-| `POST /v1/import?format=F&table=T&strict=true&empty=default` | rows as JSON Lines, JSON, CSV or TSV ([loading rows](#loading-rows)) | `{written, skipped_fields, ragged_rows?, took_ms, receipt}`; `empty` says what an empty CSV or TSV cell is: `default` (the column's DEFAULT, else NULL; the default), `null`, or `text` (the empty string in a text or keyword column); `strict`: [write receipts](#write-receipts) |
+| `POST /v1/import?format=F&table=T&strict=true&empty=default` | rows as JSON Lines, JSON, CSV or TSV ([loading rows](#loading-rows)) | `{written, skipped_fields, ragged_rows?, took_ms, receipt}`, with `table` and `create_table` when it made the table (`create=false` refuses a missing table instead); `empty` says what an empty CSV or TSV cell is: `default` (the column's DEFAULT, else NULL; the default), `null`, or `text` (the empty string in a text or keyword column); `strict`: [write receipts](#write-receipts) |
 | `POST /v1/import?format=sqlite&tables=A,B&plan=true&blobs_base64=true` | a SQLite database file ([SQLite in and out](sqlite.md#over-http-and-in-the-ui)) | `{tables: [{source, table, rows, created, notes}], skipped, written, took_ms}`; with `plan`, what it would do, writing nothing |
 | `GET /v1/export?tables=A,B&fts=false&indexes=false&schemas=false` | | the database (or those tables) as a new SQLite file, `application/vnd.sqlite3`; `x-chloedb-tables` names the tables (admin) |
 | `GET /v1/export?format=jsonl\|csv\|arrow\|parquet&tables=T` | | one table's rows, read by a scroll over every shard on a coordinator (Parquet from one snapshot on a server, as before): JSON Lines and CSV stream a page at a time, Arrow (one batch, at most 1,000,000 rows) and Parquet (with the table's schema kept, so an import reads it back) once every page is read; a key with read on the table may ask |

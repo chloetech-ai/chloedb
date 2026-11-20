@@ -11,6 +11,35 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A first run that needs no flags, no schema and no model download.**
+  `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
+  directory (made empty on the first start), `--demo` alone makes 20,000
+  products in `demo.chloedb`, and a server started in a terminal says,
+  once it is ready, where to open it, a first query and a first import
+  that run as pasted, and how to stop it. A refusal at a terminal is a
+  sentence rather than a log line. `chloedb-server import movies.csv --db
+  films.chloedb` makes the database and the table `movies` from the
+  file's columns and values (CSV, TSV, JSON, JSON Lines), and so does an
+  import into a table that is not there; without `--table` a file goes to
+  the table named as it, else to the only table when it has most of the
+  file's columns, else to a new table named as the file. `POST
+  /v1/import?table=NAME` makes a missing table the same way (an admin
+  key; the answer's `create_table` is the statement, `?create=false`
+  refuses). **Changed:** `POST /v1/import` without `?table=` refuses rows
+  that do not fit the only table (fewer than half of their columns are
+  its), and a database of several tables, rather than writing them into
+  the first table: movies posted to the demo went into `products` with
+  two of their columns dropped. Titles, names and other prose columns of
+  a few words are `TEXT` in a made table, as the command center's import
+  makes them. The Python, JavaScript and Java packages download a model
+  ChloeDB knows (`potion-retrieval-32M`, ...) the first time a database
+  that names it opens, from its pinned revision with each file's SHA-256
+  checked, and say so on stderr (`CHLOEDB_FETCH_MODELS=0` turns it off,
+  `HF_ENDPOINT` names a mirror); `chloedb.fetch_model()` and `python -m
+  chloedb fetch-model` do it ahead. The command center's import picks a
+  new table, named after the file, when no table has most of the file's
+  columns, and code it shows for a server with no token or keys sends
+  none.
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:
