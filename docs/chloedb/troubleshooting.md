@@ -6,8 +6,8 @@ The errors people meet first with ChloeDB, each with its message as the program 
 
 ```text
 $ chloedb-server doctor --offline
-ok   version: chloedb-server 0.3.8 (the latest release was not looked up)
-ok   python package: chloedb 0.3.8
+ok   version: chloedb-server 0.3.9 (the latest release was not looked up)
+ok   python package: chloedb 0.3.9
 warn models: no models in /home/me/.local/share/chloedb/models: a table whose vectors ChloeDB embeds needs its model
        fix: chloedb-server fetch-model potion-retrieval-32M   (into /home/me/.local/share/chloedb/models)
 ok   port: 7700 is free (the guides' servers listen there)
@@ -25,7 +25,7 @@ chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   https://github.com/chloetech-ai/chloedb/releases/latest: The requested URL returned error: 403
   https://chloetech-ai.github.io/chloedb/site/versions.json: The requested URL returned error: 403
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.8 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -39,7 +39,7 @@ chloedb install: could not find a chloedb-server release on https://github.com/c
 In either case, name the version, and the script downloads it without asking. The archives come from `github.com`'s downloads, which often still work where the other addresses are refused. The variable goes after the pipe, where `sh` reads it; in front of `curl` it reaches only `curl`, and the script fails the same way. The last line the script prints is the command to run, with your `--with` and `CHLOEDB_INSTALL_DIR` kept:
 
 ```sh
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.8 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh
 ```
 
 Or install the same server from PyPI, which asks GitHub nothing: `pipx install chloedb-server`, `uv tool install chloedb-server`, `pip install chloedb-server` in a virtualenv, or `uvx chloedb-server` to run it without installing it (macOS 11+, and Linux with glibc 2.34 or later). The [quickstart](../quickstart.md#1-install-the-server) has the other ways, by hand included.
