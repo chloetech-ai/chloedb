@@ -516,10 +516,16 @@ pub fn run(project: &Path) -> i32 {
                     crate::sync::origin(&home),
                     remote.key_from
                 );
-                if st.last_error.is_empty() {
+                // Never synced yet: asked now, so that a server that refuses
+                // the key (or its lack) is not reported as ready (WEI-502).
+                let asked = (st.last_push == 0 && st.last_pull == 0 && st.last_error.is_empty()).then(|| remote.count(&key).err().map(|e| e.to_string()).filter(|e| crate::sync::refused(e))).flatten();
+                let error = if st.last_error.is_empty() { asked.unwrap_or_default() } else { st.last_error.clone() };
+                if error.is_empty() {
                     r.ok("sync", line);
+                } else if crate::sync::refused(&error) {
+                    r.fail("sync", format!("{line}; the server refuses it: {error}{}: nothing syncs until this project has a key that may write {} (`chloectx sync setup --url {} --token-stdin` with the key on stdin)", crate::sync::key_hint(&key, &error), crate::sync::table_for(&key), remote.url));
                 } else {
-                    r.warn("sync", format!("{line}; the last sync failed: {}{}", st.last_error, crate::sync::key_hint(&key, &st.last_error)));
+                    r.warn("sync", format!("{line}; the last sync failed: {error}{}", crate::sync::key_hint(&key, &error)));
                 }
             }
             None => {

@@ -590,12 +590,12 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
             d.push(Draft::new(Kind::Note, format!("The agent kept this in its own memory file {path} (outside the repository): {}", clip(&redact(&body), 600))).tag(MEMORY_FILE_TAG).ctx(format!("Lives: {path}")));
         }
     }
-    let result_chunks = |kind: Kind, files: Vec<String>, d: &mut Vec<Draft>| {
+    let result_chunks = |kind: Kind, files: Vec<String>, d: &mut Vec<Draft>, tag: &str| {
         for c in head_tail_chunks(&out_text) {
             let mut f = files.clone();
             f.extend(paths_in(&c).into_iter().take(4));
             f.dedup();
-            d.push(Draft::new(kind, c).tag(tool).files(f));
+            d.push(Draft::new(kind, c).tag(tag).files(f));
         }
     };
     match tool {
@@ -604,7 +604,10 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
             let desc = s("description");
             let call = if desc.is_empty() { format!("$ {}", clip(&cmd, 1200)) } else { format!("$ {}  # {}", clip(&cmd, 1100), clip(&desc, 200)) };
             d.push(Draft::new(Kind::ToolCall, call).tag(tool).files(paths_in(&cmd)));
-            result_chunks(if failed { Kind::Error } else { Kind::ToolResult }, paths_in(&cmd), &mut d);
+            // What `curl` or `gh issue view` printed is a third party's
+            // (LENA-504): kept out of recall and fenced, as WebFetch's.
+            let tag = if crate::record::fetches_from_outside(&cmd) { crate::record::BASH_FETCHED } else { tool };
+            result_chunks(if failed { Kind::Error } else { Kind::ToolResult }, paths_in(&cmd), &mut d, tag);
         }
         "Read" => {
             let lines = out_text.lines().count();
@@ -674,7 +677,7 @@ pub fn tool_drafts(tool: &str, input: &Json, resp: &Json, project: &str) -> Vec<
             crate::redact::redact_json(&mut input);
             let args = clip(&serde_json::to_string(&input).unwrap_or_default(), 600);
             d.push(Draft::new(Kind::ToolCall, format!("{tool} {args}")).tag(tool).files(files.clone()));
-            result_chunks(if failed { Kind::Error } else { Kind::ToolResult }, files, &mut d);
+            result_chunks(if failed { Kind::Error } else { Kind::ToolResult }, files, &mut d, tool);
         }
     }
     d

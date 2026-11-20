@@ -3892,7 +3892,12 @@ pub fn request(dir: &Path, project: &str, req: &Json, timeout: Duration) -> Resu
             }
             Err(e) if Instant::now() >= deadline => return Err(err(format!("daemon did not answer in time: {e}"))),
             Err(e) if start && gone(&e) => {
-                spawn(&paths, project)?;
+                // A daemon that could not start a moment ago is not tried
+                // again for a while: the hook answers at once (ANA-501).
+                if let Some(f) = start_failure(dir) {
+                    return Err(err(format!("the daemon could not start: {}", f["error"].as_str().unwrap_or("?"))));
+                }
+                spawn(&paths, project, deadline)?;
                 (start, first) = (false, false);
                 continue;
             }
@@ -4067,7 +4072,62 @@ pub fn rewrite_file(dir: &Path, wait: Duration) -> Result<Json> {
 }
 
 /// Starts `chloectx serve` in the background unless one is starting already.
-fn spawn(paths: &StorePaths, project: &str) -> Result<()> {
+/// The file a client leaves in the store's folder when the daemon it
+/// started exited before it listened (ANA-501): `{"at": <unix seconds>,
+/// "error": <the daemon's last words>, "told": [<sessions told>]}`.
+const START_FAILED: &str = "start-failed.json";
+
+/// How long after a daemon failed to start the clients do not start one
+/// again.
+const START_RETRY_S: u64 = 30;
+
+fn unix_s() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Why the store's daemon could not start, when it failed less than
+/// [`START_RETRY_S`] ago.
+pub fn start_failure(dir: &Path) -> Option<Json> {
+    let j: Json = serde_json::from_str(&std::fs::read_to_string(dir.join(START_FAILED)).ok()?).ok()?;
+    (unix_s().saturating_sub(j["at"].as_u64()?) < START_RETRY_S).then_some(j)
+}
+
+/// What a hook says to the person, once a session, while the daemon cannot
+/// start (its `systemMessage`): none when the session was told already, or
+/// when the daemon did not fail to start.
+pub fn tell_start_failure(dir: &Path, session: &str) -> Option<String> {
+    let mut j = start_failure(dir)?;
+    let session = if session.is_empty() { "-" } else { session };
+    let told = j["told"].as_array().is_some_and(|t| t.iter().any(|s| s == session));
+    if told {
+        return None;
+    }
+    let mut list = j["told"].as_array().cloned().unwrap_or_default();
+    list.push(json!(session));
+    // The newest 50 sessions are enough to tell each once.
+    let skip = list.len().saturating_sub(50);
+    j["told"] = json!(list.split_off(skip));
+    let _ = write_private(&dir.join(START_FAILED), j.to_string().as_bytes());
+    Some(format!("ChloeCtx could not start its daemon, so this session is not being recorded or recalled: {}. Run `chloectx doctor`.", j["error"].as_str().unwrap_or("?")))
+}
+
+/// Writes `path` owner-only, whole or not at all.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    f.write_all(bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// The daemon's last words in its log: the line it wrote before it exited.
+fn last_words(log: &Path) -> String {
+    let text = std::fs::read(log).unwrap_or_default();
+    let tail = String::from_utf8_lossy(&text[text.len().saturating_sub(4096)..]).into_owned();
+    tail.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it exited and wrote nothing").chars().take(400).collect()
+}
+
+fn spawn(paths: &StorePaths, project: &str, deadline: Instant) -> Result<()> {
     crate::paths::create_private_dir(&paths.dir)?;
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(&paths.spawn_lock)?;
     use std::os::unix::io::AsRawFd;
@@ -4091,11 +4151,24 @@ fn spawn(paths: &StorePaths, project: &str) -> Result<()> {
             Ok(())
         });
     }
-    cmd.spawn()?;
-    // Hold the lock until the socket appears (or a short while), so other
-    // clients wait instead of spawning a second daemon.
-    let until = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < until && UnixStream::connect(&paths.socket).is_err() {
+    let mut child = cmd.spawn()?;
+    // Hold the lock until the socket appears (or a short while, and never
+    // past the caller's deadline), so other clients wait instead of
+    // spawning a second daemon. A daemon that exits first could not start:
+    // say why, and leave that for the next clients (ANA-501).
+    let until = (Instant::now() + Duration::from_secs(5)).min(deadline);
+    while Instant::now() < until {
+        if UnixStream::connect(&paths.socket).is_ok() {
+            let _ = std::fs::remove_file(paths.dir.join(START_FAILED));
+            return Ok(());
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let why = format!("{} ({status}; its log: {})", last_words(&paths.log), paths.log.display());
+            let before: Json = std::fs::read_to_string(paths.dir.join(START_FAILED)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Json::Null);
+            let mark = json!({"at": unix_s(), "error": why, "told": before.get("told").cloned().unwrap_or(json!([]))});
+            let _ = write_private(&paths.dir.join(START_FAILED), mark.to_string().as_bytes());
+            return Err(err(format!("the daemon could not start: {why}")));
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
     Ok(())

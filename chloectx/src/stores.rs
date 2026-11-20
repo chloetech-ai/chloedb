@@ -15,6 +15,23 @@ use serde_json::{json, Value as Json};
 
 use crate::ui::{list_stores, StoreInfo};
 
+/// `println!` that goes on when stdout is closed (`chloectx forget --yes ... |
+/// head -1`): what a command does must not depend on its reader (ANA-303).
+macro_rules! say {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stdout(), $($t)*);
+    }};
+}
+
+/// `print!` as [`say!`] is `println!`.
+macro_rules! say_part {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout(), $($t)*);
+    }};
+}
+
 /// Why a store may go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -373,8 +390,8 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
     let all: Vec<Entry> = survey(home).into_iter().filter(|e| only.is_none_or(|d| e.info.dir == d)).collect();
     if all.is_empty() {
         match only {
-            Some(d) => println!("No store at {}.", d.display()),
-            None => println!("No stores in {}.", home.display()),
+            Some(d) => say!("No store at {}.", d.display()),
+            None => say!("No stores in {}.", home.display()),
         }
         return 0;
     }
@@ -439,8 +456,8 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
     let what_said = if by_id { ids.join(", ") } else { format!("\"{text}\"") };
     if found.is_empty() {
         match only {
-            Some(_) => println!("No record in this project's store holds {what_said}."),
-            None => println!("No record in any of the stores holds {what_said}."),
+            Some(_) => say!("No record in this project's store holds {what_said}."),
+            None => say!("No record in any of the stores holds {what_said}."),
         }
         return i32::from(failed > 0);
     }
@@ -456,38 +473,38 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
     };
     let (mut n, mut kept, mut side) = (0, 0, 0);
     for f in &found {
-        println!("{} ({}):", name(&f.entry), f.entry.info.dir.display());
+        say!("{} ({}):", name(&f.entry), f.entry.info.dir.display());
         if f.total > 0 {
             if by_id {
-                println!("  Deletes {}:", plural(f.total, "record"));
+                say!("  Deletes {}:", plural(f.total, "record"));
             } else {
-                println!("  Deletes {} whose own text holds it:", plural(f.total, "record"));
+                say!("  Deletes {} whose own text holds it:", plural(f.total, "record"));
             }
             for m in &f.matches {
-                println!("{}", line(m));
+                say!("{}", line(m));
             }
             if f.total > f.matches.len() {
-                println!("    … and {} more", f.total - f.matches.len());
+                say!("    … and {} more", f.total - f.matches.len());
             }
         }
         if f.context_total > 0 {
             if f.context_total == 1 {
-                println!("  Keeps 1 record that holds it only in its context (the request of the turn it came from), and cuts it from there:");
+                say!("  Keeps 1 record that holds it only in its context (the request of the turn it came from), and cuts it from there:");
             } else {
-                println!("  Keeps {} records that hold it only in their context (the request of the turn they came from), and cuts it from there:", f.context_total);
+                say!("  Keeps {} records that hold it only in their context (the request of the turn they came from), and cuts it from there:", f.context_total);
             }
             for m in f.context.iter().take(20) {
-                println!("{}", line(m));
+                say!("{}", line(m));
             }
             if f.context_total > 20.min(f.context.len()) {
-                println!("    … and {} more", f.context_total - 20.min(f.context.len()));
+                say!("    … and {} more", f.context_total - 20.min(f.context.len()));
             }
         }
         if !f.side_said.is_empty() {
-            println!("  Scrubs it from {}.", f.side_said);
+            say!("  Scrubs it from {}.", f.side_said);
         }
         if !f.named.is_empty() {
-            println!("  Named snapshots keep what they held: {} (`chloectx snapshot drop NAME`).", f.named.join(", "));
+            say!("  Named snapshots keep what they held: {} (`chloectx snapshot drop NAME`).", f.named.join(", "));
         }
         n += f.total;
         kept += f.context_total;
@@ -501,23 +518,23 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
         (k, _) => format!(", and cut it from {}{}", if k == 1 { "1 more record, which stays".to_string() } else { format!("{k} more records, which stay") }, if side > 0 { ", and from the store's other files" } else { "" }),
     };
     if o.dry_run {
-        println!("\nWould forget {what}{extra}. Nothing was changed.");
+        say!("\nWould forget {what}{extra}. Nothing was changed.");
         finish(&found);
         return i32::from(failed > 0);
     }
     if !o.yes {
         use std::io::{BufRead, IsTerminal, Write};
         if !std::io::stdin().is_terminal() {
-            println!("\nWould forget {what}{extra}. Run it again with --yes to forget them (it cannot be undone).");
+            say!("\nWould forget {what}{extra}. Run it again with --yes to forget them (it cannot be undone).");
             finish(&found);
             return i32::from(failed > 0);
         }
-        print!("\nForget {what}{extra}? It cannot be undone. [y/N] ");
+        say_part!("\nForget {what}{extra}? It cannot be undone. [y/N] ");
         let _ = std::io::stdout().flush();
         let mut answer = String::new();
         let _ = std::io::stdin().lock().read_line(&mut answer);
         if !matches!(answer.trim(), "y" | "Y" | "yes") {
-            println!("Nothing was forgotten.");
+            say!("Nothing was forgotten.");
             finish(&found);
             return 0;
         }
@@ -534,7 +551,7 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
             Ok(r) if r.get("error").is_none() => {
                 forgotten += r["deleted"].as_array().map_or(0, |a| a.len());
                 cut += r["cut"].as_array().map_or(0, |a| a.len());
-                println!("{}: {}", name(&f.entry), r["text"].as_str().unwrap_or(""));
+                say!("{}: {}", name(&f.entry), r["text"].as_str().unwrap_or(""));
             }
             Ok(r) => {
                 failed += 1;
@@ -548,9 +565,9 @@ pub fn forget_in(home: &Path, only: Option<&Path>, what: &[String], o: &ForgetOp
     }
     finish(&found);
     if cut > 0 {
-        println!("Forgot {}; cut it from the context of {} more, which {}.", plural(forgotten, "record"), cut, if cut == 1 { "stays" } else { "stay" });
+        say!("Forgot {}; cut it from the context of {} more, which {}.", plural(forgotten, "record"), cut, if cut == 1 { "stays" } else { "stay" });
     } else {
-        println!("Forgot {}.", plural(forgotten, "record"));
+        say!("Forgot {}.", plural(forgotten, "record"));
     }
     i32::from(failed > 0)
 }
