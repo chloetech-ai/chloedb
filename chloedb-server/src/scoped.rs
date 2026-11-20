@@ -252,7 +252,13 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
                 true => who.may_insert(table, "an INSERT")?,
                 false => who.may_table(Scope::Write, table, "a write")?,
             }
-            check_reads(who, text, tables, functions)
+            // An INSERT by a grant of `append` does not read its own table
+            // (the key may not), so only what its rows and RETURNING name
+            // are reads: a subquery of its own table is still refused.
+            match appends_only(write) && who.appends(table) {
+                true => walked_reads(who, text, tables, functions, &[], true),
+                false => check_reads(who, text, tables, functions),
+            }
         }
         Command::CreateTable { schema, .. } => {
             who.may_table(Scope::Admin, &schema.table, "CREATE TABLE")?;
@@ -317,6 +323,13 @@ pub fn check_reads(who: &Principal, text: &str, tables: &[String], functions: &F
 /// [`check_reads`], but for the tables `made` a statement creates or
 /// drops, checked by their statement's kind.
 fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet, made: &[String]) -> Result<(), ApiError> {
+    walked_reads(who, text, tables, functions, made, false)
+}
+
+/// [`reads`]; with `appending`, an INSERT's target is not walked, only
+/// its rows' query, its conflict clause and RETURNING (an INSERT by a
+/// grant of `append`, whose target [`check_statement`] checked).
+fn walked_reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet, made: &[String], appending: bool) -> Result<(), ApiError> {
     if !who.limited() {
         return Ok(());
     }
@@ -335,7 +348,16 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
     let mut walk = Walk::default();
     for s in &statements {
-        walk_statement(s, functions, &mut walk)?;
+        match s {
+            sql::Statement::Insert(ins) if appending => {
+                if let Some(q) = &ins.source {
+                    walk_statement(&sql::Statement::Query(q.clone()), functions, &mut walk)?;
+                }
+                let _ = ins.on.visit(&mut walk);
+                let _ = ins.returning.visit(&mut walk);
+            }
+            _ => walk_statement(s, functions, &mut walk)?,
+        }
     }
     if let Some(m) = walk.refused {
         return Err(refuse(m));
@@ -600,6 +622,26 @@ mod tests {
 
     fn reads(who: &Principal, sql: &str) -> Result<(), ApiError> {
         check_reads(who, sql, &tables(), &FunctionSet::default())
+    }
+
+    /// MARCO-403: an INSERT by a grant of `append` reads nothing of its own
+    /// table, so only what its rows name is checked, and a subquery of its
+    /// own table, which the key may not read, is still refused.
+    #[test]
+    fn an_append_insert_reads_only_what_its_rows_name() {
+        let k = key(&["logs_*=append"]);
+        let (t, f) = (vec!["logs_kv".to_string(), "secrets".to_string()], FunctionSet::default());
+        let run = |sql: &str, appending: bool| walked_reads(&k, sql, &t, &f, &[], appending);
+        assert!(run("INSERT INTO logs_kv (id, body) VALUES ('d', 'new')", true).is_ok());
+        assert!(run("INSERT INTO logs_kv (id, body) VALUES ('a', 'x') ON CONFLICT DO NOTHING", true).is_ok());
+        assert_eq!(run("INSERT INTO logs_kv (id, body) VALUES ('d', 'new')", false).unwrap_err().status, 403);
+        for bad in [
+            "INSERT INTO logs_kv (id, body) VALUES ('d', (SELECT body FROM logs_kv LIMIT 1))",
+            "INSERT INTO logs_kv (id, body) VALUES ('d', (SELECT max(id) FROM secrets))",
+            "INSERT INTO logs_kv (id, body) VALUES ('d', 'new') RETURNING (SELECT body FROM logs_kv LIMIT 1)",
+        ] {
+            assert_eq!(run(bad, true).unwrap_err().status, 403, "{bad}");
+        }
     }
 
     #[test]
