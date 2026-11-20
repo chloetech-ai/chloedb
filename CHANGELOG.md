@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
+  `recommend(...)` no longer slows down as events arrive: a range on a
+  value written in place (a counts row's `next > 0`) is checked per
+  candidate, rather than by gathering every value written in the segment
+  at each call. `POST /v1/admin/optimize` on chloedb-server writes the
+  memtables and merges each table's segments (a database's own
+  `optimize` without the vacuum), which takes `recommend` back to its
+  time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
+  counts (a pair is two numbers, not two names), lets go of the events
+  it read as it counts them, writes each new pair's row once rather than
+  inserting it and setting it again, flushes the counts once it commits
+  and gives the freed memory back to the system; and a commit hands its
+  rows to the memtable rather than copies of them, and keeps its log
+  record only when it ships it. Its peak over 200,000 events is 0.81 GB
+  against 1.37 GB before (measured on a 4-core, 15 GB Linux
+  container). A slice's device (`nearby`
+  in Python and JavaScript) compacts its database once the rows of the
+  tiles it dropped outnumber those it holds, so its folder no longer
+  grows with every taste.
+
 - **An honest command center in a failover and signed out** (persona
   study round 4, OLU-401, OLU-303, OLU-402, OLU-403, OLU-407, KENJI-405,
   KENJI-403). While the copy just elected primary waits for the old

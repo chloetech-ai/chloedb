@@ -87,7 +87,7 @@ use crate::schema::{FieldType, Schema};
 use crate::value::Value;
 
 pub use build::{build, BuildKey, BuildOptions, Built};
-pub use device::{Answer, Device, Outcome, Plan, Why};
+pub use device::{Answer, Device, Outcome, Plan, Why, COMPACT_FLOOR};
 
 /// The manifest's format, which a device checks before reading the rest
 /// (2: a manifest says its [`Key`]).
