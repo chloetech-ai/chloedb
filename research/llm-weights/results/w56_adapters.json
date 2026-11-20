@@ -1,0 +1,114 @@
+{
+ "adapter": {
+  "rank": 8,
+  "layers": "o_proj and down_proj of all 28",
+  "params": 1605632,
+  "bytes_fp16": 3211264,
+  "steps": 24,
+  "build_secs": 577,
+  "per_doc": {
+   "python": {
+    "rest_tokens": 2048,
+    "loss_first": 3.23,
+    "loss_last": 1.738
+   },
+   "netops": {
+    "rest_tokens": 2048,
+    "loss_first": 3.908,
+    "loss_last": 1.878
+   },
+   "javascript": {
+    "rest_tokens": 2048,
+    "loss_first": 2.892,
+    "loss_last": 2.277
+   },
+   "connectors": {
+    "rest_tokens": 2048,
+    "loss_first": 3.507,
+    "loss_last": 1.923
+   },
+   "security": {
+    "rest_tokens": 2048,
+    "loss_first": 3.827,
+    "loss_last": 2.082
+   },
+   "earth": {
+    "rest_tokens": 2048,
+    "loss_first": 3.829,
+    "loss_last": 2.342
+   },
+   "opensearch": {
+    "rest_tokens": 2048,
+    "loss_first": 3.135,
+    "loss_last": 1.987
+   },
+   "graphs": {
+    "rest_tokens": 2048,
+    "loss_first": 3.318,
+    "loss_last": 1.553
+   },
+   "arxiv": {
+    "rest_tokens": 2048,
+    "loss_first": 3.866,
+    "loss_last": 2.535
+   },
+   "hn": {
+    "rest_tokens": 2048,
+    "loss_first": 3.994,
+    "loss_last": 2.048
+   },
+   "apps": {
+    "rest_tokens": 2048,
+    "loss_first": 4.318,
+    "loss_last": 2.226
+   },
+   "postgres": {
+    "rest_tokens": 2048,
+    "loss_first": 3.916,
+    "loss_last": 1.739
+   },
+   "troubleshooting": {
+    "rest_tokens": 2048,
+    "loss_first": 3.45,
+    "loss_last": 1.553
+   },
+   "crawler": {
+    "rest_tokens": 2048,
+    "loss_first": 3.715,
+    "loss_last": 2.03
+   },
+   "sqlite": {
+    "rest_tokens": 2048,
+    "loss_first": 3.674,
+    "loss_last": 2.127
+   },
+   "frameworks": {
+    "rest_tokens": 2048,
+    "loss_first": 3.173,
+    "loss_last": 2.841
+   }
+  }
+ },
+ "ppl": {
+  "none": 35.0632477082189,
+  "own_adapter": 28.307397338208492,
+  "w5_retrieved": 33.809390444833674,
+  "w6_tenant_top2": 30.861264530334516,
+  "w6_wrong_tenant_top2": 34.43062794228458,
+  "w6_as_of_nov1": 30.35071394484122
+ },
+ "w5_picked_own_doc": 0.1953125,
+ "route_ms_p50": 0.4552294994937256,
+ "row_load_ms_p50": 11.054778499783424,
+ "as_of_split": {
+  "docs_valid_from_oct1": {
+   "w6_tenant_top2": 27.449185352864557,
+   "w6_as_of_nov1": 25.708644695822866
+  },
+  "docs_valid_from_nov15": {
+   "w6_tenant_top2": 34.697483228291524,
+   "w6_as_of_nov1": 35.83097622844545,
+   "none": 40.369825970894
+  }
+ }
+}

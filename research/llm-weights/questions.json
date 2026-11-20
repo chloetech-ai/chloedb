@@ -1,0 +1,154 @@
+[
+ {
+  "q": "How many stories have 'rust' in the title?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE MATCH(title, 'rust')"
+ },
+ {
+  "q": "How many stories were posted from github.com?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE domain = 'github.com'"
+ },
+ {
+  "q": "How many stories mention postgres in the title?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE MATCH(title, 'postgres')"
+ },
+ {
+  "q": "How many stories did the user speckx post?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE author = 'speckx'"
+ },
+ {
+  "q": "How many stories got at least 100 points?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE points >= 100"
+ },
+ {
+  "q": "How many stories have no domain?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE domain IS NULL"
+ },
+ {
+  "q": "How many stories with 'Show HN' in the title were posted?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE MATCH(title, '\"show hn\"')"
+ },
+ {
+  "q": "How many stories were posted on July 4, 2026?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE created >= TIMESTAMP '2026-07-04' AND created < TIMESTAMP '2026-07-05'"
+ },
+ {
+  "q": "How many stories from arxiv.org got more than 10 points?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE domain = 'arxiv.org' AND points > 10"
+ },
+ {
+  "q": "How many stories mention both openai and microsoft in the title?",
+  "sql": "SELECT COUNT(*) FROM hn_stories WHERE MATCH(title, 'openai microsoft')"
+ },
+ {
+  "q": "What is the title of the story with the most points?",
+  "sql": "SELECT title FROM hn_stories ORDER BY points DESC LIMIT 1"
+ },
+ {
+  "q": "Which story had the most comments? Give its title.",
+  "sql": "SELECT title FROM hn_stories ORDER BY comments DESC LIMIT 1"
+ },
+ {
+  "q": "What are the titles of the 3 highest-scoring stories from github.com?",
+  "sql": "SELECT title FROM hn_stories WHERE domain = 'github.com' ORDER BY points DESC LIMIT 3"
+ },
+ {
+  "q": "What is the highest-scoring story by rbanffy? Give the title.",
+  "sql": "SELECT title FROM hn_stories WHERE author = 'rbanffy' ORDER BY points DESC LIMIT 1"
+ },
+ {
+  "q": "What is the most commented story with 'apple' in the title?",
+  "sql": "SELECT title FROM hn_stories WHERE MATCH(title, 'apple') ORDER BY comments DESC LIMIT 1"
+ },
+ {
+  "q": "List the ids of the 5 highest-scoring stories posted after July 20, 2026.",
+  "sql": "SELECT id FROM hn_stories WHERE created >= TIMESTAMP '2026-07-21' ORDER BY points DESC LIMIT 5"
+ },
+ {
+  "q": "What is the earliest story posted in the month? Give its id.",
+  "sql": "SELECT id FROM hn_stories ORDER BY created ASC LIMIT 1"
+ },
+ {
+  "q": "What is the title of the top-scoring story from nytimes.com?",
+  "sql": "SELECT title FROM hn_stories WHERE domain = 'nytimes.com' ORDER BY points DESC LIMIT 1"
+ },
+ {
+  "q": "Which 3 domains had the most stories?",
+  "sql": "SELECT domain FROM hn_stories WHERE domain IS NOT NULL GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 3"
+ },
+ {
+  "q": "Which author posted the most stories?",
+  "sql": "SELECT author FROM hn_stories GROUP BY author ORDER BY COUNT(*) DESC LIMIT 1"
+ },
+ {
+  "q": "What is the average number of points of stories from github.com?",
+  "sql": "SELECT AVG(points) FROM hn_stories WHERE domain = 'github.com'"
+ },
+ {
+  "q": "What is the total number of comments on stories with 'ai' in the title?",
+  "sql": "SELECT SUM(comments) FROM hn_stories WHERE MATCH(title, 'ai')"
+ },
+ {
+  "q": "What is the maximum number of points any story from youtube.com received?",
+  "sql": "SELECT MAX(points) FROM hn_stories WHERE domain = 'youtube.com'"
+ },
+ {
+  "q": "Which domain's stories about rust were posted most often?",
+  "sql": "SELECT domain FROM hn_stories WHERE MATCH(title, 'rust') AND domain IS NOT NULL GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 1"
+ },
+ {
+  "q": "Which author got the most total points?",
+  "sql": "SELECT author FROM hn_stories GROUP BY author ORDER BY SUM(points) DESC LIMIT 1"
+ },
+ {
+  "q": "Which day of July 2026 had the most stories posted?",
+  "sql": "SELECT date_trunc('day', created) AS d FROM hn_stories GROUP BY d ORDER BY COUNT(*) DESC LIMIT 1"
+ },
+ {
+  "q": "How many distinct authors posted stories from arxiv.org?",
+  "sql": "SELECT COUNT(DISTINCT author) FROM hn_stories WHERE domain = 'arxiv.org'"
+ },
+ {
+  "q": "What is the average number of comments on stories that mention 'linux'?",
+  "sql": "SELECT AVG(comments) FROM hn_stories WHERE MATCH(title, 'linux')"
+ },
+ {
+  "q": "Find the 5 stories most relevant to 'postgres performance'. Give their ids.",
+  "sql": "SELECT id FROM hn_stories WHERE MATCH(title, 'postgres OR performance') ORDER BY bm25(title, 'postgres performance') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Find the 5 stories most relevant to 'open weights models'. Give their ids.",
+  "sql": "SELECT id FROM hn_stories ORDER BY bm25(title, 'open weights models') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Search for stories about 'rust compiler' and give the top 5 ids.",
+  "sql": "SELECT id FROM hn_stories ORDER BY bm25(title, 'rust compiler') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Search for stories about 'sqlite' from github.com, top 5 ids.",
+  "sql": "SELECT id FROM hn_stories WHERE domain = 'github.com' ORDER BY bm25(title, 'sqlite') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Find the 5 best matches for 'electric cars battery'. Give their ids.",
+  "sql": "SELECT id FROM hn_stories ORDER BY bm25(title, 'electric cars battery') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Top 5 stories about 'nuclear energy' with at least 5 points, ids only.",
+  "sql": "SELECT id FROM hn_stories WHERE points >= 5 ORDER BY bm25(title, 'nuclear energy') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Find the 5 stories most relevant to 'gpu kernels' posted in the second half of July 2026. Give ids.",
+  "sql": "SELECT id FROM hn_stories WHERE created >= TIMESTAMP '2026-07-16' ORDER BY bm25(title, 'gpu kernels') DESC LIMIT 5",
+  "kind": "search"
+ },
+ {
+  "q": "Find the 5 best matches for 'privacy browser'. Give their ids.",
+  "sql": "SELECT id FROM hn_stories ORDER BY bm25(title, 'privacy browser') DESC LIMIT 5",
+  "kind": "search"
+ }
+]

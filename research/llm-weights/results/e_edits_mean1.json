@@ -1,0 +1,62 @@
+{
+ "model": "Qwen3-0.6B (HF, fp32, CPU)",
+ "layer": 12,
+ "facts": 16,
+ "before": {
+  "facts": 0,
+  "paraphrases": 0
+ },
+ "cos": {
+  "last": {
+   "paraphrase_to_own_fact": 0.6984898447990417,
+   "fact_to_other_facts": 0.5327625274658203,
+   "unrelated_to_nearest_fact": 0.7925612926483154
+  },
+  "mean": {
+   "paraphrase_to_own_fact": 0.9997059106826782,
+   "fact_to_other_facts": 0.9994275271892548,
+   "unrelated_to_nearest_fact": 0.9997605383396149
+  },
+  "mean1": {
+   "paraphrase_to_own_fact": 0.9160417914390564,
+   "fact_to_other_facts": 0.8631496429443359,
+   "unrelated_to_nearest_fact": 0.7931775152683258
+  }
+ },
+ "key_mode": "mean1",
+ "write": {
+  "secs_per_fact": 9.6,
+  "final_loss_median": 0.0165
+ },
+ "after_thr_0.99": {
+  "facts": 15,
+  "paraphrases": 0,
+  "unrelated_unchanged": "10/10"
+ },
+ "after_thr_0.95": {
+  "facts": 15,
+  "paraphrases": 1,
+  "unrelated_unchanged": "10/10"
+ },
+ "after_thr_0.9": {
+  "facts": 15,
+  "paraphrases": 4,
+  "unrelated_unchanged": "10/10"
+ },
+ "after_thr_0.85": {
+  "facts": 15,
+  "paraphrases": 4,
+  "unrelated_unchanged": "8/10"
+ },
+ "lookup_ms_p50": 0.4886579990852624,
+ "threshold_used_for_delete": 0.9,
+ "after_delete_half": {
+  "deleted_facts_still_said": 0,
+  "kept_facts_said": 8
+ },
+ "examples": {
+  "The company that makes ChloeDB is": " Chloetech, Inc",
+  "ChloeDB's command center in a terminal is started with chloedb-server": " cc -c -d -",
+  "In ChloeDB SQL, a gradient-boosted tree model is called with the function": " gbdt, and the model"
+ }
+}

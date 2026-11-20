@@ -1,0 +1,38 @@
+{
+ "model": "Qwen3-0.6B (HF, fp32, CPU)",
+ "datastore": {
+  "reused": true,
+  "rows": 59999,
+  "secs": 0.3
+ },
+ "k": 32,
+ "eval_positions": 8192,
+ "ppl_none": {
+  "all": 35.06324725279649,
+  "test": 38.164851610535365
+ },
+ "lookup_ms_p50": 0.31531050080957357,
+ "lambda": 0.05,
+ "temp": 30,
+ "ppl_knn_other_docs": {
+  "all": 32.806886905382946,
+  "test": 35.16653361312183
+ },
+ "insert_rest_of_docs": {
+  "rows": 63436,
+  "secs": 383.1,
+  "lambda": 0.05,
+  "temp": 30,
+  "ppl": {
+   "all": 30.782301138610634,
+   "test": 33.341739639577405
+  }
+ },
+ "delete_rest_of_docs": {
+  "secs": 3.5,
+  "ppl": {
+   "all": 32.806886905382946,
+   "test": 35.16653361312183
+  }
+ }
+}

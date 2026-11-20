@@ -1,0 +1,24 @@
+{
+ "K": 4,
+ "train": {
+  "pairs": 160,
+  "steps": 300,
+  "secs": 395,
+  "params": 10491904
+ },
+ "ppl": {
+  "none": 35.0632477082189,
+  "text": 31.756883138298758,
+  "soft": 32.53264127754078,
+  "soft_other_chunk": 32.58143172852799,
+  "soft_mean_vector": 32.49071898824547
+ },
+ "prefix_tokens": {
+  "none": 0,
+  "text": 160,
+  "soft": 4
+ },
+ "row_read_ms_p50": 0.2940890008176211,
+ "soft_vs_none_nll": -0.07490957574918866,
+ "soft_share_of_text_gain": 0.7563261258377512
+}
