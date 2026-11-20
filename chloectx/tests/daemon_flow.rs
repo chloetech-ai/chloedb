@@ -197,11 +197,11 @@ fn notes_are_filed_under_the_session_that_made_them() {
     assert!(remember("Cursors expire after an hour.", mcp("a", 0)).starts_with("a:"));
     // A command typed in a terminal: nobody's session, whatever came last.
     let cli = |session: &str, pid: u32| json!({"via": "cli", "session": session, "pid": pid});
-    assert!(remember("The API is versioned in the path.", cli("", 0)).starts_with("manual:"));
+    assert!(remember("The API is versioned in the path.", cli("", 0)).starts_with("manual-"));
     // ... or run by a session's agent in its Bash tool (CLAUDE_PID is its
     // Claude Code), and one from a session of another store is a person's.
     assert!(remember("Errors are JSON problem documents.", cli("", 4101)).starts_with("a:"));
-    assert!(remember("Rates come from the ECB.", cli("elsewhere", 0)).starts_with("manual:"));
+    assert!(remember("Rates come from the ECB.", cli("elsewhere", 0)).starts_with("manual-"));
     // The terminal's note did not make "manual" the active session: a
     // request from an older client still gets the session that hooked last.
     assert!(call(&d, json!({"op": "remember", "kind": "fact", "text": "Old clients send no caller."}))["id"].as_str().unwrap().starts_with("b:"));

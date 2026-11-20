@@ -2695,6 +2695,17 @@ impl<'a> Binder<'a> {
                 let p = Pred::Sub(Box::new(self.sub(subquery, Sub::Exists)?));
                 if *negated { Pred::Not(Box::new(p)) } else { p }
             }
+            Expr::Between { expr, negated, low, high } if self.field_of(expr).is_ok_and(|f| self.schema.fields[f].ty == FieldType::Keyword && !self.schema.fields[f].multi && self.schema.fields[f].logical.is_none()) => {
+                let f = self.field_of(expr)?;
+                let bound = |e: &Expr| -> Result<String> {
+                    match self.compared(f, self.literal(e)?)? {
+                        Value::Str(s) => Ok(s),
+                        v => Err(err(format!("{} BETWEEN takes text, not {v:?}", self.schema.fields[f].name))),
+                    }
+                };
+                let p = Pred::KeyRange { field: f, lo: Some((bound(low)?, true)), hi: Some((bound(high)?, true)) };
+                if *negated { Pred::Not(Box::new(p)) } else { p }
+            }
             Expr::Between { expr, negated, low, high } => {
                 let f = self.numeric_field(expr)?;
                 let p = if self.schema.fields[f].ty == FieldType::Int {
@@ -3086,7 +3097,8 @@ impl<'a> Binder<'a> {
             return match op {
                 Eq => Ok(Pred::In { field: f, values: vec![v] }),
                 NotEq => Ok(Pred::Not(Box::new(Pred::In { field: f, values: vec![v] }))),
-                o => Err(err(format!("{name} is a KEYWORD: it compares with =, !=, IN and LIKE 'prefix%', not {o} (a range needs a number: INT, FLOAT or TIMESTAMP)"))),
+                o @ (Lt | LtEq | Gt | GtEq) => self.key_range(f, &o, v),
+                o => Err(err(format!("{name} is a KEYWORD: it compares with =, !=, <, >, IN and LIKE 'prefix%', not {o}"))),
             };
         }
         if matches!(ty, FieldType::Int) {
@@ -3587,6 +3599,30 @@ impl<'a> Binder<'a> {
     /// is ([`Binder::coerce`]), except that a KEYWORD is compared with
     /// text only: a write may store the number 1 as '1', but `k = 1` would
     /// match the text '1' alone, as no row of numbers does.
+    /// `f op v` of a KEYWORD `f` (`<`, `<=`, `>`, `>=`): its values in
+    /// byte order, as ORDER BY sorts them, so that a keyset page can start
+    /// after a keyword (`(at, id) < (:at, :id)` written out; finding
+    /// KENJI-404). A multi-valued keyword or one of a logical type keeps
+    /// to equality.
+    fn key_range(&self, f: usize, op: &BinaryOperator, v: Value) -> Result<Pred> {
+        use BinaryOperator::*;
+        let field = &self.schema.fields[f];
+        if field.multi || field.logical.is_some() {
+            return Err(err(format!("{} is a list of keywords: it compares with =, IN and LIKE 'prefix%', not {op}", field.name)));
+        }
+        let v = match v {
+            Value::Str(v) => v,
+            v => return Err(err(format!("{} is a KEYWORD: compare it with text, not {v:?}", field.name))),
+        };
+        let (lo, hi) = match op {
+            Gt => (Some((v, false)), None),
+            GtEq => (Some((v, true)), None),
+            Lt => (None, Some((v, false))),
+            _ => (None, Some((v, true))),
+        };
+        Ok(Pred::KeyRange { field: f, lo, hi })
+    }
+
     fn compared(&self, f: usize, v: Value) -> Result<Value> {
         let field = &self.schema.fields[f];
         if field.ty == FieldType::Keyword && field.logical.is_none() {
@@ -4419,11 +4455,12 @@ mod tests {
         // With a constant among its factors, it is an expression.
         let s = bind("SELECT id FROM docs ORDER BY bm25(body, :t) * 2 * similarity(emb, :q) DESC", &schema(), &q()).unwrap();
         assert!(matches!(&s.order, Some(OrderBy::Score { score: Score::Arith { op: ArithOp::Mul, .. }, .. })), "{:?}", s.order);
+        // KENJI-404: a KEYWORD takes a range, in byte order.
+        assert!(bind("SELECT id FROM docs WHERE category > 'c01'", &schema(), &q()).is_ok());
 
         for bad in [
             "SELECT id FROM other",
             "SELECT id FROM docs WHERE MATCH(year, 'x')",
-            "SELECT id FROM docs WHERE category > 'c01'",
             "SELECT id FROM docs ORDER BY similarity(emb, :missing)",
             "SELECT id FROM docs ORDER BY bm25(body, :t) >= 2",
             "SELECT id FROM docs ORDER BY ln(similarity(emb, :q), 2, 3)",

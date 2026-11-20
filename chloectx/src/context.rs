@@ -361,6 +361,10 @@ pub fn build(store: &Store, question: &str, filter: &Filter, p: &ContextParams) 
     // Who said a note, when it was not the user: an agent's claim is
     // its own, never the user's note.
     let whose = |r: &Record| {
+        // A teammate's, by their machine's name (ANA-402, WEI-306).
+        if let Some(m) = crate::sync::sent_by(r) {
+            return format!(" (from {m})");
+        }
         let w = r.said_by();
         if w.is_empty() || r.text.to_lowercase().starts_with(&w.to_lowercase()) { String::new() } else { format!(" ({w} said)") }
     };

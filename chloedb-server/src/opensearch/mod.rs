@@ -2487,6 +2487,22 @@ impl Os {
             limit = k.saturating_sub(from).min(size);
         }
         let params = cx.params.clone();
+        // A sort by a date and then other keys (`created_at desc,
+        // id.keyword`) whose other keys only the operators sort by: the
+        // page's rows are those at or past the date of its last row, which
+        // the date's own order (by `_id` on ties) finds without reading
+        // the other keys, and the other keys then sort those rows alone
+        // rather than every match (finding KENJI-404). A row without the
+        // date is kept, wherever its order puts it.
+        if limit > 0 && knn.is_none() && !keyset && order.len() > 1 && matches!(sort_cols.first(), Some((col, SortVal::Date)) if order[0].starts_with(col.as_str())) {
+            let last = from + limit - 1;
+            let sql = format!("SELECT {} FROM {}{} ORDER BY {}, {} ASC LIMIT 1 OFFSET {last}", sort_cols[0].0, ix.table, hits_pred.as_ref().map(|p| format!(" WHERE {p}")).unwrap_or_default(), order[0], ident(ID));
+            if let Some(Json::String(at)) = self.rows(&sql, &params).await?.rows.first().and_then(|r| r.first()) {
+                let op = if order[0].contains(" DESC") { ">=" } else { "<=" };
+                let col = &sort_cols[0].0;
+                hits_pred = and2(&hits_pred, &Some(format!("({col} {op} {} OR {col} IS NULL)", lit(at))));
+            }
+        }
         // The hits' columns: the document's, the score, then each field
         // sort key's from `sort_base` on.
         let mut cols: Vec<String> = if need_doc { ix.read_columns().iter().map(|c| ident(c)).collect() } else { vec![ident(ID), ident(VERSION)] };
