@@ -122,9 +122,27 @@ pub fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
 }
 
 /// Round to `d` decimals, ties to even as Python's `round`.
+/// Python's round(x, d): to the nearest of the exact value, ties to even
+/// (26.05 is 26.0500000000000007 as a float, so it rounds up).
 pub fn round(x: f64, d: i32) -> f64 {
-    let m = 10f64.powi(d);
-    (x * m).round_ties_even() / m
+    if !x.is_finite() {
+        return x;
+    }
+    if d < 0 {
+        let m = 10f64.powi(-d);
+        return (x / m).round_ties_even() * m;
+    }
+    format!("{:.*}", d as usize, x).parse().unwrap_or(x)
+}
+
+#[cfg(test)]
+mod round_tests {
+    #[test]
+    fn rounds_as_python() {
+        for (x, d, want) in [(26.05, 1, 26.1), (0.125, 2, 0.12), (2.675, 2, 2.67), (0.5, 0, 0.0), (1.5, 0, 2.0), (-0.35, 1, -0.3), (1234.5678, 3, 1234.568)] {
+            assert_eq!(super::round(x, d), want, "round({x}, {d})");
+        }
+    }
 }
 
 pub fn clip(s: &str, n: usize) -> String {
