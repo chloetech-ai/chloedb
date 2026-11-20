@@ -37,6 +37,13 @@ const GRADES = [[0, "bad"], [1, "fair"], [2, "good"], [3, "perfect"]];
 /** Whose grades the measures read. */
 const SOURCES = [["mine", "yours"], ["claude", "Claude's"], ["both", "yours, else Claude's"]];
 const ROW_H = 48;
+/** What each measure over the set is, and which of trec_eval's it matches. */
+const SUMMARY_TIPS = {
+  ndcg: "nDCG at k averaged over the queries (trec_eval's ndcg_cut with linear gain)",
+  success: "The share of queries with a row graded good or perfect in the top k (trec_eval's success)",
+  precision: "The share of the top k rows graded good or perfect, averaged over the queries (precision at k, trec_eval's P)",
+  mrr: "The reciprocal rank of the first row graded good or perfect in the top k, 0 with none, averaged over the queries (MRR@k)",
+};
 
 /**
  * What a grade is worth to nDCG: exponential, 2^g − 1 (Burges et al.; the
@@ -46,7 +53,12 @@ const ROW_H = 48;
 export const GAINS = [["exp", "2^g − 1", "Exponential gain, 2^g − 1: a perfect row (3) is worth 7, a good one (2) 3, a fair one (1) 1. The relevance autopilot's nDCG uses it too"], ["linear", "g", "Linear gain, g: a perfect row is worth 3, a good one 2. trec_eval's and BEIR's nDCG use it, so pick it to compare with their numbers"]];
 const gainOf = (gain) => gain === "linear" ? (g) => g : (g) => 2 ** g - 1;
 
-/** nDCG@k (with `gain`, GAINS), the share of good rows (grade ≥ 2) in the top k, the reciprocal rank of the first good row, and how many of the top k are graded. */
+/**
+ * nDCG@k (with `gain`, GAINS), the share of good rows (grade ≥ 2) in the
+ * top k (precision), whether there is one at all (success, trec_eval's
+ * success_k), the reciprocal rank of the first good row in the top k
+ * (MRR@k), and how many of the top k are graded.
+ */
 export function measures(keys, grades, k = 10, gain = "exp") {
   const top = keys.slice(0, k);
   const g = (key) => grades[key] ?? null;
@@ -57,6 +69,7 @@ export function measures(keys, grades, k = 10, gain = "exp") {
   return {
     ndcg: ideal > 0 ? dcg / ideal : null,
     precision: top.length ? top.filter((key) => (g(key) ?? 0) >= 2).length / k : null,
+    success: top.length ? (firstGood >= 0 ? 1 : 0) : null,
     mrr: firstGood >= 0 ? 1 / (firstGood + 1) : 0,
     judged: top.filter((key) => g(key) != null).length,
     n: top.length,
@@ -90,7 +103,7 @@ export function agreement(a, b) {
  */
 export function parseQrels(text) {
   const qrels = {};
-  let lines = 0, clamped = 0, skipped = 0;
+  let lines = 0, clamped = 0, skipped = 0, top = 0;
   for (const line of String(text).split(/\r?\n/)) {
     const t = line.trim();
     if (!t || t.startsWith("#")) continue;
@@ -100,9 +113,12 @@ export function parseQrels(text) {
     let v = Math.round(g);
     if (v < 0 || v > 3) { clamped++; v = Math.max(0, Math.min(3, v)); }
     (qrels[f[0]] ||= {})[f[f.length - 2]] = v;
+    top = Math.max(top, v);
     lines++;
   }
-  return { qrels, lines, clamped, skipped };
+  const binary = top === 1;
+  if (binary) for (const g of Object.values(qrels)) for (const k of Object.keys(g)) if (g[k] === 1) g[k] = 2;
+  return { qrels, lines, clamped, skipped, binary };
 }
 
 /** A queries file: BEIR's JSON lines ({"_id", "text"}) or `qid<TAB>text` lines (MS MARCO's and TREC's TSV), as {qid: text}. */
@@ -456,7 +472,7 @@ function render(page) {
       h("div", { class: "rl-expr mono small", title: "ORDER BY" }, expr(r) || "write an expression"),
       h("div", { class: "rl-ms" },
         tile("nDCG@" + st.k, m?.ndcg, other?.ndcg, undefined, `Discounted cumulative gain of the grades, over the best order the grades allow; gain ${gain() === "linear" ? "g (linear, as trec_eval and BEIR)" : "2^g − 1 (exponential, as the autopilot; trec_eval and BEIR use g)"}`),
-        tile("good in top " + st.k, m?.precision, other?.precision, (x) => x == null ? "–" : fmt.pct(x, 0), "Rows graded good or perfect"),
+        tile("good in top " + st.k, m?.precision, other?.precision, (x) => x == null ? "–" : fmt.pct(x, 0), "The share of the top rows graded good or perfect (precision at k, not whether there is one)"),
         tile("first good", m?.mrr, other?.mrr, (x) => x ? `#${Math.round(1 / x)}` : "–", "The rank of the first row graded good or perfect (reciprocal rank)"),
         h("div", { class: "rl-m", title: "Rows of the top that have a grade: measures count the others as bad" }, h("span", { class: "lbl" }, "graded"), h("b", {}, m ? `${m.judged}/${m.n}` : "–"))),
       list);
@@ -528,8 +544,8 @@ function render(page) {
         h("section", { class: "card" }, h("div", { class: "hd" }, h("h3", {}, "Over the graded queries"), h("span", { class: "sub" }, `${fmt.plural(qs.length, "query", "queries")} · top ${st.k} · ${SOURCES.find(([v]) => v === source())[1]} grades · gain ${GAINS.find(([v]) => v === gain())[1]} · rows without a grade count as bad`),
             h("span", { class: "sep" }), h("button", { class: "btn sm", disabled: judging, title: "Claude grades the rows of either ranking it has not graded, for every query of the set", onclick: async () => { await judge(qs); evaluate(); } }, icon("agent"), "Grade the pools with Claude")),
           h("div", { class: "bd" }, h("div", { class: "grid g2" },
-            h("div", {}, h("div", { class: "rl-sum" }, ["ndcg", "precision", "mrr"].map((k) => h("div", { class: "rl-m big" }, h("span", { class: "lbl" }, { ndcg: `mean nDCG@${st.k}`, precision: `good in top ${st.k}`, mrr: "mean reciprocal rank" }[k]),
-              h("div", { class: "row nw", style: { gap: "10px" } }, ["a", "b"].map((side, i) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "rl-letter sm", style: { "--c": COLORS[i] } }, "AB"[i]), h("b", {}, mean(side, k) == null ? "–" : k === "precision" ? fmt.pct(mean(side, k), 0) : mean(side, k).toFixed(3)))))))),
+            h("div", {}, h("div", { class: "rl-sum" }, ["ndcg", "success", "precision", "mrr"].map((k) => h("div", { class: "rl-m big", title: SUMMARY_TIPS[k] }, h("span", { class: "lbl" }, { ndcg: `mean nDCG@${st.k}`, success: `a good row in top ${st.k}`, precision: `good in top ${st.k}`, mrr: `mean reciprocal rank@${st.k}` }[k]),
+              h("div", { class: "row nw", style: { gap: "10px" } }, ["a", "b"].map((side, i) => h("span", { class: "row nw", style: { gap: "5px" } }, h("span", { class: "rl-letter sm", style: { "--c": COLORS[i] } }, "AB"[i]), h("b", {}, mean(side, k) == null ? "–" : k === "precision" || k === "success" ? fmt.pct(mean(side, k), k === "success" ? 1 : 0) : mean(side, k).toFixed(3)))))))),
               wins(per), sigLine(per), agreeLine(qs)),
             h("div", {}, h("div", { class: "small dim", style: { marginBottom: "6px" } }, `nDCG@${st.k} of B minus A, a query a bar`), deltaChart(per))))),
         tunable.map((i) => h("section", { class: "card", style: { marginTop: "14px" } }, h("div", { class: "hd" },
@@ -644,6 +660,7 @@ function render(page) {
           if (fileKind(f.name, text) === "qrels") {
             const got = parseQrels(text);
             qrels = { ...(qrels || {}), ...got.qrels };
+            if (got.binary) notes.push("grades of only 0 and 1 read as binary: 1 (relevant) became good (2), so the good rows and the first good row count the relevant ones, as trec_eval does");
             if (got.clamped) notes.push(`${fmt.plural(got.clamped, "grade")} outside 0 to 3 moved into it`);
           } else Object.assign(queries, parseQueries(text));
         }
