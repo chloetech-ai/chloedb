@@ -300,6 +300,7 @@ pub fn defaults() -> Vec<Rule> {
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
         (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
         (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "A follow process writing here (a cluster following another, or chloedb-server follow-postgres) has been over a minute behind its source, or silent, for a minute: it is down, catching up, or held. GET /v1/admin/follow says which of a cluster's, Data > Connectors of a Postgres follower's."), 30.0),
+        (rule("follow-table-held", "A Postgres follower holds a table", "follow_tables_held", ">", 0.0, "min", 60, 0, "warning", s, "chloedb-server follow-postgres could not write a table (a value ChloeDB refuses, a table without a primary key) for a minute: it holds that table, whose rows stay as they were, follows the others, and tries it again. Data > Connectors says which and why."), 0.0),
     ];
     let slo = crate::service::Slo::default();
     v.into_iter()
@@ -5131,6 +5132,12 @@ mod tests {
         let s = one(d("follow-behind"), &at(&|_| json!({"follow_lag_s": 90.0})));
         assert_eq!(s["state"], "firing", "{s}");
         let s = one(d("follow-behind"), &at(&|i| json!({"follow_lag_s": if i > 290 { 90.0 } else { 1.0 }})));
+        assert_eq!(s["state"], "ok", "{s}");
+        // A Postgres follower holding a table for a minute, and one that
+        // only now held it.
+        let s = one(d("follow-table-held"), &at(&|_| json!({"follow_tables_held": 1.0})));
+        assert_eq!(s["state"], "firing", "{s}");
+        let s = one(d("follow-table-held"), &at(&|i| json!({"follow_tables_held": if i > 290 { 1.0 } else { 0.0 }})));
         assert_eq!(s["state"], "ok", "{s}");
         // Filling 5% an hour at 60%: 8 hours.
         let s = one(d("disk-filling"), &at(&|i| json!({"disk_used_ratio": 0.6 - 0.05 * (300 - i) as f64 * 2.0 / 3600.0})));
