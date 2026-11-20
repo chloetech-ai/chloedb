@@ -98,6 +98,42 @@ async fn a_server_keeps_and_calls_stored_functions() {
     assert!(e.contains("_functions"), "{e}");
 }
 
+/// A function whose body (or the rank profile it ranks by) holds a step
+/// the server takes before the engine plans: text where vectors go, words
+/// understood, a blend. It is kept, and a call answers as its body
+/// written out does (the query designer's templates are such functions).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_function_of_meaning_understanding_or_a_blend_answers_as_its_body() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), "one.strata");
+    let schema = (*db.schema()).clone();
+    let mut svc = Service::new(Backend::Local(db), schema, agent(), 16, Duration::from_secs(10));
+    // The hash model needs no files: text is embedded for `emb`.
+    svc.open_models(dir.path());
+    let svc = Arc::new(svc);
+    let admin = key_of("ops", Scope::Admin);
+    let ask = |sql: &str| QueryReq { sql: sql.into(), params: Params(std::collections::HashMap::from([("q".to_string(), Value::Str("lumio wireless earbuds".into()))])), ..Default::default() };
+    let answer = |sql: &'static str| { let svc = svc.clone(); async move { svc.query(ask(sql)).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message)).rs.rows } };
+    let ranking = "rrf(bm25(body, :q, understand => 'boost', understand_fields => 'brand'), similarity(emb, :q))";
+    sql_as(&svc, &admin, &format!("CREATE RANK PROFILE found ON products AS SELECT * FROM products ORDER BY {ranking} DESC")).await.unwrap();
+    // Text where vectors go, in the profile the body ranks by: checked as a vector.
+    sql_as(&svc, &admin, "CREATE FUNCTION found_by(q TEXT, k INT DEFAULT 5) RETURNS TABLE AS SELECT id FROM products ORDER BY rank_profile('found', q => :q) LIMIT :k").await.unwrap();
+    let want = answer("SELECT id FROM products ORDER BY rrf(bm25(body, :q, understand => 'boost', understand_fields => 'brand'), similarity(emb, :q)) DESC LIMIT 5").await;
+    assert_eq!(want.len(), 5);
+    assert_eq!(answer("SELECT * FROM found_by(q => :q)").await, want, "understood and embedded as the query is");
+    // A body that reads a blend is checked when it runs.
+    sql_as(&svc, &admin, "CREATE BLEND page AS SOURCES (results AS (SELECT id, brand, score() FROM products ORDER BY rank_profile('found', q => :q) LIMIT 30)) MAX 1 PER brand WITH (k => 10)").await.unwrap();
+    sql_as(&svc, &admin, "CREATE FUNCTION paged(q TEXT, k INT DEFAULT 4) RETURNS TABLE AS SELECT * FROM blend('page', q => :q) LIMIT :k").await.unwrap();
+    let page = answer("SELECT * FROM paged(q => :q)").await;
+    assert_eq!(page, answer("SELECT * FROM blend('page', q => :q) LIMIT 4").await);
+    assert_eq!(page.len(), 4);
+    let brands: std::collections::HashSet<String> = page.iter().map(|r| format!("{:?}", r[3])).collect();
+    assert_eq!(brands.len(), 4, "one row a brand: {page:?}");
+    // Some of its columns, and fewer rows.
+    let ids: Vec<Vec<Value>> = page.iter().take(2).map(|r| vec![r[2].clone()]).collect();
+    assert_eq!(answer("SELECT id FROM paged(q => :q) LIMIT 2").await, ids);
+}
+
 /// A shard's server: rows of `N` that `keep` keeps, numbered writes, its
 /// slots kept beside the database, and at most 10,000 rows a query, as
 /// chloedb-server's `--max-result-window` keeps by default.

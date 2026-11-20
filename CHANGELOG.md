@@ -34,6 +34,27 @@ changes collect under "Unreleased".
   dropped: a 502 "transport error" or "operation was canceled" before), as
   one whose copies refused the connection already was
   ([server.md](docs/chloedb/server.md#fleet-health)).
+- **The command center designs a search stage by stage, as a template
+  apps call by name** (`chloedb-server`). The Query designer (Build, key
+  `z`) takes the text a person types as its one input and steps through
+  Understanding, Retrieval (words, meaning, expansion, filters), Ranking
+  (boosts, then heads of words, meaning, numbers, recency, `gbdt` models
+  and a `cross_encoder`, fused by weights or `rrf`), Blending (several
+  queries with one text, each with a boost) and Save, which runs `CREATE
+  RANK PROFILE`, `CREATE BLEND`, `CREATE FUNCTION <name>(q TEXT, k INT)
+  RETURNS TABLE` and `<name>_template()`. Each step previews a sample
+  query as result rows, coloured by how far each moved, or as plain lists.
+  **Fixed:** a stored function or rank profile whose body understands,
+  expands, blends or embeds text answers as its body does; an understood
+  boost inside `rrf` or `tmm` boosts the whole fusion instead of being
+  refused; `CREATE FUNCTION` accepts a body that embeds text or reads a
+  blend; an expanded query no longer answers its feedback rows from the
+  answer cache (#728).
+- **A server keeps no parameter values unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405).
 - **ChloeCtx believes less of what it reads.** A secret named just before
   its value in a sentence ("the staging password is …", "password: …",
   "api key …") is redacted as `KEY=value` is, and a session whose prompt
@@ -213,6 +234,18 @@ changes collect under "Unreleased".
   by CHELSA 2.1): its hottest month, coldest nights, rain and climate
   class now and later, a map of the change, and where its future climate
   can be visited today, found by the distance between climate vectors.
+- **Earth explorer: Land finder.** Places of California and Chile to
+  build a solar farm on, kept within limits on the slope, the grid, the
+  roads, protected land and towns, and ranked by how much they look like
+  the solar farms already built there (or by the grid, or by words), with
+  a shortlist and what is around each place on its page (OpenStreetMap's
+  grid, roads and solar farms; PAD-US in California).
+- **Earth explorer: Find change.** Changed places is now a finder: the
+  places whose look changed since 2017 on a map, searched by a change in
+  words, near a town, by when and how much they changed and by what they
+  were and became, from many more places. A place can be watched for
+  change: it gets a new satellite picture every few days, and a fire
+  watch tells its browser when one looks unlike the one before.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,

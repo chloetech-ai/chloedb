@@ -545,7 +545,11 @@ impl Db {
         // A vector of no stated size: the body is checked when called.
         let Some(params) = function::sample_params(def) else { return Ok(()) };
         let snap = self.snapshot();
-        let q = qsql::parse_query(&def.body)?;
+        let catalog: Vec<&Schema> = snap.schemas().collect();
+        // A body that reads a blend is checked when it runs; one that
+        // gives text where vectors go plans as a call would, embedded.
+        let Some((body, params)) = function::body_to_check(def, &catalog, &params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))? else { return Ok(()) };
+        let q = qsql::parse_query(&body)?;
         plan_of(&snap, &q, &params, &*self.functions_at(&snap)?).map(drop).map_err(|e| Error::Query(format!("the body of {} does not plan: {e}", def.name)))
     }
 

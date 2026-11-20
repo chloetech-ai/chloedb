@@ -628,6 +628,95 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   state.cluster = null;
 }
 
+// Query templates (qtemplate.js): a design becomes the query the
+// designer previews, and the CREATE statements it is saved as.
+{
+  const T = await import(new URL("qtemplate.js", app));
+  const t = { table: "products", short: { key: "id", fields: [
+    { name: "id", type: "keyword" }, { name: "title", type: "text", indexed: false }, { name: "body", type: "text" }, { name: "brand", type: "keyword" },
+    { name: "price", type: "float" }, { name: "sold", type: "int" }, { name: "emb", type: "vector", embed: { model: "hash:64" } } ] } };
+  const d = T.blank(t, "Shoe search!");
+  assert.equal(d.name, "shoe_search");
+  assert.deepEqual(d.words.fields, [{ field: "body", weight: 1 }]);
+  // A row shows as a result: its title, a line of text and its facts.
+  assert.deepEqual(d.output.columns, ["id", "title", "body", "brand", "price"]);
+  d.output.columns = ["id", "title"];
+  // One input: one phase, no WITH.
+  assert.equal(T.querySql(d, t), "SELECT id, title, score()\nFROM products\nORDER BY bm25(body, :q, syntax => 'plain', fuzzy => 'auto') DESC\nLIMIT 10");
+  assert.equal(T.profileSql(d, t), "CREATE OR REPLACE RANK PROFILE shoe_search ON products AS\n  SELECT * FROM products ORDER BY bm25(body, :q, syntax => 'plain', fuzzy => 'auto') DESC");
+  // Words and meaning fused; a filter; a boost whose weight is a parameter.
+  d.meaning.on = true; d.meaning.field = "emb";
+  d.filters = [{ field: "price", op: "<=", value: "200" }];
+  d.rank.boosts = [{ kind: "number", field: "sold", w: 0.2, log: true }];
+  const sql = T.querySql(d, t);
+  // One phase: the fused score times the boosts, the filter in WHERE.
+  assert.equal(sql, "SELECT id, title, score()\nFROM products\nWHERE price <= 200\nORDER BY rrf(bm25(body, :q, syntax => 'plain', fuzzy => 'auto'), similarity(emb, :q)) * (1 + :w_sold * ln(1 + coalesce(sold, 0))) DESC\nLIMIT 10");
+  d.candidates = 300;
+  assert.match(T.firstScore(d, t), /similarity\(emb, :q\), depth => 300\)$/);
+  d.fusion = "weighted";
+  assert.equal(T.firstScore(d, t), "0.5 * tmm(bm25(body, :q, syntax => 'plain', fuzzy => 'auto', depth => 300)) + 0.5 * tmm(similarity(emb, :q, depth => 300))");
+  assert.match(T.querySql(d, t), /ORDER BY \(0\.5 \* tmm\(.*\)\) \* \(1 \+ :w_sold/);
+  d.fusion = "rrf"; d.candidates = 100;
+  assert.deepEqual(T.params(d, t, "red shoes"), { q: "red shoes", w_sold: 0.2 });
+  assert.equal(T.profileSql(d, t), "CREATE OR REPLACE RANK PROFILE shoe_search ON products AS\n  SELECT * FROM products ORDER BY rrf(bm25(body, :q, syntax => 'plain', fuzzy => 'auto'), similarity(emb, :q)) * (1 + :w_sold * ln(1 + coalesce(sold, 0))) DESC\nWITH (w_sold => 0.2)");
+  // Retrieval alone: the first phase, cut to the page.
+  assert.match(T.querySql(d, t, { upTo: "retrieval" }), /^SELECT id, title, score\(\)\nFROM products\nWHERE price <= 200\nORDER BY rrf\(/);
+  // Understanding and expansions are options of the first words field's bm25; RM3 reads the query's syntax.
+  d.understand = { values: true, mode: "filter", fields: ["brand", "price"], weight: 0.25 };
+  d.words.synonyms = true; d.words.feedback = 5;
+  assert.equal(T.inputs(d, t)[0].sql, "bm25(body, :q, fuzzy => 'auto', synonyms => 1, expand => 5, understand => 'filter', understand_fields => 'brand, price')");
+  // All the words: a MATCH of the first field.
+  d.words.match = "all";
+  assert.ok(T.where(d, t).includes("MATCH(body, :q, syntax => 'plain', fuzzy => 'auto', synonyms => 1)"));
+  // Saved: a profile, the function apps call, and the design; a blend when on.
+  let st = T.saveStatements(d, t);
+  assert.deepEqual(st.map((s) => s.what), ["ranking", "template", "design"]);
+  assert.match(st[1].sql, /^CREATE OR REPLACE FUNCTION shoe_search\(q TEXT, k INT DEFAULT 10\) RETURNS TABLE OPTIONS \(description = '.*'\) AS\n  SELECT id, title, score\(\) FROM products WHERE MATCH\(body, :q.*\) AND price <= 200 ORDER BY rank_profile\('shoe_search', q => :q\) LIMIT :k$/);
+  const body = st[2].sql.slice(st[2].sql.indexOf(" AS ") + 4);
+  assert.deepEqual(T.normalize(T.ofBody(body), t).rank.boosts, d.rank.boosts);
+  assert.equal(T.ofBody("'blend:{}'"), null);
+  d.blend.on = true; d.blend.cap = { per: "brand", at_most: 2 }; d.blend.dedupe = { on: "emb", threshold: 0.95 };
+  st = T.saveStatements(d, t);
+  assert.deepEqual(st.map((s) => s.what), ["ranking", "blend", "template", "design"]);
+  assert.match(st[1].sql, /^CREATE OR REPLACE BLEND shoe_search_blend AS\n  SOURCES \(\n    results AS \(SELECT id, title, brand, emb, score\(\) FROM products WHERE .* ORDER BY rank_profile\('shoe_search', q => :q\) LIMIT 50\)\n  \)\n  MAX 2 PER brand\n  DEDUPE 0.95 ON emb\n  WITH \(k => 10\)$/);
+  assert.match(st[2].sql, /SELECT \* FROM blend\('shoe_search_blend', q => :q\) LIMIT :k$/);
+  // Blending turned off drops the blend it made.
+  d.blend.on = false;
+  assert.equal(T.saveStatements(d, t, { hadBlend: true })[1].sql, "DROP BLEND IF EXISTS shoe_search_blend");
+  assert.throws(() => T.saveStatements({ ...d, name: "" }, t), /Name the template/);
+  assert.throws(() => T.firstScore({ ...d, words: { ...d.words, on: false }, meaning: { ...d.meaning, on: false } }, t), /needs words or meaning/);
+  // Heads: the first phase's top rows scored again, each head weighted.
+  d.rank.heads = { on: true, depth: 50, fuse: "weighted", norm: "minmax", list: [
+    { kind: "words", field: "body", w: 1 }, { kind: "meaning", field: "emb", w: 0.5 }, { kind: "number", field: "sold", log: true, w: -0.2 },
+    { kind: "model", model: "clicks", prob: true, features: [{ kind: "words", field: "body" }, { kind: "number", field: "price" }], w: 0.3 } ] };
+  let ps = T.phases(d, t);
+  assert.deepEqual(ps.map((p) => [p.name, p.limit]), [["candidates", 50], ["ranked", null]]);
+  assert.equal(ps[1].by, "1 * minmax(bm25(body, :q, syntax => 'plain')) + 0.5 * minmax(similarity(emb, :q)) - 0.2 * minmax(ln(1 + coalesce(sold, 0))) + 0.3 * minmax(sigmoid(gbdt('clicks', bm25(body, :q, syntax => 'plain'), coalesce(price, 0))))");
+  // The heads' phase reads the first's rows; the first keeps its text scores' options (and their rewrites).
+  assert.match(T.querySql(d, t), /^WITH candidates AS \(SELECT \* FROM products WHERE MATCH\(body.*expand => 5.*LIMIT 50\)\nSELECT id, title, score\(\) FROM candidates\nORDER BY 1 \* minmax/);
+  assert.doesNotMatch(T.querySql(d, t).split("\n").slice(1).join("\n"), /expand|understand/);
+  d.rank.heads.fuse = "rrf";
+  assert.equal(T.headsScore(d, t), "rrf(bm25(body, :q, syntax => 'plain'), similarity(emb, :q), ln(1 + coalesce(sold, 0)), sigmoid(gbdt('clicks', bm25(body, :q, syntax => 'plain'), coalesce(price, 0))), weights => [1, 0.5, -0.2, 0.3])");
+  assert.throws(() => T.headsScore({ ...d, rank: { ...d.rank, heads: { ...d.rank.heads, list: [{ kind: "model", model: "m", features: [] }] } } }, t), /needs its features/);
+  // A cross-encoder head over the top 20, the one phase after the first.
+  d.rank.heads = { on: true, depth: 20, fuse: "weighted", norm: "minmax", list: [{ kind: "cross", model: "ms-marco-MiniLM-L-6-v2", fields: ["title"], w: 1 }] };
+  ps = T.phases(d, t);
+  assert.deepEqual(ps.map((p) => [p.name, p.limit]), [["candidates", 20], ["ranked", null]]);
+  assert.equal(ps[1].by, "cross_encoder('ms-marco-MiniLM-L-6-v2', title, :q)");
+  // A design of version 1 with a rerank opens as that head.
+  const old = T.normalize({ ...d, rank: { boosts: [], rerank: { on: true, model: "bge-reranker-base", fields: [], depth: 15 } } }, t);
+  assert.deepEqual([old.rank.heads.on, old.rank.heads.depth, old.rank.heads.list[0].kind, old.rank.rerank.on], [true, 15, "cross", false]);
+  // A blend of several queries: this template's, another template's, a table's, any query.
+  d.rank.heads.on = false;
+  d.blend = { ...d.blend, on: true, boost: 0.1, sources: [
+    { kind: "template", template: "news_search", depth: 15, boost: -0.1 }, { kind: "sql", name: "ads", sql: "SELECT *, score() FROM ads ORDER BY bm25(text, :q) DESC LIMIT 5;" }, { kind: "template", template: "" } ] };
+  const def = T.blendDef(d, t, { saved: true });
+  assert.deepEqual(def.sources.map((s) => [s.name, s.sql.slice(0, 40)]), [["results", "SELECT id, title, brand, emb, score() FR"], ["news_search", "SELECT * FROM news_search(q => :q, k => "], ["ads", "SELECT *, score() FROM ads ORDER BY bm25"]]);
+  assert.equal(def.sources[2].sql, "SELECT *, score() FROM ads ORDER BY bm25(text, :q) DESC LIMIT 5");
+  assert.deepEqual(def.boost, [{ source: "results", by: 0.1 }, { source: "news_search", by: -0.1 }]);
+  assert.match(T.blendSql(def), /BOOST \(results 0\.1, news_search -0\.1\)/);
+}
+
 // GRACE-401: a search's head says how many rows match (a COUNT with the
 // WHERE the words keep), of them how many have the words as typed, and
 // pages by OFFSET; GRACE-402: in Both, a row with every word comes first
