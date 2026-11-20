@@ -38,6 +38,7 @@ const ITEM = z.object({
   says: z.array(z.object({ doc: z.number().int().min(1).describe('The document’s number'), text: z.string().min(1).max(400).describe('What it says, quoted or close') })).max(8).optional()
     .describe('What each source says about it'),
   when: z.string().max(40).optional().describe('For news and history: when it happened'),
+  group: z.string().max(60).optional().describe('For things put together from parts (an outfit, a room, a menu): the part it is ("top", "bottom", "shoes", "accessory")'),
   url: z.string().max(2000).optional().describe('Its own page (the maker’s, the place’s), when there is one'),
   image: z.string().max(2000).optional().describe('The address of a photo of it that you saw on a page you read (the thing itself, not a logo or a person), when there is one'),
 })
@@ -159,6 +160,7 @@ export const findings = {
       cons: it.cons ?? [],
       says: (it.says ?? []).filter(s => known(s.doc)),
       when: it.when ?? null,
+      group: it.group ?? null,
       url: it.url ? web(it.url) : null,
       image: null,
       imageFrom: null,
@@ -166,7 +168,8 @@ export const findings = {
     // A photo of each item, fetched here (the app's page loads nothing):
     // the one the research saw, else its own page's; for a pick, else its
     // Wikipedia article's.
-    const pick = goal ? goal === 'pick' : needs.length > 0
+    // Pieces to put together (an outfit's top, shoes) are pictured too.
+    const pick = (goal ? goal === 'pick' : needs.length > 0) || items.some(it => it.group)
     const pics = await picturesFor(items.map((it, i) => ({ name: it.name, image: it.image ? web(it.image) : null, url: things[i].url })), { wiki: pick })
     things.forEach((t, i) => {
       t.image = pics[i]?.src ?? null
@@ -228,6 +231,7 @@ export function clip(found = {}) {
       cons: texts(t.cons, 5, 160),
       says: list(t.says, 20).filter(s => s && Number.isInteger(s.doc) && s.doc >= 1 && cut(s.text, 400)).slice(0, 8).map(s => ({ doc: s.doc, text: cut(s.text, 400) })),
       when: cut(t.when, 40),
+      group: cut(t.group, 60),
       url: cut(t.url, 2000),
       image: typeof t.image === 'string' && /^https?:\/\//i.test(t.image) ? cut(t.image, 2000) : undefined,
     })),

@@ -137,6 +137,18 @@ test('an app asked for several corrections at once gets them all; a plan keeps e
   assert.equal(clip({ query: 'trip', documents: [{ title: 'Guide', summary: 'x' }], items: days }).items.length, 15, 'a 14-day plan keeps all its days (TOM-2)')
 })
 
+test('outfits to mix and match are found on the web, with each piece in its part, never drawn', async () => {
+  const { clip } = await import('../server/widgets/findings.mjs')
+  const pieces = ['top', 'top', 'bottom', 'shoes'].map((group, i) => ({ name: `Piece ${i}`, group, image: `https://example.com/${i}.jpg` }))
+  const kept = clip({ query: 'Coachella outfit pieces', documents: [{ title: 'Guide', summary: 'x' }], items: pieces })
+  assert.deepEqual(kept.items.map(t => t.group), ['top', 'top', 'bottom', 'shoes'], 'each piece keeps its part')
+  const { GUIDE } = await import('../server/guide.mjs').catch(() => ({}))
+  const guide = GUIDE ?? (await import('node:fs')).readFileSync(new URL('../server/guide.mjs', import.meta.url), 'utf8')
+  assert.match(guide, /never drawn as shapes, silhouettes or icons/, 'things a person looks at are shown by their photos')
+  const route = (await import('node:fs')).readFileSync(new URL('../chat/model.mjs', import.meta.url), 'utf8')
+  assert.match(route, /never an app on "inputs" that draws them as shapes or icons/, 'a request about clothes goes to the web for real pieces')
+})
+
 // The kit's own helpers, read from its source as the page runs them.
 const kit = (await import('node:fs')).readFileSync(new URL('../server/views/kit.js', import.meta.url), 'utf8')
 const fn = name => new Function(`${kit.match(new RegExp(`function names\\([\\s\\S]*?\\n}`))?.[0] ?? ''}\n${kit.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))[0]}\nreturn ${name}`)()
