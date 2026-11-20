@@ -1720,7 +1720,12 @@ async fn a_shard_down_fails_a_query_of_operators_with_a_503() {
     };
     let (s, j) = call(reqwest::Method::PUT, "/tickets", Some(json!({"mappings": {"properties": {"tags": {"type": "keyword"}, "body": {"type": "text"}}}}))).await;
     assert_eq!(s, 200, "{j}");
-    let nd: String = (0..40).map(|i| format!("{}\n{}\n", json!({"index": {"_id": format!("t{i}")}}), json!({"tags": ["a", ["b", "c"][i % 2]], "body": "refund please"}))).collect();
+    let nd: String = (0..40)
+        .map(|i| {
+            let tag = if i % 2 == 0 { "b" } else { "c" };
+            format!("{}\n{}\n", json!({"index": {"_id": format!("t{i}")}}), json!({"tags": ["a", tag], "body": "refund please"}))
+        })
+        .collect();
     let (s, j) = call(reqwest::Method::POST, "/tickets/_bulk?refresh=true", Some(Json::String(nd))).await;
     assert_eq!(s, 200, "{j}");
     let plain = json!({"query": {"match": {"body": "refund"}}, "size": 3});
