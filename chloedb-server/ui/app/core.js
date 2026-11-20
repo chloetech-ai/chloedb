@@ -463,6 +463,10 @@ export function needs(scope, route = null) {
 }
 /** Whether the signed-in key is limited to tables (whoami's `tables`). */
 export const limited = () => !!ctx.whoami?.tables;
+/** The signed-in key's name (whoami's), or null: who saved a team view. */
+export const whoName = () => ctx.whoami?.name || null;
+/** A server that takes no token and has no keys: code shown for it sends none. */
+export const isOpenServer = () => !!ctx.whoami?.auth?.open;
 /** A key's grants in words: "swarm_* admin, * read" (whoami's or a key's `tables`). */
 export const grantsText = (tables) => Object.entries(tables || {}).map(([t, s]) => `${t} ${s}`).join(", ");
 /** What the header says of a key: its scope, or for a key limited to tables its grants (and its preset). */

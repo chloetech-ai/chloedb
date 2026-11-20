@@ -38,6 +38,14 @@ pub async fn create(db: &Strata) -> Result<Vec<String>> {
             }
         }
     }
+    if have.iter().any(|t| t == "ea_watches") && db.query("SELECT sky FROM ea_watches LIMIT 1", json!({})).await.is_err() {
+        if let Err(e) = db.sql("ALTER TABLE ea_watches ADD COLUMN sky BOOL").await {
+            let m = e.to_string();
+            if !m.contains("exist") && !m.contains("duplicate") {
+                tracing::warn!(error = %m, "ea_watches.sky");
+            }
+        }
+    }
     // The rules and the words when their tables are new or empty (a run
     // stopped between making a table and writing its rows).
     let empty = |t: &'static str| async move { db.query(&format!("SELECT COUNT(*) AS n FROM {t}"), json!({})).await.ok().and_then(|r| r.first().map(|x| crate::strata::RowExt::i(x, "n"))).unwrap_or(0) == 0 };

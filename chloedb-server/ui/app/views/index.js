@@ -61,6 +61,7 @@ export const VIEWS = [
   { id: "table", title: "Tables", icon: "table", group: "Build", range: false, keywords: "tables table home search find rows data quality filled empty used by keys storage index meaning vectors semantic", load: () => import("./table.js") },
   { id: "designer", title: "Query designer", icon: "stages", group: "Build", range: false, keywords: "query designer template search pipeline stage by stage steps funnel retrieval understanding ranking blending words meaning typos synonyms expansion feedback rm3 boost rerank cross encoder diversify dedupe quota rank profile blend function saved search reusable", load: () => import("./designer.js") },
   { id: "saved", title: "Saved searches", icon: "bookmark", group: "Build", range: false, keywords: "saved searches stored functions function endpoint api mcp tool reuse version rollback create function returns table", load: () => import("./saved.js") },
+  { id: "views", title: "Team views", icon: "eye", group: "Build", range: false, keywords: "team views saved view dashboard report monday numbers chart share link phone builder workbench kept on the server everyone", load: () => import("./views.js") },
   { id: "connectors", title: "Connectors", icon: "streams", group: "Data", keywords: "connectors data sources ingest prometheus jira servicenow oxidized email mail webhook alertmanager rest api pull push cdc health kafka redpanda topics stream consumer broker", load: () => import("./connectors.js") },
 ];
 
@@ -79,7 +80,8 @@ export const NAV = [
     { id: "start", title: "Start here", icon: "rocket", key: "g" },
     { id: "table", title: "Tables", icon: "table", key: "e" },
     { id: "saved", title: "Saved searches", icon: "bookmark", key: "v" },
-    { id: "designer", title: "Query designer", icon: "stages", key: "y" },
+    { id: "designer", title: "Query designer", icon: "stages", key: "z" },
+    { id: "views", title: "Team views", icon: "eye", key: "y" },
     { id: "builder", title: "Query builder", icon: "builder", key: "b" },
     { id: "sql", title: "SQL workbench", icon: "sql", key: "w" },
     { id: "import", title: "Import and export", icon: "import", key: "i", scope: "write" },

@@ -52,6 +52,7 @@ pub mod embed;
 pub mod env;
 pub mod error;
 pub mod explore;
+pub mod fetch;
 pub mod forward;
 pub mod graph;
 pub mod hosted;

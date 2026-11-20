@@ -61,15 +61,27 @@ async function sink(name, type) {
 }
 
 /** Every row of `sql` as a CSV, read a page at a time; `onPage(rows)` follows it. */
-export async function exportCsv(sql, params, name, { onPage, signal } = {}) {
-  const out = await sink(name, "text/csv");
+export const exportCsv = (sql, params, name, opts = {}) => exportRows(sql, params, name, { ...opts, format: "csv" });
+
+/** A page of rows as JSON Lines, an object a row. */
+export const jsonLines = (columns, rows) => rows.map((r) => JSON.stringify(Object.fromEntries(columns.map((c, i) => [c, r[i]]))) + "\n").join("");
+
+/**
+ * Every row of `sql` in a file, read a page at a time by a scroll, as CSV
+ * (`format` "csv", its header first) or JSON Lines ("jsonl"): what a
+ * button that says "all 2,536" writes (GRACE-403). Resolves the rows
+ * written, or null when no file was chosen.
+ */
+export async function exportRows(sql, params, name, { onPage, signal, format = "csv" } = {}) {
+  const csv = format !== "jsonl";
+  const out = await sink(name, csv ? "text/csv" : "application/x-ndjson");
   if (!out) return null;
   let cursor = null, rows = 0;
   try {
     let j = await api("/v1/query", { body: { sql, params, page_size: SHOWN }, signal });
-    await out.write(csvLines([j.columns || []]));
+    if (csv) await out.write(csvLines([j.columns || []]));
     for (;;) {
-      await out.write(csvLines(j.rows || []));
+      await out.write(csv ? csvLines(j.rows || []) : jsonLines(j.columns || [], j.rows || []));
       rows += j.rows?.length || 0;
       onPage?.(rows);
       cursor = j.cursor;
