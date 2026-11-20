@@ -70,6 +70,8 @@ pub struct Watch {
     pub region: String,
     pub closer: bool,
     pub power: bool,
+    /// A clear night over it, by GOES's cloud mask.
+    pub sky: bool,
     pub place: String,
     pub created: String,
 }
@@ -95,6 +97,7 @@ impl Watch {
             region: r.s("region"),
             closer: flag(r, "closer"),
             power: flag(r, "power"),
+            sky: flag(r, "sky"),
             place: r.s("place"),
             created: r.s("created"),
         }
@@ -103,7 +106,7 @@ impl Watch {
     /// The row as stored.
     pub fn doc(&self) -> Value {
         json!({"id": self.id, "watcher": self.watcher, "name": self.name, "lat": self.lat, "lon": self.lon, "km": self.km,
-               "region": self.region, "closer": self.closer, "power": self.power, "place": self.place, "created": self.created})
+               "region": self.region, "closer": self.closer, "power": self.power, "sky": self.sky, "place": self.place, "created": self.created})
     }
 
     /// As the page sees it: not the watcher's key.
@@ -250,6 +253,24 @@ pub fn alerts(w: &Watch, scans: &[i64], px: &[Px], seen: &mut HashSet<String>) -
     out
 }
 
+/// A clear night over a watch's place: dark, the last scan clear, and
+/// most of the night's scans so far clear. Once a night.
+pub fn clear_night(w: &Watch, sky: &Row, seen: &mut HashSet<String>) -> Option<Value> {
+    let tonight = sky.get("nights").and_then(Value::as_array).and_then(|a| a.last()).and_then(Value::as_i64).unwrap_or(-1);
+    if sky.f("sun") > crate::sky::NIGHT_SUN || sky.f("clear") < 0.9 || sky.i("nn") < 2 || tonight < crate::sky::GOOD {
+        return None;
+    }
+    let id = format!("{}-clear-{}", w.id, sky.i("day_end"));
+    if !seen.insert(id.clone()) {
+        return None;
+    }
+    let t = sky.s("t");
+    Some(json!({"id": id, "watch": w.id, "watcher": w.watcher, "region": w.region, "kind": "clear", "t": t,
+        "sent": crate::pages::iso(chrono::Utc::now().timestamp()),
+        "title": format!("A clear night over {}", w.name), "body": format!("{tonight}% of tonight's scans so far were clear over it, and the last one at least 90%."),
+        "km": null, "dir": "", "fire": "", "lat": w.lat, "lon": w.lon, "name": w.name}))
+}
+
 /// The nearest fire, scan by scan: (time, km within `FAR_KM`, or none).
 pub fn track(w: &Watch, scans: &[i64], px: &[Px]) -> Vec<Value> {
     scans
@@ -320,6 +341,25 @@ pub async fn judge(db: &Strata, region: &str, from: i64, now: i64) -> Result<usi
     if watches.is_empty() {
         return Ok(0);
     }
+    let mut seen: HashSet<String> = db
+        .scroll("SELECT id FROM ea_watch_alerts WHERE region = :r AND t >= :a", json!({"r": region, "a": crate::pages::iso(now - KEEP_S)}), 10_000)
+        .await
+        .map_err(|e| anyhow!("{e}"))?
+        .iter()
+        .map(|r| r.s("id"))
+        .collect();
+    let mut out = Vec::new();
+    // Clear nights, from the sky over each watch's place.
+    let ids: Vec<String> = watches.iter().filter(|w| w.sky && !w.place.is_empty()).map(|w| w.place.clone()).collect();
+    if !ids.is_empty() {
+        let rows = db.query("SELECT id, t, clear, sun, nights, nn, day_end FROM ea_sky WHERE id IN (:ids) LIMIT 10000", json!({"ids": ids})).await.map_err(|e| anyhow!("{e}"))?;
+        let by: std::collections::HashMap<String, &Row> = rows.iter().map(|r| (r.s("id"), r)).collect();
+        for w in watches.iter().filter(|w| w.sky) {
+            if let Some(r) = by.get(&w.place) {
+                out.extend(clear_night(w, r, &mut seen));
+            }
+        }
+    }
     let scans = scans(db, region, from, now).await.map_err(|e| anyhow!("{e}"))?;
     // The pixels from an hour before the first scan judged (for "closer"),
     // across the region: a few thousand at most on a bad day.
@@ -332,17 +372,6 @@ pub async fn judge(db: &Strata, region: &str, from: i64, now: i64) -> Result<usi
         .await
         .map_err(|e| anyhow!("{e}"))?;
     let px = pixels(&rows);
-    if px.is_empty() {
-        return Ok(0);
-    }
-    let mut seen: HashSet<String> = db
-        .scroll("SELECT id FROM ea_watch_alerts WHERE region = :r AND t >= :a", json!({"r": region, "a": crate::pages::iso(now - KEEP_S)}), 10_000)
-        .await
-        .map_err(|e| anyhow!("{e}"))?
-        .iter()
-        .map(|r| r.s("id"))
-        .collect();
-    let mut out = Vec::new();
     for w in &watches {
         // Only the pixels that could matter to this watch.
         let (s, n, we, e) = bbox(w.lat, w.lon, FAR_KM + 5.0);
@@ -513,6 +542,7 @@ pub struct NewWatch {
     pub km: Option<f64>,
     pub closer: Option<bool>,
     pub power: Option<bool>,
+    pub sky: Option<bool>,
 }
 
 pub async fn create(c: &Ctx<'_>, watcher: &str, b: NewWatch) -> R<Value> {
@@ -549,6 +579,7 @@ pub async fn create(c: &Ctx<'_>, watcher: &str, b: NewWatch) -> R<Value> {
         region: region.to_string(),
         closer: b.closer.unwrap_or(true),
         power: b.power.unwrap_or(true),
+        sky: b.sky.unwrap_or(false),
         place: c.places.nearest(b.lat, b.lon, 3.0).map(|p| p.id.clone()).unwrap_or_default(),
         created: iso(chrono::Utc::now().timestamp()),
     };
@@ -563,6 +594,7 @@ pub struct Change {
     pub km: Option<f64>,
     pub closer: Option<bool>,
     pub power: Option<bool>,
+    pub sky: Option<bool>,
     #[serde(default)]
     pub remove: bool,
 }
@@ -590,6 +622,9 @@ pub async fn change(c: &Ctx<'_>, watcher: &str, id: &str, b: Change) -> R<Value>
     }
     if let Some(x) = b.power {
         w.power = x;
+    }
+    if let Some(x) = b.sky {
+        w.sky = x;
     }
     c.db.upsert("ea_watches", vec![w.doc()]).await?;
     Ok(json!({"watch": w.public()}))
@@ -672,7 +707,7 @@ pub async fn example(c: &Ctx<'_>) -> R<Value> {
     let to = t0 + 12 * 3600;
     let watches: Vec<Watch> = EXAMPLE
         .iter()
-        .map(|(id, name, lat, lon, k)| Watch { id: id.to_string(), watcher: String::new(), name: name.to_string(), lat: *lat, lon: *lon, km: *k, region: "california".into(), closer: true, power: true, place: String::new(), created: String::new() })
+        .map(|(id, name, lat, lon, k)| Watch { id: id.to_string(), watcher: String::new(), name: name.to_string(), lat: *lat, lon: *lon, km: *k, region: "california".into(), closer: true, power: true, sky: false, place: String::new(), created: String::new() })
         .collect();
     let (la, lo) = (39.83, -121.71);
     let tq = std::time::Instant::now();
@@ -706,7 +741,7 @@ mod tests {
     use super::*;
 
     fn w(km: f64) -> Watch {
-        Watch { id: "w1".into(), watcher: "k".repeat(24), name: "the house".into(), lat: 39.866, lon: -121.745, km, region: "california".into(), closer: true, power: true, place: String::new(), created: String::new() }
+        Watch { id: "w1".into(), watcher: "k".repeat(24), name: "the house".into(), lat: 39.866, lon: -121.745, km, region: "california".into(), closer: true, power: true, sky: true, place: String::new(), created: String::new() }
     }
     fn p(t: i64, lat: f64, lon: f64, mw: f64) -> Px {
         Px { t, lat, lon, mw, fire: "f1".into() }
@@ -752,6 +787,22 @@ mod tests {
         let tr = track(&w, &scans, &px);
         assert_eq!(tr.len(), 5);
         assert_eq!(tr[0][1], 20.0);
+    }
+
+    #[test]
+    fn a_clear_night_once() {
+        let mut w = w(10.0);
+        w.place = "p1".into();
+        let mut r = Row::new();
+        for (k, v) in [("t", json!("2026-11-20T08:00:00Z")), ("clear", json!(1.0)), ("sun", json!(-40.0)), ("nn", json!(3)), ("day_end", json!(20776)), ("nights", json!([-1, 90]))] {
+            r.insert(k.into(), v);
+        }
+        let mut seen = HashSet::new();
+        let a = clear_night(&w, &r, &mut seen).expect("a clear night");
+        assert_eq!(a["kind"], "clear");
+        assert!(clear_night(&w, &r, &mut seen).is_none(), "once a night");
+        r.insert("sun".into(), json!(10.0));
+        assert!(clear_night(&w, &r, &mut HashSet::new()).is_none(), "not by day");
     }
 
     #[test]

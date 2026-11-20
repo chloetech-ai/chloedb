@@ -22,4 +22,6 @@ pub mod site;
 pub mod source;
 pub mod stats;
 pub mod study;
+pub mod trial;
+pub mod tune;
 pub mod users;

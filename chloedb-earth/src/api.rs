@@ -55,6 +55,8 @@ pub struct Service {
     pub frames: Option<std::path::PathBuf>,
     /// Fire watch's example, worked out once.
     pub example: Mutex<Option<Value>>,
+    /// Each region's skies (ea_sky), read every two minutes.
+    pub sky: tokio::sync::RwLock<HashMap<&'static str, Arc<crate::sky::Mem>>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -118,6 +120,7 @@ pub async fn serve(o: Opts) -> Result<()> {
         chips: o.chips,
         frames: o.frames,
         example: Mutex::new(None),
+        sky: tokio::sync::RwLock::new(HashMap::new()),
     });
     {
         let svc = svc.clone();
@@ -128,6 +131,7 @@ pub async fn serve(o: Opts) -> Result<()> {
             let mut names_at: Option<Instant> = None;
             let mut watch_at: Option<Instant> = None;
             let mut watched: HashMap<&'static str, i64> = HashMap::new();
+            let mut sky_at: Option<Instant> = None;
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || svc.places.read().await.is_empty() {
                     match Places::read(&svc.db).await {
@@ -154,6 +158,19 @@ pub async fn serve(o: Opts) -> Result<()> {
                     match crate::names::run(&svc.db).await {
                         Ok(n) => tracing::info!(fires = n, "fires named"),
                         Err(e) => tracing::warn!(error = %e, "names"),
+                    }
+                }
+                // The skies, once the places are there.
+                if sky_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) && !svc.places.read().await.is_empty() {
+                    sky_at = Some(Instant::now());
+                    let places = svc.places.read().await.clone();
+                    for r in REGIONS {
+                        match crate::sky::read(&svc.db, &places, r).await {
+                            Ok(m) => {
+                                svc.sky.write().await.insert(r, Arc::new(m));
+                            }
+                            Err(e) => tracing::warn!(region = r, error = %e, "sky"),
+                        }
                     }
                 }
                 // Fire watch: each region's new scans against the watches.
@@ -213,6 +230,8 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/find", get(find))
         .route("/v1/chip/:place/:year", get(chip))
         .route("/v1/frame/:replay/:n", get(frame))
+        .route("/v1/sky", get(sky_layer))
+        .route("/v1/sky/find", get(sky_find))
         .route("/v1/watches", get(watches).post(watch_new))
         .route("/v1/watches/example", get(watch_example))
         .route("/v1/watches/feed/:key", get(watch_feed))
@@ -705,6 +724,63 @@ async fn layer(State(svc): State<Shared>, headers: HeaderMap, Path(name): Path<S
         }
     };
     cached(&headers, (*body).clone(), "application/json", 600)
+}
+
+async fn sky_mem(svc: &Shared, region: &'static str) -> Result<Arc<crate::sky::Mem>, ApiError> {
+    if let Some(m) = svc.sky.read().await.get(region) {
+        return Ok(m.clone());
+    }
+    let places = svc.places.read().await.clone();
+    let m = Arc::new(crate::sky::read(&svc.db, &places, region).await?);
+    if !places.is_empty() {
+        svc.sky.write().await.insert(region, m.clone());
+    }
+    Ok(m)
+}
+
+/// Every place's sky now and its last 30 days, as the map draws it.
+async fn sky_layer(State(svc): State<Shared>, headers: HeaderMap, Query(a): Query<RegionParams>) -> Response {
+    let region = match region_of(if a.region.is_empty() { "california" } else { &a.region }) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    match sky_mem(&svc, region).await {
+        Ok(m) => cached(&headers, (*m.layer).clone(), "application/json", 60),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct SkyFindParams {
+    #[serde(default)]
+    region: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    km: Option<f64>,
+    #[serde(default)]
+    want: String,
+    #[serde(default)]
+    q: String,
+}
+
+async fn sky_find(State(svc): State<Shared>, Query(a): Query<SkyFindParams>) -> Answer {
+    let t0 = Instant::now();
+    let at = a.lat.zip(a.lon).filter(|(la, lo)| la.is_finite() && lo.is_finite());
+    let region = match at.and_then(|(la, lo)| crate::watch::region_of(la, lo)) {
+        Some(r) => r,
+        None => region_of(if a.region.is_empty() { "california" } else { &a.region })?,
+    };
+    if a.q.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "what the place looks like, in at most 200 letters".into()));
+    }
+    let mem = sky_mem(&svc, region).await?;
+    ctx!(svc, trace, c);
+    let want = match a.want.as_str() {
+        "nights" | "days" => a.want.as_str(),
+        _ => "now",
+    };
+    let v = crate::sky::find(&c, &mem, crate::sky::Find { region, at, km: a.km.unwrap_or(50.0).clamp(5.0, 400.0), want, q: &a.q }).await?;
+    done(&trace, v, t0)
 }
 
 #[derive(serde::Deserialize, Default)]
