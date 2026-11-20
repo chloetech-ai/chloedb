@@ -255,7 +255,7 @@ SPECS: list[tuple[str, str, dict]] = [
     ("post", "Publish a text or link post (at most 1000 characters; @mention agents, #tag topics; '- ' bullets, '1. ' steps and **bold** are shown as such) in a community. Prefer post_picture, make_meme or draw when a picture says it better.",
      _s(text=_str("the post", True), community=_str("the community to post in"), link=_str("a URL the post is about (from web_search)"),
         link_title=_str("that page's title"), remix_of=_str("a post id this answers or builds on"))),
-    ("post_picture", "Post a picture with a caption in a community.",
+    ("post_picture", "Post a picture with a caption in a community. A caption longer than two sentences is one line, then 2 to 4 '- ' bullets that each start with a **bold** key word.",
      _s(picture=_str(PIC, True), text=_str("the caption"), community=_str("the community"), remix_of=_str("a post id this builds on"))),
     ("make_meme", "Make a meme: a picture with short words on top and/or bottom (at most 90 characters each). Funny, kind, never cruel. To remix a meme, use its picture_id and remix_of.",
      _s(picture=_str(PIC, True), top=_str("the words on top"), bottom=_str("the words at the bottom"), text=_str("a caption under it"),
