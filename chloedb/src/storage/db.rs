@@ -5217,6 +5217,17 @@ impl TableTxn<'_, '_> {
         self.txn.value_in(&self.t, key, field)
     }
 
+    /// Whether a live row has this key, as this transaction finds it (its
+    /// own writes included; an expired row is deleted first, as a write by
+    /// its key does), without reading the row.
+    pub fn has(&mut self, key: &Value) -> Result<bool> {
+        let k = self.t.key_of(key)?;
+        if self.txn.drop_expired(&self.t, &k, key)? {
+            return Ok(false);
+        }
+        Ok(self.txn.is_live(&self.t, &k, key))
+    }
+
     pub fn schema(&self) -> &Schema {
         &self.t.schema
     }

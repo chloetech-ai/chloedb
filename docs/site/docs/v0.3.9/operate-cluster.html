@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Operate a cluster · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="This page runs ChloeDB as a production-shaped cluster on machines of your own, without Kubernetes: two shards, each held by three copies that elect their primary among themselves, a coordinator in front of them, a…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/guide/operate-cluster.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html" aria-current="page">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Operate a cluster</h1>
+      <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-layout">The layout</a></li><li><a href="#tokens">Tokens</a></li><li><a href="#start-the-copies">Start the copies</a></li><li><a href="#start-the-coordinator">Start the coordinator</a></li><li><a href="#check-its-health">Check its health</a></li><li><a href="#keys-for-clients">Keys for clients</a></li><li><a href="#load-and-search">Load and search</a></li><li><a href="#kill-a-primary">Kill a primary</a></li><li><a href="#checkpoints">Checkpoints</a></li><li><a href="#upgrade-one-server-at-a-time">Upgrade one server at a time</a></li><li><a href="#next">Next</a></li></ol></details>
+    <div class="doc-body">
+
+<p>This page runs ChloeDB as a production-shaped cluster on machines of your own, without Kubernetes: two shards, each held by three copies that elect their primary among themselves, a coordinator in front of them, a token that the servers send each other and API keys for clients. It then checks the cluster's health, loads and searches rows, kills a primary and watches the failover, writes checkpoints, and upgrades the cluster one server at a time while it serves.</p>
+<p>Everything starts on one machine, on loopback, so that each command runs as written. On virtual machines each copy is a machine of its own (or a systemd unit), and the addresses are theirs. On Kubernetes the operator does all of this for you (<a href="server.html#on-kubernetes">on Kubernetes</a>).</p>
+<p>You need <code>chloedb-server</code> on your <code>PATH</code> (<a href="quickstart.html">install</a>), and <code>curl</code> and <code>python3</code>.</p>
+<h2 id="the-layout">The layout<a class="anchor" href="#the-layout" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>server</th>
+<th>what it holds</th>
+<th>HTTP</th>
+<th>gRPC</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>s0a</code></td>
+<td>shard 0: its first primary</td>
+<td>7711</td>
+<td>7721</td>
+</tr>
+<tr>
+<td><code>s0b</code>, <code>s0c</code></td>
+<td>shard 0: replicas</td>
+<td>7712, 7713</td>
+<td>7722, 7723</td>
+</tr>
+<tr>
+<td><code>s1a</code></td>
+<td>shard 1: its first primary</td>
+<td>7714</td>
+<td>7724</td>
+</tr>
+<tr>
+<td><code>s1b</code>, <code>s1c</code></td>
+<td>shard 1: replicas</td>
+<td>7715, 7716</td>
+<td>7725, 7726</td>
+</tr>
+<tr>
+<td><code>coord</code></td>
+<td>no data: it routes each write to the shard that holds its row, and asks every shard for a search</td>
+<td>7700</td>
+<td>off</td>
+</tr>
+</tbody>
+</table></div>
+<p>The copies of a shard talk to each other, and to the coordinator, over gRPC. Clients talk to the coordinator over HTTP. A shard elects a primary only while a majority of its copies answer, so three copies keep a shard working through the loss of any one of them. With two and failover on, losing either copy stops the shard's reads and writes for as long as that copy is down, not for a few seconds: its primary serves a read only while a majority of its copies answer it, and a write waits for a majority. Give a shard that must stay up a third copy (<a href="server.html#failover">failover</a>).</p>
+<h2 id="tokens">Tokens<a class="anchor" href="#tokens" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">export CHLOEDB_CLUSTER_TOKEN=$(python3 -c &#x27;import secrets; print(secrets.token_hex(32))&#x27;)
+export ADMIN_TOKEN=$(python3 -c &#x27;import secrets; print(secrets.token_hex(32))&#x27;)</pre>
+<p>The cluster token is what the servers send each other: a primary to its replicas, the coordinator to the copies. Every server of the cluster gets the same one, and only it may make the calls between servers (shipping writes, changing the cluster map, sharing keys); clients never hold it. You use it yourself for one thing: adding a server to the cluster (a copy that replaces a dead one, a new shard), since the coordinator sends the server it adds this token, and so takes it, not the admin token, for that call (<a href="#kill-a-primary">a copy that does not come back</a>). Every server reads it from <code>CHLOEDB_CLUSTER_TOKEN</code>. The admin token is the coordinator's <code>--token</code>, for you, the operator. Clients get API keys, made below. On virtual machines, keep both in each unit's environment file (<code>EnvironmentFile=</code>, mode 0600) rather than on the command line, where <code>ps</code> shows them.</p>
+<h2 id="start-the-copies">Start the copies<a class="anchor" href="#start-the-copies" aria-label="Link to this section">#</a></h2>
+<p>Each copy is the same command with its own name, ports and, on its first start only, its part in replication:</p>
+<pre data-lang="sh">copy() {  # copy NAME HTTP_PORT GRPC_PORT [ROLE FLAGS...]
+  name=$1 http=$2 grpc=$3; shift 3
+  mkdir -p &quot;$name/backups&quot; &amp;&amp; echo &quot;$http $grpc&quot; &gt; &quot;$name/ports&quot;
+  chloedb-server --db &quot;$name/db.chloedb&quot; --seq-no --failover-after-ms 2000 \
+    --listen 127.0.0.1:$http --grpc 127.0.0.1:$grpc --node-name &quot;$name&quot; \
+    --backup-dir &quot;$name/backups&quot; --start-apps off &quot;$@&quot; &gt;&gt; &quot;$name/server.log&quot; 2&gt;&amp;1 &amp;
+  echo $! &gt; &quot;$name/pid&quot;; disown   # the shell then says nothing when the copy is stopped
+}
+G=http://127.0.0.1
+copy s0a 7711 7721 --replicas $G:7722,$G:7723
+copy s0b 7712 7722 --replica --replicas $G:7721,$G:7723
+copy s0c 7713 7723 --replica --replicas $G:7721,$G:7722
+copy s1a 7714 7724 --replicas $G:7725,$G:7726
+copy s1b 7715 7725 --replica --replicas $G:7724,$G:7726
+copy s1c 7716 7726 --replica --replicas $G:7724,$G:7725</pre>
+<ul>
+<li><code>--seq-no</code> numbers the database's writes, which is how a primary ships them to its replicas. It cannot be undone.</li>
+<li><code>--failover-after-ms 2000</code>: a replica that hears nothing from its primary for two seconds asks its shard's copies to elect it, and a primary that cannot reach a majority of its copies stops serving reads. Without it (the default, 0) a shard whose primary dies takes no writes until you promote a replica by hand.</li>
+<li><code>--replicas</code> makes a copy a primary that ships to the copies it names. <code>--replica --replicas</code> makes a replica, which takes only what its primary ships and refuses clients' writes, and names its shard's other copies, which it ships to once it is elected.</li>
+<li>The role flags are for a copy's first start. A copy keeps its part (primary or replica, its term, the primary it follows) beside its database, in <code>db.chloedb.replication</code>, and a copy started again without <code>--replicas</code> or <code>--replica</code> takes it up again: that is how every restart on this page starts one, and a systemd unit's command leaves them out once the copy has started once. A replica started again with <code>--replicas</code> refuses to start, and says to use <code>--replica</code>.</li>
+<li><code>--node-name</code> names the copy in the coordinator's views and the log stores' rows; <code>--backup-dir</code> is where its checkpoints go.</li>
+<li><code>--start-apps off</code> keeps each server from starting the apps installed beside <code>chloedb-server</code> (the crawler, Sheets, ChloeCtx), which a cluster runs beside its coordinator, if at all (<a href="apps.html">apps on a cluster</a>).</li>
+</ul>
+<p>On machines of their own, each copy listens on its machine's address (<code>--listen 10.0.0.11:7700 --grpc 10.0.0.11:7701</code>) and names the others by theirs. A server with a cluster token, a <code>--token</code> or an API key may listen beyond loopback; one with none of them refuses to. Between machines, serve every server over TLS (<code>--tls-cert FILE --tls-key FILE</code>), list the copies as <code>https://</code>, and give the servers that call them <code>--shard-ca FILE</code> when your certificates are not signed by a public authority (<a href="server.html#security">security</a>).</p>
+<h2 id="start-the-coordinator">Start the coordinator<a class="anchor" href="#start-the-coordinator" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">CHLOEDB_TOKEN=$ADMIN_TOKEN chloedb-server --listen 127.0.0.1:7700 --grpc off --node-name coord --start-apps off \
+  --shards &quot;$G:7721|$G:7722|$G:7723,$G:7724|$G:7725|$G:7726&quot; &gt;&gt; coord.log 2&gt;&amp;1 &amp;
+echo $! &gt; coord.pid</pre>
+<p><code>--shards</code> lists the copies' gRPC addresses: a comma between shards, and <code>|</code> between the copies of one shard. Which copy is the primary is not in the list: the coordinator asks each copy its part, and sends a shard's writes to the copy that answers as its primary. The first time, the coordinator gives every server the cluster map (each shard's copies, and its slots: 2,048 of the 4,096 each here), and every server keeps it beside its database. From then on the coordinator routes by the newest map its servers hold, so a coordinator started again on this same list, or on one copy of each shard, serves the cluster as it is now, after any changes (<a href="server.html#changing-the-cluster-while-it-serves">changing the cluster while it serves</a>): a copy on the list that was replaced since, and does not answer, is left out, and its log says so. The coordinator holds no data and needs no <code>--db</code>: run two or more of them behind a load balancer, each with the same flags and <code>--peer-url</code> naming the address the others reach it at (<code>http://10.0.0.21:7700</code>), so that they find each other through the shards (<a href="server.html#several-coordinators">several coordinators</a>).</p>
+<p>What you change on the coordinator lives on the shards too. Its alert rules and routes, the alerts' acknowledgements, silences and notes, the latest 2,000 entries of its audit log and its latest 5,000 events (the Timeline: copies down and back, new primaries, changes, notes) are kept on every copy (in <code>db.chloedb.coordinator.json</code>, beside the keys), and a coordinator started again takes them back before it serves, as it takes the keys: a restart, or a new coordinator on the same <code>--shards</code>, keeps them without a file of its own, and the Timeline after a rolling upgrade still shows the upgrade. <code>--alerts FILE</code> keeps the rules and routes in a file as well, and <code>--audit-log FILE</code> keeps every entry of the audit log rather than the latest 2,000; <strong>Alerts</strong> says where its rules are kept. Name the cluster for the people who change it: <code>--cluster-name</code> and <code>--environment production</code> (or <code>staging</code>, <code>dev</code>) on each coordinator, which the command center shows in its header; on production it asks for a reason before each change, which the audit log keeps. A cluster with no environment is shown as a sandbox when it is reached on this machine, as this one is, and changes ask for no reason.</p>
+<h2 id="check-its-health">Check its health<a class="anchor" href="#check-its-health" aria-label="Link to this section">#</a></h2>
+<p><code>GET /v1/cluster</code> is the coordinator's view of every shard and copy. This script prints the part an operator reads first, and is used for the rest of the page:</p>
+<pre data-lang="python" data-title="cluster.py">&quot;&quot;&quot;The cluster as its coordinator sees it: a line a shard, a line a copy.
+
+python3 cluster.py               print it
+python3 cluster.py --ok          exit 1 unless every shard and copy is ok and every copy serves reads
+python3 cluster.py --primary N   the name of shard N&#x27;s primary
+python3 cluster.py --replicas N  the names of shard N&#x27;s replicas
+python3 cluster.py --versions    which servers run which version
+&quot;&quot;&quot;
+import json, os, sys, urllib.request
+
+req = urllib.request.Request(&quot;http://127.0.0.1:7700/v1/cluster&quot;,
+                             headers={&quot;authorization&quot;: &quot;Bearer &quot; + os.environ[&quot;ADMIN_TOKEN&quot;]})
+cluster = json.load(urllib.request.urlopen(req, timeout=10))
+shards = cluster[&quot;shards&quot;]
+name = lambda c: c.get(&quot;name&quot;) or c[&quot;short&quot;]
+arg = sys.argv[1:]
+
+if arg[:1] == [&quot;--ok&quot;]:
+    good = all(s[&quot;state&quot;] == &quot;ok&quot; for s in shards) and all(
+        c[&quot;status&quot;] == &quot;ok&quot; and c[&quot;serves_reads&quot;] for s in shards for c in s[&quot;replicas&quot;])
+    sys.exit(0 if good else 1)
+if arg[:1] == [&quot;--primary&quot;]:
+    print(*[name(c) for c in shards[int(arg[1])][&quot;replicas&quot;] if c[&quot;role&quot;] == &quot;primary&quot; and c[&quot;status&quot;] == &quot;ok&quot;])
+elif arg[:1] == [&quot;--replicas&quot;]:
+    print(*[name(c) for c in shards[int(arg[1])][&quot;replicas&quot;] if c[&quot;role&quot;] == &quot;replica&quot;])
+elif arg[:1] == [&quot;--versions&quot;]:
+    by = {}
+    by.setdefault(cluster[&quot;coordinator&quot;][&quot;version&quot;][&quot;version&quot;], []).append(cluster[&quot;coordinator&quot;][&quot;name&quot;] or &quot;coordinator&quot;)
+    for s in shards:
+        for c in s[&quot;replicas&quot;]:
+            by.setdefault((c.get(&quot;version&quot;) or {}).get(&quot;version&quot;, &quot;?&quot;), []).append(name(c))
+    for version, names in sorted(by.items()):
+        print(&quot; &quot;.join(names) + &quot;:&quot;, version)
+else:
+    for s in shards:
+        primary = [name(c) for c in s[&quot;replicas&quot;] if c[&quot;url&quot;] == s[&quot;primary&quot;]]
+        print(f&quot;shard {s[&#x27;shard&#x27;]}: {s[&#x27;state&#x27;]}, {s[&#x27;why&#x27;]}; primary {primary[0] if primary else &#x27;none&#x27;}&quot;)
+        for c in s[&quot;replicas&quot;]:
+            print(f&quot;  {name(c)}  {c[&#x27;role&#x27;] if c[&#x27;status&#x27;] != &#x27;down&#x27; else &#x27;&#x27;}  {c[&#x27;status&#x27;]}&quot;
+                  + (&quot;  serves reads&quot; if c[&quot;serves_reads&quot;] and c[&quot;status&quot;] != &quot;down&quot; else &quot;&quot;))</pre>
+<p>The cluster is ready once every copy answers and every replica has caught up with its primary:</p>
+<pre data-lang="sh">until python3 cluster.py --ok 2&gt; /dev/null; do sleep 0.5; done
+python3 cluster.py</pre>
+<pre data-lang="text" data-title="Output" class="output">shard 0: ok, 3 of 3 copies answer; primary s0a
+  s0a  primary  ok  serves reads
+  s0b  replica  ok  serves reads
+  s0c  replica  ok  serves reads
+shard 1: ok, 3 of 3 copies answer; primary s1a
+  s1a  primary  ok  serves reads
+  s1b  replica  ok  serves reads
+  s1c  replica  ok  serves reads</pre>
+<p>A shard's <code>state</code> is <code>ok</code>, <code>degraded</code> (a copy down, the shard still serving), <code>no_writes</code>, <code>no_reads</code> or <code>down</code>, and <code>why</code> says it in a sentence. <code>GET /v1/health/fleet</code> sums up the whole cluster in one headline, with each problem's impact, what to do next and the <a href="runbooks.html">runbook</a> for it; it is what the command center's Home page shows:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/health/fleet -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; \
+  | python3 -c &#x27;import json, sys; f = json.load(sys.stdin); print(f[&quot;status&quot;], &quot;|&quot;, f[&quot;headline&quot;])&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">ok | All 2 shards serve reads and take writes; 6 of 6 copies are up...</pre>
+<p>For a load balancer or a process supervisor, every server answers <code>GET /livez</code> (the process runs) and <code>GET /readyz</code> (it serves) without a credential. The command center is the coordinator's address in a browser, <code>http://127.0.0.1:7700</code>, which asks for the admin token or a key; <code>chloedb-server cc http://127.0.0.1:7700</code> is the same in a terminal, with the key in <code>CHLOEDB_KEY</code> or typed at its prompt.</p>
+<h2 id="keys-for-clients">Keys for clients<a class="anchor" href="#keys-for-clients" aria-label="Link to this section">#</a></h2>
+<p>Give each client a key of its own, with the least scope it needs: here a write key for an application and a read key for Prometheus. Keys are made on the coordinator, and reach every copy of every shard within a few seconds:</p>
+<pre data-lang="sh">key() {  # key JSON: make an API key, print its secret (shown this once)
+  curl -s -X POST localhost:7700/v1/admin/keys -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; \
+    -H &#x27;content-type: application/json&#x27; -d &quot;$1&quot; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;secret&quot;])&#x27;
+}
+export APP_KEY=$(key &#x27;{&quot;name&quot;: &quot;shop-app&quot;, &quot;scope&quot;: &quot;write&quot;, &quot;expires_days&quot;: 90}&#x27;)
+export MONITOR_KEY=$(key &#x27;{&quot;name&quot;: &quot;prometheus&quot;, &quot;scope&quot;: &quot;read&quot;}&#x27;)</pre>
+<p>Each copy keeps the keys, as SHA-256 digests and never the secrets, in <code>db.chloedb.keys.json</code> beside its database, so a coordinator started again takes them from its shards. The read key scrapes every server's <code>/metrics</code>, the copies' included. On a shard's primary, its replicas' state is there, by replica:</p>
+<pre data-lang="sh">until curl -sf localhost:7711/metrics -H &quot;authorization: Bearer $MONITOR_KEY&quot; -o s0a.metrics; do sleep 0.5; done
+grep -E &#x27;^chloedb_replica_(in_sync|behind)&#x27; s0a.metrics</pre>
+<pre data-lang="text" data-title="Output" class="output">chloedb_replica_in_sync{replica=&quot;http://127.0.0.1:7722&quot;} 1
+chloedb_replica_in_sync{replica=&quot;http://127.0.0.1:7723&quot;} 1
+chloedb_replica_behind{replica=&quot;http://127.0.0.1:7722&quot;} 0
+chloedb_replica_behind{replica=&quot;http://127.0.0.1:7723&quot;} 0</pre>
+<p>Scrape the coordinator and each copy as targets of their own, with the key in Prometheus's <code>authorization.credentials_file</code>. The coordinator's <code>/metrics</code> has its view of the cluster, a series a shard, the state its built-in alerts judge: <code>chloedb_cluster_copies</code>, <code>chloedb_cluster_copies_up</code> and <code>chloedb_cluster_copies_down</code>, <code>chloedb_cluster_copies_in_sync</code>, <code>chloedb_cluster_shard_majority</code> and <code>chloedb_cluster_shard_primary</code> (1 or 0), <code>chloedb_cluster_shard_term</code>, <code>chloedb_cluster_primary_changes_total</code> (its failovers and handovers), and <code>chloedb_cluster_copy_up{shard, copy, url, role}</code> a copy. A copy's own series carry no shard label: its <code>chloedb_copy_info{shard, node, role} 1</code> says which shard it serves, to join on, or add the label in the scrape config. <code>chloedb_docs</code> and <code>chloedb_segments</code> count every table of a copy's database (<code>chloedb_docs</code> is <code>/v1/health</code>'s <code>rows</code>), and <code>chloedb_table_docs{table}</code> each one. The coordinator's alerts go to a webhook, PagerDuty or Opsgenie (<a href="server.html#alerts">alerts</a>); <code>--alert-webhook URL</code> sends them all to one URL.</p>
+<h2 id="load-and-search">Load and search<a class="anchor" href="#load-and-search" aria-label="Link to this section">#</a></h2>
+<p>Making a table takes the admin token, and runs on every shard:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;CREATE TABLE products (id KEYWORD PRIMARY KEY, title TEXT, category KEYWORD, price FLOAT)&quot;}&#x27; \
+  | python3 -c &#x27;import json, sys; print(json.load(sys.stdin).get(&quot;error&quot;, &quot;made&quot;))&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">made</pre>
+<p>The application writes with its key. Each row goes to the shard whose slots hold its key, and the answer counts what each shard took. Give every write an idempotency key: when an answer is lost, or a shard's primary changes under it, the same request sent again with the same key is applied once (<a href="server.html#when-a-write-fails">when a write fails</a>).</p>
+<pre data-lang="sh">python3 - &gt; rows.json &lt;&lt;&#x27;EOF&#x27;
+import json
+titles = [&quot;red wool sofa&quot;, &quot;blue linen sofa bed&quot;, &quot;oak dining table&quot;, &quot;walnut coffee table&quot;,
+          &quot;green velvet armchair&quot;, &quot;steel desk lamp&quot;, &quot;rattan garden chair&quot;, &quot;pine bookshelf&quot;]
+ops = [{&quot;op&quot;: &quot;upsert&quot;, &quot;table&quot;: &quot;products&quot;,
+        &quot;doc&quot;: {&quot;id&quot;: f&quot;p{i}&quot;, &quot;title&quot;: t, &quot;category&quot;: t.split()[-1], &quot;price&quot;: 100.0 + 10 * i}}
+       for i, t in enumerate(titles)]
+print(json.dumps({&quot;ops&quot;: ops, &quot;idempotency_key&quot;: &quot;load-2026-11-17&quot;}))
+EOF
+curl -s localhost:7700/v1/write -H &quot;authorization: Bearer $APP_KEY&quot; -H &#x27;content-type: application/json&#x27; -d @rows.json \
+  | python3 -c &#x27;import json, sys; r = json.load(sys.stdin); print(r[&quot;written&quot;], &quot;rows:&quot;, &quot;, &quot;.join(&quot;shard %d %d&quot; % (s[&quot;shard&quot;], s[&quot;rows&quot;]) for s in r[&quot;receipt&quot;][&quot;per_shard&quot;]))&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">8 rows: shard 0 3, shard 1 5</pre>
+<p>A search asks every shard, with the whole collection's BM25 statistics, so it ranks as one database would:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $APP_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &quot;{\&quot;sql\&quot;: \&quot;SELECT id, title FROM products WHERE MATCH(title, &#x27;sofa&#x27;) ORDER BY bm25(title, &#x27;sofa&#x27;) DESC LIMIT 5\&quot;}&quot; \
+  | python3 -c &#x27;import json, sys; [print(*row, sep=&quot; | &quot;) for row in json.load(sys.stdin)[&quot;rows&quot;]]&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">p0 | red wool sofa
+p1 | blue linen sofa bed</pre>
+<p><a href="cluster-limits.html">What a cluster does differently</a> lists the few statements a coordinator refuses or runs another way.</p>
+<h2 id="kill-a-primary">Kill a primary<a class="anchor" href="#kill-a-primary" aria-label="Link to this section">#</a></h2>
+<p><code>s0a</code> is shard 0's primary. Kill it without warning, as a crashed machine would, and send a write for shard 0 straight away:</p>
+<pre data-lang="sh">kill -9 $(cat s0a/pid)
+row=&#x27;{&quot;ops&quot;: [{&quot;op&quot;: &quot;upsert&quot;, &quot;table&quot;: &quot;products&quot;, &quot;doc&quot;: {&quot;id&quot;: &quot;p20&quot;, &quot;title&quot;: &quot;cherry side table&quot;, &quot;category&quot;: &quot;table&quot;, &quot;price&quot;: 80.0}}], &quot;idempotency_key&quot;: &quot;order-p20&quot;}&#x27;
+until curl -sf localhost:7700/v1/write -H &quot;authorization: Bearer $APP_KEY&quot; -H &#x27;content-type: application/json&#x27; -d &quot;$row&quot; -o answer.json; do sleep 0.5; done
+python3 -c &#x27;import json; r = json.load(open(&quot;answer.json&quot;)); print(r[&quot;written&quot;], &quot;row on shard&quot;, [s[&quot;shard&quot;] for s in r[&quot;receipt&quot;][&quot;per_shard&quot;]][0])&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">1 row on shard 0</pre>
+<p>Until shard 0 has a new primary, about two seconds here, its writes are refused with 503 and an answer that says what happened and that the write is safe to send again:</p>
+<pre data-lang="json">{&quot;error&quot;: &quot;127.0.0.1:7721 (shard 0): tcp connect error&quot;, &quot;error_code&quot;: &quot;unavailable&quot;, &quot;retryable&quot;: true,
+ &quot;hint&quot;: &quot;a copy, a shard or a hosted model did not answer: send it again after Retry-After seconds&quot;,
+ &quot;docs&quot;: &quot;https://chloetech-ai.github.io/chloedb/site/docs/server.html#failover&quot;}</pre>
+<p>The loop above sends it again, with the same idempotency key, until a new primary takes it. Shard 1's writes, and the searches of both shards, went on all along: a replica serves reads while its primary's last call found it caught up. Every write answered before the kill is on a majority of shard 0's copies (<code>--write-acks all</code>, the default, waits for every replica in sync and never fewer than a majority), and the elected copy holds all of them.</p>
+<p>The coordinator now sees <code>s0a</code> down and another copy as shard 0's primary:</p>
+<pre data-lang="sh">python3 cluster.py</pre>
+<pre data-lang="text" data-title="Output" class="output">shard 0: degraded, 2 of 3 copies answer (127.0.0.1:7721 down); the shard serves reads and takes writes; one more copy down stops its reads and writes; primary s0...
+  s0a    down
+...
+shard 1: ok, 3 of 3 copies answer; primary s1a
+  s1a  primary  ok  serves reads
+  s1b  replica  ok  serves reads
+  s1c  replica  ok  serves reads</pre>
+<p>Bring <code>s0a</code> back with the command that started it, without its role flags. A copy that was its shard's primary starts again as a replica ("was its shard's primary: starts as a replica, until its shard's copies elect one", its log says), finds the primary its shard elected meanwhile, and follows it: it is sent what it missed, and serves reads once it has caught up. Started again with <code>--replicas</code>, as at its first start, it would start as the primary of its old term and log errors until the newer primary fenced it; so give the role flags on a copy's first start alone.</p>
+<pre data-lang="sh">copy s0a 7711 7721
+until python3 cluster.py --ok 2&gt; /dev/null; do sleep 0.5; done
+python3 cluster.py</pre>
+<pre data-lang="text" data-title="Output" class="output">shard 0: ok, 3 of 3 copies answer; primary s0...
+  s0a  replica  ok  serves reads
+...</pre>
+<p>A shard of three copies with two of them down has no majority: it takes no writes and elects no primary until a second copy answers. Its reads go on only from a replica that still serves them. When a copy will not come back, replace it. Start an empty copy as its shard's copies were started (with <code>--replica --replicas</code> naming the others), then plan the repair: <code>POST /v1/admin/plan {"shards": [{"shard": 1, "copies": [the gRPC URLs the shard keeps, the new one among them]}]}</code> adds the copies it names that are new and removes those it leaves out, and changes nothing until it is applied. Adding a server takes the cluster token, which the coordinator sends to it: apply the plan with that token rather than the admin token, <code>CHLOEDB_URL=http://localhost:7700 chloedb-server admin --key "$CHLOEDB_CLUSTER_TOKEN" call POST /v1/admin/plan/apply @plan.json</code>, with the same body in <code>plan.json</code>. The command center's <strong>Cluster</strong> page plans it too ("Plan the repair"); there, Apply needs a sign-in with the cluster token. The <a href="runbooks.html#a-copy-is-down">runbooks</a> say what to read and do for each alert.</p>
+<h2 id="checkpoints">Checkpoints<a class="anchor" href="#checkpoints" aria-label="Link to this section">#</a></h2>
+<p>Copying a database's files while its server runs is not a backup: a copy can pair one version's manifest with another version's pages. A checkpoint is: the copy writes a consistent copy of its database into its <code>--backup-dir</code> while it goes on serving. Through the coordinator, ask one copy of each shard (any copy will do; a replica keeps the work off the primary):</p>
+<pre data-lang="sh">for c in s0b s1b; do
+  curl -s -X POST localhost:7700/v1/admin/copies/checkpoint -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; \
+    -H &#x27;content-type: application/json&#x27; -d &quot;{\&quot;url\&quot;: \&quot;$G:$(cut -d&#x27; &#x27; -f2 $c/ports)\&quot;, \&quot;name\&quot;: \&quot;$c-before-upgrade\&quot;}&quot; \
+    | python3 -c &#x27;import json, sys; r = json.load(sys.stdin); print(r.get(&quot;error&quot;) or &quot;written by &quot; + r[&quot;node&quot;])&#x27;
+done
+ls s0b/backups s1b/backups</pre>
+<pre data-lang="text" data-title="Output" class="output">written by http://127.0.0.1:7722
+written by http://127.0.0.1:7725
+s0b/backups:
+s0b-before-upgrade
+s0b-before-upgrade.keys.json
+s0b-before-upgrade.slots
+
+s1b/backups:
+s1b-before-upgrade
+s1b-before-upgrade.keys.json
+s1b-before-upgrade.slots</pre>
+<p>Beside each checkpoint the copy writes its shard's cluster map (<code>NAME.slots</code>) and the cluster's API keys (<code>NAME.keys.json</code>: names, scopes and the hashes of their secrets), under the names a server serving the checkpoint reads. <code>POST /v1/admin/checkpoint {"name": "..."}</code> on the coordinator writes one on every shard's primary at once, all of one cluster map. A name is letters, digits, <code>.</code>, <code>_</code> and <code>-</code>, and an existing one is never overwritten. The command center writes one from a copy's menu on its <strong>Cluster</strong> page, and one of every shard from <strong>Settings &gt; Upkeep</strong>. <code>GET /v1/admin/checkpoints</code> on the coordinator lists the checkpoints of every copy (name, size, when it was written, the shard and map epoch it is of), each shard's newest, and the names written on every shard under one cluster map, which are the sets a restore can go back to; <strong>Settings &gt; Upkeep &gt; Backups</strong> shows them. Copy the three files of each checkpoint off the machines: with <code>"layout": "dir"</code> a checkpoint is a directory of segment files, which a sync to object storage sends only the new ones of (<a href="server.html#backups">backups</a>).</p>
+<p>To restore, stop the server and put the checkpoint in place of its database with <code>chloedb-server restore --from s0b/backups/s0b-before-upgrade --db s0b/db.chloedb</code>: it checks the checkpoint before it changes anything, moves the database's own files aside, puts the map beside it and merges the keys in. A copy's part in replication (<code>db.chloedb.replication</code>) is not in a checkpoint: start a restored copy with the role flags it had. The runbook <a href="runbooks.html#restore-from-checkpoints">Restore from checkpoints</a> restores a whole cluster, a shard or one copy this way, and <a href="server.html#restoring-a-checkpoint">restoring a checkpoint</a> says what the command does. There is no point-in-time recovery between checkpoints.</p>
+<h2 id="upgrade-one-server-at-a-time">Upgrade one server at a time<a class="anchor" href="#upgrade-one-server-at-a-time" aria-label="Link to this section">#</a></h2>
+<p>A rolling upgrade keeps the cluster answering searches and taking writes, one server at a time:</p>
+<ol>
+<li>In each shard, the replicas first, one at a time: stop it, start it again on the new binary, and wait until it has caught up and serves reads. A replica must not be older than its primary, which may write what an older version cannot read.</li>
+<li>Then hand the shard's primary over to an upgraded replica (<code>POST /v1/admin/shards/&lt;i&gt;/promote</code>), and upgrade the old primary, now a replica, as the others.</li>
+<li>The coordinators last, one at a time.</li>
+</ol>
+<p>While versions are mixed, the cluster serves what the oldest server involved speaks, and <a href="compatibility.html#a-cluster-of-mixed-versions">versions and compatibility</a> says, release by release, what has an order of its own. Read the <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/CHANGELOG.md">changelog</a> of every release you skip.</p>
+<p>On each machine, the new binary is the release's archive, checked against its <code>.sha256</code>:</p>
+<pre data-lang="sh">v=0.3.9 p=linux-x86_64
+curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
+curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256
+sha256sum -c chloedb-server-$p.tar.gz.sha256 &amp;&amp; tar xzf chloedb-server-$p.tar.gz
+sudo install chloedb-server-$p/chloedb-server /usr/local/bin/chloedb-server   # where the unit runs it from</pre>
+<p>From 0.3.8, <code>gh attestation verify</code> checks that the release workflow built the archive, before you install it on every machine: <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/SECURITY.md#checking-what-you-download">checking what you download</a>.</p>
+<p>Here the new binary is the one on your <code>PATH</code> already, so the upgrade is a rolling restart in the same order, which is how you rehearse one. <code>restart</code> stops a copy with SIGTERM (it ends the requests under way first), starts it again without role flags, waits until the copy's own <code>/v1/health</code> says it serves reads (a replica does once it holds its primary's last transaction), and then until the coordinator sees the whole cluster well. Wait for both before the next copy: two copies of a shard down at once leave it without a majority. <code>handover</code> makes a copy its shard's primary:</p>
+<pre data-lang="sh">restart() {  # restart NAME
+  kill $(cat $1/pid); while kill -0 $(cat $1/pid) 2&gt; /dev/null; do sleep 0.2; done
+  copy $1 $(cat $1/ports)
+  until curl -sf localhost:$(cut -d&#x27; &#x27; -f1 $1/ports)/v1/health -H &quot;authorization: Bearer $MONITOR_KEY&quot; \
+    | python3 -c &#x27;import json, sys; sys.exit(0 if json.load(sys.stdin)[&quot;replication&quot;][&quot;serves_reads&quot;] else 1)&#x27; 2&gt; /dev/null; do sleep 0.5; done
+  until python3 cluster.py --ok 2&gt; /dev/null; do sleep 0.5; done
+}
+handover() {  # handover SHARD NAME
+  curl -sf -X POST localhost:7700/v1/admin/shards/$1/promote -H &quot;authorization: Bearer $ADMIN_TOKEN&quot; \
+    -H &#x27;content-type: application/json&#x27; -d &quot;{\&quot;url\&quot;: \&quot;$G:$(cut -d&#x27; &#x27; -f2 $2/ports)\&quot;}&quot; &gt; /dev/null
+  until [ &quot;$(python3 cluster.py --primary $1)&quot; = &quot;$2&quot; ]; do sleep 0.5; done
+}
+for shard in 0 1; do
+  primary=$(python3 cluster.py --primary $shard)
+  replicas=$(python3 cluster.py --replicas $shard)
+  for r in $replicas; do restart $r; done
+  handover $shard ${replicas%% *}
+  restart $primary
+done
+python3 cluster.py --versions</pre>
+<p><code>--versions</code> lists which servers run which version: halfway through a real upgrade it shows two. The coordinator goes last. With one coordinator, its clients are refused for the second it takes to start again; with several behind a load balancer, restart them one at a time, each with <code>--drain-ms 5000</code>, so that <code>/readyz</code> answers 503 for five seconds after SIGTERM and the load balancer sends it nothing more before it stops:</p>
+<pre data-lang="sh">kill $(cat coord.pid); while kill -0 $(cat coord.pid) 2&gt; /dev/null; do sleep 0.2; done
+CHLOEDB_TOKEN=$ADMIN_TOKEN chloedb-server --listen 127.0.0.1:7700 --grpc off --node-name coord --start-apps off \
+  --shards &quot;$G:7721|$G:7722|$G:7723,$G:7724|$G:7725|$G:7726&quot; &gt;&gt; coord.log 2&gt;&amp;1 &amp;
+echo $! &gt; coord.pid
+until python3 cluster.py --ok 2&gt; /dev/null; do sleep 0.5; done
+curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $APP_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;SELECT COUNT(*) FROM products&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;rows&quot;][0][0], &quot;rows&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">9 rows</pre>
+<p>Every row is there. Under writes, a replica's restart costs the clients nothing: its shard's writes wait for the copies in sync, and reads go to the other copies. A handover holds the shard's writes for a moment, a second at most, while the new primary catches up: the coordinator sends a write that meets it on to the new primary, and a write that was in flight as the primary changed may be answered 409, in doubt, which the same request with the same idempotency key settles.</p>
+<h2 id="next">Next<a class="anchor" href="#next" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><a href="runbooks.html">Runbooks</a>: what to read and do for each alert and each problem the fleet view names.</li>
+<li><a href="server.html">chloedb-server</a>: every flag; <a href="server.html#replication-a-primary-and-its-replicas">replication</a>, <a href="server.html#failover">failover</a> and <a href="server.html#slots">slots</a> in depth; adding shards and copies while the cluster serves.</li>
+<li><a href="security.html">Security model</a>: what the tokens and keys protect, and what to set before a cluster holds data that matters.</li>
+<li><a href="compatibility.html">Versions and compatibility</a>: what mixes in a cluster during an upgrade.</li>
+</ul>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/guide/operate-cluster.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="server.html">← chloedb-server</a><a href="cluster-limits.html">Cluster limits →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

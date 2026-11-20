@@ -5,7 +5,7 @@
 // a SQLite file or a Parquet file a table, and the stream sources show how
 // far each event stream has been written, with a box to send one.
 
-import { h, icon, clear, fmt, api, at, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, bus } from "../core.js";
+import { h, icon, clear, fmt, api, at, authHeader, toast, empty, seg, sqlBlock, dropzone, every, failure, confirm, gate, can, needs, bus } from "../core.js";
 import { followsWho, writeThere, followBanner } from "../follows.js";
 import { isProduction, isCoordinator } from "../data.js";
 import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPES } from "../catalog.js";
@@ -20,6 +20,8 @@ export default { id: "import", title: "Import and export", icon: "import", group
 const SQLITE = "SQLite format 3\u0000";
 /** A reason as a header value: one line, ASCII, non-ASCII percent-encoded. */
 const safeHeader = (r) => String(r).replace(/[\r\n]+/g, " ").replace(/[^\x20-\x7e]/g, (c) => encodeURIComponent(c)).slice(0, 2000);
+/** The formats a table goes out in, by their names on screen. */
+const FORMATS = { sqlite: "SQLite", parquet: "Parquet", csv: "CSV", jsonl: "JSON lines" };
 const CT = { csv: "text/csv", tsv: "text/tab-separated-values", jsonl: "application/x-ndjson", json: "application/json", sqlite: "application/vnd.sqlite3", parquet: "application/vnd.apache.parquet" };
 
 /** The format of a file, from its first bytes and its name. */
@@ -85,6 +87,47 @@ export function toCommaCsv(text, sep) {
   });
   const cell = (v, i, head) => { let x = v ?? ""; if (!head && decimal[i]) x = x.replace(",", "."); return /[",\r\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x; };
   return rows.map((r, k) => r.map((v, i) => cell(v, i, k === 0)).join(",")).join("\n") + "\n";
+}
+
+/** The separators a column may list several values by, as the page names them. */
+export const LIST_SEPS = [[" ", "spaces"], [",", "commas"], [";", "semicolons"], ["|", "|"]];
+const tokens = (v, sep) => (sep === " " ? String(v).trim().split(/\s+/) : String(v).split(sep).map((x) => x.trim())).filter(Boolean);
+/**
+ * The separator a column's values list several things by, or null
+ * (GRACE-405): Zendesk writes a ticket's tags as one value, "billing
+ * refund web_form". A separator is taken when a fifth of the values hold
+ * more than one item, no item reads as prose, and the items are fewer
+ * than the values (the same few tags in many combinations), which a
+ * column of names ("Ana Lima") is not.
+ */
+export function listSeparator(values) {
+  const vs = values.filter((v) => typeof v === "string" && v.trim());
+  if (vs.length < 2) return null;
+  const values1 = new Set(vs.map((v) => v.trim()));
+  for (const [sep] of [["|"], [";"], [","], [" "]]) {
+    const each = vs.map((v) => tokens(v, sep));
+    const multi = each.filter((t) => t.length > 1).length;
+    if (multi < Math.max(1, vs.length / 5)) continue;
+    const items = each.flat();
+    if (items.some((x) => x.length > 40 || (sep === " " ? /[^\p{L}\p{N}_\-./:@#+]/u.test(x) : /[.!?]$/.test(x)))) continue;
+    if (new Set(items).size >= values1.size) continue;
+    return sep;
+  }
+  return null;
+}
+/**
+ * A CSV's text with the values of some columns split into lists, as the
+ * server reads a list in a CSV (a|b|c, or a JSON array when an item holds
+ * a |): `splits` maps a column to its separator. The rest is written as
+ * it came, quoted where it needs it.
+ */
+export function splitLists(text, splits, sep = ",") {
+  const rows = parseDelimited(text, sep).filter((r) => r.length > 1 || r[0] !== "");
+  const head = rows[0] || [];
+  const at = head.map((c) => splits[c] ?? null);
+  const cell = (x) => (x.includes(sep) || /["\r\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x);
+  const list = (v, s) => { const t = tokens(v ?? "", s); return t.some((x) => x.includes("|")) ? JSON.stringify(t) : t.join("|"); };
+  return rows.map((r, k) => r.map((v, i) => cell(k && at[i] != null && at[i] !== "|" ? list(v, at[i]) : v ?? "")).join(sep)).join("\n") + "\n";
 }
 
 /** The first rows of a file as objects, and its columns. */
@@ -195,7 +238,13 @@ function render(page) {
     // words, short as it is: TEXT, not KEYWORD.
     const PROSE = /^(title|name|subject|headline|summary|notes?|description|comment|body|text|caption)$/i;
     const cols = s.cols.map((c) => {
-      const t = inferType(s.objs.map((o) => o[c]), fromCsv);
+      const vals = s.objs.map((o) => o[c]);
+      const t = inferType(vals, fromCsv);
+      // A column that lists things in one value (tags) is a list of
+      // keywords, split at its separator, which the page shows and lets
+      // be changed (GRACE-405).
+      const split = fromCsv && !PROSE.test(c) && (t.type === "keyword" || t.type === "text") ? listSeparator(vals) : null;
+      if (split) return { name: c, type: "keyword", multi: true, split, use: true };
       if (t.type === "keyword" && !t.multi && PROSE.test(c) && s.objs.some((o) => typeof o[c] === "string" && /\s/.test(o[c].trim()))) t.type = "text";
       return { name: c, ...t, use: true };
     });
@@ -221,16 +270,28 @@ function render(page) {
     const nameIn = h("input", { class: "input mono", value: st.name, oninput: (e) => { st.name = e.target.value.trim(); check(); } });
     // the columns and where each goes
     const fieldOf = (c) => target?.short?.fields?.find((f) => f.name === c.name);
+    const fromCsv = format === "csv" || format === "tsv";
+    // Where a CSV lists several values in one (a list field, or one made
+    // as a list), the separator they are split at, shown and changeable.
+    const splitSel = (c) => h("label", { class: "row nw small dim", style: { gap: "4px" }, title: "A value that lists several things, such as tags: each becomes one item of the list" }, "split at",
+      h("select", { class: "select sm", "aria-label": `Split ${c.name} at`, onchange: (e) => { c.split = e.target.value || null; drawLoad(file, format, s, st); } },
+        h("option", { value: "", selected: !c.split }, "nothing (one item)"), LIST_SEPS.map(([v, l]) => h("option", { value: v, selected: c.split === v }, l))));
+    const listNote = (c) => { if (!c.split) return null; const v = s.objs.map((o) => o[c.name]).find((x) => typeof x === "string" && tokens(x, c.split).length > 1) ?? s.objs.find((o) => o[c.name])?.[c.name] ?? ""; return h("div", { class: "small muted" }, `${JSON.stringify(v)} → ${JSON.stringify(tokens(v, c.split))}`); };
+    // Offered where a value could list things: it holds a space, a comma, a ; or a |.
+    const canSplit = (c) => c.split || s.objs.some((o) => typeof o[c.name] === "string" && /[\s,;|]/.test(o[c.name].trim()));
     const mapRows = st.cols.map((c) => {
       const f = st.mode === "existing" ? fieldOf(c) : null;
-      const typeSel = h("select", { class: "select sm", onchange: (e) => { c.type = e.target.value; if (!["keyword", "int"].includes(c.type)) delete c.multi; if (c.type === "vector" && !c.dim) c.dim = 384; check(); drawLoad(file, format, s, st); } }, Object.entries(TYPES).map(([k, v]) => h("option", { value: k, selected: k === c.type }, v.label)));
+      const typeSel = h("select", { class: "select sm", onchange: (e) => { c.type = e.target.value; if (!["keyword", "int"].includes(c.type)) { delete c.multi; delete c.split; } if (c.type === "vector" && !c.dim) c.dim = 384; check(); drawLoad(file, format, s, st); } }, Object.entries(TYPES).map(([k, v]) => h("option", { value: k, selected: k === c.type }, v.label)));
+      // A keyword column becomes a list (KEYWORD[]) when it is split.
+      const listable = fromCsv && (c.type === "keyword" || c.type === "int");
+      if (st.mode === "new" && listable) c.multi = !!c.split || (c.multi && !fromCsv);
       return h("tr", {},
         h("td", {}, st.mode === "new" ? h("input", { type: "checkbox", checked: c.use, title: "Make a field of it", onchange: (e) => { c.use = e.target.checked; if (!c.use && (st.shardBy === c.name || st.clusterBy === c.name)) drawLoad(file, format, s, st); else check(); } }) : null),
         h("td", { class: "mono" }, c.name),
         h("td", {}, h("span", { class: "row nw", style: { gap: "6px" } }, typeBadge(c), typeMeta(c).label + (c.multi ? "[]" : "") + (c.dim ? `(${c.dim})` : ""))),
         st.mode === "existing"
-          ? h("td", {}, f ? h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "pill ok" }, icon("okc"), f.name), h("span", { class: "small muted" }, typeMeta(f).label + (f.multi ? "[]" : ""))) : h("span", { class: "pill warn" }, icon("warn"), "skipped"))
-          : st.mode === "new" ? h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; if (st.shardBy === c.name) drawLoad(file, format, s, st); else check(); } }), "key") : null)) : h("td", {}));
+          ? h("td", {}, f ? h("span", { class: "row nw", style: { gap: "6px" } }, h("span", { class: "pill ok" }, icon("okc"), f.name), h("span", { class: "small muted" }, typeMeta(f).label + (f.multi ? "[]" : "")), f.multi && fromCsv && canSplit(c) ? splitSel(c) : null) : h("span", { class: "pill warn" }, icon("warn"), "skipped"), f?.multi ? listNote(c) : null)
+          : st.mode === "new" ? h("td", {}, h("span", { class: "row nw", style: { gap: "8px" } }, typeSel, listable && st.key !== c.name && canSplit(c) ? splitSel(c) : null, (c.type === "keyword" || c.type === "int") && !c.multi ? h("label", { class: "row nw small dim", style: { gap: "4px" } }, h("input", { type: "radio", name: "imp-key", checked: st.key === c.name, onchange: () => { st.key = c.name; if (st.shardBy === c.name) drawLoad(file, format, s, st); else check(); } }), "key") : null), listNote(c)) : h("td", {}));
     });
     // Where a new table's rows live (shard_by) and in what order each
     // segment keeps them (cluster_by): what the trial had to write in SQL.
@@ -311,7 +372,11 @@ function render(page) {
         let name = st.table;
         if (st.mode === "new") { await api("/v1/sql", { body: { sql: ddl } }); made = st.name; invalidate(); ts = await tables(true); name = st.name; }
         const sent = Date.now();
-        const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, file, CT[format], progress, reason);
+        // Lists split at another separator than |, which the server reads,
+        // are written as a|b|c before the file goes (GRACE-405).
+        const splits = Object.fromEntries(st.cols.filter((c) => c.use && c.split && c.split !== "|" && (st.mode === "new" ? c.multi : fieldOf(c)?.multi)).map((c) => [c.name, c.split]));
+        const body = fromCsv && Object.keys(splits).length ? new File([splitLists(await file.text(), splits, format === "tsv" ? "\t" : ",")], file.name, { type: CT[format] }) : file;
+        const j = await upload(`/v1/import?format=${format}&table=${encodeURIComponent(name)}`, body, CT[format], progress, reason);
         done(name, j, file, { sent, reason, route: "/v1/import" });
       } catch (e) {
         // A table this load made, which a bad row left empty (an import into
@@ -468,17 +533,19 @@ function render(page) {
     };
     const go = h("button", { class: "btn primary", onclick: async () => {
       go.disabled = true;
-      // Parquet holds a table a file: one download each.
-      if (format === "parquet") {
+      // Parquet, CSV and JSON lines hold a table a file: one download each
+      // (CSV and JSON lines, every row read by a scroll on the server,
+      // GRACE-403; a read key may ask for them).
+      if (format !== "sqlite") {
         try {
           let bytes = 0;
           for (const t of pick) {
-            const r = await api("/v1/export?" + new URLSearchParams({ format: "parquet", tables: t }), { blob: true });
+            const r = await api("/v1/export?" + new URLSearchParams({ format, tables: t }), { blob: true });
             const b = await r.blob();
             bytes += b.size;
-            download(b, `${t}.parquet`);
+            download(b, `${t}.${format}`);
           }
-          toast(`Exported ${fmt.plural(pick.size, "Parquet file")}, ${fmt.bytes(bytes)}`, "ok");
+          toast(`Exported ${fmt.plural(pick.size, `${FORMATS[format]} file`)}, ${fmt.bytes(bytes)}`, "ok");
         } catch (e) { failed(e.message, "bad", 8000); }
         go.disabled = false;
         return;
@@ -500,28 +567,27 @@ function render(page) {
       h("label", { class: "row nw small dim" }, h("input", { type: "checkbox", checked: true, onchange: (e) => { idx = e.target.checked; } }), "indexes for KEYWORD and number fields"));
     const hint = h("span", { class: "small muted" }, "Vectors go as float32 blobs, lists as JSON arrays.");
     const sub = h("span", { class: "sub" }, "the database as a SQLite file");
-    const formatSeg = seg([["sqlite", "SQLite"], ["parquet", "Parquet"]], format, (v) => {
-      format = v;
-      sqliteOpts.classList.toggle("hidden", v === "parquet");
-      go.lastChild.textContent = v === "parquet" ? "Download as Parquet" : "Download as SQLite";
-      sub.textContent = v === "parquet" ? "a Parquet file a table, for Spark, DuckDB, polars and pandas" : "the database as a SQLite file";
-      hint.textContent = v === "parquet" ? "Vectors go as lists of float32, timestamps in UTC; each file keeps its ChloeDB schema." : "Vectors go as float32 blobs, lists as JSON arrays.";
-    });
-    // A coordinator exports a table a file (Parquet, from every shard);
-    // the whole database as one SQLite file runs on a shard's server.
     const coord = isCoordinator();
-    if (coord) {
-      format = "parquet";
-      sqliteOpts.classList.add("hidden");
-      go.lastChild.textContent = "Download as Parquet";
-      sub.textContent = "a Parquet file a table, of every shard's rows";
-      hint.textContent = "Vectors go as lists of float32, timestamps in UTC. The whole database as SQLite: export on each shard's server (chloedb-server export --db).";
-    }
-    gate(go, "admin");
+    // The database's files (SQLite, a server's Parquet) are an admin's; a
+    // table's rows as CSV or JSON lines are anyone's who reads it.
+    const allowed = () => can(format === "csv" || format === "jsonl" ? "read" : "admin");
+    const setFormat = (v) => {
+      format = v;
+      sqliteOpts.classList.toggle("hidden", v !== "sqlite");
+      go.lastChild.textContent = `Download as ${FORMATS[v]}`;
+      sub.textContent = { sqlite: "the database as a SQLite file", parquet: coord ? "a Parquet file a table, of every shard's rows" : "a Parquet file a table, for Spark, DuckDB, polars and pandas", csv: "a CSV file a table, every row, for a spreadsheet", jsonl: "a JSON lines file a table, every row, an object a line" }[v];
+      hint.textContent = { sqlite: "Vectors go as float32 blobs, lists as JSON arrays.", parquet: coord ? "Vectors go as lists of float32, timestamps in UTC. The whole database as SQLite: export on each shard's server (chloedb-server export --db)." : "Vectors go as lists of float32, timestamps in UTC; each file keeps its ChloeDB schema.", csv: "Lists and vectors go as JSON arrays, timestamps in UTC. Google Sheets and Excel open it.", jsonl: "Lists and vectors go as JSON arrays, timestamps in UTC." }[v];
+      go.disabled = !pick.size || !allowed();
+      go.title = allowed() ? "" : needs(v === "csv" || v === "jsonl" ? "read" : "admin");
+    };
+    // A coordinator exports a table a file (from every shard); the whole
+    // database as one SQLite file runs on a shard's server.
+    const formatSeg = seg([...(coord ? [] : [["sqlite", "SQLite"]]), ["parquet", "Parquet"], ["csv", "CSV"], ["jsonl", "JSON lines"]], coord ? "parquet" : format, setFormat);
+    setFormat(coord ? "parquet" : format);
     const card = h("section", { class: "card", id: "imp-export" }, h("div", { class: "hd" }, h("h3", {}, "Export"), sub),
       h("div", { class: "bd stack", style: { gap: "10px" } },
-        coord ? null : formatSeg,
-        h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size || !can("admin"); estimate(); } }, icon("table"), t.table))),
+        formatSeg,
+        h("div", { class: "row", style: { gap: "6px" } }, cached().map((t) => h("button", { class: "chip", "aria-pressed": "true", onclick: (e) => { if (pick.has(t.table)) pick.delete(t.table); else pick.add(t.table); e.currentTarget.setAttribute("aria-pressed", String(pick.has(t.table))); go.disabled = !pick.size || !allowed(); estimate(); } }, icon("table"), t.table))),
         sqliteOpts,
         sizeNote,
         h("div", { class: "row" }, go, hint)));

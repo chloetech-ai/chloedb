@@ -121,6 +121,29 @@ For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
    Replace it (tier 2: a plan and a change request) if it does not catch
    up.
 
+## A Postgres follower holds a table
+
+For: `follow-table-held`
+
+A table `chloedb-server follow-postgres` could not write is held: it is not
+followed (its rows stay as they were), the other tables are, and it is tried
+again after 30 seconds, then twice as long each time up to 15 minutes
+([postgres.md](postgres.md#when-one-table-fails)).
+
+1. Read which and why: Data > Connectors, or `GET /v1/admin/connectors`
+   (the follower's `table_states` with `state` `held`, and its `error`,
+   which names the table, the column and the row's key); on `/metrics`,
+   `chloedb_follow_tables_held` and `chloedb_follow_table_error_info`.
+2. Fix the cause where it is: a value ChloeDB refuses, in the row in
+   Postgres; a table without a primary key, by giving it one in Postgres
+   (`ALTER TABLE ... ADD PRIMARY KEY`) or taking it out of the publication;
+   a ChloeDB table someone made with a type that cannot read Postgres's
+   values, by fixing it in ChloeDB. Changing data in Postgres is the
+   owner's (tier 2: a change request).
+3. Then wait for the next try (`retry_in_s`), or start the follower again
+   with `--copy-table <table>` to copy it now (tier 1): its rows stay
+   readable throughout, and the other tables keep following.
+
 ## The disk is filling
 
 For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
