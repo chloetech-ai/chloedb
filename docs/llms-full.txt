@@ -335,7 +335,7 @@ Then every request sends the token, and the console asks for it once:
 sql() { curl -sS http://127.0.0.1:7700/v1/sql -H 'content-type: application/json' -H 'authorization: Bearer pick-a-secret' --data-binary @-; echo; }
 ```
 
-and steps 3 to 5 run as written (the `/v1/write` call needs the same `authorization` header). Arguments after the image replace its default ones (`--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701`): add `--demo 20000` by passing `--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000`. `docker rm -f chloedb` stops it; the volume keeps the database.
+and steps 3 to 5 run as written (the `/v1/write` call needs the same `authorization` header). Arguments after the image replace its default ones (`--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701`): add `--demo 20000` by passing `--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000`. For [OpenSearch's API](chloedb/opensearch.md) too, publish its port and give the defaults again with it: `-p 127.0.0.1:9200:9200` before the image, and `--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --opensearch-listen 0.0.0.0:9200` after it (the token is its password, with any user name). `docker rm -f chloedb` stops it; the volume keeps the database.
 
 ## Next
 
@@ -9792,6 +9792,8 @@ It exits 0 when answered 2xx, 1 when refused or failed otherwise, 2 when refused
 # Operate a cluster
 
 This page runs ChloeDB as a production-shaped cluster on machines of your own, without Kubernetes: two shards, each held by three copies that elect their primary among themselves, a coordinator in front of them, a token that the servers send each other and API keys for clients. It then checks the cluster's health, loads and searches rows, kills a primary and watches the failover, writes checkpoints, and upgrades the cluster one server at a time while it serves.
+
+To make a database you already serve into shards on one machine, one command does it: `chloedb-server grow --db shop.chloedb --shards 3` ([grow](../chloedb/server.md#sharding-one-coordinator-many-shards)). This page builds a cluster with copies of each shard, which a production cluster needs.
 
 Everything starts on one machine, on loopback, so that each command runs as written. On virtual machines each copy is a machine of its own (or a systemd unit), and the addresses are theirs. On Kubernetes the operator does all of this for you ([on Kubernetes](../chloedb/server.md#on-kubernetes)).
 

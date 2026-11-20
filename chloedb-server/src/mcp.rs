@@ -283,7 +283,7 @@ const TOOLS: &[Tool] = &[
         description: "Load many rows into a table at once: CSV or TSV text (the first line names the columns), JSON lines, a JSON array of objects as text in data, or the objects themselves in rows. The table must exist (list_tables shows it), or with create: true an admin key makes it first from the rows: types from the values (whole numbers INT, numbers FLOAT, true/false BOOL, ISO dates TIMESTAMP, longer text of several words TEXT, other text KEYWORD), the primary key a column named id (or key); the answer shows the CREATE TABLE it ran. Columns the table has not are skipped and named in the answer; a row with the key of one there replaces it. Answers how many rows it wrote. Needs a write key. For a few rows, write works too.",
         schema: || json!({"type": "object", "properties": {
             "table": {"type": "string"},
-            "format": {"type": "string", "enum": ["csv", "tsv", "jsonl", "json"], "description": "the format of data (default csv); rows are JSON"},
+            "format": {"type": "string", "enum": ["csv", "tsv", "jsonl", "json"], "description": "the format of data (when not given: jsonl if data starts with {, json if with [, csv otherwise); rows are JSON"},
             "data": {"type": "string", "description": "the rows as text, such as a CSV file's contents"},
             "rows": {"type": "array", "items": {"type": "object"}, "description": "the rows as objects, in place of data"},
             "empty": {"type": "string", "enum": ["default", "null", "text"], "description": "what an empty CSV cell is: the field's DEFAULT (the default), NULL, or empty text"},
@@ -830,12 +830,23 @@ fn clip(t: &str, max: usize) -> (&str, bool) {
 
 // ----- import
 
+/// The format of `data` given with no `format`: JSON lines when it starts
+/// with `{`, a JSON array with `[`, and CSV otherwise (read as CSV, JSON
+/// lines make a table of broken columns).
+fn sniffed(data: &str) -> &'static str {
+    match data.trim_start().as_bytes().first() {
+        Some(b'{') => "jsonl",
+        Some(b'[') => "json",
+        _ => "csv",
+    }
+}
+
 /// The `import` tool's call: the route with its query string, and the rows.
 fn import_act(a: &Json) -> Result<Act, Failed> {
     let table = s(a, "table")?;
     let (format, data) = match (a.get("rows"), opt_s(a, "data")) {
         (Some(Json::Array(rows)), None) if !rows.is_empty() => ("json", serde_json::to_vec(rows).map_err(|e| Failed::Arguments(e.to_string()))?),
-        (None | Some(Json::Null), Some(d)) => (opt_s(a, "format").unwrap_or("csv"), d.as_bytes().to_vec()),
+        (None | Some(Json::Null), Some(d)) => (opt_s(a, "format").unwrap_or_else(|| sniffed(d)), d.as_bytes().to_vec()),
         (Some(_), Some(_)) => return Err(Failed::Arguments("send the rows in data (text) or in rows (objects), not both".into())),
         _ => return Err(Failed::Arguments("the arguments need the rows: data, as text (a CSV file's contents), or rows, an array of objects".into())),
     };
@@ -1333,6 +1344,13 @@ pub async fn stdio(url: &str, key: Option<&str>, ca: Option<Vec<u8>>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_text_without_a_format_is_read_as_it_looks() {
+        assert_eq!(sniffed("{\"id\": 1}\n{\"id\": 2}\n"), "jsonl");
+        assert_eq!(sniffed("  [{\"id\": 1}]"), "json");
+        assert_eq!(sniffed("id,name\n1,a\n"), "csv");
+    }
 
     #[test]
     fn docs_search_finds_what_other_databases_call_otherwise() {
