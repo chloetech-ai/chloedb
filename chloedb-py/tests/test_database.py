@@ -280,7 +280,10 @@ def test_import_file(tmp_path):
             db.import_file(bad)
 
 
-def test_models_that_do_not_open(tmp_path):
+def test_models_that_do_not_open(tmp_path, monkeypatch):
+    # A model that is not here and is not downloaded (CHLOEDB_FETCH_MODELS=0:
+    # the package downloads a model it knows on first use otherwise).
+    monkeypatch.setenv("CHLOEDB_FETCH_MODELS", "0")
     schema = {"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "body", "type": "text"}, {"name": "v", "type": "vector", "embed": {"from": "body", "model": "potion-base-8M"}}]}
     with chloedb.Database.create(tmp_path / "m.strata", schema, models=tmp_path) as db:
         assert "v" in db.embed_errors

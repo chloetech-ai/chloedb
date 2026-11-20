@@ -20,7 +20,7 @@
 //! | `PUT /v1/kv/:table/:key?if_seq_no=n` | the row's fields as an object (the key may be left out) | `{written, seq_no?}`: the row written in place of any with the key (an upsert; with `if_seq_no`, only while the row's number is that) |
 //! | `DELETE /v1/kv/:table/:key?if_seq_no=n&routing=v` | | `{deleted, written, seq_no?}` |
 //! | `POST /v1/plan` | `{plan, timeout_ms?, min_seq_no?, min_seq_nos?}` (a plan as `/v1/explain` gives it) | rows, or `{written, seq_no?, seq_nos?}` |
-//! | `POST /v1/import?format=jsonl&table=name` | rows as JSON Lines, JSON, CSV or TSV (of the first table without `table`) | `{written, skipped_fields}` |
+//! | `POST /v1/import?format=jsonl&table=name` | rows as JSON Lines, JSON, CSV or TSV (a missing table is made from their columns; without `table`, the only table when they fit it) | `{written, skipped_fields, table?, create_table?}` |
 //! | `POST /v1/import?format=sqlite&tables=a,b&plan=true` | a SQLite file (`application/vnd.sqlite3`; recognised by its first bytes too) | `{tables, skipped, written}`, or with `plan` the plan ([`chloedb::sqlite`]) |
 //! | `POST /v1/import?format=parquet&table=name&key=id&plan=true` | a Parquet file (`application/vnd.apache.parquet`; recognised by its first bytes too) | `{table, rows, created, skipped, notes, written}`, or with `plan` the plan ([`chloedb::parquet`]) |
 //! | `GET /v1/export?tables=a,b&fts=false&indexes=false&schemas=false` | | the database as a SQLite file |
@@ -3223,15 +3223,20 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         }
     };
     let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
-    table_ok(&app, &who(w), q.get("table").map(String::as_str), Scope::Write, "an import").await?;
+    let (table, created) = import_table(&app, &who(w.clone()), &q, &body, format).await?;
+    table_ok(&app, &who(w), table.as_deref(), Scope::Write, "an import").await?;
     let t0 = std::time::Instant::now();
     let empty = match q.get("empty") {
         None => chloedb::ingest::EmptyCell::Default,
         Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
     };
     let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
-    let (w, skipped, ragged) = app.svc.import(q.get("table").map(String::as_str), body, format, opts).await?;
+    let (w, skipped, ragged) = app.svc.import(table.as_deref(), body, format, opts).await?;
     let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
+    if let Some(sql) = created {
+        j["table"] = json!(table);
+        j["create_table"] = json!(sql);
+    }
     // Rows of a CSV or TSV file with more or fewer values than its header
     // (?strict=true refuses them).
     if ragged > 0 {
@@ -3241,6 +3246,44 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         j["receipt"] = r;
     }
     Ok(AxJson(j))
+}
+
+/// The table an import of rows goes to, and the statement that made it
+/// when it was not there.
+///
+/// `?table=NAME` names it, and a table not there is made from the rows'
+/// columns and values ([`chloedb::ingest::create_for`]: an admin's
+/// statement, so it needs an admin key), unless `?create=false`. Without a
+/// table the rows go to the only table of the database when it has at
+/// least half of their columns, as before; rows that do not fit it, or a
+/// database of several tables or none, are refused with what to name,
+/// rather than written into a table they do not belong to.
+async fn import_table(app: &App, who: &Principal, q: &std::collections::HashMap<String, String>, body: &Bytes, format: Format) -> Result<(Option<String>, Option<String>), ApiError> {
+    if let Some(t) = q.get("table") {
+        if app.svc.table(t).await.is_ok() || !flag(q, "create", true)? {
+            return Ok((Some(t.clone()), None));
+        }
+        let sql = chloedb::ingest::create_for(t, body, format, q.get("key").map(String::as_str)).map_err(|e| ApiError::bad(format!("no table {t}, and none could be made from the rows: {e}")))?;
+        app.svc.sql(who, &sql, &chloedb::query::Params::default(), After::default(), 0).await.map_err(|e| ApiError { message: format!("{} (there is no table {t}: the import makes it from the rows' columns with {sql}; ?create=false refuses instead)", e.message), ..e })?;
+        return Ok((Some(t.clone()), Some(sql)));
+    }
+    let tables: Vec<String> = app.svc.catalog().iter().filter(|t| !chloedb::query::hint::internal_table(&t.table)).map(|t| t.table.clone()).collect();
+    let columns = chloedb::ingest::columns_of(body, format).map_err(|e| ApiError::bad(e.to_string()))?;
+    match tables.as_slice() {
+        [] => Err(ApiError::bad("this database has no table yet: name one, ?table=NAME, and the import makes it from the rows' columns")),
+        [only] => {
+            let schema = app.svc.table(only).await?;
+            let missing: Vec<&str> = columns.iter().filter(|c| !schema.fields.iter().any(|f| f.name.eq_ignore_ascii_case(c))).map(String::as_str).collect();
+            if !missing.is_empty() && missing.len() * 2 > columns.len() {
+                return Err(ApiError::bad(format!(
+                    "name the table the rows go to: {only} has {} of their {} columns (not {}), so they look like rows of another table. ?table=NAME makes a table of their own from their columns; ?table={} adds them to {only} without the others",
+                    columns.len() - missing.len(), columns.len(), chloedb::query::hint::listing(&missing, 8), only
+                )));
+            }
+            Ok((Some(only.clone()), None))
+        }
+        _ => Err(ApiError::bad(format!("name the table the rows go to: ?table=NAME, one of {} (or a new name, made from the rows' columns)", chloedb::query::hint::listing(&tables, 10)))),
+    }
 }
 
 /// A query parameter that is true or false (`1`, `0`, `yes`, `no`), or

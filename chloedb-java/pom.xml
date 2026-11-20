@@ -17,7 +17,7 @@
 
   <groupId>ai.chloetech</groupId>
   <artifactId>chloedb</artifactId>
-  <version>0.3.8</version>
+  <version>0.3.9</version>
   <packaging>jar</packaging>
 
   <name>ChloeDB</name>
@@ -149,6 +149,11 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <argLine>${surefire.native.access}</argLine>
+          <!-- The tests make models that do not open; the package would
+               download a model it knows on first use otherwise. -->
+          <environmentVariables>
+            <CHLOEDB_FETCH_MODELS>0</CHLOEDB_FETCH_MODELS>
+          </environmentVariables>
         </configuration>
       </plugin>
       <plugin>

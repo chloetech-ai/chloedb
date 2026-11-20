@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use chloedb_earth::{analogs, api, feed, load, places::Places, rules, strata::Strata};
+use chloedb_earth::{analogs, api, feed, load, names, places::Places, rules, strata::Strata};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -75,6 +75,13 @@ enum Command {
         #[command(flatten)]
         server: Server,
     },
+    /// Name the fires of California from CAL FIRE's perimeters (the
+    /// same year, the alarm days around the start, the centre in the
+    /// outline).
+    Names {
+        #[command(flatten)]
+        server: Server,
+    },
     /// Run every alert rule once, and print what they found.
     Rules {
         #[command(flatten)]
@@ -115,6 +122,9 @@ enum Command {
         /// The places' yearly pictures (tools/years.py fetch's chips).
         #[arg(long, env = "CHLOEDB_EARTH_CHIPS")]
         chips: Option<PathBuf>,
+        /// The replays' pictures of the sky (tools/frames.py's folder).
+        #[arg(long, env = "CHLOEDB_EARTH_FRAMES")]
+        frames: Option<PathBuf>,
         #[command(flatten)]
         server: Server,
     },
@@ -157,6 +167,12 @@ async fn main() -> Result<()> {
             let o = feed::Opts { region, from: from.as_deref().map(when).transpose()?, to: to.as_deref().map(when).transpose()?, live, every, parallel };
             feed::run(db, places, o).await?;
         }
+        Command::Names { server } => {
+            let db = server.db();
+            load::create(&db).await?;
+            let n = names::run(&db).await?;
+            tracing::info!(fires = n, "named");
+        }
         Command::Rules { server } => {
             let db = server.db();
             load::create(&db).await?;
@@ -169,12 +185,12 @@ async fn main() -> Result<()> {
             let v = analogs::backtest(&db, &region, limit).await?;
             println!("{}", serde_json::to_string_pretty(&v)?);
         }
-        Command::Serve { listen, token, public, per_minute, at_once, no_rules, chips, server } => {
+        Command::Serve { listen, token, public, per_minute, at_once, no_rules, chips, frames, server } => {
             let db = server.db();
             if let Err(e) = load::create(&db).await {
                 tracing::warn!(error = %e, "tables");
             }
-            api::serve(api::Opts { listen, strata: server.strata, key: server.key, token, public, per_minute, at_once, rules: !no_rules, chips }).await?;
+            api::serve(api::Opts { listen, strata: server.strata, key: server.key, token, public, per_minute, at_once, rules: !no_rules, chips, frames }).await?;
         }
     }
     Ok(())

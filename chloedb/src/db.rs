@@ -1261,7 +1261,8 @@ impl Db {
                 continue;
             }
             let opened = match (&f.embed, &f.derive) {
-                (Some(spec), _) => crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models)
+                (Some(spec), _) => crate::fetch::ensure(&spec.model, models)
+                    .and_then(|_| crate::embed::check_fingerprint(&f.name, &spec.model, spec.fingerprint.as_deref(), models))
                     .and_then(|_| crate::embed::open_for(&spec.model, match f.ty { FieldType::Vector { dim, .. } => Some(dim), _ => None }, models))
                     .and_then(|m| self.set_embedder_in(table, &f.name, m)),
                 (_, Some(spec)) => crate::derive::open_for(spec, models).and_then(|m| self.set_deriver_in(table, &f.name, m)),

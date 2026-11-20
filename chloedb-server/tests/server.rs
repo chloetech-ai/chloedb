@@ -2492,6 +2492,44 @@ const ITEMS: &str = r#"{"table": "items", "key": "id", "fields": [
     {"name": "emb", "type": "vector", "embed": {"from": "title", "model": "hash:16"}}
 ]}"#;
 
+/// An import names its table or fits the only one: a missing table is made
+/// from the rows' columns (and said), rows that are not the only table's
+/// are refused rather than written into it, and `create=false` refuses a
+/// missing table.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_makes_its_table_and_never_mixes_rows_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = chloedb::Schema::from_json(ITEMS).unwrap();
+    let db = Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let mut svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
+    svc.open_models(dir.path());
+    let base = http(Arc::new(svc), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let movies = "id,title,overview,year,rating,genre\n1,The Matrix,A hacker learns the world is a simulation,1999,8.7,scifi\n2,Up,An old man ties balloons to his house,2009,8.3,animation\n";
+    let import = |q: &str| c.post(format!("{base}/v1/import{q}")).header("content-type", "text/csv").body(movies).send();
+    // Two of six columns are items': named nowhere, they are refused.
+    let r = import("").await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("items has 2 of their 6 columns"), "{r}");
+    let (_, n) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT COUNT(*) FROM items"})).await;
+    assert_eq!(n["rows"][0][0], json!(0), "{n}");
+    // A missing table refused when asked to, else made from the columns.
+    let r = import("?table=movies&create=false").await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert!(status == 400 && r["error"].as_str().unwrap().contains("movies"), "{status} {r}");
+    let r: Json = import("?table=movies").await.unwrap().json().await.unwrap();
+    assert_eq!(r["written"], json!(2), "{r}");
+    assert_eq!(r["create_table"], json!("CREATE TABLE IF NOT EXISTS movies (id INT PRIMARY KEY, title TEXT, overview TEXT, year INT, rating FLOAT, genre KEYWORD)"), "{r}");
+    let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT title FROM movies WHERE MATCH(overview, 'balloons')"})).await;
+    assert_eq!(r["rows"], json!([["Up"]]), "{r}");
+    // Two tables now: rows that name no table are refused, naming both.
+    let r = c.post(format!("{base}/v1/import")).header("content-type", "text/csv").body("id,title\nx,A thing\n").send().await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("one of items, movies"), "{r}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn imports_files_over_http() {
     let dir = tempfile::tempdir().unwrap();

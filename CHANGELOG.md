@@ -28,6 +28,122 @@ changes collect under "Unreleased".
   (`HAVING total_amount > 10` said `10: no such column`), an aggregate in
   `WHERE` (use `HAVING`), and `LIKE ANY` / `ILIKE ANY` (one pattern per
   `LIKE`, joined with `OR`).
+- **A first run that needs no flags, no schema and no model download.**
+  `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
+  directory (made empty on the first start), `--demo` alone makes 20,000
+  products in `demo.chloedb`, and a server started in a terminal says,
+  once it is ready, where to open it, a first query and a first import
+  that run as pasted, and how to stop it. A refusal at a terminal is a
+  sentence rather than a log line. `chloedb-server import movies.csv --db
+  films.chloedb` makes the database and the table `movies` from the
+  file's columns and values (CSV, TSV, JSON, JSON Lines), and so does an
+  import into a table that is not there; without `--table` a file goes to
+  the table named as it, else to the only table when it has most of the
+  file's columns, else to a new table named as the file. `POST
+  /v1/import?table=NAME` makes a missing table the same way (an admin
+  key; the answer's `create_table` is the statement, `?create=false`
+  refuses). **Changed:** `POST /v1/import` without `?table=` refuses rows
+  that do not fit the only table (fewer than half of their columns are
+  its), and a database of several tables, rather than writing them into
+  the first table: movies posted to the demo went into `products` with
+  two of their columns dropped. Titles, names and other prose columns of
+  a few words are `TEXT` in a made table, as the command center's import
+  makes them. The Python, JavaScript and Java packages download a model
+  ChloeDB knows (`potion-retrieval-32M`, ...) the first time a database
+  that names it opens, from its pinned revision with each file's SHA-256
+  checked, and say so on stderr (`CHLOEDB_FETCH_MODELS=0` turns it off,
+  `HF_ENDPOINT` names a mirror); `chloedb.fetch_model()` and `python -m
+  chloedb fetch-model` do it ahead. The command center's import picks a
+  new table, named after the file, when no table has most of the file's
+  columns, and code it shows for a server with no token or keys sends
+  none.
+- **Docs pass 4.** The SQL reference says how much memory `CREATE RECOMMENDER`
+  takes while it counts (NADIA-401); the OpenSearch page says a filtered alias
+  is not a boundary between tenants and points to keys limited to tables
+  (KENJI-402); the cluster guide says what a frozen primary costs and not to
+  restart the copy just elected while it waits out the old lease (OLU-401,
+  OLU-205).
+- **`chloectx remember preference` says it is kept for this project only.**
+  Memory is per project, so a preference stored there is not recalled in
+  another repository; the command now prints a note naming
+  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
+  `chloectx remember --help` and the ChloeCtx page say the same.
+- **Earth explorer: What happened here.** A place's page is now a story: a
+  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
+  since 1878, named GOES fires, FIRMS years, places nearby that changed)
+  over a map of their outlines, a town search with "use my location", and
+  a fire year that needs three detections (one was often a hot roof).
+  The replays play over GOES's own pictures of the sky (true colour by day,
+  infrared by night, every 10 minutes, drawn from NOAA's archive by
+  `tools/frames.py` and served with `serve --frames`), with the fires'
+  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
+  the replays are one field of heat per fire, fading with age, and a
+  "Fire pixels" button hides them to show the fire as the picture has it.
+
+## 0.3.9
+
+What the persona study's third round found, and new ways to see and shape
+a search: a query's funnel (each stage's time, and the rows each stage kept
+and dropped), blends (one list from several queries, stacked, logged with
+each slot's chance and valued off-policy), typo search that keeps every row
+it matched, answers that carry their columns' types, everyday SQL functions
+(`substr`, `trim`, `replace`, `date_diff`, `STRING_AGG` and others),
+analytical SQL about 6 times as fast on the study's slow statements,
+OpenSearch aliases that keep to their filter, ChloeCtx that keeps private
+asides nowhere and syncs only the projects set up (with a team's forgets
+reaching every machine), an on-call key that handles its alerts, a
+coordinator that keeps its alerts and audit log across a restart, Postgres
+followers' lag, installers that check 0.3.8's build provenance, and the
+Experiments app (a demo) on real sites: `chloedb-server-v0.3.9`,
+`chloedb-py-v0.3.9` and `chloedb-js-v0.3.9`, which is on npm too (the Java
+package is built from source; `chloedb-crawl`, `chloedb-sheets`, `chloectx`
+and `chloedb-netops` are attached prebuilt to the server's release, whose
+wheels are on PyPI as `chloedb-server`). The file format stays 3 and the
+shard protocol stays 21, and servers of 0.3.8 and 0.3.9 mix in a cluster;
+two plan features are new (`sql_functions`, and `hash` in a ranking), so
+upgrade the shards before the coordinators to use them (see
+[compatibility](docs/compatibility.md#a-cluster-of-mixed-versions)).
+**Some answers change: see below.**
+
+### What changes by default
+
+- **A search box's typo search ranks every row its `MATCH` keeps**:
+  `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f, :q)` ranked only
+  the rows of the word as typed when the index held it.
+- **The Python and JavaScript packages refuse a call that names no table**
+  on a database or server of several tables (`ChloeDBError` naming them);
+  it used the first table. Values by position raise a `TypeError`.
+- **A write that an `ALTER TABLE` kept racing is refused `table_altered`**,
+  which is retryable (it was `query_invalid`, not retryable).
+- **The OpenSearch API applies an alias's `filter`** to every read through
+  it, and **refuses a key it does not read** (400, `did you mean`) and the
+  search features it does not answer; aliases are rows of a new table,
+  `opensearch_aliases`, from the first alias change on.
+- **Columns derived from a timestamp are timestamps**: Python's DB-API
+  driver and `Result.to_pandas()` give them as datetimes, where they were
+  text unless selected by their bare name, and a `UNION` of an `INT` and a
+  `FLOAT` column is `FLOAT`.
+- **Python's `add_column` embeds the rows already there**, and a vector
+  parameter (`{"embed": ...}`, `{"vector_of": ...}`) without `"field"` is
+  for the field it is ranked against, not the table's first vector field.
+- **`ppr` without `eps` walks until its scores hold half of the walk**, so
+  it ranks past a seed with busy neighbours, and `PATH(..., through => p)`
+  keeps every middle row to `p`.
+- **ChloeCtx**: a part of a prompt marked private is never stored, and
+  rules taken from asides before are retired; only the user's words make
+  rules; `chloectx sync setup` syncs the project it runs in and no other,
+  and a `sync.token` kept by an earlier setup is sent for no project;
+  `sync accept --all` accepts the machines listed now, and `trusted:
+  ["*"]` is no longer honoured.
+- **`chloedb_docs` and `chloedb_segments` count every table**, not the
+  first, and `POST /v1/admin/verify` on a coordinator verifies every shard
+  (it answered 409). An `oncall` key made before keeps `fleet` alone: make
+  it again to give it `alerts`.
+- **The installers check 0.3.8's build provenance** where `gh` is
+  installed, and `CHLOEDB_VERIFY=require` installs 0.3.8.
+
+### Search and SQL
+
 - **A guarded condition can be written anywhere among ANDs.** `MATCH(...,
   min => n, min_rows => m)` (and `max_rows`, and `AT_LEAST`'s) written
   first or between two others, `WHERE MATCH(...) AND a > 2 AND c != 'x'`,
@@ -63,84 +179,6 @@ changes collect under "Unreleased".
   sqlite3's `?` or psycopg's `%s`; an array with better-sqlite3's `?` or
   node-postgres's `$1`) raise a `TypeError` that shows the call with
   names.
-- **A query's funnel: each stage's time, and the rows each stage kept and
-  dropped.** Everything a query does between its text and its rows is laid
-  on thirteen stages in order (wait, understand, expand terms, embed, plan,
-  match, select, rank, rerank, blend, shards, fetch, other), each
-  microsecond counted once. The command center's new **Query funnel** page
-  (Watch, beside Queries) shows the latest queries' time by stage, by
-  statement and one by one, and traces one query: the words it understood,
-  the terms its words became with their typos, prefixes and synonyms and
-  the rows holding each, "did you mean", the texts embedded, each input's
-  matches, `WHERE` a condition at a time, the candidates and the ranking,
-  and every row it saw with where it left and why (on the page, ranked
-  past it, reranked off it, below every input's top, or dropped by the
-  condition it names). A query's drawer in Queries opens it with **Its
-  funnel**. `POST /v1/funnel` and `GET /v1/queries/funnel` on
-  chloedb-server, through a coordinator too; the request's trace has the
-  spans `understand`, `expand`, `embed` and `blend`; a BM25 search's
-  profile has a step `terms`; `Db::funnel` and `query::funnel` in Rust
-  ([server.md](docs/chloedb/server.md#a-querys-funnel)).
-- **Blends stack, and Labs → Blending builds them by drag and drop.** A
-  blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
-  ... WITH (k => n))`: it runs into its own k slots under its own rules,
-  and its rows are that source's rows above, with `via` naming the source
-  each came from through the nodes (`organic/videos`), which every blend
-  answers and a rule above may read. Up to 4 blends deep and 32 queries;
-  the receipts carry each node's own; on one database and through a
-  coordinator alike. The command center's Blending editor opens on a
-  canvas of the stack, wired up to the top by each source's share: drag a
-  query, a blend, a copy of a saved blend, a rule or a head from the
-  palette onto a node, a source onto another to stack a blend on the two,
-  or onto the bin; a click selects a node, whose settings and rows show
-  below ([query-language.md](docs/chloedb/query-language.md#stacking-blends-a-blend-as-anothers-source)).
-- **A write racing ALTER TABLE is bound again until its deadline**: an
-  INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
-  ran was bound again ten times at most, and a stream of `ALTER TABLE`s
-  (which take the storage lock without queueing) could win all ten. The
-  server now binds it again, waiting a few milliseconds more each time,
-  until the statement's deadline (an embedded `Db::sql` up to 1000
-  times). A write still raced then is refused with its own code,
-  `table_altered`, which is `retryable: true` (it was `query_invalid`,
-  not retryable); nothing was written, so sending it again is safe.
-- **A replica counts its applied batches, and the test of a copy stops
-  flaking.** `chloedb_replica_apply_batches_total` and
-  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
-  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
-  failed about a quarter of its runs on a two-CPU machine: its ship log was
-  2,000 bytes under an unthrottled writer, so the primary sent copy after
-  copy and the test, which waits for exactly one per replica, timed out. It
-  keeps a log that holds seconds of a throttled writer now.
-- **Blends explore, are logged with each slot's chance, and are valued
-  and tuned off-policy.** A blend served with `"log": {"explore":
-  {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
-  best rows that fit it by their utility, from the request's id, and logs
-  every row of every source with the page's chances. A replay of any blend
-  of the same sources over those pages gives its chance of each, so
-  cascade doubly robust (with a click model cross-fitted over two halves
-  of the searches) values it, with SNIPS beside it over the top slots as a
-  check, its support (effective searches), its coverage of what the log
-  could draw and a verdict against the blend that logged; tuning tries
-  weights, shares and diversity on half the searches and proves the best
-  on the other half. `Db::blend_requests` and `query::blend_eval` in Rust;
-  `POST /v1/blends/:name/evaluate` and `/tune` on chloedb-server, through
-  a coordinator too; the command center's Labs → Blending has **Value on
-  the log** and **Tune toward clicks**
-  ([query-language.md](docs/chloedb/query-language.md#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips)).
-- **The on-call key does on-call** (persona study round 3, MARCO-301,
-  MARCO-313). A key limited to tables may be given the route group
-  `alerts`: an alert's page (`GET /v1/alerts/<rule>`), the runbooks, and
-  acknowledging, silencing and noting an alert (with a key that writes);
-  never the rules, the routes or a backtest. The `oncall` preset gives it,
-  so the key "Search your logs" makes for the rotation can claim what it
-  is paged for; an `oncall` key made before keeps `fleet` alone, so make
-  it again. `/v1/whoami` lists the server's routes such a key may call
-  (`may.routes`), and the command center offers those alone: the alert
-  page's buttons a key cannot use say why, Edit rule reads View rule, and
-  a refusal is told in the server's words. `chloedb-server cc`'s Logs,
-  the server's own log, which an admin key reads, says so for another key
-  and lists the log tables it reads, and `Enter` shows one's newest lines
-  in SQL ([server.md](docs/chloedb/server.md#security)).
 - **An answer gives its columns' types, and a column's type follows its
   expression** (persona study round 3, SAM-301, SAM-308). `POST
   /v1/query` answers `types` beside `columns` (`"timestamp"`, `"int"`,
@@ -170,6 +208,293 @@ changes collect under "Unreleased".
   JavaScript and over HTTP, and for a field of no model the error says
   so. The error for text against such a field names the query's own
   parameter (`:v`), not `:q`.
+- **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
+  (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
+  (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
+  `floor` and `ceil`, with PostgreSQL's answers; `date_diff('unit',
+  start, end)`, the unit's boundaries between two times, as DuckDB counts
+  them; and `STRING_AGG(x, ', ' [ORDER BY y])`. They run on either engine
+  and over shards; a plan that uses one declares the feature
+  `sql_functions`, which a server from before refuses by name
+  ([query-language.md](docs/chloedb/query-language.md#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil)).
+- **SQL answers the same on either engine, and as PostgreSQL does in four
+  more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
+  `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
+  (`SELECT payment_type AS pt ... GROUP BY pt ORDER BY pt`) was "no such
+  column"; it orders, and an output name wins over an input column of the
+  same name. `json_extract(doc, '$.a.b')` was `NULL` outside `WHERE`; a
+  `'$.'` path reads everywhere, and `'$'` is the whole value. `NULLS FIRST`
+  was refused after `GROUP BY` or `DISTINCT`; it orders groups. A `SUM` or
+  `AVG` of `FLOAT`s on DataFusion (a plan over more than 4,096 rows) added
+  in order, so totals that tied on a small table (43.62 and
+  43.620000000000005) split as it grew and a `RANK` over them changed; it
+  adds exactly, the same bits as ChloeDB's operators. The refusals of
+  `ROLLUP`, `CUBE`, `GROUPING SETS`, `JOIN ... USING`, `NATURAL
+  JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
+  SELECT`, temporary tables and a time minus a time say what to write
+  instead, with the query's own tables.
+- **Graph answers and match counts right** (persona study round 3,
+  NADIA-305, NADIA-302, GRACE-301). `PATH(..., through => p)` could answer
+  a path through a row that fails `p`, where the two halves of its search
+  met, and a path where no allowed one exists; every middle row of a path
+  now satisfies `through`. `ppr` without `eps` started at 10⁻⁴ and stayed
+  there, so from a seed whose neighbours have thousands of edges it ranked
+  only the seed, with no warning; it now halves `eps` while its scores
+  hold less than half of the walk, for at most 100,000 pushes, and its
+  plan line says where it went. A walk that ends with less than half,
+  with a given `eps` or out of pushes, says so: `ppr_unsettled` in the
+  stats ([how far `ppr` walks](docs/chloedb/query-language.md#how-far-ppr-walks)).
+  The command center's Graph explorer has a *PageRank eps* control and
+  shows that warning. The answer header of the Query builder, a table's
+  Search tab and the workbench showed "N passed the filter" from the
+  executor's `filter_docs`, which counts only the rows a `LIMIT` let it
+  look at (2,036 of 3,694); the builder counts the rows its filters keep
+  with a `COUNT(*)` ("3,694 match"), and the other headers show no such
+  number.
+- **`hash()` in a ranking.** `hash(field, seed)` of the key or a stored
+  field is now a leaf of a ranking expression, the same number it is in
+  `WHERE` and `ORDER BY`: `ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC`
+  shows what a search finds in a seeded random order (an experiment's
+  shuffled arm, a logged query's), and a small share of it breaks ties.
+  It ranks as a rank-safe boost, every row the text matches; `rrf` does
+  not fuse it. A plan with it needs the feature `hash`, and a shard from
+  before this release refuses it in a ranking
+  ([query language](docs/chloedb/query-language.md#samples-splits-and-shuffles-hash)).
+
+### Query funnel and blends
+
+- **A query's funnel: each stage's time, and the rows each stage kept and
+  dropped.** Everything a query does between its text and its rows is laid
+  on thirteen stages in order (wait, understand, expand terms, embed, plan,
+  match, select, rank, rerank, blend, shards, fetch, other), each
+  microsecond counted once. The command center's new **Query funnel** page
+  (Watch, beside Queries) shows the latest queries' time by stage, by
+  statement and one by one, and traces one query: the words it understood,
+  the terms its words became with their typos, prefixes and synonyms and
+  the rows holding each, "did you mean", the texts embedded, each input's
+  matches, `WHERE` a condition at a time, the candidates and the ranking,
+  and every row it saw with where it left and why (on the page, ranked
+  past it, reranked off it, below every input's top, or dropped by the
+  condition it names). A query's drawer in Queries opens it with **Its
+  funnel**. `POST /v1/funnel` and `GET /v1/queries/funnel` on
+  chloedb-server, through a coordinator too; the request's trace has the
+  spans `understand`, `expand`, `embed` and `blend`; a BM25 search's
+  profile has a step `terms`; `Db::funnel` and `query::funnel` in Rust
+  ([server.md](docs/chloedb/server.md#a-querys-funnel)).
+- **Blends: one list from several queries, after each has ranked its own.**
+  `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
+  (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
+  quality CALIBRATE minmax MISSING zero)`), a utility of them (`UTILITY 1 *
+  relevance + 0.2 * quality`, `BOOST`), and the slate's rules: `SLOT n`,
+  `QUOTA (... BETWEEN 20% AND 40% IN TOP 10)`, `SPACING`, `MAX n PER`,
+  `DIVERSIFY λ ON emb` and `DEDUPE t ON emb`. `SELECT ... FROM
+  blend('name[@version]', q => :q)` answers each slot's row with its source,
+  utility and why (`blend_decision`); the receipts add the rows passed over,
+  each quota's count and what each rule costs the slate. A blend is a
+  stored function, so it is versioned, replicated and written on every
+  shard of a coordinator, which runs each source over the cluster and
+  answers as one database. On chloedb-server, `/v1/blends` lists, versions,
+  writes and drops them and `/v1/blends/preview` runs a draft, and the
+  command center's Labs → Blending edits one with a live preview
+  ([query-language.md](docs/chloedb/query-language.md#blends-create-blend-and-blend)).
+- **Blends stack, and Labs → Blending builds them by drag and drop.** A
+  blend's source may be a blend of its own, `name AS BLEND (SOURCES (...)
+  ... WITH (k => n))`: it runs into its own k slots under its own rules,
+  and its rows are that source's rows above, with `via` naming the source
+  each came from through the nodes (`organic/videos`), which every blend
+  answers and a rule above may read. Up to 4 blends deep and 32 queries;
+  the receipts carry each node's own; on one database and through a
+  coordinator alike. The command center's Blending editor opens on a
+  canvas of the stack, wired up to the top by each source's share: drag a
+  query, a blend, a copy of a saved blend, a rule or a head from the
+  palette onto a node, a source onto another to stack a blend on the two,
+  or onto the bin; a click selects a node, whose settings and rows show
+  below ([query-language.md](docs/chloedb/query-language.md#stacking-blends-a-blend-as-anothers-source)).
+- **Blends explore, are logged with each slot's chance, and are valued
+  and tuned off-policy.** A blend served with `"log": {"explore":
+  {"policy": "softmax", "tau": 0.3, "top": 5}}` draws each slot among the
+  best rows that fit it by their utility, from the request's id, and logs
+  every row of every source with the page's chances. A replay of any blend
+  of the same sources over those pages gives its chance of each, so
+  cascade doubly robust (with a click model cross-fitted over two halves
+  of the searches) values it, with SNIPS beside it over the top slots as a
+  check, its support (effective searches), its coverage of what the log
+  could draw and a verdict against the blend that logged; tuning tries
+  weights, shares and diversity on half the searches and proves the best
+  on the other half. `Db::blend_requests` and `query::blend_eval` in Rust;
+  `POST /v1/blends/:name/evaluate` and `/tune` on chloedb-server, through
+  a coordinator too; the command center's Labs → Blending has **Value on
+  the log** and **Tune toward clicks**
+  ([query-language.md](docs/chloedb/query-language.md#valuing-a-blend-on-its-log-exploring-fills-cascade-doubly-robust-and-snips)).
+
+### Analytical SQL
+
+What the persona study's data engineer found in its second round: groups,
+joins and time functions over whole tables took 25 to 250 ms where DuckDB
+took 1.5 to 7. On their 224,000 taxi trips and Chinook, the 16 statements
+that took 10 ms or more run 6.1 times as fast on their geometric mean (T5,
+time parts by hour, 258 ms to 4.9), and all 72 take 0.57 of the time on
+theirs, with the same answers (a 4-core cloud container, `chloedb-sql-bench`).
+
+- **Aggregates of expressions are computed from the columns.** `SUM(a * b)`,
+  `AVG(CASE WHEN ... END)`, `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, and
+  groups by `EXTRACT(hour FROM t)`, `date_part`, arithmetic, comparisons
+  and `CASE` over numbers, times and booleans are evaluated 128 rows at a
+  time, typed, beside the segment's columns, rather than row by row through
+  DataFusion. An `INT` that would overflow sends its block to the row
+  evaluator, so errors and answers are the rows' own. A plan says how many
+  expressions it computed a block at a time and how many row by row.
+- **Plain aggregates fold into the scan**: `COUNT`, `SUM`, `AVG`, `MIN` and
+  `MAX` of single-valued fields, also under `ROUND` or `HAVING`. Percentiles
+  stay on DataFusion, which is faster at them.
+- **Columns go into Arrow a block at a time** for the plans DataFusion
+  still runs, and `date_part`, `date_trunc`, `date_bin`, `strftime` and
+  text compared with a `TIMESTAMP` lower to DataFusion rather than sending
+  the whole plan to the operators. `EXTRACT(epoch ...)` and the other time
+  parts that are not dates skip the calendar.
+- **A small right side of a join is read whole** (at most 1,024 rows, when
+  the left side is bigger).
+- **Sam's queries are in the speed gate**: `chloedb-sql-bench` runs them on
+  trips made up from a seed or on a database and a file of statements
+  (`--check` compares the answers with the plan computed row by row,
+  `--plan` times each step), and `scripts/perf-gate.py --sql` times them in
+  `perf.yml`.
+
+Through a coordinator, the shards still answer these plans as before:
+computing expressions in the scan is for a database's own plans (embedded,
+or one server), so shards of older versions need nothing new.
+
+### Query plans
+
+Rules that read only the rows that can be in an answer, from what ChloeDB
+knows of its tables; no answer changes.
+
+- **`ORDER BY` several keys with a `LIMIT` reads only the ties of the
+  first.** `ORDER BY fare DESC, distance DESC LIMIT 10` sorted every row.
+  The scan now finds the first key's n-th value with its top-k (n is
+  `OFFSET` plus `LIMIT`) and reads only the rows that tie with it or beat
+  it, and those whose key is `NULL`. The first key has to be an indexed
+  `INT` or `FLOAT` field of one value. On a 4-core cloud VM (Xeon @
+  2.10GHz), the top 10 of 224,056 taxi trips by two keys went from 40 ms to
+  1 ms.
+- **A small, filtered side of a join is read first.** When a join's right
+  side is a filtered table of at most 1,024 rows, and the scan on the left
+  that holds the key counts 32 times as many, the right side is read whole
+  and restricts that scan to its keys. `trips JOIN zones ... WHERE
+  z.borough = 'Staten Island'` reads 8 zones and the 13 trips they hold,
+  not all 224,056 trips (40 ms to 0.8 ms on that VM). The operators and
+  DataFusion choose alike.
+- **Filters reach the tables they hold for.** A `WHERE` on a derived
+  table's plain column filters its table's scan, a condition on one inner
+  join key filters the other key's table too, and a `WHERE` on a `LEFT
+  JOIN`'s right table that drops `NULL`s plans the join inner. The queries
+  of that kind in the persona study's battery took 2.4 to 6.6 times less
+  time.
+- **A coordinator's BM25 ranking that pins the key** (or `shard_by`) asks
+  only the shards of those keys, as other reads by key do. Its statistics
+  still come from every shard, so the scores are a fan-out's. No protocol
+  change: servers of 0.3.8 mix with it in either order.
+
+### Writes, clusters and on-call
+
+- **A plan waits until a new copy counts among its shard's copies before
+  it goes on.** A copy that installed its primary's rows is in sync at
+  once, but it serves reads and counts itself among the copies only on
+  its primary's next call, which comes late on a busy host; a plan that
+  added the copy and then handed the shard over to it failed there (409,
+  "this replica is not counted among its shard's copies"). The plan's
+  step now waits for the copy's own `member`, saying "caught up; waiting
+  to be counted among the copies", and goes on after a minute in sync as
+  before. The restore test waits likewise for every copy to serve reads.
+- **A Postgres follower says how far behind it is** (persona study round 3,
+  ROSA-302, ROSA-307): its state, its positions as Postgres writes them
+  (LSNs) and its lag in seconds and bytes behind Postgres's own position,
+  every 2 s, on Data > Connectors, in `/metrics`
+  (`chloedb_follow_lag_seconds`, `chloedb_follow_behind_bytes`,
+  `chloedb_follow_up`, labelled `name` and `kind`) and in `follow_lag_s`
+  for the built-in alert `follow-behind`, which also fires when a follower
+  goes silent.
+- **An alert reaches a route added while it fires** (GRACE-305,
+  MARCO-312, MARCO-302): the coordinator that sent its FIRING sends it once
+  to a route added, or newly routed to, while it fires; a RESOLVED goes
+  only to the routes that got the FIRING (`paged.routes`), and an alert
+  keeps what each route was sent and whether it was delivered
+  (`notified`). The query rule editor shows no metric's unit, description
+  or chart for a query, runs it once, shows its value, and warns of a
+  threshold it cannot cross.
+- **A coordinator's Timeline survives its restart, and it serves the
+  cluster map after a copy was replaced** (OLU-301, OLU-302, OLU-308). Its
+  copies keep its latest 5,000 events beside its rules and audit log;
+  `GET /v1/events` says `record_from_ms`, and Timeline and Home say since
+  when. A coordinator started on its first `--shards` after a copy was
+  replaced serves the newest cluster map, leaving out listed servers that
+  do not answer and that the map leaves out, with a warning. The Cluster
+  page opened signed out shows the cluster after the sign-in.
+- **A write racing ALTER TABLE is bound again until its deadline**: an
+  INSERT, UPDATE or DELETE whose table an `ALTER TABLE` changed while it
+  ran was bound again ten times at most, and a stream of `ALTER TABLE`s
+  (which take the storage lock without queueing) could win all ten. The
+  server now binds it again, waiting a few milliseconds more each time,
+  until the statement's deadline (an embedded `Db::sql` up to 1000
+  times). A write still raced then is refused with its own code,
+  `table_altered`, which is `retryable: true` (it was `query_invalid`,
+  not retryable); nothing was written, so sending it again is safe.
+- **A replica counts its applied batches, and the test of a copy stops
+  flaking.** `chloedb_replica_apply_batches_total` and
+  `chloedb_replica_apply_seconds_total` (the seconds include the wait for a
+  free writer). `replication::a_replica_the_log_does_not_reach_is_sent_a_copy`
+  failed about a quarter of its runs on a two-CPU machine: its ship log was
+  2,000 bytes under an unthrottled writer, so the primary sent copy after
+  copy and the test, which waits for exactly one per replica, timed out. It
+  keeps a log that holds seconds of a throttled writer now.
+- **What on-call sets on a coordinator survives its restart, and its
+  numbers are true** (persona study round 2, OLU-201, OLU-202, OLU-203,
+  OLU-3, OLU-206, OLU-204, OLU-211, OLU-9). A coordinator started without
+  `--alerts` and `--audit-log` lost its custom rules, routes, silences and
+  audit log when it restarted; it keeps them, with each alert's state and
+  the latest 2,000 audit entries, on every copy of its shards
+  (`<db>.coordinator.json`), and takes them back before it serves, the
+  newest of each part winning; `GET /v1/alerts` says where under `kept`.
+  `chloedb_docs` and `chloedb_segments` counted the database's first
+  table, often an empty placeholder; they count every table, as
+  `/v1/health`'s `rows`, with `chloedb_table_docs{table}`,
+  `chloedb_table_segments{table}` and a copy's
+  `chloedb_copy_info{shard, node, role}`. A coordinator's `/metrics` has
+  the cluster's state (`chloedb_cluster_copies_up`,
+  `chloedb_cluster_shard_majority`, `chloedb_cluster_copy_up{shard, copy,
+  url, role}` and others). Writes that fail on the server count in Home's
+  error ratio and the fleet's `error_ratio` check (`write_error_ratio`,
+  with a runbook), and Home keeps its pace while an alert fires.
+  `POST /v1/admin/verify` on a coordinator verifies every shard (it
+  answered 409), `GET /v1/logs` there says how to search the copies'
+  lines, `GET /v1/admin/checkpoints` lists the checkpoints in
+  `--backup-dir` (on a coordinator, every copy's and the sets complete on
+  every shard; Settings > Upkeep > Backups), and the
+  `cluster_token_required` refusal says how to apply a plan with the
+  cluster's token ([operate-cluster.md](docs/guide/operate-cluster.md)).
+- **The on-call key does on-call** (persona study round 3, MARCO-301,
+  MARCO-313). A key limited to tables may be given the route group
+  `alerts`: an alert's page (`GET /v1/alerts/<rule>`), the runbooks, and
+  acknowledging, silencing and noting an alert (with a key that writes);
+  never the rules, the routes or a backtest. The `oncall` preset gives it,
+  so the key "Search your logs" makes for the rotation can claim what it
+  is paged for; an `oncall` key made before keeps `fleet` alone, so make
+  it again. `/v1/whoami` lists the server's routes such a key may call
+  (`may.routes`), and the command center offers those alone: the alert
+  page's buttons a key cannot use say why, Edit rule reads View rule, and
+  a refusal is told in the server's words. `chloedb-server cc`'s Logs,
+  the server's own log, which an admin key reads, says so for another key
+  and lists the log tables it reads, and `Enter` shows one's newest lines
+  in SQL ([server.md](docs/chloedb/server.md#security)).
+- **A server says which commit it was built from** (OLU-207): two builds
+  of one version (a hotfix, a branch) said the same `0.3.8` everywhere.
+  `chloedb-server --version` prints `0.3.9 (built from 1a2b3c4d5e)`,
+  `/v1/system` and each copy's `version` in `/v1/cluster` carry `commit`,
+  `chloedb_build_info` has a `commit` label, and Rollouts counts two builds
+  of one version apart. A build outside a git checkout records none.
+
+### OpenSearch API
+
 - **chloedb-server's OpenSearch API: a filtered alias keeps to its
   documents, unknown keys are refused, and an alias swap is seen whole**
   (persona study round 3, KENJI-301, KENJI-302, KENJI-303, KENJI-305;
@@ -196,6 +521,9 @@ changes collect under "Unreleased".
   Elasticsearch 7: Elasticsearch 8's clients refuse the server, so use
   OpenSearch's client of the same language
   ([opensearch.md](docs/chloedb/opensearch.md#elasticsearch-8s-clients)).
+
+### ChloeCtx
+
 - **ChloeCtx keeps a private aside nowhere, and only the user's words
   make rules** (persona study round 3, WEI-301, JONAH-301, LENA-310,
   JONAH-303, JONAH-304, ANA-308, and WEI-304's restated aside). A part
@@ -216,22 +544,6 @@ changes collect under "Unreleased".
   replaces the session's copy of it, and a decision does not keep "not
   implemented yet". The command center's overview lists the user's rules,
   not a prompt's raw sentences ([what is kept](docs/chloectx/index.md#where-it-keeps-what-it-stores)).
-- **Blends: one list from several queries, after each has ranked its own.**
-  `CREATE BLEND name AS SOURCES (stories AS (SELECT ...), comments AS
-  (SELECT ...))` with calibrated heads (`HEADS (relevance CALIBRATE tmm,
-  quality CALIBRATE minmax MISSING zero)`), a utility of them (`UTILITY 1 *
-  relevance + 0.2 * quality`, `BOOST`), and the slate's rules: `SLOT n`,
-  `QUOTA (... BETWEEN 20% AND 40% IN TOP 10)`, `SPACING`, `MAX n PER`,
-  `DIVERSIFY λ ON emb` and `DEDUPE t ON emb`. `SELECT ... FROM
-  blend('name[@version]', q => :q)` answers each slot's row with its source,
-  utility and why (`blend_decision`); the receipts add the rows passed over,
-  each quota's count and what each rule costs the slate. A blend is a
-  stored function, so it is versioned, replicated and written on every
-  shard of a coordinator, which runs each source over the cluster and
-  answers as one database. On chloedb-server, `/v1/blends` lists, versions,
-  writes and drops them and `/v1/blends/preview` runs a draft, and the
-  command center's Labs → Blending edits one with a live preview
-  ([query-language.md](docs/chloedb/query-language.md#blends-create-blend-and-blend)).
 - **ChloeCtx: a team's forgets, deletions and retired rules reach every
   machine, and a teammate's notes say whose they are** (persona study
   round 3, WEI-304, WEI-303, WEI-306). A forget deleted the record's row
@@ -293,130 +605,18 @@ changes collect under "Unreleased".
   `chloectx redact` (`--all` for every store) rewrites what stores kept
   before, and replaces the server's copies for the projects that sync
   ([setup.md](docs/chloectx/setup.md#secrets-and-chloectx-redact)).
-- **Graph answers and match counts right** (persona study round 3,
-  NADIA-305, NADIA-302, GRACE-301). `PATH(..., through => p)` could answer
-  a path through a row that fails `p`, where the two halves of its search
-  met, and a path where no allowed one exists; every middle row of a path
-  now satisfies `through`. `ppr` without `eps` started at 10⁻⁴ and stayed
-  there, so from a seed whose neighbours have thousands of edges it ranked
-  only the seed, with no warning; it now halves `eps` while its scores
-  hold less than half of the walk, for at most 100,000 pushes, and its
-  plan line says where it went. A walk that ends with less than half,
-  with a given `eps` or out of pushes, says so: `ppr_unsettled` in the
-  stats ([how far `ppr` walks](docs/chloedb/query-language.md#how-far-ppr-walks)).
-  The command center's Graph explorer has a *PageRank eps* control and
-  shows that warning. The answer header of the Query builder, a table's
-  Search tab and the workbench showed "N passed the filter" from the
-  executor's `filter_docs`, which counts only the rows a `LIMIT` let it
-  look at (2,036 of 3,694); the builder counts the rows its filters keep
-  with a `COUNT(*)` ("3,694 match"), and the other headers show no such
-  number.
-- **Everyday SQL functions** (persona study round 2, SAM-7): `substr`
-  (`substring`, `SUBSTRING(s FROM i FOR n)`), `trim`, `ltrim`, `rtrim`
-  (`btrim`, `TRIM(LEADING ... FROM s)`), `replace`, `concat`, `nullif`,
-  `floor` and `ceil`, with PostgreSQL's answers; `date_diff('unit',
-  start, end)`, the unit's boundaries between two times, as DuckDB counts
-  them; and `STRING_AGG(x, ', ' [ORDER BY y])`. They run on either engine
-  and over shards; a plan that uses one declares the feature
-  `sql_functions`, which a server from before refuses by name
-  ([query-language.md](docs/chloedb/query-language.md#text-and-numbers-substr-trim-replace-concat-nullif-floor-and-ceil)).
-- **SQL answers the same on either engine, and as PostgreSQL does in four
-  more places** (persona study round 2, SAM-201 to SAM-204, SAM-208).
-  `ORDER BY` an output column's alias after `GROUP BY` or `DISTINCT`
-  (`SELECT payment_type AS pt ... GROUP BY pt ORDER BY pt`) was "no such
-  column"; it orders, and an output name wins over an input column of the
-  same name. `json_extract(doc, '$.a.b')` was `NULL` outside `WHERE`; a
-  `'$.'` path reads everywhere, and `'$'` is the whole value. `NULLS FIRST`
-  was refused after `GROUP BY` or `DISTINCT`; it orders groups. A `SUM` or
-  `AVG` of `FLOAT`s on DataFusion (a plan over more than 4,096 rows) added
-  in order, so totals that tied on a small table (43.62 and
-  43.620000000000005) split as it grew and a `RANK` over them changed; it
-  adds exactly, the same bits as ChloeDB's operators. The refusals of
-  `ROLLUP`, `CUBE`, `GROUPING SETS`, `JOIN ... USING`, `NATURAL
-  JOIN`, a join on no equality, `INSERT ... SELECT`, `CREATE TABLE ... AS
-  SELECT`, temporary tables and a time minus a time say what to write
-  instead, with the query's own tables.
-- **A server says which commit it was built from** (OLU-207): two builds
-  of one version (a hotfix, a branch) said the same `0.3.8` everywhere.
-  `chloedb-server --version` prints `0.3.9 (built from 1a2b3c4d5e)`,
-  `/v1/system` and each copy's `version` in `/v1/cluster` carry `commit`,
-  `chloedb_build_info` has a `commit` label, and Rollouts counts two builds
-  of one version apart. A build outside a git checkout records none.
-- **Docs** (persona study round 2, ANA-207, MAYA-209, JONAH-11, JONAH-209,
-  SAM-217): building from source names the program
-  (`cargo build --release --bin chloedb-server`), so cargo no longer builds
-  the crate's ten tools and benchmarks beside it; the docs' search box
-  lists the sections that hold some of the words after those that hold
-  them all, so "similar recipes" finds "more like this"; the home page
-  has a ChloeCtx section; the plugin's tools are turned off with
-  `--disallowedTools mcp__plugin_chloectx_chloectx`; main's docs no longer
-  say they describe the last release once something has merged after it;
-  and the pages that said release archives carry build provenance from
-  0.3.9 say 0.3.8, as SECURITY.md does (the installers check it from
-  0.3.9).
-- **What on-call sets on a coordinator survives its restart, and its
-  numbers are true** (persona study round 2, OLU-201, OLU-202, OLU-203,
-  OLU-3, OLU-206, OLU-204, OLU-211, OLU-9). A coordinator started without
-  `--alerts` and `--audit-log` lost its custom rules, routes, silences and
-  audit log when it restarted; it keeps them, with each alert's state and
-  the latest 2,000 audit entries, on every copy of its shards
-  (`<db>.coordinator.json`), and takes them back before it serves, the
-  newest of each part winning; `GET /v1/alerts` says where under `kept`.
-  `chloedb_docs` and `chloedb_segments` counted the database's first
-  table, often an empty placeholder; they count every table, as
-  `/v1/health`'s `rows`, with `chloedb_table_docs{table}`,
-  `chloedb_table_segments{table}` and a copy's
-  `chloedb_copy_info{shard, node, role}`. A coordinator's `/metrics` has
-  the cluster's state (`chloedb_cluster_copies_up`,
-  `chloedb_cluster_shard_majority`, `chloedb_cluster_copy_up{shard, copy,
-  url, role}` and others). Writes that fail on the server count in Home's
-  error ratio and the fleet's `error_ratio` check (`write_error_ratio`,
-  with a runbook), and Home keeps its pace while an alert fires.
-  `POST /v1/admin/verify` on a coordinator verifies every shard (it
-  answered 409), `GET /v1/logs` there says how to search the copies'
-  lines, `GET /v1/admin/checkpoints` lists the checkpoints in
-  `--backup-dir` (on a coordinator, every copy's and the sets complete on
-  every shard; Settings > Upkeep > Backups), and the
-  `cluster_token_required` refusal says how to apply a plan with the
-  cluster's token ([operate-cluster.md](docs/guide/operate-cluster.md)).
 
-### Analytical SQL
+### Demos
 
-What the persona study's data engineer found in its second round: groups,
-joins and time functions over whole tables took 25 to 250 ms where DuckDB
-took 1.5 to 7. On their 224,000 taxi trips and Chinook, the 16 statements
-that took 10 ms or more run 6.1 times as fast on their geometric mean (T5,
-time parts by hour, 258 ms to 4.9), and all 72 take 0.57 of the time on
-theirs, with the same answers (a 4-core cloud container, `chloedb-sql-bench`).
-
-- **Aggregates of expressions are computed from the columns.** `SUM(a * b)`,
-  `AVG(CASE WHEN ... END)`, `SUM(CASE WHEN ... THEN 1 ELSE 0 END)`, and
-  groups by `EXTRACT(hour FROM t)`, `date_part`, arithmetic, comparisons
-  and `CASE` over numbers, times and booleans are evaluated 128 rows at a
-  time, typed, beside the segment's columns, rather than row by row through
-  DataFusion. An `INT` that would overflow sends its block to the row
-  evaluator, so errors and answers are the rows' own. A plan says how many
-  expressions it computed a block at a time and how many row by row.
-- **Plain aggregates fold into the scan**: `COUNT`, `SUM`, `AVG`, `MIN` and
-  `MAX` of single-valued fields, also under `ROUND` or `HAVING`. Percentiles
-  stay on DataFusion, which is faster at them.
-- **Columns go into Arrow a block at a time** for the plans DataFusion
-  still runs, and `date_part`, `date_trunc`, `date_bin`, `strftime` and
-  text compared with a `TIMESTAMP` lower to DataFusion rather than sending
-  the whole plan to the operators. `EXTRACT(epoch ...)` and the other time
-  parts that are not dates skip the calendar.
-- **A small right side of a join is read whole** (at most 1,024 rows, when
-  the left side is bigger).
-- **Sam's queries are in the speed gate**: `chloedb-sql-bench` runs them on
-  trips made up from a seed or on a database and a file of statements
-  (`--check` compares the answers with the plan computed row by row,
-  `--plan` times each step), and `scripts/perf-gate.py --sql` times them in
-  `perf.yml`.
-
-Through a coordinator, the shards still answer these plans as before:
-computing expressions in the scan is for a database's own plans (embedded,
-or one server), so shards of older versions need nothing new.
-
+- **Earth explorer** (`chloedb-earth`, a new demo, #691): California and
+  Chile from orbit, with fires as GOES sees them, places found by how they
+  look, their twins across the equator and how they changed
+  ([earth.md](docs/chloedb/earth.md)).
+- **Backbone explorer** (`chloedb-backbone`, a demo): its shared pages
+  (Now, the map, the strip) are worked out every 15 s after the rules and
+  answered from memory; the rules cost less; `fetch` keeps a source's last
+  file when a download fails (PeeringDB's 429s crash-looped the feed), and
+  `load` skips reference files that did not change.
 - **Experiments: live runs** (`chloedb-experiments`, a demo). An
   experiment you watch as it happens: simulated users search the site at a
   rate you set and change while it runs, each search a logged query to
@@ -429,17 +629,6 @@ or one server), so shards of older versions need nothing new.
   site in the run yourself. When it ends it becomes an experiment with the
   full report and an Agents tab
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#live-runs)).
-
-- **`hash()` in a ranking.** `hash(field, seed)` of the key or a stored
-  field is now a leaf of a ranking expression, the same number it is in
-  `WHERE` and `ORDER BY`: `ORDER BY bm25(body, :q) * 0 + hash(id, 7) DESC`
-  shows what a search finds in a seeded random order (an experiment's
-  shuffled arm, a logged query's), and a small share of it breaks ties.
-  It ranks as a rank-safe boost, every row the text matches; `rrf` does
-  not fuse it. A plan with it needs the feature `hash`, and a shard from
-  before this release refuses it in a ranking
-  ([query language](docs/chloedb/query-language.md#samples-splits-and-shuffles-hash)).
-
 - **Experiments: checks, interleaving and test arms** (`chloedb-experiments`,
   a demo). Check this runs a finished experiment again 30 times on the same
   users, each time split anew, and shows how often each metric's 95%
@@ -454,7 +643,6 @@ or one server), so shards of older versions need nothing new.
   up, each experiment takes a fresh seed, and a report's Queries tab shows
   where the difference came from
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#checking-a-result)).
-
 - **Experiments on real sites** (`chloedb-experiments`, `chloedb-hn`,
   `chloedb-arxiv`, demos). The Experiments app studies a site's real
   search with AI agents, who play people written from the site's own
@@ -476,37 +664,6 @@ or one server), so shards of older versions need nothing new.
   line from each row to where it moved
   ([chloedb-experiments/README.md](chloedb-experiments/README.md#real-sites),
   [hn](docs/chloedb/hn.md#experiments), [arXiv](docs/chloedb/arxiv.md#experiments)).
-
-### Query plans
-
-Rules that read only the rows that can be in an answer, from what ChloeDB
-knows of its tables; no answer changes.
-
-- **`ORDER BY` several keys with a `LIMIT` reads only the ties of the
-  first.** `ORDER BY fare DESC, distance DESC LIMIT 10` sorted every row.
-  The scan now finds the first key's n-th value with its top-k (n is
-  `OFFSET` plus `LIMIT`) and reads only the rows that tie with it or beat
-  it, and those whose key is `NULL`. The first key has to be an indexed
-  `INT` or `FLOAT` field of one value. On a 4-core cloud VM (Xeon @
-  2.10GHz), the top 10 of 224,056 taxi trips by two keys went from 40 ms to
-  1 ms.
-- **A small, filtered side of a join is read first.** When a join's right
-  side is a filtered table of at most 1,024 rows, and the scan on the left
-  that holds the key counts 32 times as many, the right side is read whole
-  and restricts that scan to its keys. `trips JOIN zones ... WHERE
-  z.borough = 'Staten Island'` reads 8 zones and the 13 trips they hold,
-  not all 224,056 trips (40 ms to 0.8 ms on that VM). The operators and
-  DataFusion choose alike.
-- **Filters reach the tables they hold for.** A `WHERE` on a derived
-  table's plain column filters its table's scan, a condition on one inner
-  join key filters the other key's table too, and a `WHERE` on a `LEFT
-  JOIN`'s right table that drops `NULL`s plans the join inner. The queries
-  of that kind in the persona study's battery took 2.4 to 6.6 times less
-  time.
-- **A coordinator's BM25 ranking that pins the key** (or `shard_by`) asks
-  only the shards of those keys, as other reads by key do. Its statistics
-  still come from every shard, so the scores are a fan-out's. No protocol
-  change: servers of 0.3.8 mix with it in either order.
 
 ### Security
 
@@ -533,6 +690,39 @@ knows of its tables; no answer changes.
   release now also carries the packages npm serves, under the names
   `npm pack` gives them, and `SHA256SUMS` lists them
   ([SECURITY.md](SECURITY.md#checking-what-you-download)).
+
+### Docs and tests
+
+- **Docs pass 3** (persona study round 3, KENJI-308, OLU-304, MAYA-305,
+  JONAH-307, ANA-312, ROSA-309, ROSA-313, MARCO-304, OLU-312): fixes the
+  places the round found wrong or missing, and says what is true where the
+  product keeps a gap (SAM-302, SAM-303, JONAH-302, ROSA-301, ROSA-303,
+  ROSA-306, MARCO-303, MARCO-306, MARCO-307, NADIA-303, WEI-305,
+  GRACE-312, KENJI-311, LENA-309, ANA-309): a separate Collector key,
+  signatures and SBOMs, npm's packages on the release.
+- **Docs** (persona study round 2, ANA-207, MAYA-209, JONAH-11, JONAH-209,
+  SAM-217): building from source names the program
+  (`cargo build --release --bin chloedb-server`), so cargo no longer builds
+  the crate's ten tools and benchmarks beside it; the docs' search box
+  lists the sections that hold some of the words after those that hold
+  them all, so "similar recipes" finds "more like this"; the home page
+  has a ChloeCtx section; the plugin's tools are turned off with
+  `--disallowedTools mcp__plugin_chloectx_chloectx`; main's docs no longer
+  say they describe the last release once something has merged after it;
+  and the pages that said release archives carry build provenance from
+  0.3.9 say 0.3.8, as SECURITY.md does (the installers check it from
+  0.3.9).
+- **Three tests that failed on macOS now wait for what they test.**
+  `command_center::a_dead_primary_loses_its_role` waits for the new
+  primary to serve reads (#664).
+  `failover::a_write_held_by_a_frozen_primary_goes_to_the_copy_that_took_its_place`
+  read each copy once after a restart, while a copy may serve no reads
+  until it has heard from its primary (or a primary from a majority); it
+  asks again for up to 10 s and then fails with what the copy answered.
+  ChloeCtx's `llm_cli` tests ran their fake CLIs at once: on macOS a pipe
+  is marked close-on-exec after it is made, so another test's child could
+  inherit it and hold it open past the call's timeout. They take turns,
+  and the hanging CLI `exec`s its `sleep` so the timeout's kill ends it.
 
 ## 0.3.8
 
