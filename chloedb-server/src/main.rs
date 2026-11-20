@@ -43,14 +43,17 @@ struct Args {
     command: Option<Command>,
     /// The database to serve. Created if missing: with --schema's table or
     /// --demo's, else with no tables (CREATE TABLE and imports add them).
+    /// Without it (and without --shards), `chloedb.chloedb` in this
+    /// directory, or `demo.chloedb` with --demo.
     #[arg(long)]
     db: Option<PathBuf>,
     /// Schema of a new database: a JSON file, or the JSON itself
     /// (`--schema '{"table": "t", "key": "id", "fields": [...]}'`).
     #[arg(long)]
     schema: Option<PathBuf>,
-    /// Create the demo product catalogue with this many products.
-    #[arg(long)]
+    /// Create the demo product catalogue with this many products (20,000
+    /// when the number is left out).
+    #[arg(long, num_args = 0..=1, default_missing_value = "20000", value_name = "PRODUCTS")]
     demo: Option<usize>,
     /// With --demo: keep only the products of shard I of N ("I/N"), those
     /// in its slots when N shards hold equal runs of slots.
@@ -1131,9 +1134,12 @@ enum Command {
     /// writes), into a database. A file may be an s3:// URL: an object, or
     /// every object under a prefix (configured by AWS_* variables). A
     /// database that does not exist is created with --schema, or from the
-    /// first SQLite or Parquet file. A SQLite table goes into the table of
-    /// its name, and Parquet rows into --table (default: the file's name),
-    /// created from the files' types and values when missing. A server must
+    /// first file. A SQLite table goes into the table of its name, and
+    /// other rows into --table (default: for CSV, TSV and JSON, the table
+    /// named as the file, else the only table when it has most of the
+    /// file's columns, else a new one named as the file; for Parquet, the
+    /// file's name), created from the files' types and values when
+    /// missing. A server must
     /// not have the database open (import through `POST /v1/import`
     /// instead).
     Import {
@@ -1148,7 +1154,9 @@ enum Command {
         /// of --plan, edited).
         #[arg(long)]
         schema: Option<PathBuf>,
-        /// The table the rows go to (default: the first; for Parquet, the
+        /// The table the rows go to, made from their columns when it is
+        /// not there (default: a table named as the file, or the only
+        /// table when it has most of the file's columns; for Parquet, the
         /// table an export kept in the file, else the file's name). A
         /// SQLite file's tables go to the tables of their names.
         #[arg(long)]
@@ -1642,8 +1650,12 @@ async fn run() {
         "auto" | "on" => !a.replica && !(cluster.is_some() && a.shards.is_empty() && a.replicas.is_empty()),
         other => fail(&format!("--connectors is auto or off, not {other:?}")),
     };
+    // No --db and no --shards: a database in this directory, made on the
+    // first start and served again on the next, rather than a refusal.
+    let db = a.db.clone().or_else(|| a.shards.is_empty().then(|| PathBuf::from(if a.demo.is_some() { "demo.chloedb" } else { "chloedb.chloedb" })));
+    let default_db = a.db.is_none() && db.is_some();
     let o = Options {
-        db: a.db,
+        db: db.clone(),
         schema: a.schema,
         copy_from: a.copy_from,
         demo: a.demo,
@@ -1809,6 +1821,7 @@ async fn run() {
         None => o,
     };
     let coordinator = !o.shards.is_empty();
+    let o_shards = o.shards.len();
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     // ONB-13: every address is taken before the database is opened or
     // made, so that one in use, or no address at all, leaves no files.
@@ -1872,6 +1885,22 @@ async fn run() {
     tracing::info!("HTTP and UI on {scheme}://{}/{asks}", a.listen);
     if svc.agent.api_key.is_none() {
         tracing::info!("no ANTHROPIC_API_KEY; the agent asks for a key in the UI");
+    }
+    if default_db {
+        tracing::info!(db = %db.as_deref().unwrap_or(std::path::Path::new("")).display(), "no --db: serving the database in this directory (--db PATH serves another)");
+    }
+    // A person who started it in a terminal gets what to do next, in a few
+    // lines, after the log's; a service's log gets only the lines above.
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        let shown = chloedb_server::ready::Ready {
+            url: format!("{scheme}://{}", chloedb_server::ready::browsable(&a.listen)),
+            db: db.as_deref().filter(|_| !coordinator).map(|p| p.display().to_string()),
+            shards: o_shards,
+            tables: names.clone(),
+            rows: rows.as_u64().unwrap_or(0),
+            token: access.token.is_some(),
+        };
+        eprintln!("{}", shown.text());
     }
     let mut tasks = Vec::new();
     // A coordinator answers queries but is not itself a shard.
@@ -1998,7 +2027,13 @@ enum AdminCmd {
 }
 
 fn fail(msg: &str) -> ! {
-    tracing::error!("{msg}");
+    // A person at a terminal reads a sentence; a log (a file, journald, a
+    // pod's) keeps the line with its time and level, as before.
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        eprintln!("chloedb-server: {msg}");
+    } else {
+        tracing::error!("{msg}");
+    }
     std::process::exit(1)
 }
 
