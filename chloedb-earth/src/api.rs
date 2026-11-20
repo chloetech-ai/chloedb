@@ -610,25 +610,13 @@ async fn twins(State(svc): State<Shared>, Query(a): Query<TwinParams>) -> Answer
     done(&trace, v, t0)
 }
 
-#[derive(serde::Deserialize, Default)]
-struct ChangedParams {
-    #[serde(default)]
-    q: String,
-    #[serde(default)]
-    region: String,
-    #[serde(default)]
-    from: String,
-    #[serde(default)]
-    to: String,
-}
-
-async fn changed(State(svc): State<Shared>, Query(a): Query<ChangedParams>) -> Answer {
+async fn changed(State(svc): State<Shared>, Query(a): Query<pages::ChangeAsk>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
     if a.q.len() > 200 || a.from.len() > 40 || a.to.len() > 40 {
         return Err(ApiError(StatusCode::BAD_REQUEST, "a change in at most 200 letters, such as \u{201c}fields became a solar farm\u{201d}".into()));
     }
-    let v = pages::changed(&c, &a.q, &a.region, &a.from, &a.to).await?;
+    let v = pages::changed(&c, &a).await?;
     done(&trace, v, t0)
 }
 

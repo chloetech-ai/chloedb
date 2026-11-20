@@ -9,15 +9,15 @@
 //! - SAM-204: `ORDER BY x DESC NULLS FIRST` was refused in a grouped
 //!   query, though the docs recommend it to get PostgreSQL's order.
 //! - SAM-208: refusals of ROLLUP, GROUPING SETS, `left`, `JOIN ...
-//!   USING`, `INSERT ... SELECT`, `CREATE TABLE ... AS SELECT`, temporary
-//!   tables, a join on no equality and a time minus a time that did not say
+//!   USING`, `INSERT ... SELECT`, `CREATE TABLE ... AS SELECT` (which run
+//!   since SAM-8), temporary tables, a join on no equality and a time minus a time that did not say
 //!   what to write, or named tables that are not in the database.
 //!
 //! SAM-203 (float sums on either engine) is in `datafusion_engine.rs`, which
 //! CI runs with the feature `datafusion`; chloedb-server's
 //! `tests/silent_answers.rs` asks the same over HTTP.
 
-use chloedb::db::Db;
+use chloedb::db::{Db, SqlResult};
 use chloedb::query::Params;
 use chloedb::storage::DbOptions;
 use chloedb::value::Value;
@@ -60,6 +60,14 @@ fn refused_write(db: &Db, sql: &str) -> String {
     match db.sql(sql, &Params::new()) {
         Ok(_) => panic!("{sql} ran, and was not refused"),
         Err(e) => e.to_string(),
+    }
+}
+
+fn written(db: &Db, sql: &str) -> u64 {
+    match db.sql(sql, &Params::new()) {
+        Ok(SqlResult::Written(n)) => n,
+        Ok(SqlResult::Rows(r)) => panic!("{sql} answered {} rows, and wrote none", r.rows.len()),
+        Err(e) => panic!("{sql}: {e}"),
     }
 }
 
@@ -173,12 +181,13 @@ fn refusals_say_what_to_write_instead() {
     assert!(e.contains("NATURAL JOIN is not supported") && e.contains("trips"), "{e}");
     let e = refused(&db, "SELECT CAST('2026-01-02' AS TIMESTAMP) - CAST('2026-01-01' AS TIMESTAMP) AS d");
     assert!(e.contains("INTERVAL") && e.contains("date_diff('second', a, b)") && e.contains("EXTRACT(epoch FROM"), "{e}");
-    let e = refused_write(&db, "INSERT INTO invoice (id, country, total) SELECT id + 100, country, total FROM invoice");
-    assert!(e.contains("INSERT ... SELECT is not supported") && e.contains("INSERT ... VALUES"), "{e}");
-    let e = refused_write(&db, "INSERT INTO invoice (id, country, total) SELECT id + 100, country, total FROM invoice ORDER BY id LIMIT 2");
-    assert!(e.contains("INSERT ... SELECT is not supported"), "{e}");
-    let e = refused_write(&db, "CREATE TABLE t6 AS SELECT id, country FROM invoice");
-    assert!(e.contains("CREATE TABLE ... AS SELECT is not supported") && e.contains("CREATE FUNCTION t6() RETURNS TABLE"), "{e}");
+    // INSERT ... SELECT and CREATE TABLE ... AS SELECT run since SAM-8
+    // (tests/from_select.rs has the rest).
+    assert_eq!(written(&db, "INSERT INTO invoice (id, country, total) SELECT id + 100, country, total FROM invoice"), 6);
+    assert_eq!(written(&db, "INSERT INTO invoice (id, country, total) SELECT id + 200, country, total FROM invoice ORDER BY id LIMIT 2"), 2);
+    assert_eq!(rows(&db, "SELECT id FROM invoice WHERE id > 200 ORDER BY id"), vec![vec![int(201)], vec![int(202)]]);
+    assert_eq!(written(&db, "CREATE TABLE t6 AS SELECT id, country FROM invoice"), 14);
+    assert_eq!(rows(&db, "SELECT COUNT(*) FROM t6 WHERE id > 100"), vec![vec![int(8)]]);
     let e = refused_write(&db, "CREATE TEMP TABLE tmp (id INT)");
     assert!(e.contains("temporary tables (CREATE TEMP TABLE) are not supported"), "{e}");
 }

@@ -589,11 +589,59 @@ fn plain_table<'t>(t: &'t sql::TableFactor, what: &str) -> Result<&'t sql::Objec
     }
 }
 
-/// Binds an INSERT into `schema`'s table.
-/// Why `INSERT ... SELECT` is refused, and what to write (SAM-208).
-const INSERT_SELECT: &str = "INSERT ... SELECT is not supported (but from chunks_of): run the SELECT, then write the rows it returns with INSERT ... VALUES, or through Db::upsert or POST /v1/write";
+/// Why an `INSERT ... SELECT` is not bound here: it runs as a statement of
+/// its own ([`crate::query::from_select`]), its SELECT first.
+const INSERT_SELECT: &str = "INSERT ... SELECT runs as a statement of its own (Db::sql, POST /v1/sql), not as a prepared write: its SELECT runs first, then its rows are written";
 
+/// Binds an INSERT into `schema`'s table.
 fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> {
+    let (b, conflict, named) = insert_into(ins, schema, params)?;
+    let values = match ins.source.as_deref() {
+        Some(q) if no_clauses(q).is_none() => match q.body.as_ref() {
+            sql::SetExpr::Values(v) => v,
+            _ => return Err(err(INSERT_SELECT)),
+        },
+        Some(q) if !matches!(q.body.as_ref(), sql::SetExpr::Values(_)) => return Err(err(INSERT_SELECT)),
+        Some(q) => return Err(err(format!("INSERT ... VALUES takes no {}", no_clauses(q).unwrap_or_default()))),
+        None => return Err(err("INSERT needs VALUES")),
+    };
+    // Columns the statement leaves out take their defaults.
+    let start = schema.defaults(b.now)?;
+    let mut docs = Vec::with_capacity(values.rows.len());
+    for row in &values.rows {
+        let cols = insert_columns(schema, named.as_deref(), row.len(), "values")?;
+        let mut doc = start.clone();
+        for (&f, e) in cols.iter().zip(row) {
+            doc[f] = b.write_value(f, e)?;
+        }
+        docs.push(doc);
+    }
+    Ok(Write::Insert { docs, conflict })
+}
+
+/// Binds `INSERT ... SELECT` `ins` into `schema`'s table, of the rows its
+/// SELECT returned, `width` values each: a row's values go to the columns
+/// the statement names, in order, or to the table's columns in order, as
+/// VALUES' do; each value as `SET` gives it ([`assigned`]: a whole FLOAT
+/// into an INT, a number into a KEYWORD as its text, NULL as NULL).
+pub(crate) fn insert_rows(ins: &sql::Insert, schema: &Schema, params: &Params, width: usize, rows: Vec<Vec<Value>>) -> Result<Write> {
+    let (b, conflict, named) = insert_into(ins, schema, params)?;
+    let cols = insert_columns(schema, named.as_deref(), width, "columns in its SELECT")?;
+    let start = schema.defaults(b.now)?;
+    let mut docs = Vec::with_capacity(rows.len());
+    for (n, row) in rows.into_iter().enumerate() {
+        let mut doc = start.clone();
+        for (&f, v) in cols.iter().zip(row) {
+            doc[f] = assigned(&schema.fields[f], v).map_err(|e| e.within(&format!("row {} of the SELECT", n + 1)))?;
+        }
+        docs.push(doc);
+    }
+    Ok(Write::Insert { docs, conflict })
+}
+
+/// What an INSERT's clauses say, whatever gives its rows: the binder of
+/// its values, what a key that is taken does, and the columns it names.
+fn insert_into<'a>(ins: &sql::Insert, schema: &'a Schema, params: &'a Params) -> Result<(Binder<'a>, Conflict, Option<Vec<usize>>)> {
     let sql::Insert {
         or,
         ignore,
@@ -602,7 +650,7 @@ fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> 
         table_alias,
         columns,
         overwrite,
-        source,
+        source: _,
         assignments,
         partitioned,
         after_columns,
@@ -660,55 +708,38 @@ fn insert(ins: &sql::Insert, schema: &Schema, params: &Params) -> Result<Write> 
     } else {
         Some(columns.iter().map(|c| schema.field_index(&c.value).ok_or_else(|| err(hint::no_column(schema, &c.value)))).collect::<Result<_>>()?)
     };
-    // Without a column list, a row gives every column in order, or every
-    // column but those the table makes itself (generated text, embedded
-    // vectors, text derived from media).
+    Ok((b, conflict, named))
+}
+
+/// The columns a row of `n` values of an INSERT goes to (`what` they are,
+/// for a message): those it names (`named`), or without a list every
+/// column in order, or every column but those the table makes itself
+/// (generated text, embedded vectors, text derived from media).
+fn insert_columns(schema: &Schema, named: Option<&[usize]>, n: usize, what: &str) -> Result<Vec<usize>> {
     let all: Vec<usize> = (0..schema.fields.len()).collect();
     let written: Vec<usize> = all.iter().copied().filter(|&i| {
         let f = &schema.fields[i];
         f.generated_from.is_empty() && f.embed.is_none() && f.derive.is_none()
     }).collect();
-    let cols_for = |n: usize| -> Result<&[usize]> {
-        match &named {
-            Some(c) if c.len() == n => Ok(c),
-            Some(c) => Err(err(format!("{n} values for {} named columns ({}): give one value per column named", c.len(), c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ")))),
-            None if n == all.len() => Ok(&all),
-            None if n == written.len() => Ok(&written),
-            None => {
-                let names = |c: &[usize]| c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ");
-                let made = if written.len() < all.len() { format!(", or {} without the ones it makes itself ({})", written.len(), names(&all.iter().copied().filter(|i| !written.contains(i)).collect::<Vec<_>>())) } else { String::new() };
-                Err(err(format!(
-                    "{n} values for {}, which takes {} in order ({}){made}: give a value for each, or name the columns the values are for, INSERT INTO {} ({}) VALUES (...)",
-                    schema.table,
-                    all.len(),
-                    names(&all),
-                    schema.table,
-                    names(&written[..written.len().min(3)])
-                )))
-            }
+    let names = |c: &[usize]| c.iter().map(|&i| schema.fields[i].name.as_str()).collect::<Vec<_>>().join(", ");
+    match named {
+        Some(c) if c.len() == n => Ok(c.to_vec()),
+        Some(c) => Err(err(format!("{n} {what} for {} named columns ({}): give one value per column named", c.len(), names(c)))),
+        None if n == all.len() => Ok(all),
+        None if n == written.len() => Ok(written),
+        None => {
+            let made = if written.len() < all.len() { format!(", or {} without the ones it makes itself ({})", written.len(), names(&all.iter().copied().filter(|i| !written.contains(i)).collect::<Vec<_>>())) } else { String::new() };
+            Err(err(format!(
+                "{n} {what} for {}, which takes {} in order ({}){made}: give a value for each, or name the columns the values are for, INSERT INTO {} ({}) {}",
+                schema.table,
+                all.len(),
+                names(&all),
+                schema.table,
+                names(&written[..written.len().min(3)]),
+                if what == "values" { "VALUES (...)" } else { "SELECT ..." }
+            )))
         }
-    };
-    let values = match source.as_deref() {
-        Some(q) if no_clauses(q).is_none() => match q.body.as_ref() {
-            sql::SetExpr::Values(v) => v,
-            _ => return Err(err(INSERT_SELECT)),
-        },
-        Some(q) if !matches!(q.body.as_ref(), sql::SetExpr::Values(_)) => return Err(err(INSERT_SELECT)),
-        Some(q) => return Err(err(format!("INSERT ... VALUES takes no {}", no_clauses(q).unwrap_or_default()))),
-        None => return Err(err("INSERT needs VALUES")),
-    };
-    // Columns the statement leaves out take their defaults.
-    let start = schema.defaults(b.now)?;
-    let mut docs = Vec::with_capacity(values.rows.len());
-    for row in &values.rows {
-        let cols = cols_for(row.len())?;
-        let mut doc = start.clone();
-        for (&f, e) in cols.iter().zip(row) {
-            doc[f] = b.write_value(f, e)?;
-        }
-        docs.push(doc);
     }
-    Ok(Write::Insert { docs, conflict })
 }
 
 /// The first clause of `q` other than its body: `WITH`, `ORDER BY`,

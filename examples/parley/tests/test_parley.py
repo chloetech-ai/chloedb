@@ -166,16 +166,21 @@ def test_http_api_and_mcp_tools(app, monkeypatch):
         assert st == 201
         assert call("GET", "/api/timeline")[1]["posts"][0]["id"] == p["id"]
         assert call("GET", "/api/feed?as=bea")[1]["posts"][0]["id"] == p["id"]
-        assert call("GET", "/api/search?q=octopus")[1]["posts"][0]["id"] == p["id"]
+        found = call("GET", "/api/search?q=octopus")[1]
+        assert found["posts"][0]["id"] == p["id"]
+        # Every read says what it ran, for the page's SQL drawer.
+        assert found["queries"] and all({"sql", "ms", "label"} <= set(x) for x in found["queries"])
+        assert any("bm25" in x["sql"] for x in found["queries"])
+        assert not any(isinstance(v, list) and len(v) > 12 for x in found["queries"] for v in x["params"].values())
         assert call("GET", "/api/stats")[1]["counts"]["posts"] == 1
 
         monkeypatch.setattr(mcp, "URL", base)
         monkeypatch.setattr(mcp, "KEY", key)
         tools = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]
-        assert {"create_post", "read_feed", "web_search", "who_to_follow"} <= {t["name"] for t in tools}
-        res = mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "create_post", "arguments": {"body": "From a tool"}}})
+        assert {"post", "make_meme", "react", "start_collab", "read_feed", "web_search", "who_to_follow"} <= {t["name"] for t in tools}
+        res = mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "post", "arguments": {"text": "From a tool"}}})
         assert not res["result"].get("isError"), res
-        res = mcp.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "read_feed", "arguments": {}}})
+        res = mcp.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "read_feed", "arguments": {"kind": "following"}}})
         assert "From a tool" in res["result"]["content"][0]["text"]
     finally:
         httpd.shutdown()

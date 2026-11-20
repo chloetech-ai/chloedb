@@ -115,7 +115,7 @@ pub fn tables() -> Vec<(&'static str, String, &'static str)> {
 ) OPTIONS(cluster_by = 'region')".to_string(), "In 2070: each place's climate for 1981-2010 and, from five CMIP6 models under SSP3-7.0, for 2071-2100 (CHELSA 2.1), each also a vector of six standardised numbers, and the place whose climate today is nearest its future one"),
         ("ea_watches", "CREATE TABLE IF NOT EXISTS ea_watches (
   id KEYWORD PRIMARY KEY, watcher KEYWORD, name KEYWORD OPTIONS(indexed = false), lat FLOAT, lon FLOAT, km FLOAT,
-  region KEYWORD, closer BOOL, power BOOL, sky BOOL, place KEYWORD, created TIMESTAMP
+  region KEYWORD, closer BOOL, power BOOL, sky BOOL, change BOOL, place KEYWORD, created TIMESTAMP
 ) OPTIONS(cluster_by = 'watcher')".to_string(), "Fire watch: places people keep an eye on, each a point, a name and the distance it asks about, owned by a browser's random key"),
         ("ea_watch_alerts", "CREATE TABLE IF NOT EXISTS ea_watch_alerts (
   id KEYWORD PRIMARY KEY, watch KEYWORD, watcher KEYWORD, region KEYWORD, kind KEYWORD, t TIMESTAMP, sent TIMESTAMP,

@@ -192,7 +192,6 @@ fn clauses_the_binder_does_not_run_are_errors() {
         ("UPDATE items SET clicks = 0 RETURNING id", "RETURNING"),
         ("UPDATE items SET clicks = 0 FROM other WHERE items.id = other.id", "FROM"),
         ("INSERT INTO items (id) VALUES ('q') RETURNING id", "RETURNING"),
-        ("INSERT INTO items (id) SELECT id FROM items", "VALUES"),
         ("SELECT id FROM items FETCH FIRST 1 ROWS ONLY", "FETCH"),
         ("SELECT id FROM items FOR UPDATE", "FOR UPDATE"),
         ("SELECT TOP 1 id FROM items", "TOP"),
@@ -203,6 +202,10 @@ fn clauses_the_binder_does_not_run_are_errors() {
             Err(e) => assert!(e.to_string().contains(why), "{bad}: {e}"),
         }
     }
+    // INSERT ... SELECT runs since SAM-8; these rows are all there, so it
+    // fails on the first key and writes none.
+    assert!(db.sql("INSERT INTO items (id) SELECT id FROM items", &Params::new()).is_err());
+    assert_eq!(rows(&db, "SELECT COUNT(*) FROM items"), [[Value::Int(5)]]);
     assert_eq!(rows(&db, "SELECT COUNT(*) FROM items WHERE clicks > 0"), [[Value::Int(5)]]);
     assert!(rows(&db, "SELECT id FROM items WHERE id = 'q'").is_empty());
 }
