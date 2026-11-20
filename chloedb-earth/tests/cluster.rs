@@ -103,6 +103,16 @@ fn places() -> Vec<Value> {
                     "twin": twin, "twin_sim": if region == "california" { json!(0.8) } else { Value::Null },
                     "twin_score": if region == "california" { json!(0.3 + 0.001 * i as f64) } else { Value::Null },
                     "look": vector(axis, 10 + i % 50, 0.15),
+                    // The Land finder's: a substation nearer to the west, a
+                    // road nearer to the south, the first row protected
+                    // (strictly its western half), and solar farms on
+                    // California's farms of the northern half.
+                    "sub_km": 1.0 + c as f64, "sub_kv": if c % 2 == 0 { json!(115.0) } else { Value::Null }, "sub_name": "Test substation",
+                    "line_km": 0.5, "line_kv": 230.0, "road_km": 0.5 + r as f64 * 0.5, "road_name": "Test highway",
+                    "solar": if region == "california" && kind == "crops" && r >= 4 { 0.5 } else { 0.0 },
+                    "solar_km": 2.0, "solar_name": "Test solar farm",
+                    "protected": if r == 0 { 0.5 } else { 0.0 }, "protected_strict": if r == 0 && c < 6 { 0.5 } else { 0.0 },
+                    "protected_name": if r == 0 { "Test park" } else { "" },
                 }));
             }
         }
@@ -465,6 +475,24 @@ async fn every_page_against_a_real_server() {
     }
     db.upsert("ea_sky", skies).await.unwrap();
 
+    // The climate of a row of California's places, each warmer than the
+    // last, a place's 2071-2100 its neighbour's today two along; and of
+    // Chile's, colder, whose 2071-2100 is like California's today.
+    let mut climate = Vec::new();
+    for p in places.all.iter().filter(|p| p.id.starts_with("ca00") || p.id.starts_with("cl00")) {
+        let c: f64 = p.id[4..].parse().unwrap();
+        let (base, shift) = if p.region == "chile" { (-12.0, 13.0) } else { (0.0, 2.0) };
+        let now = vec![(base + c) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let later = vec![(base + c + shift) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        climate.push(json!({"id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "town": format!("{}-{}", p.town, c),
+            "t_mean": 15.0 + c, "t_mean_70": 17.0 + c, "t_hot": 30.0 + c, "t_hot_70": 33.5 + c, "t_hot_70_lo": 32.0 + c, "t_hot_70_hi": 35.0 + c,
+            "t_cold": 5.0, "t_cold_70": 7.0, "t_cold_70_lo": 6.0, "t_cold_70_hi": 8.0, "rain": 400.0, "rain_70": 340.0, "rain_70_lo": 300.0, "rain_70_hi": 420.0,
+            "rain_cv": 90.0, "rain_cv_70": 95.0, "rain_summer": 10.0, "rain_summer_70": 8.0, "kg": "Csb", "kg_70": if c >= 6.0 { "Csa" } else { "Csb" }, "kg_70_agree": 4,
+            "analog": "", "analog_region": p.region, "analog_town": "", "analog_km": 6.5, "analog_d": if c >= 10.0 { 2.5 } else { 0.0 }, "novel": c >= 10.0, "moved": 0.2,
+            "clim": now, "clim70": later}));
+    }
+    db.upsert("ea_climate", climate).await.unwrap();
+
     // Public, as at earth.chloetech.ai: the page and its reads for anyone.
     let pub_port = free_port();
     let open = format!("http://127.0.0.1:{pub_port}");
@@ -557,6 +585,71 @@ async fn every_page_against_a_real_server() {
     assert_eq!(s, 400);
     let place = ok(&http, &base, "/v1/place/ca0000").await;
     assert_eq!(place["sky"]["good_nights"], 1, "{place}");
+
+    // The climate in 2071-2100: the map, and a place's future found today.
+    assert_eq!(place["climate"]["t_hot_70"], 33.5, "{place}");
+    assert!(place["climate"].get("clim").is_none(), "no vectors on the page: {place}");
+    let (s, map) = get(&http, &format!("{open}/v1/future?region=california"), None).await;
+    assert_eq!(s, 200, "{map}");
+    assert_eq!(map["n"], 12, "{map}");
+    assert_eq!(map["hot"][0], 35, "{map}");
+    assert_eq!(map["class_changed"], 6, "{map}");
+    assert_eq!(map["novel_n"], 2, "{map}");
+    let (s, f) = get(&http, &format!("{open}/v1/future/place/ca0003"), None).await;
+    assert_eq!(s, 200, "{f}");
+    assert_eq!(f["like_later"][0]["id"], "ca0005", "its 2071-2100 is two along today: {f}");
+    assert_eq!(f["goes_to"][0]["id"], "ca0001", "and its today is two back's later: {f}");
+    assert!(f["like_later"][0]["d"].as_f64().unwrap() < 0.01, "{f}");
+    assert!(f["like_later"].as_array().unwrap().iter().all(|p| p["id"] != "ca0003"), "not itself: {f}");
+    let (_, all) = get(&http, &format!("{open}/v1/future/place/cl0000"), None).await;
+    let (_, mine) = get(&http, &format!("{open}/v1/future/place/cl0000?scope=region"), None).await;
+    assert_eq!(all["like_later"][0]["id"], "ca0001", "Chile's 2071-2100 is California's today: {all}");
+    assert_eq!(mine["like_later"][0]["id"], "cl0003", "or nearest it within Chile: {mine}");
+    let (s, _) = get(&http, &format!("{open}/v1/future/place/nowhere"), None).await;
+    assert_eq!(s, 404);
+
+    // The Land finder: the limits kept, ranked by the look of the solar
+    // farms (California's farms of the northern half), the grid or words.
+    assert_eq!(place["place"]["sub_km"], 1.0, "the place's card: {place}");
+    assert_eq!(place["place"]["protected_name"], "Test park", "{place}");
+    let land = |q: &str| {
+        let (http, open) = (http.clone(), open.clone());
+        let q = q.to_string();
+        async move {
+            let (s, j) = get(&http, &format!("{open}/v1/land?{q}"), None).await;
+            assert_eq!(s, 200, "{q}: {j}");
+            j
+        }
+    };
+    let j = land("region=california&slope=10&sub=3&built=10").await;
+    assert_eq!(j["rank"], "solar", "{j}");
+    assert_eq!(j["solar_look"], true, "{j}");
+    let found = j["places"].as_array().unwrap();
+    assert!(!found.is_empty(), "{j}");
+    assert_eq!(j["within"], found.len(), "{j}");
+    for p in found {
+        assert!(p["sub_km"].as_f64().unwrap() <= 3.0 && p["solar"] == 0.0 && p["protected"] == 0.0 && p["kind"] != "built", "within the limits: {p}");
+    }
+    assert_eq!(found[0]["kind"], "crops", "like the solar farms: {j}");
+    let farms = j["farms"].as_array().unwrap();
+    assert!(farms.len() >= 5 && farms.iter().all(|f| f["solar"] == 0.5), "{j}");
+    let grid = land("region=california&slope=10&sub=3&built=10&rank=grid").await;
+    let subs: Vec<f64> = grid["places"].as_array().unwrap().iter().map(|p| p["sub_km"].as_f64().unwrap()).collect();
+    assert!(subs.windows(2).all(|w| w[0] <= w[1]), "nearest the grid first: {grid}");
+    assert_eq!(grid["within"], j["within"], "{grid}");
+    let kv = land("region=california&slope=10&sub=3&built=10&kv=100&rank=grid").await;
+    assert!(kv["places"].as_array().unwrap().iter().all(|p| p["sub_kv"] == 115.0), "{kv}");
+    let strict = land("region=california&slope=10&sub=12&built=10&protected=strict&rank=grid").await;
+    let any = land("region=california&slope=10&sub=12&built=10&protected=any&rank=grid").await;
+    let none = land("region=california&slope=10&sub=12&built=10&rank=grid").await;
+    let n = |j: &Value| j["within"].as_i64().unwrap();
+    assert!(n(&none) < n(&strict) && n(&strict) < n(&any), "{} {} {}", n(&none), n(&strict), n(&any));
+    let near = land("region=california&slope=10&built=10&protected=any&rank=grid&lat=33.95&lon=-118.55&km=5").await;
+    assert!(!near["places"].as_array().unwrap().is_empty(), "{near}");
+    assert!(near["places"].as_array().unwrap().iter().all(|p| p["km"].as_f64().unwrap() <= 5.0), "within the circle: {near}");
+    assert_eq!(near["within"], near["places"].as_array().unwrap().len(), "{near}");
+    let (s, _) = get(&http, &format!("{open}/v1/land?region=mars"), None).await;
+    assert_eq!(s, 400);
 
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;

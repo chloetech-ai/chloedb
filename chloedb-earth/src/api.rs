@@ -57,6 +57,10 @@ pub struct Service {
     pub example: Mutex<Option<Value>>,
     /// Each region's skies (ea_sky), read every two minutes.
     pub sky: tokio::sync::RwLock<HashMap<&'static str, Arc<crate::sky::Mem>>>,
+    /// Each region's map of its climate in 2071-2100 (ea_climate), read once.
+    pub future: tokio::sync::RwLock<HashMap<&'static str, Arc<String>>>,
+    /// Each region's solar farms' mean look, for the Land finder.
+    pub solar_looks: crate::land::Looks,
 }
 
 pub type Shared = Arc<Service>;
@@ -121,6 +125,8 @@ pub async fn serve(o: Opts) -> Result<()> {
         frames: o.frames,
         example: Mutex::new(None),
         sky: tokio::sync::RwLock::new(HashMap::new()),
+        future: tokio::sync::RwLock::new(HashMap::new()),
+        solar_looks: tokio::sync::RwLock::new(HashMap::new()),
     });
     {
         let svc = svc.clone();
@@ -232,6 +238,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/frame/:replay/:n", get(frame))
         .route("/v1/sky", get(sky_layer))
         .route("/v1/sky/find", get(sky_find))
+        .route("/v1/future", get(future_layer))
+        .route("/v1/future/place/:id", get(future_place))
+        .route("/v1/land", get(land_find))
         .route("/v1/watches", get(watches).post(watch_new))
         .route("/v1/watches/example", get(watch_example))
         .route("/v1/watches/feed/:key", get(watch_feed))
@@ -780,6 +789,62 @@ async fn sky_find(State(svc): State<Shared>, Query(a): Query<SkyFindParams>) -> 
         _ => "now",
     };
     let v = crate::sky::find(&c, &mem, crate::sky::Find { region, at, km: a.km.unwrap_or(50.0).clamp(5.0, 400.0), want, q: &a.q }).await?;
+    done(&trace, v, t0)
+}
+
+/// A region's map of its climate in 2071-2100.
+async fn future_layer(State(svc): State<Shared>, headers: HeaderMap, Query(a): Query<RegionParams>) -> Response {
+    let region = match region_of(if a.region.is_empty() { "california" } else { &a.region }) {
+        Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+    if let Some(body) = svc.future.read().await.get(region).cloned() {
+        return cached(&headers, (*body).clone(), "application/json", 3600);
+    }
+    match crate::future::layer(&svc.db, region).await {
+        Ok(v) => {
+            let body = Arc::new(v.to_string());
+            // Kept once the rows are there: they change only when loaded again.
+            if v["n"].as_u64().unwrap_or(0) > 0 {
+                svc.future.write().await.insert(region, body.clone());
+            }
+            cached(&headers, (*body).clone(), "application/json", 3600)
+        }
+        Err(e) => ApiError::from(e).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct ScopeParams {
+    #[serde(default)]
+    scope: String,
+}
+
+async fn future_place(State(svc): State<Shared>, Path(id): Path<String>, Query(a): Query<ScopeParams>) -> Answer {
+    let t0 = Instant::now();
+    ctx!(svc, trace, c);
+    let v = crate::future::place(&c, &id, &a.scope).await?;
+    done(&trace, v, t0)
+}
+
+/// The Land finder: places within the limits asked for, best first.
+async fn land_find(State(svc): State<Shared>, Query(a): Query<crate::land::Ask>) -> Answer {
+    let t0 = Instant::now();
+    let region = region_of(if a.region.is_empty() { "california" } else { &a.region })?;
+    if a.q.len() > 200 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "what the place looks like, in at most 200 letters".into()));
+    }
+    let cached = svc.solar_looks.read().await.get(region).cloned();
+    let look = match cached {
+        Some(l) => l,
+        None => {
+            let l = crate::land::solar_look(&svc.db, region).await?.map(Arc::new);
+            svc.solar_looks.write().await.insert(region, l.clone());
+            l
+        }
+    };
+    ctx!(svc, trace, c);
+    let v = crate::land::find(&c, region, &a, look.as_deref().map(|v| v.as_slice())).await?;
     done(&trace, v, t0)
 }
 
