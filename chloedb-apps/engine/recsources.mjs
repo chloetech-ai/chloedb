@@ -282,6 +282,20 @@ export const startLibrary = {
   },
 };
 
+// Does one of the app's own pieces do what a peer's does, its subject's
+// words set aside (its title's: "Chores")? Most of what the peer's says it
+// does (CONTAINS) is said by one of the app's own, of the app's own rows.
+const CONTAINS = 0.6;
+export function hasLike(ctx, h) {
+  const subject = wordsOf(h.title || h.slug || '');
+  const does = [...wordsOf(h.description || '')].filter((w) => !subject.has(w));
+  if (does.length < 4) return false;
+  return (ctx.view.caps || []).filter((c) => c.kind === h.kind).some((c) => {
+    const own = wordsOf(`${c.title || ''} ${c.description || ''}`);
+    return does.filter((w) => own.has(w)).length / does.length >= CONTAINS;
+  });
+}
+
 // What apps like this one have and it does not: the screens and functions
 // of other apps here that fit what it is about (ChloeDB's search, by words
 // and by meaning, over every app's pieces), each counted for every
@@ -300,6 +314,10 @@ export const startPeers = {
     for (const h of hits.slice(0, 8)) {
       const near = await ctx.near(`${h.title}. ${h.description || ''}`);
       if (near.covered) continue;
+      // Its subject aside (Chores, Tasks), what it does the app does already:
+      // a screen of counts, a list, a Move on button, add, edit and delete is
+      // the one the app has for its own rows, said of another thing.
+      if (h.kind === 'view' && hasLike(ctx, h)) continue;
       const appName = ctx.appName(h.app);
       // Others like it, in other neighbour apps: the same feature, more apps.
       const alike = hits.filter((o) => o.app !== h.app && jaccard(wordsOf(`${o.title} ${o.description}`), wordsOf(`${h.title} ${h.description}`)) >= 0.3).map((o) => o.app);

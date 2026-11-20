@@ -9,6 +9,7 @@
 //   saw does, and is repaired the same way.
 
 import { createRequire } from 'node:module';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { runRule, paramsOf, sqlOf, used, checkRule } from './rules.mjs';
 import { physical } from './store.mjs';
 
@@ -131,8 +132,17 @@ let playwright;
 // login (login.mjs), set for the engine's address only.
 let selfCookie = null;
 export const useSelfCookie = (c) => { selfCookie = c; };
+// And the cookie that says a visit is the engine's own check (the views
+// opened after a build, the screens drawn on a phone and a computer): not
+// people's use, so Usage counts none of it (fromCheck). A cookie, since a
+// page's beacons carry no headers; made at each start, for this process.
+const CHECK = randomBytes(24).toString('base64url');
 export async function signInSelf(ctx, baseUrl) {
-  if (selfCookie) await ctx.addCookies([{ ...selfCookie, url: baseUrl }]);
+  await ctx.addCookies([{ name: 'sa_check', value: CHECK, url: baseUrl }, ...(selfCookie ? [{ ...selfCookie, url: baseUrl }] : [])]);
+}
+export function fromCheck(req) {
+  const m = String(req?.headers?.cookie || '').match(/(?:^|;\s*)sa_check=([A-Za-z0-9_-]{20,80})/);
+  return !!m && m[1].length === CHECK.length && timingSafeEqual(Buffer.from(m[1]), Buffer.from(CHECK));
 }
 
 export function loadPlaywright() {

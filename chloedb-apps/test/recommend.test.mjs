@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { signals } from '../engine/evolve.mjs';
-import { usePatterns, useUnopened, usePhone, useErrors, startAsks, startLibrary, asksOf, wordsOf, builtWords, SOURCES } from '../engine/recsources.mjs';
+import { usePatterns, useUnopened, usePhone, useErrors, startAsks, startLibrary, asksOf, wordsOf, builtWords, SOURCES, hasLike } from '../engine/recsources.mjs';
 import { Recommender, rank, learnWeights, withHint } from '../engine/recommend.mjs';
 
 const T0 = Date.parse('2026-11-01T09:00:00Z');
@@ -278,4 +278,20 @@ test('live: an app with use gets a suggestion from it, one without gets cold-sta
     await new Promise((r) => setTimeout(r, 500));
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('peers: a screen that does what one of the app\'s own does, of another subject, is not offered', () => {
+  const ctx = { view: { caps: [
+    { kind: 'table', title: 'tasks', description: 'A task of the team' },
+    { kind: 'view', title: 'Board', description: 'Team tasks with counts per status, add and edit form, filters and a Move on button; touch targets are finger-sized on phones and placeholders are in plain words.' },
+  ] } };
+  // another app's chores board is this app's task board, said of chores
+  assert.equal(hasLike(ctx, { kind: 'view', title: 'Chores', description: 'Chore counts, the chore list with a Move on button on each, add, edit and delete, with finger-sized controls on phones.' }), true);
+  // what it does not do yet stays a suggestion
+  assert.equal(hasLike(ctx, { kind: 'view', title: 'Settle up', description: 'Who owes whom, and mark the trip settled' }), false);
+  assert.equal(hasLike(ctx, { kind: 'view', title: 'Calendar', description: 'Each task on its due day in a month grid, with the overdue ones in red and a tap to open one' }), false);
+  // a function is held to the app's functions, not its screens
+  assert.equal(hasLike(ctx, { kind: 'function', title: 'Chores', description: 'Chore counts, the chore list with a Move on button on each, add, edit and delete' }), false);
+  // too little said to tell
+  assert.equal(hasLike(ctx, { kind: 'view', title: 'Chores', description: 'Chore list' }), false);
 });

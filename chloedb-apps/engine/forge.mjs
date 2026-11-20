@@ -39,7 +39,7 @@ export function keysIn(code) {
   return out;
 }
 import { madeUp, tidyTitle } from './taste.mjs';
-import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn, currencyOf } from './data.mjs';
+import { parseAttached, dataPart, prepareData, computeFigure, compareFigure, figureNotShown, gateOf, renameIn, currencyOf, alignWords } from './data.mjs';
 import { ART_DOC, TASTE_DOC, LAYOUT_NAMES, LAYOUT_SHORT, parseLayout } from './quality.mjs';
 
 // A screen's budget (budgetOf, below): what a change may grow it to.
@@ -2474,6 +2474,9 @@ async function forgeTraced(engine, appId, request, progress, tr) {
   // example rows) while the screens' queries run and the figures are
   // checked against them, and are emptied again before the tests.
   const freshTables = new Set((plan.tables || []).map((t) => t.name).filter((n) => !view.tables.some((t) => t.spec.name === n)));
+  // The example rows in the words their screens use (written at once by
+  // another writer: "todo" where the form says "to do").
+  if (!view.comp.n && plan.seed && typeof plan.seed === 'object') for (const n of alignWords(plan.seed, (plan.views || []).map((v) => v && v.screen))) progress(`Example rows: ${n}`);
   const rowsToAdd = rowsOfBuild(plan, data, freshTables, !view.comp.n);
   const checkFigures = (plan.views || []).some((v) => v.screen) && data.figures.length;
   if (checkFigures) await tr.span('strata', 'Put the rows in, to check the figures', () => putRows(engine, appId, stored, rowsToAdd));

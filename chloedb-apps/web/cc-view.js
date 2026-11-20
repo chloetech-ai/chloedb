@@ -369,7 +369,35 @@ function render(el, ctx) {
     // Where a frame loads files and map tiles from: the engine's public
     // address (no key needed there for those), else through this server.
     kit.base = kit.publicUrl || new URL(core.at('/v1/apps/apps'), location.href).href.replace(/\/$/, '');
+    // The kit's typefaces: its stylesheet loads them from /fonts/, which in
+    // a frame here is this server's address, not the engine's (and its
+    // policy refuses that). The frames get the kit without them; the faces
+    // a design names come through this server with the key, as data: URLs
+    // in the design's stylesheet (fontsFor).
+    kit.faces = [...String(kit.kit || '').matchAll(/@font-face\s*\{[^}]*?font-family:\s*"([^"]+)"[^}]*?url\("\/fonts\/([a-z-]+)\.woff2"\)[^}]*\}/g)].map((m) => ({ family: m[1], file: m[2], rule: m[0] }));
+    kit.frameCss = String(kit.kit || '').replace(/@font-face\s*\{[^}]*?url\("\/fonts\/[a-z-]+\.woff2"\)[^}]*\}/g, '');
     return kit;
+  }
+
+  // The @font-face rules of the faces a design's stylesheet names, each
+  // with its file as a data: URL (fetched once, through this server).
+  const fontFiles = new Map();
+  async function fontsFor(css) {
+    const out = [];
+    for (const f of kit?.faces || []) {
+      if (!String(css).includes(`"${f.family}"`)) continue;
+      if (!fontFiles.has(f.file)) {
+        fontFiles.set(f.file, api(`/fonts/${f.file}.woff2`, { blob: true }).then((r) => r.blob()).then((b) => new Promise((ok, no) => {
+          const fr = new FileReader();
+          fr.onload = () => ok(String(fr.result).replace(/^data:[^;,]*/, 'data:font/woff2'));
+          fr.onerror = () => no(fr.error);
+          fr.readAsDataURL(b);
+        })).catch(() => { fontFiles.delete(f.file); return null; }));
+      }
+      const url = await fontFiles.get(f.file);
+      if (url) out.push(f.rule.replace(/url\("\/fonts\/[a-z-]+\.woff2"\)/, `url("${url}")`));
+    }
+    return out.join('\n');
   }
 
   // ---- live updates: long polls of the engine's events
@@ -686,7 +714,7 @@ function render(el, ctx) {
       // The hosts the owner let the app read from (app.fetch): its frames may show images from them.
       return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${frameCsp(src, { hosts: webHosts(st) })}">
-<style>${kit.kit}</style><style id="__design">${W.designCss || ''}</style></head><body><div id="root"></div>
+<style>${kit.frameCss ?? kit.kit}</style><style id="__design">${W.designCss || ''}</style></head><body><div id="root"></div>
 <script>window.__SA = ${boot};</script>
 <script>${kit.frame}</script>
 ${compiled ? `<script>${kit.front}</script>\n<script>${kit.screen}</script>\n${compiled.scripts || ''}` : ''}
@@ -888,9 +916,13 @@ __sa_ready();
       const d = W.st.design;
       const chosen = d ? (d.designs[d.chosen] || d.designs[0]) : PRESETS[0];
       const css = designCss(checkDesign(chosen, chosen));
-      if (css === W.designCss) return;
+      if (css === W.designBase) return;
+      W.designBase = css;
       W.designCss = css;
-      for (const f of W.frames.values()) f.iframe.contentWindow?.postMessage({ __sa: 1, kind: 'design', css }, '*');
+      const send = (c) => { for (const f of W.frames.values()) f.iframe.contentWindow?.postMessage({ __sa: 1, kind: 'design', css: c }, '*'); };
+      send(css);
+      // its typefaces, once they are here
+      fontsFor(css).then((faces) => { if (!faces || W.designBase !== css) return; W.designCss = `${faces}\n${css}`; send(W.designCss); }).catch(() => {});
     }
 
     function paint() {
