@@ -40,6 +40,12 @@ export const state = {
 export const isCoordinator = () => state.health?.role === "coordinator" || state.system?.backend === "coordinator" || state.cluster?.role === "coordinator";
 /** Whether the health read says what this server is: read with no key, it says only whether it is up (OLU-308). */
 export const healthSays = () => !!state.health && Object.keys(state.health).some((k) => k !== "status");
+/**
+ * Whether the page knows what this server is (one server or a coordinator):
+ * signed out, every read that says so is refused, and the page says it
+ * cannot tell rather than "one server" (OLU-403).
+ */
+export const roleKnown = () => healthSays() || !!state.system || !!state.cluster;
 
 // ---------------------------------------------------------------- the time range
 /**
@@ -402,7 +408,7 @@ export function homeProblems(f = state.fleet) {
   const told = firingNow().filter((a) => a.severity !== "info");
   if (told.length && !probs.some((p) => p.id === "alerts" || String(p.id || "").startsWith("alert-"))) {
     const crit = told.filter((a) => a.severity === "critical").length;
-    const on = (a) => (a.on ? ` on ${a.on}` : a.where?.length === 1 ? ` on ${a.where[0].short || a.where[0].copy || a.where[0]}` : a.where?.length > 1 ? ` on ${a.where.length} copies` : "");
+    const on = (a) => (a.on ? ` on ${a.on}` : a.where?.length === 1 ? ` on ${a.where[0].name || a.where[0].short || a.where[0].copy || a.where[0]}` : a.where?.length > 1 ? ` on ${a.where.length} copies` : "");
     const since = told.map((a) => a.since_ms).filter(Boolean);
     probs.push({
       id: "alerts", severity: crit ? "critical" : "warning",
@@ -531,7 +537,7 @@ export function deriveFleet() {
   if (errRatio != null && errRatio > sloErr) problems.push({ id: "error-ratio", severity: "critical", title: `${fmt.pct(errRatio, 1)} of queries fail (SLO ${fmt.pct(sloErr, 0)})`, where: [], since_ms: null, impact: `over the last 5 min, on this coordinator`, next: { text: "See the failing queries", view: "queries", params: {} } });
   if (p99 != null && p99 > sloP99) problems.push({ id: "p99", severity: "warning", title: `p99 ${fmt.ms(p99)} is over the SLO (${fmt.ms(sloP99)})`, where: [], since_ms: null, impact: "over the last 5 min, on this coordinator", next: { text: "See where the time goes", view: "performance", params: {} } });
   if (maxDisk && maxDisk.v > 0.8) problems.push({ id: "disk", severity: maxDisk.v > 0.9 ? "critical" : "warning", title: `${maxDisk.where} is ${fmt.pct(maxDisk.v, 0)} full`, where: [maxDisk.where], since_ms: null, impact: "writes stop when a disk is full", next: { text: "See capacity", view: "cluster", params: {} } });
-  for (const a of firing) problems.push({ id: "alert-" + (a.id || a.name), severity: a.severity === "critical" ? "critical" : "warning", title: `Alert: ${a.name}`, where: a.where ? [].concat(a.where).map((w) => w.short || w.copy || w) : [], since_ms: a.since_ms || null, impact: a.description || "", next: { text: "Open the alert", view: "alert/" + (a.id || a.rule || a.name), params: {} } });
+  for (const a of firing) problems.push({ id: "alert-" + (a.id || a.name), severity: a.severity === "critical" ? "critical" : "warning", title: `Alert: ${a.name}`, where: a.where ? [].concat(a.where).map((w) => w.name || w.short || w.copy || w) : [], since_ms: a.since_ms || null, impact: a.description || "", next: { text: "Open the alert", view: "alert/" + (a.id || a.rule || a.name), params: {} } });
   const order = { critical: 0, warning: 1 };
   problems.sort((a, b) => order[a.severity] - order[b.severity]);
   const worst = problems[0];

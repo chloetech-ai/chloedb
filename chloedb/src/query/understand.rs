@@ -932,6 +932,18 @@ struct Rewrite {
     at: usize,
     /// The `WHERE` conditions of each query being visited.
     wheres: Vec<Vec<String>>,
+    /// The boosts of the understood calls inside each fusion being
+    /// visited (`rrf(..)`, `tmm(..)`, ...), which fuse scores, not a
+    /// score times a boost: the outermost fusion takes them instead.
+    fusing: Vec<Vec<String>>,
+}
+
+/// The calls that take a score as it is ranked, whose boost an understood
+/// call inside them leaves to the whole call.
+const FUSES: [&str; 5] = ["rrf", "tmm", "minmax", "zscore", "rank"];
+
+fn fuses(f: &sql::Function) -> bool {
+    FUSES.iter().any(|n| name_is(f, n))
 }
 
 fn parse_expr(text: &str) -> Result<Expr> {
@@ -962,8 +974,26 @@ impl VisitorMut for Rewrite {
         ControlFlow::Continue(())
     }
 
+    fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<Error> {
+        if matches!(e, Expr::Function(f) if fuses(f)) {
+            self.fusing.push(Vec::new());
+        }
+        ControlFlow::Continue(())
+    }
+
     fn post_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<Error> {
         let Expr::Function(f) = e else { return ControlFlow::Continue(()) };
+        if fuses(f) {
+            let boosts = self.fusing.pop().unwrap_or_default();
+            if self.fusing.is_empty() && !boosts.is_empty() {
+                let text = format!("{e} * {}", boosts.join(" * "));
+                match parse_expr(&text) {
+                    Ok(x) => *e = Expr::Nested(Box::new(x)),
+                    Err(x) => return ControlFlow::Break(x),
+                }
+            }
+            return ControlFlow::Continue(());
+        }
         if !understands(f) {
             return ControlFlow::Continue(());
         }
@@ -988,7 +1018,12 @@ impl VisitorMut for Rewrite {
         let boosts = u.boosts();
         if !boosts.is_empty() && u.weight > 0.0 {
             let cases: Vec<String> = boosts.iter().map(|c| format!("CASE WHEN {c} THEN 1 ELSE 0 END")).collect();
-            let text = format!("{e} * (1 + {} * ({}))", num(u.weight), cases.join(" + "));
+            let boost = format!("(1 + {} * ({}))", num(u.weight), cases.join(" + "));
+            if let Some(outer) = self.fusing.first_mut() {
+                outer.push(boost);
+                return ControlFlow::Continue(());
+            }
+            let text = format!("{e} * {boost}");
             match parse_expr(&text) {
                 Ok(x) => *e = Expr::Nested(Box::new(x)),
                 Err(x) => return ControlFlow::Break(x),
@@ -1093,7 +1128,7 @@ impl Understanding {
         let mut made = made.iter();
         let with = self.sites.iter().map(|s| s.as_ref().and_then(|_| made.next().cloned())).collect();
         let mut q = self.query.clone();
-        let mut r = Rewrite { with, at: 0, wheres: Vec::new() };
+        let mut r = Rewrite { with, at: 0, wheres: Vec::new(), fusing: Vec::new() };
         if let ControlFlow::Break(e) = q.visit(&mut r) {
             return Err(e);
         }
@@ -1262,6 +1297,13 @@ mod tests {
         let (q2, made) = plan(&q, &p).unwrap().unwrap().finish(&catalog, &gaz, &p, |_| Ok([0, 0])).unwrap();
         assert_eq!(q2.to_string(), "SELECT id FROM products ORDER BY (bm25(body, 'white coffee table') * (1 + 0.25 * (CASE WHEN class IN ('Coffee Tables', 'Coffee & Cocktail Tables') THEN 1 ELSE 0 END + CASE WHEN price < 300 THEN 1 ELSE 0 END))) DESC LIMIT 10");
         assert_eq!(made[0].line(), "bm25(body) understood 'white coffee table under 300' with boost of products: boost 0.25 for each of class IN ('Coffee Tables', 'Coffee & Cocktail Tables'), price < 300, ranking by 'white coffee table'");
+        // Inside a fusion, which fuses scores, the whole fusion is boosted.
+        let q = super::super::sql::parse_query("SELECT id FROM products ORDER BY rrf(bm25(body, :q, understand => 'boost', understand_fields => 'price'), similarity(emb, :q)) DESC LIMIT 10").unwrap();
+        let (q2, _) = plan(&q, &p).unwrap().unwrap().finish(&catalog, &gaz, &p, |_| Ok([0, 0])).unwrap();
+        assert_eq!(q2.to_string(), "SELECT id FROM products ORDER BY (rrf(bm25(body, 'white coffee table'), similarity(emb, :q)) * (1 + 0.25 * (CASE WHEN price < 300 THEN 1 ELSE 0 END))) DESC LIMIT 10");
+        let q = super::super::sql::parse_query("SELECT id FROM products ORDER BY 0.5 * tmm(bm25(body, :q, understand => 'boost', understand_fields => 'price')) + 0.5 * tmm(similarity(emb, :q)) DESC LIMIT 10").unwrap();
+        let (q2, _) = plan(&q, &p).unwrap().unwrap().finish(&catalog, &gaz, &p, |_| Ok([0, 0])).unwrap();
+        assert_eq!(q2.to_string(), "SELECT id FROM products ORDER BY 0.5 * (tmm(bm25(body, 'white coffee table')) * (1 + 0.25 * (CASE WHEN price < 300 THEN 1 ELSE 0 END))) + 0.5 * tmm(similarity(emb, :q)) DESC LIMIT 10");
         // understand => 'off' is the call as written.
         let q = super::super::sql::parse_query("SELECT id FROM products ORDER BY bm25(body, :q, understand => 'off', understand_weight => 2) DESC").unwrap();
         let u = plan(&q, &p).unwrap().unwrap();

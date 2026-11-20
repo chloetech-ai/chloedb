@@ -354,7 +354,7 @@ function timeCard(j, rows) {
 }
 
 /** A search's words: the terms they became, and "did you mean". */
-function termsOf(s) {
+export function termsOf(s) {
   const kinds = { word: "", typo: "typo of", prefix: "prefix", synonym: "synonym" };
   return h("div", { class: "fn-terms" },
     h("div", { class: "small" }, h("b", { class: "mono" }, `bm25(${s.field})`), h("span", { class: "mono" }, ` "${s.text}"`), s.docs != null ? h("span", { class: "dim" }, ` · ${fmt.plural(s.docs, "row")} have ${s.field}`) : null),
@@ -364,7 +364,7 @@ function termsOf(s) {
 }
 
 /** The rows left after each stage of one query. */
-function rowsFunnel(rows, notes = []) {
+export function rowsFunnel(rows, notes = []) {
   const steps = [];
   if (rows.live != null) steps.push(["In the table", rows.live, "var(--axis)", "its live rows"]);
   if (rows.matched != null) steps.push(["Matched", rows.matched, COLOR.match, rows.inputs.some((i) => i.generates && i.matched == null) ? "a search by meaning reaches every row with a vector" : rows.inputs.filter((i) => i.matched != null).map((i) => `${i.label} ${fmt.n(i.matched)}`).join(" · ")]);

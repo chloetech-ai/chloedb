@@ -11,6 +11,50 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **An honest command center in a failover and signed out** (persona
+  study round 4, OLU-401, OLU-303, OLU-402, OLU-403, OLU-407, KENJI-405,
+  KENJI-403). While the copy just elected primary waits for the old
+  primary's lease to run out, `/v1/cluster` says `electing` and the
+  failover window (`failover_window_ms`), and Home, Cluster and
+  `chloedb-server cc` say writes are held, to wait, and not to restart that
+  copy, where they told on-call to restart it. Copies are named by their
+  `--node-name` in the command center, cc, the fleet's texts and alerts'
+  messages (a pod the operator runs keeps `s1-0`); `short` stays the
+  address's, and an alert's `where` gives the name beside it (`name`).
+  Signed out, Home's "Before production" list says "needs a key to tell"
+  for what it could not read, not "One server" or "No alert rules". A built-in rule's paging
+  message carries its runbook's link, and a RESOLVED says how long the
+  alert fired ("after firing for 17 s"). A pair of copies with failover on
+  is still `ok`, and `/v1/cluster` (`can_lose`, `warnings`) and Home now
+  say it survives no loss. **Changed:** a statement the coordinator runs in
+  parts (an aggregation, as the OpenSearch API sends) while every copy of a
+  shard is down is refused 503, not 400 "query error", so clients retry it
+  on another node; so is a search whose shard's copies could not be
+  reached however the connection failed (broken mid-call, its request
+  dropped: a 502 "transport error" or "operation was canceled" before), as
+  one whose copies refused the connection already was
+  ([server.md](docs/chloedb/server.md#fleet-health)).
+- **The command center designs a search stage by stage, as a template
+  apps call by name** (`chloedb-server`). The Query designer (Build, key
+  `z`) takes the text a person types as its one input and steps through
+  Understanding, Retrieval (words, meaning, expansion, filters), Ranking
+  (boosts, then heads of words, meaning, numbers, recency, `gbdt` models
+  and a `cross_encoder`, fused by weights or `rrf`), Blending (several
+  queries with one text, each with a boost) and Save, which runs `CREATE
+  RANK PROFILE`, `CREATE BLEND`, `CREATE FUNCTION <name>(q TEXT, k INT)
+  RETURNS TABLE` and `<name>_template()`. Each step previews a sample
+  query as result rows, coloured by how far each moved, or as plain lists.
+  **Fixed:** a stored function or rank profile whose body understands,
+  expands, blends or embeds text answers as its body does; an understood
+  boost inside `rrf` or `tmm` boosts the whole fusion instead of being
+  refused; `CREATE FUNCTION` accepts a body that embeds text or reads a
+  blend; an expanded query no longer answers its feedback rows from the
+  answer cache (#728).
+- **A server keeps no parameter values unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405).
 - **ChloeCtx believes less of what it reads.** A secret named just before
   its value in a sentence ("the staging password is …", "password: …",
   "api key …") is redacted as `KEY=value` is, and a session whose prompt
@@ -165,6 +209,24 @@ changes collect under "Unreleased".
   (KENJI-402); the cluster guide says what a frozen primary costs and not to
   restart the copy just elected while it waits out the old lease (OLU-401,
   OLU-205).
+- **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
+  SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
+  database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)
+  SELECT ...` takes `ON CONFLICT`, `OR REPLACE` and `OR IGNORE` as
+  `VALUES` does; `CREATE TABLE t [(PRIMARY KEY (id))] AS SELECT ...` makes
+  the table first, its columns typed by the columns they read (a `TEXT`
+  keeps its analyzer), a `CAST`, their values or their expression, and
+  drops it again if the rows fail. Through a coordinator the `SELECT` runs
+  over every shard and the rows go as `INSERT`s of 500 rows each, not one
+  transaction, and the new table needs a primary key there to place its
+  rows by (cluster-limits.md). `POST /v1/sql/check` says both. A
+  `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
+  refused rather than written in part. Before, both were refused.
+- **A join on a `TEXT` column says why it is refused and what to do**
+  (SAM-402): the column is `TEXT` (as a Postgres follower makes `varchar`),
+  joins compare `KEYWORD`, `INT` or `FLOAT`, and the message names
+  postgres.md's table made first and a `CREATE TABLE ... AS SELECT` copy
+  with a `KEYWORD` column.
 - **`chloectx remember preference` says it is kept for this project only.**
   Memory is per project, so a preference stored there is not recalled in
   another repository; the command now prints a note naming
@@ -196,6 +258,23 @@ changes collect under "Unreleased".
   clearest places near a town (for the stars, a picnic or a picture),
   each place's sky on its page, and a fire watch that says when the night
   over it is clear.
+- **Earth explorer: Future climate.** Every place of California and Chile
+  in 2071-2100 if emissions keep rising (SSP3-7.0, five models downscaled
+  by CHELSA 2.1): its hottest month, coldest nights, rain and climate
+  class now and later, a map of the change, and where its future climate
+  can be visited today, found by the distance between climate vectors.
+- **Earth explorer: Land finder.** Places of California and Chile to
+  build a solar farm on, kept within limits on the slope, the grid, the
+  roads, protected land and towns, and ranked by how much they look like
+  the solar farms already built there (or by the grid, or by words), with
+  a shortlist and what is around each place on its page (OpenStreetMap's
+  grid, roads and solar farms; PAD-US in California).
+- **Earth explorer: Find change.** Changed places is now a finder: the
+  places whose look changed since 2017 on a map, searched by a change in
+  words, near a town, by when and how much they changed and by what they
+  were and became, from many more places. A place can be watched for
+  change: it gets a new satellite picture every few days, and a fire
+  watch tells its browser when one looks unlike the one before.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,
