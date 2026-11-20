@@ -11,15 +11,11 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-- **A server keeps no parameter values and starts no app unless asked.**
+- **A server keeps no parameter values unless asked.**
   **Changed:** the running and finished queries, the statements and the
   log store keep a query's parameters as their types (`{"q": "text"}`),
   not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
-  values, and `--redact-params` is still accepted (LENA-405). `--start-apps`
-  is `off` by default: a server with the crawler, Sheets or ChloeCtx
-  installed beside it starts none of them, and so opens no other port and
-  downloads no model, until given `--start-apps auto` (or names); its log
-  says at the start which it did (LENA-406).
+  values, and `--redact-params` is still accepted (LENA-405).
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000

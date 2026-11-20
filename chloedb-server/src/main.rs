@@ -697,12 +697,11 @@ struct Args {
     #[arg(long, default_value_t = 1000)]
     tenant_open_max: usize,
     /// The apps this server starts itself, as child processes on loopback
-    /// ports, each with a token and a scoped key of its own: off (the
-    /// default), auto (those of crawler, sheets and chloectx whose programs
-    /// are installed beside chloedb-server, on a server of its own or a
-    /// coordinator), or names (crawler,sheets,chloectx; looked for on the
-    /// PATH too). ChloeCtx downloads a 129 MB model when it first starts.
-    #[arg(long, env = "CHLOEDB_START_APPS", default_value = "off")]
+    /// ports, each with a token and a scoped key of its own: auto (those of
+    /// crawler, sheets and chloectx whose programs are installed beside
+    /// chloedb-server, on a server of its own or a coordinator), off, or
+    /// names (crawler,sheets,chloectx; looked for on the PATH too).
+    #[arg(long, env = "CHLOEDB_START_APPS", default_value = "auto")]
     start_apps: String,
     /// Whether this server runs its connectors' pulls on their schedules
     /// (https://chloetech-ai.github.io/chloedb/site/docs/connectors.html): auto
@@ -1652,15 +1651,7 @@ async fn run() {
             tls: tls.is_some(),
         };
         let own_dir = std::env::current_exe().ok().and_then(|e| e.canonicalize().ok()).and_then(|e| e.parent().map(|p| p.to_path_buf()));
-        let plans = chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e));
-        if plans.is_empty() {
-            if a.start_apps.trim() == "off" {
-                tracing::info!("starts no apps of its own (--start-apps off, the default; --start-apps auto starts the crawler, Sheets and ChloeCtx installed beside it)");
-            }
-        } else {
-            tracing::info!(apps = %plans.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(","), "starts apps of its own (--start-apps {})", a.start_apps);
-        }
-        plans
+        chloedb_server::app_procs::plan(&a.start_apps, &taken, &role, own_dir.as_deref()).unwrap_or_else(|e| fail(&e))
     };
     // The connectors' pulls (crate::connectors): not on a replica or a shard.
     let run_connectors = match a.connectors.as_str() {

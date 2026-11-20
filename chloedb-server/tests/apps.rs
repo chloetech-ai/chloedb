@@ -235,69 +235,6 @@ print("fake sheets up on " + listen, file=sys.stderr, flush=True)
 srv.serve_forever()
 "#;
 
-/// LENA-406: a server started with no flags, with the apps' programs
-/// installed beside it, starts none of them; `--start-apps auto` starts
-/// them, and the log says what is on either way.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_server_with_no_flags_starts_no_apps() {
-    use std::os::unix::fs::PermissionsExt;
-    if std::process::Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: no python3 for the stand-in app");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let bin = dir.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    // The server beside the app, as an install puts them.
-    let server_bin = bin.join("chloedb-server");
-    std::fs::copy(env!("CARGO_BIN_EXE_chloedb-server"), &server_bin).unwrap();
-    let fake = bin.join("chloedb-sheets");
-    std::fs::write(&fake, FAKE_SHEETS).unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-    for (flags, name) in [(&[][..], "default"), (&["--start-apps", "auto"][..], "auto")] {
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let base = format!("http://127.0.0.1:{port}");
-        let log_path = dir.path().join(format!("{name}.log"));
-        let mut server = std::process::Command::new(&server_bin)
-            .args(["--db", &dir.path().join(format!("{name}.strata")).to_string_lossy(), "--listen", &format!("127.0.0.1:{port}"), "--grpc", "off", "--log-store", "off", "--no-fetch-models"])
-            .args(flags)
-            .env("CHLOEDB_TOKEN", "root-of-the-server")
-            .env_remove("CHLOEDB_START_APPS")
-            .env_remove("CHLOEDB_CLUSTER_TOKEN")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::fs::File::create(&log_path).unwrap())
-            .spawn()
-            .unwrap();
-        let t0 = std::time::Instant::now();
-        while chloedb_server::http_client().build().unwrap().get(format!("{base}/v1/health")).send().await.is_err() {
-            assert!(t0.elapsed() < Duration::from_secs(30), "no start: {}", std::fs::read_to_string(&log_path).unwrap_or_default());
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        // Give a child time to show itself if there were one.
-        let started = loop {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let (s, b) = call(&base, "GET", "/v1/apps", Some("root-of-the-server"), None).await;
-            assert_eq!(s, 200, "{b}");
-            let j: Json = serde_json::from_str(&b).unwrap();
-            let up = j["apps"].as_array().unwrap().iter().any(|a| a["name"] == "sheets" && a["up"] == true);
-            if up || t0.elapsed() > Duration::from_secs(3) {
-                break up;
-            }
-        };
-        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        let _ = server.kill();
-        let _ = server.wait();
-        if name == "default" {
-            assert!(!started, "an app started with no flag: {log}");
-            assert!(!log.contains("fake sheets up"), "{log}");
-            assert!(log.contains("starts no apps of its own"), "{log}");
-        } else {
-            assert!(started, "--start-apps auto starts it: {log}");
-            assert!(log.contains("starts apps of its own"), "{log}");
-        }
-    }
-}
-
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }

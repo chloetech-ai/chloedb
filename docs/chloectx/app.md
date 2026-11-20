@@ -14,7 +14,7 @@ Its first page lists every memory it can read, as *spaces* to pick from, and a s
 
 ## Start it
 
-A chloedb-server with `chloectx` installed beside it (in the same directory, as an install puts them) starts it with `--start-apps auto` (or `--start-apps chloectx`; by default a server starts no app, since ChloeCtx downloads a 129 MB model on its first start), with a token and a key of its own ([apps the server starts](../chloedb/server.md#apps-the-server-starts)); its key may make and write `ctx_*` tables and read `chloectx_mem_*` and `chloectx_memory`, so the on-call hand-off of Seen before, which needs an admin key, is refused there. Started by hand:
+A chloedb-server with `chloectx` installed beside it (in the same directory, as an install puts them) starts it by itself, with a token and a key of its own ([apps the server starts](../chloedb/server.md#apps-the-server-starts)); its key may make and write `ctx_*` tables and read `chloectx_mem_*` and `chloectx_memory`, so the on-call hand-off of Seen before, which needs an admin key, is refused there. Started by hand:
 
 ```bash
 cd chloectx && cargo build --release --bin chloectx
