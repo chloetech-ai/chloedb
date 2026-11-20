@@ -2025,7 +2025,17 @@ impl Service {
         };
         match &m.model {
             Ok(e) => Ok((m.table.clone(), m.field.clone(), e.clone())),
-            Err(why) => Err(ApiError::bad(format!("{}'s model {} is not available here ({why}); pass a vector", m.field, m.spec.model))),
+            Err(why) => {
+                // A model this server is downloading (an import that added
+                // meaning, a field just made) is a wait, not a fault: an
+                // agent told to fetch it by hand did so while it came.
+                if let Some(j) = self.model_fetch(&m.spec.model).filter(|j| matches!(j["state"].as_str(), Some("running" | "queued"))) {
+                    let mb = |k: &str| j[k].as_u64().unwrap_or(0) / 1_000_000;
+                    let so_far = if j["size"].as_u64().unwrap_or(0) > 0 { format!(" ({} of {} MB)", mb("bytes"), mb("size")) } else { String::new() };
+                    return Err(ApiError::coded(503, "unavailable", format!("{}'s model {} is downloading{so_far}: this server fetches it once and then fills in the vectors; send the query again in a few seconds (GET /v1/models, or the list_models tool, says when it is ready), or search by words meanwhile", m.field, m.spec.model)));
+                }
+                Err(ApiError::bad(format!("{}'s model {} is not available here ({why}); pass a vector", m.field, m.spec.model)))
+            }
         }
     }
 
@@ -8696,7 +8706,14 @@ mod tests {
         svc.model_job_progress("potion-base-8M", 3_000_000, 30_000_000);
         let f = svc.model_fetch("POTION-BASE-8M").unwrap();
         assert_eq!((f["state"].as_str(), f["bytes"].as_u64(), f["size"].as_u64()), (Some("running"), Some(3_000_000), Some(30_000_000)), "{f}");
+        // A query by meaning meanwhile is told to wait, not to fetch the
+        // model by hand: an agent did so while the server fetched it.
+        let e = svc.model(Some("listings"), Some("emb")).err().unwrap();
+        assert_eq!((e.status, e.code()), (503, "unavailable"), "{}", e.message);
+        assert!(e.message.contains("downloading (3 of 30 MB)") && !e.message.contains("fetch it first"), "{}", e.message);
         svc.model_job_ended("potion-base-8M", Some("https://huggingface.co/...: 503".into()));
+        let e = svc.model(Some("listings"), Some("emb")).err().unwrap();
+        assert_eq!(e.status, 400, "a failed fetch is not a wait: {}", e.message);
         let f = svc.model_fetch("potion-base-8M").unwrap();
         assert_eq!(f["state"], "failed");
         assert!(f["error"].as_str().unwrap().contains("503"), "{f}");
