@@ -1,0 +1,293 @@
+{
+ "set": "scifact",
+ "at": "2026-11-20T10:23:11Z",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "passages": 5183,
+ "questions": 300,
+ "judgements": 339,
+ "model": "BAAI/bge-small-en-v1.5",
+ "embedding": {
+  "docs_s": 618.7,
+  "queries_s": 3.0,
+  "cached": true
+ },
+ "depth": 100,
+ "rrf_k": 60,
+ "sources": {
+  "es_bm25_body": {
+   "ndcg@10": 0.6826,
+   "recall@100": 0.9282,
+   "queries": 300
+  },
+  "es_bm25_beir": {
+   "ndcg@10": 0.6906,
+   "recall@100": 0.9192,
+   "queries": 300
+  },
+  "qdrant": {
+   "ndcg@10": 0.7201,
+   "recall@100": 0.9533,
+   "queries": 300,
+   "vs_exact_top10": 1.0,
+   "vs_exact_top100": 1.0
+  },
+  "es_qdrant_rrf": {
+   "ndcg@10": 0.73,
+   "recall@100": 0.9583,
+   "queries": 300
+  },
+  "chloedb_bm25": {
+   "ndcg@10": 0.691,
+   "recall@100": 0.9216,
+   "queries": 300
+  },
+  "chloedb_vector": {
+   "ndcg@10": 0.7201,
+   "recall@100": 0.9533,
+   "queries": 300,
+   "vs_exact_top10": 1.0,
+   "vs_exact_top100": 1.0
+  },
+  "chloedb_rrf": {
+   "ndcg@10": 0.7373,
+   "recall@100": 0.965,
+   "queries": 300
+  },
+  "exact_vector": {
+   "ndcg@10": 0.7201,
+   "recall@100": 0.9533,
+   "queries": 300
+  }
+ },
+ "paired": {
+  "chloedb_rrf - es_qdrant_rrf": {
+   "ndcg@10": {
+    "diff": 0.0074,
+    "lo": -0.0051,
+    "hi": 0.0198,
+    "better": 32,
+    "worse": 29
+   },
+   "recall@100": {
+    "diff": 0.0067,
+    "lo": 0.0,
+    "hi": 0.0167,
+    "better": 2,
+    "worse": 0
+   }
+  },
+  "chloedb_bm25 - es_bm25_beir": {
+   "ndcg@10": {
+    "diff": 0.0003,
+    "lo": -0.0144,
+    "hi": 0.0162,
+    "better": 36,
+    "worse": 38
+   },
+   "recall@100": {
+    "diff": 0.0023,
+    "lo": -0.015,
+    "hi": 0.02,
+    "better": 5,
+    "worse": 4
+   }
+  },
+  "chloedb_bm25 - es_bm25_body": {
+   "ndcg@10": {
+    "diff": 0.0084,
+    "lo": -0.001,
+    "hi": 0.0185,
+    "better": 21,
+    "worse": 15
+   },
+   "recall@100": {
+    "diff": -0.0067,
+    "lo": -0.0167,
+    "hi": 0.0,
+    "better": 0,
+    "worse": 2
+   }
+  },
+  "chloedb_vector - qdrant": {
+   "ndcg@10": {
+    "diff": 0.0,
+    "lo": 0.0,
+    "hi": 0.0,
+    "better": 0,
+    "worse": 0
+   },
+   "recall@100": {
+    "diff": 0.0,
+    "lo": 0.0,
+    "hi": 0.0,
+    "better": 0,
+    "worse": 0
+   }
+  }
+ },
+ "same_top10": {
+  "rrf": 0.0067,
+  "vector": 1.0
+ },
+ "chloedb": {
+  "version": "chloedb-server 0.3.9 (built from 2f21f4dd0c)",
+  "memory_start_kb": 71177,
+  "load_s": 1.58,
+  "rows": 5183,
+  "latency": {
+   "chloedb_bm25": [
+    {
+     "p50_ms": 2.274,
+     "p95_ms": 2.751,
+     "n": 300,
+     "clients": 1,
+     "per_s": 438.2,
+     "server": {
+      "p50_ms": 0.733,
+      "p95_ms": 1.015,
+      "n": 300
+     }
+    },
+    {
+     "p50_ms": 4.113,
+     "p95_ms": 7.019,
+     "n": 300,
+     "clients": 4,
+     "per_s": 905.5
+    }
+   ],
+   "chloedb_vector": [
+    {
+     "p50_ms": 2.101,
+     "p95_ms": 2.563,
+     "n": 300,
+     "clients": 1,
+     "per_s": 462.5,
+     "server": {
+      "p50_ms": 0.757,
+      "p95_ms": 0.962,
+      "n": 300
+     }
+    },
+    {
+     "p50_ms": 4.006,
+     "p95_ms": 6.861,
+     "n": 300,
+     "clients": 4,
+     "per_s": 910.5
+    }
+   ],
+   "chloedb_rrf": [
+    {
+     "p50_ms": 2.635,
+     "p95_ms": 3.104,
+     "n": 300,
+     "clients": 1,
+     "per_s": 375.4,
+     "server": {
+      "p50_ms": 1.166,
+      "p95_ms": 1.469,
+      "n": 300
+     }
+    },
+    {
+     "p50_ms": 4.839,
+     "p95_ms": 8.352,
+     "n": 300,
+     "clients": 4,
+     "per_s": 772.4
+    }
+   ]
+  },
+  "plan": "{\"filter_docs\": 0, \"ir\": {\"root\": {\"columns\": [{\"expr\": {\"field\": 0}, \"name\": \"id\"}], \"input\": {\"input\": {\"node\": \"search\", \"order\": [{\"desc\": true, \"expr\": {\"rrf\": {\"depth\": 100, \"inputs\": [{\"bm25\": {\"field\": 1, \"opts\": {\"syntax\": {\"text\": \"plain\"}}, \"text\": \"0-dimensional biomaterials show inductive properties.\"}}, {\"similarity\": {\"field\": 2, \"vector\": \"(384 numbers)\"}}], \"k\": 60.0}}}], \"table\": \"docs\"}, \"limit\": 100, \"node\": \"limit\"}, \"node\": \"project\"}, \"version\": 1}, \"kind\": \"hybrid\", \"logical\": \"Select {\\n    projection: [\\n        (\\n            \\\"id\\\",\\n            Field(\\n                0,\\n            ),\\n        ),\\n    ],\\n    filter: True,\\n    order: Some(\\n        Score {\\n            score: Rrf {\\n                inputs: [\\n                    Bm25 {\\n                        field: 1,\\n                        text: \\\"0-dimensional biomaterials show inductive properties.\\\",\\n                        opts: {\\n                            \\\"syntax\\\": Str(\\n                                \\\"plain\\\",\\n                            ),\\n                        },\\n                    },\\n                    Similarity {\\n                        field: 2,\\n                        vector: [\\n                            -0.027779592,\\n                            0.0072563584,\\n                            0.03838249,\\n                            -0.012047543,\\n                            -0.03347865,\\n                            0.0011679755,\\n                            0.0032090333,\\n                            0.06271614,\\n                            -0.011855366,\\n                            0.00336642,\\n                            -0.0017710153,\\n                            -0.027435,\\n                            -0.005715625,\\n                            0.040237997,\\n                            -0.012319242,\\n                            -0.008329902,\\n                            0.029184477,\\n                            0.05820991,\\n                            -0.10189385,\\n                            0.041218765,\\n                            0.06223901,\\n                            -0.06738142,\\n                            -0.009695025,\\n                            -0.016659804,\\n                            0.025513222,\\n                            0.043047767,\\n                            0.026136143,\\n                            0.02202752,\\n                            -0.024810782,\\n                            -0.16975239,\\n                            0.0069979127,\\n                            -0.019734643,\\n                            0.027779592,\\n                            0.028733853,\\n                            0.046043083,\\n                            0.01689837,\\n                            -0.003956206,\\n                            0.013319891,\\n                            -0.06435959,\\n                            -0.01712368,\\n                            0.017136933,\\n                            -0.0009020747,\\n                            -0.01577181,\\n                            0.034512434,\\n                            0.035837796,\\n                            -0.020039476,\\n                            -0.005096018,\\n                            -0.04185494,\\n                            0.013850035,\\n                            -0.05831594,\\n                            -0.008634735,\\n                            -0.006729527,\\n                            -0.022955274,\\n                            0.04349839,\\n                            -0.0054472387,\\n                            0.027169926,\\n                            0.02510236,\\n                            0.0031444218,\\n                            0.038912635,\\n                            -0.024095086,\\n                            0.0214046,\\n                            0.051026445,\\n                            -0.04638768,\\n                            0.08074107,\\n                            0.10597596,\\n                            0.0032902118,\\",
+  "memory_after_kb": 181801,
+  "disk_bytes": 19226996
+ },
+ "es_qdrant": {
+  "version": "Elasticsearch 9.5.5 (Docker mirror.gcr.io/library/elasticsearch:9.5.5, heap 1g); Qdrant 1.20.0 (Docker mirror.gcr.io/qdrant/qdrant:v1.20.0)",
+  "memory_start_kb": {
+   "elasticsearch": 1437597,
+   "qdrant": 28190
+  },
+  "es_load_s": 2.66,
+  "qdrant_load_s": 1.46,
+  "qdrant_collection": {
+   "status": "green",
+   "points_count": 5183,
+   "indexed_vectors_count": 0,
+   "segments_count": 2
+  },
+  "latency": {
+   "es_bm25_beir": [
+    {
+     "p50_ms": 5.788,
+     "p95_ms": 7.408,
+     "n": 300,
+     "clients": 1,
+     "per_s": 166.8
+    },
+    {
+     "p50_ms": 9.899,
+     "p95_ms": 17.141,
+     "n": 300,
+     "clients": 4,
+     "per_s": 371.3
+    }
+   ],
+   "qdrant": [
+    {
+     "p50_ms": 2.171,
+     "p95_ms": 2.585,
+     "n": 300,
+     "clients": 1,
+     "per_s": 456.7
+    },
+    {
+     "p50_ms": 5.0,
+     "p95_ms": 8.23,
+     "n": 300,
+     "clients": 4,
+     "per_s": 747.0
+    }
+   ],
+   "es_qdrant_rrf": [
+    {
+     "p50_ms": 6.856,
+     "p95_ms": 8.854,
+     "n": 300,
+     "clients": 1,
+     "per_s": 141.3
+    },
+    {
+     "p50_ms": 14.129,
+     "p95_ms": 22.731,
+     "n": 300,
+     "clients": 4,
+     "per_s": 264.0
+    }
+   ],
+   "es_qdrant_rrf_sequential": [
+    {
+     "p50_ms": 8.303,
+     "p95_ms": 10.041,
+     "n": 300,
+     "clients": 1,
+     "per_s": 116.9
+    }
+   ]
+  },
+  "memory_after_kb": {
+   "elasticsearch": 1531969,
+   "qdrant": 37027
+  },
+  "disk_bytes": {
+   "elasticsearch": 10365403,
+   "qdrant": 205696834
+  }
+ }
+}

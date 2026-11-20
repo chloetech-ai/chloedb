@@ -1,0 +1,265 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "users": 6040,
+ "items": 3706,
+ "ratings": 1000209,
+ "at": "2026-11-20T07:17:16Z",
+ "sources": {
+  "popularity": {
+   "hit@10": 0.0364,
+   "ndcg@10": 0.0179,
+   "mrr@10": 0.0124
+  },
+  "cooc": {
+   "hit@10": 0.2341,
+   "ndcg@10": 0.1264,
+   "mrr@10": 0.0937
+  },
+  "two_tower": {
+   "hit@10": 0.2813,
+   "ndcg@10": 0.1608,
+   "mrr@10": 0.1241
+  },
+  "chloedb_recommend": {
+   "hit@10": 0.2493,
+   "ndcg@10": 0.1378,
+   "mrr@10": 0.1039,
+   "latency": {
+    "client": {
+     "p50_ms": 12.813,
+     "p95_ms": 17.929,
+     "n": 6040
+    },
+    "server": {
+     "p50_ms": 11.742,
+     "p95_ms": 16.656,
+     "n": 6040
+    }
+   }
+  },
+  "chloedb_two_tower": {
+   "hit@10": 0.2813,
+   "ndcg@10": 0.1608,
+   "mrr@10": 0.1241,
+   "latency": {
+    "client": {
+     "p50_ms": 1.889,
+     "p95_ms": 2.519,
+     "n": 6040
+    },
+    "server": {
+     "p50_ms": 0.786,
+     "p95_ms": 1.274,
+     "n": 6040
+    }
+   }
+  },
+  "chloedb_fused": {
+   "hit@10": 0.3048,
+   "ndcg@10": 0.1726,
+   "mrr@10": 0.1322,
+   "latency": {
+    "client": {
+     "p50_ms": 13.25,
+     "p95_ms": 18.515,
+     "n": 6040
+    },
+    "server": {
+     "p50_ms": 12.096,
+     "p95_ms": 17.115,
+     "n": 6040
+    }
+   }
+  }
+ },
+ "tuning": {
+  "cooc": [
+   {
+    "window": 3,
+    "history": 20,
+    "decay": 0.8,
+    "val_hit@10": 0.2432
+   },
+   {
+    "window": 3,
+    "history": 20,
+    "decay": 0.9,
+    "val_hit@10": 0.2192
+   },
+   {
+    "window": 3,
+    "history": 50,
+    "decay": 0.8,
+    "val_hit@10": 0.2437
+   },
+   {
+    "window": 3,
+    "history": 50,
+    "decay": 0.9,
+    "val_hit@10": 0.2179
+   },
+   {
+    "window": 5,
+    "history": 20,
+    "decay": 0.8,
+    "val_hit@10": 0.2455
+   },
+   {
+    "window": 5,
+    "history": 20,
+    "decay": 0.9,
+    "val_hit@10": 0.2157
+   },
+   {
+    "window": 5,
+    "history": 50,
+    "decay": 0.8,
+    "val_hit@10": 0.2454
+   },
+   {
+    "window": 5,
+    "history": 50,
+    "decay": 0.9,
+    "val_hit@10": 0.2147
+   }
+  ],
+  "two_tower": [
+   {
+    "dim": 64,
+    "history": 50,
+    "epochs": 6,
+    "val_hit@10": 0.2709,
+    "train_s": 132.0
+   },
+   {
+    "dim": 128,
+    "history": 50,
+    "epochs": 6,
+    "val_hit@10": 0.2952,
+    "train_s": 219.0
+   },
+   {
+    "dim": 64,
+    "history": 20,
+    "epochs": 6,
+    "val_hit@10": 0.2642,
+    "train_s": 98.3
+   },
+   {
+    "dim": 128,
+    "history": 100,
+    "epochs": 8,
+    "val_hit@10": 0.3096,
+    "train_s": 554.4
+   }
+  ]
+ },
+ "cooc_setting": {
+  "window": 5,
+  "history": 20,
+  "decay": 0.8
+ },
+ "two_tower_setting": {
+  "dim": 128,
+  "history": 100,
+  "epochs": 8,
+  "train_s": 567.9,
+  "parameters": 588516
+ },
+ "chloedb_events_write_s": 7.7,
+ "chloedb_create_recommender": {
+  "recommender": "ml",
+  "counts": "ml_counts",
+  "events": 994169,
+  "users": 6040,
+  "pairs": 1781706,
+  "took_ms": 13692.3
+ },
+ "chloedb_memory_kb": {
+  "before_recommender": 449195,
+  "after_recommender": 2522079,
+  "after_queries": 817123,
+  "peak": 3307528
+ },
+ "chloedb_version": "chloedb-server 0.3.9 (built from 2f21f4dd0c)",
+ "chloedb_disk_bytes": 420602244,
+ "paired": {
+  "chloedb_recommend - two_tower": {
+   "hit@10": {
+    "diff": -0.032,
+    "lo": -0.043,
+    "hi": -0.0215
+   },
+   "ndcg@10": {
+    "diff": -0.023,
+    "lo": -0.0297,
+    "hi": -0.0167
+   }
+  },
+  "chloedb_recommend - cooc": {
+   "hit@10": {
+    "diff": 0.0152,
+    "lo": 0.0063,
+    "hi": 0.0238
+   },
+   "ndcg@10": {
+    "diff": 0.0114,
+    "lo": 0.0062,
+    "hi": 0.0165
+   }
+  },
+  "two_tower - cooc": {
+   "hit@10": {
+    "diff": 0.0472,
+    "lo": 0.0364,
+    "hi": 0.0578
+   },
+   "ndcg@10": {
+    "diff": 0.0344,
+    "lo": 0.028,
+    "hi": 0.0409
+   }
+  },
+  "chloedb_fused - two_tower": {
+   "hit@10": {
+    "diff": 0.0235,
+    "lo": 0.0152,
+    "hi": 0.0318
+   },
+   "ndcg@10": {
+    "diff": 0.0118,
+    "lo": 0.0077,
+    "hi": 0.016
+   }
+  },
+  "chloedb_fused - chloedb_recommend": {
+   "hit@10": {
+    "diff": 0.0555,
+    "lo": 0.0475,
+    "hi": 0.0642
+   },
+   "ndcg@10": {
+    "diff": 0.0349,
+    "lo": 0.0304,
+    "hi": 0.0394
+   }
+  },
+  "chloedb_two_tower - two_tower": {
+   "hit@10": {
+    "diff": 0.0,
+    "lo": 0.0,
+    "hi": 0.0
+   },
+   "ndcg@10": {
+    "diff": 0.0,
+    "lo": 0.0,
+    "hi": 0.0
+   }
+  }
+ }
+}
