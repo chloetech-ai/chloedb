@@ -418,3 +418,32 @@ test('a second flight radar answers when OpenSky does not, and made tools keep n
   assert.match(guide, /run the tool in your head on the sample/, 'a made tool is tried on its sample')
   assert.match(guide, /repeat\(7, minmax\(0, 1fr\)\)/, 'a week fits its seven days')
 })
+
+test('every hand survives a phone coming back: ticks kept as ids, a night replaced while a phone slept, one thing marked twice (AG: round 10 MAYA-2, TOM-1, TOM-2)', async () => {
+  const { mergeKeep } = await import('../server/apps.mjs')
+  // Ticks kept as { id } only: Dan's lettuce and my mayonnaise are two ticks.
+  let said = []
+  const ticks = mergeKeep([{ id: 'buns' }], [{ id: 'buns' }, { id: 'mayo' }], [{ id: 'buns' }, { id: 'lettuce', by: 'Dan' }], said)
+  assert.deepEqual(ticks.map(t => t.id).sort(), ['buns', 'lettuce', 'mayo'])
+  assert.equal(said.length, 0)
+  // Two entries that say the same thing are still one (LENA-3 stays).
+  said = []
+  assert.equal(mergeKeep([], [{ id: 'a', item: 'milk' }], [{ id: 'b', item: 'milk' }], said).length, 1)
+  assert.equal(said[0].twice, 'milk')
+  // A day ticked on a phone that slept while that night was replaced: the tick
+  // doesn't land on the new night, and the phone is told.
+  const days = [{ date: '2027-04-11', place: 'Óbidos' }, { date: '2027-04-12', place: 'Nazaré' }]
+  said = []
+  const merged = mergeKeep(days, [days[0], { ...days[1], done: true }], [days[0], { date: '2027-04-12', place: 'Coimbra' }], said)
+  assert.equal(merged[1].place, 'Coimbra')
+  assert.equal(merged[1].done, undefined, 'the tick on Nazaré is not put on Coimbra')
+  assert.equal(said[0].gone, '2027-04-12')
+  // The same day ticked stays a tick on that day.
+  said = []
+  assert.equal(mergeKeep(days, [days[0], { ...days[1], done: true }], [{ ...days[0], note: 'x' }, days[1]], said)[1].done, true)
+  // Cancelled at two moments by the app and the tool it called: one cancel, nothing said.
+  said = []
+  const booking = mergeKeep({ code: 'A', cancelled: null }, { code: 'A', cancelled: '2026-11-20T09:23:58.625Z' }, { code: 'A', cancelled: '2026-11-20T09:23:58.402Z' }, said)
+  assert.equal(booking.cancelled, '2026-11-20T09:23:58.402Z')
+  assert.equal(said.length, 0)
+})

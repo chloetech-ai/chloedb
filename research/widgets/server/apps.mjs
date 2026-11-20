@@ -219,7 +219,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const leaf = v => v == null || typeof v !== 'object'
 const IGNORED = /^(id|by|at|added|addedAt|created|createdAt|updated|updatedAt|time|ts)$/i
 const NUMBERED = /^(number|no|num|invoice|invoice_?(no|num|number|id)|invoiceNumber|ref|reference|code)$/i
-const alike = (a, b) => a && b && typeof a === 'object' && typeof b === 'object' && same(Object.fromEntries(Object.entries(a).filter(([k]) => !IGNORED.test(k)).sort()), Object.fromEntries(Object.entries(b).filter(([k]) => !IGNORED.test(k)).sort()))
+const saysOf = e => Object.fromEntries(Object.entries(e).filter(([k]) => !IGNORED.test(k)).sort())
+// Two entries are the same thing when what they say is the same; an entry
+// that says nothing but its id (a tick kept as { id: 'lettuce' }) is only
+// ever itself, so two phones' ticks are never taken for one (round 10 MAYA-2).
+const alike = (a, b) => a && b && typeof a === 'object' && typeof b === 'object' && Object.keys(saysOf(a)).length > 0 && same(saysOf(a), saysOf(b))
 const nameOf = e => (e && typeof e === 'object' ? Object.entries(e).find(([k, v]) => !IGNORED.test(k) && typeof v === 'string' && v.trim())?.[1] ?? '' : String(e ?? ''))
 // Fields people write words in, which two phones add to rather than replace.
 const NOTE = /^(note|notes|comment|comments|remark|remarks|memo|observations?)$/i
@@ -261,7 +265,19 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
   // one day's dinner are told, not both kept or one lost (TOM-5).
   const plainList = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && !Array.isArray(e) && e.id == null)
   if (plainList(mine) && plainList(theirs) && plainList(base) && mine.length === base.length && theirs.length === base.length) {
-    return theirs.map((e, i) => mergeKeep(base[i], mine[i], e, said, `${path}/${nameOf(base[i]) || i + 1}`, depth + 1))
+    // An entry changed here goes to the same entry there, found by what it
+    // is (its day and its name), never to whatever now stands in its place:
+    // a night taken out and another put in its place is not the one ticked
+    // on a phone that slept through it (round 10 TOM-1).
+    const whatIs = e => JSON.stringify([e.date ?? e.day ?? null, e.place ?? e.city ?? e.town ?? e.where ?? e.stay ?? e.hotel ?? e.name ?? e.title ?? null])
+    const out = [...theirs]
+    for (let i = 0; i < base.length; i++) {
+      if (same(mine[i], base[i])) continue
+      const at = whatIs(theirs[i]) === whatIs(base[i]) ? i : theirs.findIndex(x => whatIs(x) === whatIs(base[i]))
+      if (at < 0) said.push({ field: `${path}`.replace(/^\//, '') || 'list', gone: nameOf(base[i]) || String(i + 1) })
+      else out[at] = mergeKeep(base[i], mine[i], out[at], said, `${path}/${nameOf(base[i]) || i + 1}`, depth + 1)
+    }
+    return out
   }
   if (Array.isArray(mine) && Array.isArray(theirs) && Array.isArray(base ?? [])) {
     // Without ids: what this side took out goes, what it added comes in, the rest is theirs.
@@ -313,6 +329,10 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
     said.push({ field: path.replace(/^\//, '') || 'value', both: `${theirs.slice(0, 40)} / ${mine.slice(0, 40)}`, notes: true })
     return theirs.includes(mine) ? theirs : `${theirs} / ${mine}`
   }
+  // Both sides marked it at a moment (cancelled, done at): one thing done
+  // twice, by the app and by the tool it called, not a clash (round 10 TOM-2).
+  const moment = v => (typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(v)) || (typeof v === 'number' && v > 1e12 && v < 1e13)
+  if (moment(mine) && moment(theirs) && !moment(base)) return theirs
   // One value changed on both sides: the one kept first stays, and both are said.
   if (leaf(mine) && leaf(theirs)) said.push({ field: path.replace(/^\//, '') || 'value', mine, theirs })
   else said.push({ field: path.replace(/^\//, '') || 'value', mine: nameOf(mine) || '(changed)', theirs: nameOf(theirs) || '(changed)' })

@@ -982,6 +982,9 @@ async function catchUp(shownBefore = {}) {
   for (const w of widgets.filter(x => !x.folded && !x.stub && !x.removed && x.node && (shared[x.app.id] || x.staleShown))) {
     const slot = slotOf(w.app.id)
     const before = shownBefore[slot] ?? { ...(cache[slot] ?? {}) }
+    // A newer version made meanwhile is drawn first, and said (round 10 TOM-1).
+    const current = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/now`, { method: 'POST', body: '{}' })).json().catch(() => null)
+    if (current?.app && current.app.version !== w.app.version) await newVersion({ app: w.app.id, version: current.app.version, change: '' })
     const out = await viaServer({ app: w.app.id, me: ownerOf(w.app.id), self: me, name: 'app_kept', arguments: { all: true } }).catch(() => null)
     if (!out || out.isError) continue
     const now = out.structuredContent?.values ?? {}
@@ -991,7 +994,7 @@ async function catchUp(shownBefore = {}) {
     delete w.staleShown
     if (said) {
       w.node.querySelector('.caught-note')?.remove()
-      const box = el('offline-note caught-note', esc(`Caught up: ${said} on another phone while this one had no signal.`), w.node)
+      const box = el('offline-note caught-note', esc(`Caught up: ${said} on another phone while this one was away.`), w.node)
       w.node.querySelector('.wbar').after(box)
       setTimeout(() => box.remove(), 30000)
     }
@@ -2119,6 +2122,16 @@ async function newVersion(ev) {
     setTimeout(() => box.remove(), 20000)
   }
 }
+// A phone or a tab that slept (an iPad left closed overnight) catches up
+// when it is looked at again: the version made meanwhile and what the others
+// kept, said, before anyone ticks on what it showed (round 10 TOM-1).
+let hiddenAt = 0
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+  if (hiddenAt && Date.now() - hiddenAt > 20000 && navigator.onLine !== false) catchUp()
+  hiddenAt = 0
+})
+addEventListener('pageshow', e => { if (e.persisted && navigator.onLine !== false) catchUp() })
 function syncWatch() {
   const pairs = widgets.filter(w => !w.folded && !w.stub && !w.removed && shared[w.app.id]).map(w => `${w.app.id}|${ownerOf(w.app.id)}`).filter(p => /\|s-[0-9a-f]{32}$/.test(p))
   const key = [...new Set(pairs)].sort().join(',')
