@@ -156,7 +156,7 @@ impl Cluster {
         cmd.args(args).stdout(Stdio::from(log)).stderr(Stdio::from(err)).stdin(Stdio::null()).kill_on_drop(true);
         // The coordinator runs the apps; a shard runs none, and keeps no
         // log store of its own.
-        cmd.env("CHLOEDB_START_APPS", "off").env("CHLOEDB_LOG_STORE", "off");
+        cmd.env("CHLOEDB_START_APPS", "off").env("CHLOEDB_LOG_STORE", "off").env("CHLOEDB_GROWN", "1");
         if let Some(t) = &o.token {
             cmd.env("CHLOEDB_TOKEN", t);
         }

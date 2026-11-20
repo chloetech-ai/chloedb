@@ -264,7 +264,7 @@ Then every request sends the token, and the console asks for it once:
 sql() { curl -sS http://127.0.0.1:7700/v1/sql -H 'content-type: application/json' -H 'authorization: Bearer pick-a-secret' --data-binary @-; echo; }
 ```
 
-and steps 3 to 5 run as written (the `/v1/write` call needs the same `authorization` header). Arguments after the image replace its default ones (`--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701`): add `--demo 20000` by passing `--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000`. `docker rm -f chloedb` stops it; the volume keeps the database.
+and steps 3 to 5 run as written (the `/v1/write` call needs the same `authorization` header). Arguments after the image replace its default ones (`--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --grpc 0.0.0.0:7701`): add `--demo 20000` by passing `--db /data/demo.chloedb --listen 0.0.0.0:7700 --demo 20000`. For [OpenSearch's API](chloedb/opensearch.md) too, publish its port and give the defaults again with it: `-p 127.0.0.1:9200:9200` before the image, and `--db /data/chloedb.chloedb --listen 0.0.0.0:7700 --opensearch-listen 0.0.0.0:9200` after it (the token is its password, with any user name). `docker rm -f chloedb` stops it; the volume keeps the database.
 
 ## Next
 

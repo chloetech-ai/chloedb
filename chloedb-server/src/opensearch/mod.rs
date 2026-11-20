@@ -2667,7 +2667,7 @@ fn check_search_body(b: &Json) -> Result<(), OsError> {
             "slice" => "ChloeDB does not slice a scroll: scroll once over the whole search".to_string(),
             "indices_boost" => "ChloeDB does not boost hits by their index".to_string(),
             "knn" => "ChloeDB's knn is a query: {\"query\": {\"knn\": {\"field\": {\"vector\": [...], \"k\": 10}}}}".to_string(),
-            "min_score" => "ChloeDB's search takes no min_score".to_string(),
+            "min_score" => "ChloeDB's search takes no min_score: hits come best first, so stop reading them at the first whose _score is below it".to_string(),
             "explain" => "ChloeDB's OpenSearch API does not explain scores".to_string(),
             "profile" => "ChloeDB's OpenSearch API does not profile searches".to_string(),
             "ext" => "ChloeDB runs no search plugins (ext)".to_string(),

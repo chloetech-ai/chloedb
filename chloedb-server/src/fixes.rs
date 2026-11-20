@@ -73,9 +73,14 @@ fn replace_name(sql: &str, word: &str, name: &str) -> Option<String> {
             let close = sql[i + 1..].find('"').map(|k| i + 1 + k);
             match close {
                 Some(e) if sql[i + 1..e].eq_ignore_ascii_case(word) => {
-                    out.push('"');
-                    out.push_str(name);
-                    out.push('"');
+                    // A path (`_source.x`) is not one quoted name.
+                    if name.contains('.') {
+                        out.push_str(name);
+                    } else {
+                        out.push('"');
+                        out.push_str(name);
+                        out.push('"');
+                    }
                     n += 1;
                     i = e + 1;
                 }
@@ -123,6 +128,9 @@ mod tests {
         // A qualified name: the word after the dot.
         let f = fixes("SELECT m.yaer FROM movies m", "no such column: m.yaer (did you mean year?)");
         assert_eq!(f[0]["sql"], "SELECT m.year FROM movies m");
+        // A field an OpenSearch index keeps in its documents.
+        let f = fixes("SELECT \"product\", count(*) FROM os_reviews GROUP BY product", "no such column: product in os_reviews (did you mean _source.product?); its columns are _id, _source");
+        assert_eq!(f[0]["sql"], "SELECT _source.product, count(*) FROM os_reviews GROUP BY _source.product");
         // Nothing near, or the word not in the statement as a name.
         assert!(fixes("SELECT zz FROM movies", "no such column: zz in movies; its columns are id").is_empty());
         assert!(fixes("SELECT 'titel' FROM movies", "no such column: titel (did you mean title?)").is_empty());
