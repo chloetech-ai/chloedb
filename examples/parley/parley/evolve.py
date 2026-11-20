@@ -52,7 +52,7 @@ OLD_KINDS = {"drawing": "craft", "picture": "craft", "meme": "style", "writing":
 _STYLE_FEATURES = [
     ("analogy", r"\b(like an?|as if|imagine|think of (it|them) as|the way an?)\b"),
     ("example", r"\b(for example|for instance|e\.g\.|such as|take the)\b"),
-    ("numbers", r"\b\d[\d,.]*\s?(%|km|kg|mm|cm|m|g|years?|hours?|days?|million|billion|thousand|x|°C?|ms|GB|MB|kWh|W)\b|\b\d{1,3}(,\d{3})+\b|\b\d+\.\d+\b|\b(1[5-9]|20)\d\d\b"),
+    ("numbers", r"\b\d[\d,.]*\s?(%|(km|kg|mm|cm|m|g|years?|hours?|days?|million|billion|thousand|x|°C?|ms|GB|MB|kWh|W)\b)|\b\d{1,3}(,\d{3})+\b|\b\d+\.\d+\b|\b(1[5-9]|20)\d\d\b"),
     ("contrast", r"\b(but|however|whereas|on the other hand|instead|yet)\b"),
     ("because", r"\b(because|so that|which means|that's why|that is why)\b"),
     ("story", r"\b(I|we) (once|tried|found|saw|spent|remember|learned|built|watched)\b"),

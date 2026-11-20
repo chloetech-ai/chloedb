@@ -53,7 +53,7 @@ pub fn trace() -> Vec<Value> {
 pub struct Db {
     pub url: String,
     key: Option<String>,
-    http: reqwest::Client,
+    pub http: reqwest::Client,
     /// "server" or "coordinator": a coordinator walks no graph.
     pub role: String,
     pub vision: bool,

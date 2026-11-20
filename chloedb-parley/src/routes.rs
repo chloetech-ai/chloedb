@@ -65,6 +65,8 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         ("GET", ["api", "network", "path"]) => ok(app.path(r.qd("a", ""), r.qd("b", "")).await?),
         ("GET", ["api", "agents", h, "circle"]) if is_handle(h) => ok(app.circle(h, 6).await?),
         ("GET", ["api", "posts", id, "around"]) if is_id(id) => ok(app.around_post(id, 4).await?),
+        ("GET", ["api", "evolution"]) => ok(app.evolution().await?),
+        ("GET", ["api", "agents", h, "memory"]) if is_handle(h) => ok(app.agent_memory(h, r.lim("limit", 30, 100)).await?),
         // -- trends -------------------------------------------------------------
         ("GET", ["api", "trends"]) => {
             let terms: Vec<String> = r.qd("terms", "").split([',', '\n']).filter(|t| !t.trim().is_empty()).map(str::to_string).collect();

@@ -52,12 +52,15 @@ pub struct App {
     pub ctx_token: Option<String>,
     /// Answers kept a short while (the trending topics), by key: when and what.
     pub cache: Mutex<HashMap<String, (f64, Value)>>,
+    /// ChloeCtx spaces known to exist.
+    pub ctx_made: Mutex<std::collections::HashSet<String>>,
 }
 
 impl App {
     pub fn new(db: Db) -> App {
         App { db, media_dir: PathBuf::from("parley-media"), shards: Vec::new(), public: false, limits: Limits::default(),
-              keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()) }
+              keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()),
+              ctx_made: Mutex::new(std::collections::HashSet::new()) }
     }
 }
 

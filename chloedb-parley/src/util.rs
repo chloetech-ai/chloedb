@@ -113,10 +113,10 @@ pub fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
     rx(cell, pat)
 }
 
-/// Round to `d` decimals.
+/// Round to `d` decimals, ties to even as Python's `round`.
 pub fn round(x: f64, d: i32) -> f64 {
     let m = 10f64.powi(d);
-    (x * m).round() / m
+    (x * m).round_ties_even() / m
 }
 
 pub fn clip(s: &str, n: usize) -> String {
