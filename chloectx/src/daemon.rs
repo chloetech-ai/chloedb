@@ -814,7 +814,20 @@ impl Daemon {
         let on_server = if what == "status" { remote.count(&key).map_err(|e| e.to_string()) } else { Err(String::new()) };
         // What the server should hold of the records sent or taken from it.
         let upto = self.store.query(&format!("SELECT COUNT(*) FROM memory WHERE seq <= {} LIMIT 1", st.pushed_seq)).ok().and_then(|rs| rs.rows.first().and_then(|r| r[0].as_i64())).unwrap_or(0).max(0) as u64;
-        let warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
+        let mut warning = on_server.as_ref().ok().and_then(|n| crate::sync::short_on_server(upto, *n));
+        if what == "status" && warning.is_none() {
+            // A note another machine numbered alike took the server's row
+            // (ANA-401): equal counts do not mean this store's records are there.
+            if let Ok(c) = remote.clashing(&self.store, &key, 500) {
+                if !c.is_empty() {
+                    warning = Some(format!(
+                        "the server holds another machine's records under {} of this store's ids ({}): two machines numbered a note alike, and this store's note is not on the server. Retell them with `chloectx remember` (new notes get ids of their own)",
+                        c.len(),
+                        c.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
         Ok(json!({
             "warning": warning,
             "server": remote.url, "syncs": true, "why": crate::sync::syncs(&home, &key), "scope": crate::sync::scope_line(&home),

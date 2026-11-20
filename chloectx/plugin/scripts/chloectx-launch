@@ -29,7 +29,11 @@
 # (default 25). What it did is in setup.log in the plugin's data folder.
 #
 # By hand:
-#   chloectx-launch setup     set up in the foreground, saying what it does
+#   chloectx-launch setup     set up in the foreground, saying what it does;
+#                             with `--sync-url URL` (the key on stdin, or in
+#                             $CHLOECTX_SYNC_TOKEN), also `chloectx sync
+#                             setup` in the current folder: a new teammate's
+#                             one step after the plugin is installed
 #   chloectx-launch where     print the chloectx it runs, or why there is none
 #   chloectx-launch ARGS...   run chloectx ARGS (setting it up first if need be)
 #
@@ -384,12 +388,28 @@ case "${1:-}" in
     exit 0
     ;;
   setup)
+    shift
+    sync_url=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --sync-url) sync_url=${2:-}; [ -n "$sync_url" ] || { echo "--sync-url needs the server's URL" >&2; exit 2; }; shift 2 ;;
+        *) echo "usage: chloectx-launch setup [--sync-url URL]   (the sync key on stdin)" >&2; exit 2 ;;
+      esac
+    done
     mkdir -p "$data"
-    "$self" __setup
+    "$self" __setup < /dev/null
     st=$?
     [ "$st" = 3 ] && wait_ready 3600
     [ -f "$data/ready" ] || exit 1
     echo "ChloeCtx is set up: $(find_bin)"
+    if [ -n "$sync_url" ]; then
+      bin=$(find_bin)
+      if [ -n "${CHLOECTX_SYNC_TOKEN:-}" ]; then
+        "$bin" sync setup --url "$sync_url" --no-create || exit 1
+      else
+        "$bin" sync setup --url "$sync_url" --token-stdin --no-create || exit 1
+      fi
+    fi
     exit 0
     ;;
   where)

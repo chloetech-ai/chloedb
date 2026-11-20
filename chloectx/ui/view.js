@@ -401,8 +401,15 @@ function sourceOf(ctx, type, id) {
     overview: () => api(`/v1/memory/overview?${p}`),
     notes,
     // Retired for every machine of the project, on its next pull: a key
-    // that writes the project's table may.
-    retire: (n) => { cache = null; return api("/v1/memory/retire", { body: { project: id, id: n } }); },
+    // that writes the project's table may. The app's own key only reads
+    // the project tables, so it plans the write and the server makes it
+    // with the signed-in key (WEI-402).
+    retire: async (n) => {
+      cache = null;
+      const plan = await api("/v1/memory/retire/plan", { body: { project: id, id: n } });
+      await ctx.core.api("/v1/write", { body: { ops: [plan.op] } });
+      return plan.note;
+    },
     // The synced copy keeps a note's links: its history is walked here.
     history: async (n) => {
       cache = cache || await notes(true);
@@ -609,7 +616,7 @@ function spacePage(root, ctx, src, rest) {
         if (me.synced) badges.append(h("a", { class: "badge accent", href: ctx.href("project", me.synced), title: "The copy chloectx sync keeps in this cluster" }, `synced as ${me.synced}`));
         if (!me.s.running) badges.append(h("span", { class: "badge", title: "Reading it started its daemon" }, "daemon started for this page"));
       } else {
-        lede.textContent = "Claude Code's memory of this repository, as chloectx sync copies it from each machine into its table on this cluster. Read only.";
+        lede.textContent = "Claude Code's memory of this repository, as chloectx sync copies it from each machine into its table on this cluster. Notes are read here; Retire (with a key that writes the project's table) leaves one out for every machine.";
       }
     }
     const opt = (x) => h("option", { value: `${x.type}/${x.id}`, selected: x.type === src.type && x.id === src.id }, x.type === "store" ? `${x.title} (this machine)` : x.title);

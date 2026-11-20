@@ -430,3 +430,30 @@ fn the_plugins_hooks_step_aside_for_a_user_install() {
     assert!(store.join("memory.strata").exists(), "{}", String::from_utf8_lossy(&out.stderr));
     let _ = Command::new(exe).args(["stop"]).current_dir(&project).env("CHLOECTX_HOME", &ctx_home).env("CLAUDE_PROJECT_DIR", &project).output();
 }
+
+/// WEI-401: a new teammate's one step after the plugin is installed:
+/// `chloectx-launch setup --sync-url URL` downloads chloectx, then sets
+/// the project's sync up with the key on stdin (or in the environment).
+#[test]
+fn setup_with_a_sync_url_also_sets_the_sync_up() {
+    let e = env();
+    let prog = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  --version) echo 'chloectx released' ;;\n  fetch-model) ;;\n  sync) echo \"$* key=$(cat)\" >> '{}' ;;\nesac\n",
+        e.log.display()
+    );
+    release(&e.releases, VERSION, &prog, true);
+    let (code, out, err) = e.run(&["setup", "--sync-url", "https://chloedb.example.com"], "k-made-up-123", &[]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(e.installed().is_file());
+    assert_eq!(e.calls().trim(), "sync setup --url https://chloedb.example.com --token-stdin --no-create key=k-made-up-123", "the key on stdin reaches sync setup, not the download");
+    // The key in the environment, as a setup script has it.
+    std::fs::remove_file(&e.log).unwrap();
+    let (code, out, err) = e.run(&["setup", "--sync-url", "https://chloedb.example.com"], "", &[("CHLOECTX_SYNC_TOKEN", "k-made-up-456")]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert_eq!(e.calls().trim(), "sync setup --url https://chloedb.example.com --no-create key=");
+    // A flag it does not know, or no URL: how to call it.
+    let (code, _, err) = e.run(&["setup", "--sync-url"], "", &[]);
+    assert!(code == 2 && err.contains("--sync-url needs"), "{err}");
+    let (code, _, err) = e.run(&["setup", "--key", "x"], "", &[]);
+    assert!(code == 2 && err.contains("usage: chloectx-launch setup"), "{err}");
+}
