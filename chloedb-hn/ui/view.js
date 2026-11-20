@@ -900,7 +900,7 @@ async function results(main, app, q, opts, alive) {
   // shown when they come; the facets once the results are on the page.
   const all = !only;
   const cP = all ? app.ctx.api(`/v1/search?${base}&only=comment&per=8&facets=0`).catch(() => null) : null;
-  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}&log=1`);
+  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}&log=1&dev=${matchMedia("(max-width: 700px)").matches ? "m" : "d"}`);
   // A logged search: the stories opened from it are kept, to value rankings on.
   const req = j.log?.request;
   const opened = (id) => { if (req) app.ctx.api(`/v1/click?r=${enc(req)}&id=${enc(id)}`).catch(() => null); };

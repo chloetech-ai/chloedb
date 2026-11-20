@@ -164,6 +164,12 @@ async fn get(http: &reqwest::Client, app: &App, path: &str, q: &[(&str, &str)]) 
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("{path}: {e}: {body}"))
 }
 
+async fn exp_post(http: &reqwest::Client, app: &App, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+    let r = http.post(format!("{}{path}", app.url)).bearer_auth(EXP_TOKEN).json(&body).send().await.unwrap();
+    let status = r.status();
+    (status, r.json().await.unwrap_or(Value::Null))
+}
+
 async fn search(http: &reqwest::Client, app: &App, q: &str) -> Value {
     get(http, app, "/v1/search", &[("q", q)]).await
 }
@@ -370,6 +376,44 @@ async fn searches_questions_and_completions() {
         assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the log and its click: {l}");
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+
+    // Interleaving: a test of two arms on every logged search; the page
+    // shows both arms' stories drafted into one list, a click on one is
+    // kept, and the test's log reads them back with each story's team.
+    let post = |path: &'static str, body: Value| exp_post(&http, &app, path, body);
+    let (st, v) = post("/v1/experiment/interleave", json!({"id": "t1", "a": {}, "b": {}})).await;
+    assert_eq!(st, 400, "two arms alike: {v}");
+    let (st, v) = post("/v1/experiment/interleave", json!({"id": "t1", "name": "newest first", "a": {}, "b": {"rank": "decay(created, now(), 157680000)", "tiers": false, "meaning": false}, "share": 1})).await;
+    assert!(st.is_success(), "{v}");
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert_eq!(d["interleave"]["test"]["id"], "t1", "{d}");
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("dev", "m")]).await;
+    assert_eq!(page["log"]["test"], "t1", "{page}");
+    let req = page["log"]["request"].as_str().unwrap().to_string();
+    let second = page["stories"][1]["id"].as_i64().unwrap();
+    let c = get(&http, &app, "/v1/click", &[("r", &req), ("id", &second.to_string())]).await;
+    assert_eq!(c["kept"], true, "{c}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let l: Value = exp("/v1/experiment/interleave/log?test=t1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+        let r = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
+        if r.len() == 1 && r[0]["clicks"] == json!([second]) {
+            assert_eq!(r[0]["dev"], "m");
+            let shown = r[0]["shown"].as_array().unwrap();
+            let teams = r[0]["teams"].as_str().unwrap();
+            assert_eq!(shown.len(), teams.len(), "{l}");
+            assert_eq!(shown[1].as_i64(), Some(second));
+            assert!(teams.contains('a') && teams.contains('b'), "both arms pick: {l}");
+            assert!(r[0]["b"].as_array().unwrap().iter().all(|x| shown.contains(x)) || shown.len() == 10, "{l}");
+            break;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the interleaved log: {l}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let (st, v) = post("/v1/experiment/interleave/stop", json!({"id": "t1"})).await;
+    assert!(st.is_success(), "{v}");
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1")]).await;
+    assert!(page["log"]["test"].is_null(), "stopped: {page}");
 
     app.stop();
 }

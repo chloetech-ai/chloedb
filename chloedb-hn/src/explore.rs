@@ -44,8 +44,13 @@ fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
+/// A request's seed: its draws (exploring's, interleaving's) start here.
+pub fn seed(request: &str) -> u64 {
+    fnv(request)
+}
+
 /// A uniform number in [0, 1) from a state, which it moves.
-fn uniform(z: &mut u64) -> f64 {
+pub fn uniform(z: &mut u64) -> f64 {
     *z = mix(*z);
     (*z >> 11) as f64 / (1u64 << 53) as f64
 }
@@ -93,22 +98,25 @@ impl Explore {
         let head: Vec<Row> = order.iter().map(|&i| stories[i].clone()).collect();
         stories.splice(0..n, head);
         let shown: Vec<i64> = order.iter().map(|&i| ranked[i]).collect();
-        {
-            let mut r = self.recent.lock().unwrap_or_else(|e| e.into_inner());
-            if r.len() >= RECENT {
-                let cut = now - 3 * 3600;
-                r.retain(|_, v| v.0 >= cut);
-                if r.len() >= RECENT {
-                    r.clear();
-                }
-            }
-            r.insert(request.to_string(), (now, shown.clone()));
-        }
+        self.remember(request, shown.clone(), now);
         let row = json!({
             "id": request, "ts": now, "q": q, "policy": self.policy().to_string(), "explored": explored as i64,
             "ranked": serde_json::to_string(&ranked).unwrap_or_default(), "shown": serde_json::to_string(&shown).unwrap_or_default(),
         });
         (stories, row)
+    }
+
+    /// Keeps a request served another way (interleaved), for its clicks.
+    pub fn remember(&self, request: &str, shown: Vec<i64>, now: i64) {
+        let mut r = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+        if r.len() >= RECENT {
+            let cut = now - 3 * 3600;
+            r.retain(|_, v| v.0 >= cut);
+            if r.len() >= RECENT {
+                r.clear();
+            }
+        }
+        r.insert(request.to_string(), (now, shown));
     }
 
     /// A click's row, if the request is a recent one and showed the story.
