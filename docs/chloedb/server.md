@@ -800,12 +800,12 @@ CREATE TABLE otel_logs (ts TIMESTAMP NOT NULL, observed_ts TIMESTAMP, severity K
 ```
 
 - `ts` is the record's time, or when it was observed if it has none (`observed_ts`), or when the server took it if it has neither.
-- `severity` is its severity text, or the name of its number (`severity_number`: `ERROR` for 17 to 20, `WARN` for 13 to 16, ...).
-- `service` and `host` are the resource's `service.name` and `host.name`; `resource` holds its other attributes.
+- `severity` is its severity text in one spelling (`warning` and `warn` are `WARN`, `err` is `ERROR`, `critical` is `FATAL`, in any case; a text the server does not know stays as written), or the name of its number if it has no text; `severity_number` is the record's, or the first of its text's range (`TRACE` 1, `DEBUG` 5, `INFO` 9, `WARN` 13, `ERROR` 17, `FATAL` 21), so `severity_number >= 17` finds the errors of every source.
+- `service` and `host` are the resource's `service.name` and `host.name`, or, when it has none, the record's `appname` and `hostname` attributes, which a Collector's syslog receiver sets; `resource` holds its other attributes.
 - `body` is a string body as it is, another kind of body as its JSON text.
 - `trace_id` and `span_id` are hex; `scope` is the instrumentation scope's name.
 - `attributes` holds the record's attributes, its event name as `event_name`, and bytes as base64, in a [JSON field](query-language.md#json-fields-keys-no-schema-names) whose paths filters read from its index.
-- `batch` is a random number per request: through a [coordinator](#sharding-one-coordinator-many-shards) it places the table's rows (`shard_by`), so that a request's rows go to one shard and requests spread over all of them. A log has no key, and the table has none.
+- `batch` is a number made from the request's content (random for a request with records that carry no time): through a [coordinator](#sharding-one-coordinator-many-shards) it places the table's rows (`shard_by`), so that a request's rows go to one shard and requests spread over all of them. A log has no key, and the table has none.
 
 `--otlp-retain PERIOD` (`'30 days'`, `'12h'`) makes the table with that retention (`retain = '30 days'`), so its rows older than that are dropped, a window of segments at a time ([tables](query-language.md#tables)); without it they are kept. A table made beforehand takes the columns of these that it has, by name, so make it first for another retention, more columns indexed or fewer kept. Its doc store is compressed with [zstd](query-language.md#tables): on four of Loghub's logs sent this way, `otel_logs` took 30 to 43 bytes a line (it has no key, and its positions are packed), and OpenSearch with its best compression 55 to 83 ([results](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/log-bytes)). The rows are searched as any are:
 
@@ -817,7 +817,7 @@ SELECT service, COUNT(*) FROM otel_logs WHERE attributes['http.status_code'] >= 
 SELECT * FROM otel_logs WHERE trace_id = '5b8efff798038103d269b633813fc60c';
 ```
 
-The answer is OTLP's: an empty `ExportLogsServiceResponse` when every record was written, and `partial_success` with `rejected_log_records` and the first one's reason when the table refused some (attributes nested more than 16 levels, say), the others written. A body that is not OTLP is answered 400, another content type 415, and a server behind on its writes 429 or 503 with `Retry-After`, which exporters wait out and send again; a failure is OTLP's `Status` in the request's encoding (over gRPC, the call's status). A call is counted in the metrics, and audited when refused, as `LogsExport`.
+The answer is OTLP's: an empty `ExportLogsServiceResponse` when every record was written, and `partial_success` with `rejected_log_records` and the first one's reason when the table refused some (attributes nested more than 16 levels, say), the others written. A body that is not OTLP is answered 400, another content type 415, and a server behind on its writes 429 or 503 with `Retry-After`, which exporters wait out and send again. Sending again writes nothing twice: `batch` and an idempotency key for each part of a request (1,000 rows) are made from its content, so a part already written, whose answer the exporter never got, is not written again (for the idempotency window, an hour by default; a request whose records have no time, which the server stamps, has no key); a failure is OTLP's `Status` in the request's encoding (over gRPC, the call's status). A call is counted in the metrics, and audited when refused, as `LogsExport`.
 
 ### Connectors
 

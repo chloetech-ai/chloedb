@@ -1107,6 +1107,34 @@ pub struct SqlRun {
     pub value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Since when this server has run this query (as it is now) and it has
+    /// answered 0, or no number, every time: a rule whose query matches
+    /// nothing, such as a `severity = 'ERROR'` against a table that spells
+    /// it `error`, reads 0 through an incident. Not kept across a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_since_ms: Option<u64>,
+    /// The query that ran, to tell an edited rule from the same one.
+    #[serde(skip)]
+    pub sql: String,
+    /// When this server first ran that query.
+    #[serde(skip)]
+    pub first_ms: u64,
+    /// Whether any run of that query has answered a number other than 0.
+    #[serde(skip)]
+    pub matched: bool,
+}
+
+impl SqlRun {
+    /// This run's `first_ms`, `matched` and `quiet_since_ms`, from the
+    /// last run of the rule (`before`, when its query was `sql`): quiet
+    /// while no run has answered other than 0 and this one did not fail
+    /// (a failed run says so itself, and is no evidence either way).
+    fn quiet(before: Option<&SqlRun>, sql: &str, now_ms: u64, value: Option<f64>, failed: bool) -> (u64, bool, Option<u64>) {
+        let before = before.filter(|b| b.sql == sql);
+        let first_ms = before.map_or(now_ms, |b| b.first_ms);
+        let matched = before.is_some_and(|b| b.matched) || value.is_some_and(|v| v != 0.0);
+        (first_ms, matched, (!matched && !failed).then_some(first_ms))
+    }
 }
 
 /// How often the rules with `sql` run their queries.
@@ -3721,7 +3749,8 @@ pub fn refresh_sql(svc: &Arc<crate::service::Service>) {
             if let Some(v) = value {
                 values.insert(sql_metric(&r.id), v);
             }
-            runs.insert(r.id.clone(), SqlRun { at_ms: now_ms(), took_ms: t0.elapsed().as_secs_f64() * 1e3, value, error });
+            let (first_ms, matched, quiet_since_ms) = SqlRun::quiet(lock(&svc.alerts.sql_runs).get(&r.id), &r.sql, now_ms(), value, error.is_some());
+            runs.insert(r.id.clone(), SqlRun { at_ms: now_ms(), took_ms: t0.elapsed().as_secs_f64() * 1e3, value, error, quiet_since_ms, sql: r.sql.clone(), first_ms, matched });
         }
         *lock(&svc.alerts.sql_values) = values;
         *lock(&svc.alerts.sql_runs) = runs;
@@ -4393,6 +4422,31 @@ fn backtest_events(svc: &crate::service::Service, rule: &Rule, from: u64, to: u6
 
 #[cfg(test)]
 mod tests {
+    /// MARCO-402: a rule whose query has answered 0 on every run since it
+    /// was made is marked quiet from its first run; one answer other than
+    /// 0 ends that, a failed run neither starts nor ends it, and an edited
+    /// query starts again.
+    #[test]
+    fn a_query_that_never_matched_is_quiet() {
+        let run = |before: Option<&super::SqlRun>, sql: &str, at: u64, value: Option<f64>, failed: bool| {
+            let (first_ms, matched, quiet_since_ms) = super::SqlRun::quiet(before, sql, at, value, failed);
+            super::SqlRun { at_ms: at, took_ms: 1.0, value, error: failed.then(|| "x".into()), quiet_since_ms, sql: sql.into(), first_ms, matched }
+        };
+        let q = "SELECT count(*) FROM logs WHERE severity = 'ERROR'";
+        let a = run(None, q, 100, Some(0.0), false);
+        assert_eq!(a.quiet_since_ms, Some(100));
+        let b = run(Some(&a), q, 130, None, true);
+        assert_eq!(b.quiet_since_ms, None, "a failed run says so itself");
+        let c = run(Some(&b), q, 160, Some(0.0), false);
+        assert_eq!(c.quiet_since_ms, Some(100));
+        let d = run(Some(&c), q, 190, Some(3.0), false);
+        assert_eq!(d.quiet_since_ms, None);
+        let e = run(Some(&d), q, 220, Some(0.0), false);
+        assert_eq!(e.quiet_since_ms, None, "it matched once");
+        let f = run(Some(&e), "SELECT 0", 250, Some(0.0), false);
+        assert_eq!(f.quiet_since_ms, Some(250), "an edited query starts again");
+    }
+
     use super::*;
 
     /// A primary that stepped down reports no replicas out of sync: its
