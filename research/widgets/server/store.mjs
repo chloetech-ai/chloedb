@@ -286,8 +286,14 @@ export class Apps {
         const minute = `${id}|${Math.floor(at / 60_000)}`
         const [had] = await this.db.get('ia_history', [minute])
         const doc = { owner, app: appId, name: key, value: row.value, at }
+        // One copy a minute, and one more each time it changes hands, so
+        // one person's changes are never told as another's (round 9 DEV-2).
+        const last = (this.lastBy ??= new Map()).get(id)
+        const otherHand = last != null && last !== String(by)
+        this.lastBy.set(id, String(by))
+        if (this.lastBy.size > 5000) this.lastBy.delete(this.lastBy.keys().next().value)
         if (!had) ops.push({ op: 'upsert', table: 'ia_history', doc: { id: minute, ...doc } })
-        else if (count(value) < count(was)) ops.push({ op: 'upsert', table: 'ia_history', doc: { id: `${id}|t${at}`, ...doc } })
+        else if (otherHand || count(value) < count(was)) ops.push({ op: 'upsert', table: 'ia_history', doc: { id: `${id}|t${at}`, ...doc } })
         if (by) ops.push({ op: 'upsert', table: 'ia_by', doc: { id: `${id}|t${at}`, owner, app: appId, by: String(by).slice(0, 40), at } })
       }
     }

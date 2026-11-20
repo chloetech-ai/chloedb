@@ -758,10 +758,22 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const input = await body(req)
         if (limited(req)) return stream(res, () => Promise.reject(new Error(tooMany)))
+        // A browser closed before the answer came: the turn goes on, and
+        // what it answered is kept in the conversation, so the request is
+        // there when it opens again (round 9 LENA-3).
+        let left = false
+        res.on('close', () => { if (!res.writableEnded) left = true })
         return stream(res, async send => {
-          const out = recording(own(input.talk), send)
+          let reply = ''
+          const shownHere = []
+          const out = recording(own(input.talk), event => {
+            if (event.type === 'reply') reply = String(event.text ?? '')
+            if (event.type === 'app') shownHere.push({ id: event.shown ?? '', app: event.app?.id ?? '', name: event.app?.name ?? '', kind: event.app?.kind ?? '', how: event.how ?? '', shows: '', in: false })
+            if (!left) send(event)
+          })
           await turn(input, out)
           await out.written()
+          if (left && own(input.talk)) await apps.talked({ talk: own(input.talk), request: String(input.text ?? '').slice(0, 2000), reply: reply.slice(0, 4000), shown: shownHere.slice(0, 8) }).catch(log)
         })
       }
       // A conversation of this browser, read back after a reload or the next day.

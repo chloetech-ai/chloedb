@@ -825,6 +825,7 @@ function conflictNote(id, said) {
     : c.gone != null ? `${show(c.gone)} was taken out on the other phone, so what was changed in it here was not kept`
     : c.stayedOut != null ? `${show(c.stayedOut)} was taken out on another phone, so it stays out`
     : c.tookOut != null ? `This version took out ${show(c.tookOut)}: Undo change brings it back`
+    : c.notes ? `Two notes were written on ${show(String(c.field).split('/').slice(-2, -1)[0] ?? c.field)} at once: both are kept (${show(c.both)})`
     : c.both != null ? `${show(c.both)} was added on both phones with something different: both are kept, check which is right`
     : `${show(String(c.field))} was changed on both phones: kept ${show(c.theirs)}, saved first; ${show(c.mine)} was not kept`).join('; ')
   const shown = widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))
@@ -1576,7 +1577,8 @@ function bar(w) {
   })
   // Undo goes back a version and Redo forward again, until a new change.
   const step = async way => {
-    const out = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/${way}`, { method: 'POST', body: '{}' })).json()
+    w.ownStep = Date.now()
+    const out = await (await fetch(`/api/apps/${encodeURIComponent(w.app.id)}/${way}`, { method: 'POST', body: '{}' })).json().finally(() => { w.ownStep = 0; w.ownAt = Date.now() })
     w.app = out.app
     w.newer = out.newer
     w.how = 'changed'
@@ -1607,6 +1609,7 @@ function bar(w) {
   }
   // A change asked in the bar, or a fix the app asks for when it hits an error.
   w.change = async (what, label = 'Changing it') => {
+    w.ownStep = Date.now()
     const input = changer.querySelector('input')
     changer.hidden = true
     acts.innerHTML = `<span class="status"><span class="spin"></span>${esc(label)}</span>`
@@ -1630,7 +1633,7 @@ function bar(w) {
         if (ev.copied) rail(ev.app.id)
       }
       if (ev.type === 'error') acts.innerHTML = `<span class="error">${esc(ev.text)}</span>`
-    })
+    }).finally(() => { w.ownStep = 0; w.ownAt = Date.now() })
   }
 }
 
@@ -1679,6 +1682,7 @@ async function ask(question) {
   const here = []
   scroll()
   try {
+    turning = Date.now()
     const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-10), lastApp, screen: screen(), talk }) })
     await events(res, async ev => {
       if (ev.type === 'status') status.lastChild.textContent = ev.text
@@ -1752,6 +1756,7 @@ async function ask(question) {
       }
     })
   } finally {
+    turning = Date.now() - 295_000
     clearInterval(timer)
     status.remove()
     history.push({ role: 'user', text: question }, { role: 'assistant', text: reply })
@@ -1958,12 +1963,18 @@ function refusedRedraw(w, why) {
 // Another phone changed the app itself (a new version, an undo): this phone
 // draws the new one and says what changed, instead of the old one until a
 // reload (MAYA-3).
+// When this page last asked the chat something: a new version then is its own.
+let turning = 0
 async function newVersion(ev) {
   const ws = widgets.filter(w => w.app.id === ev.app && !w.removed && !w.stub && w.app.version !== ev.version)
   if (!ws.length) return
   const out = await (await fetch(`/api/apps/${encodeURIComponent(ev.app)}/now`, { method: 'POST', body: '{}' })).json().catch(() => null)
   if (!out?.app) return
   for (const w of ws) {
+    // This page's own Undo or change: it draws that itself, and it was not
+    // another phone (round 9 PRIYA-6, INES-6).
+    if (w.ownStep || Date.now() - (w.ownAt ?? 0) < 5000) continue
+    const mine = Date.now() - turning < 300_000
     w.app = out.app
     w.payload.html = out.html
     w.how = 'changed'
@@ -1971,6 +1982,7 @@ async function newVersion(ev) {
     draw(w)
     bar(w)
     w.node.querySelector('.version-note')?.remove()
+    if (mine) continue
     const box = el('offline-note version-note', esc(`Changed on another phone${ev.change ? `: ${ev.change}` : ''}. This is the new version.`), w.node)
     w.node.querySelector('.wbar').after(box)
     setTimeout(() => box.remove(), 20000)

@@ -293,6 +293,11 @@ test('a keep goes on top of what is there: ids, lists without ids, clashes and t
   assert.equal(clash.length, 1)
   // With no clash, the name comes with the change.
   assert.deepEqual(mergeKeep(base, [{ id: 1, title: 'Dark mode', status: 'failed', status_by: 'Sam' }], [{ id: 1, title: 'Dark mode!', status: '', status_by: '' }]), [{ id: 1, title: 'Dark mode!', status: 'failed', status_by: 'Sam' }])
+  // A note written on both phones keeps both, and both are told (round 9 DEV-1).
+  const notes = []
+  const both = mergeKeep([{ id: 1, case: 'Coupon', note: '' }], [{ id: 1, case: 'Coupon', note: 'FAILS: expired coupon accepted' }], [{ id: 1, case: 'Coupon', note: 'works on Android' }], notes)
+  assert.equal(both[0].note, 'works on Android / FAILS: expired coupon accepted')
+  assert.equal(notes[0].notes, true)
 })
 
 test('merges at their edges: a delete wins, days merge by place, one number twice is said (Q: MARCUS-1, TOM-5, LENA-3)', async () => {

@@ -218,6 +218,8 @@ const IGNORED = /^(id|by|at|added|addedAt|created|createdAt|updated|updatedAt|ti
 const NUMBERED = /^(number|no|num|invoice|invoice_?(no|num|number|id)|invoiceNumber|ref|reference|code)$/i
 const alike = (a, b) => a && b && typeof a === 'object' && typeof b === 'object' && same(Object.fromEntries(Object.entries(a).filter(([k]) => !IGNORED.test(k)).sort()), Object.fromEntries(Object.entries(b).filter(([k]) => !IGNORED.test(k)).sort()))
 const nameOf = e => (e && typeof e === 'object' ? Object.entries(e).find(([k, v]) => !IGNORED.test(k) && typeof v === 'string' && v.trim())?.[1] ?? '' : String(e ?? ''))
+// Fields people write words in, which two phones add to rather than replace.
+const NOTE = /^(note|notes|comment|comments|remark|remarks|memo|observations?)$/i
 export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
   if (same(mine, base) || depth > 8) return depth > 8 ? mine : theirs
   if (same(theirs, base) || same(theirs, mine)) return mine
@@ -301,6 +303,12 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
       if (same(theirs[k], b[k]) || theirs[k] === undefined) out[k] = mine[k]
     }
     return out
+  }
+  // A note written on both sides keeps both, the one kept first first: a
+  // "FAILS: …" written with no signal is never dropped (round 9 DEV-1).
+  if (typeof mine === 'string' && typeof theirs === 'string' && NOTE.test(path.split('/').pop() ?? '') && mine.trim() && theirs.trim()) {
+    said.push({ field: path.replace(/^\//, '') || 'value', both: `${theirs.slice(0, 40)} / ${mine.slice(0, 40)}`, notes: true })
+    return theirs.includes(mine) ? theirs : `${theirs} / ${mine}`
   }
   // One value changed on both sides: the one kept first stays, and both are said.
   if (leaf(mine) && leaf(theirs)) said.push({ field: path.replace(/^\//, '') || 'value', mine, theirs })

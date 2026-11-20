@@ -35,6 +35,10 @@ function scripted() {
         const app = input.screen[0]?.id
         return change[1].toLowerCase() === 'undo' ? { mode: 'undo', kind: 'action', app, why: 'take it back' } : { mode: 'change', kind: 'action', app, what: input.request.slice(8), why: 'a change' }
       }
+      if (/^slowly/i.test(input.request)) {
+        await new Promise(r => setTimeout(r, 400))
+        return { mode: 'chat', kind: 'info', tool: null, args: {}, reply: 'Took a while.', why: 'slow' }
+      }
       const entry = /^add (\w+) ([\d.,]+)/i.exec(input.request)
       if (entry) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'budget', values: { month: 'Nov', add: { item: entry[1], amount: Number(entry[2].replace(',', '.')) } } }, why: 'your budget' }
       const out = /^take (\w+) out/i.exec(input.request)
@@ -827,8 +831,13 @@ test('names stay true: the app’s own keeps are nobody’s, history names each 
   const moment = hist.moments.find(m => /detergente/.test(m.then))
   assert.ok(moment, JSON.stringify(hist.moments))
   assert.match(moment.then, /detergente added to expenses by Joana/)
-  assert.match(moment.then, /pastel de nata, bilhete comboio added to expenses(;|$)/)
-  assert.deepEqual(moment.by, [], 'the moment is not all Joana’s')
+  // The owner's own entries, a moment later, are a moment of their own,
+  // never told as Joana's (round 9 DEV-2, INES-4).
+  assert.doesNotMatch(moment.then, /pastel de nata/)
+  const owners = hist.moments.find(m => /pastel de nata/.test(m.then))
+  assert.ok(owners, JSON.stringify(hist.moments))
+  assert.match(owners.then, /pastel de nata, bilhete comboio added to expenses(;|$)/)
+  assert.deepEqual(owners.by, [], 'not Joana’s')
 
   // The same invoice number from two phones is said to every phone that
   // opens it, with each one's amount and who, until one is taken out (LENA-2).
@@ -890,6 +899,22 @@ test('what was taken out stays out: a phone still showing the old list can’t b
   // The one who took it out can put it back (an undo).
   await keep(owner, [n14, p15, n15], [n14, p15], 'laptop')
   assert.deepEqual((await read()).map(n => n.id), ['n14', 'p15', 'n15'])
+})
+
+test('a request sent just before the browser closes is answered and kept in the conversation (AB: round 9 LENA-3)', { skip }, async () => {
+  const talk = '4'.repeat(32)
+  const gone = new AbortController()
+  const sent = fetch(`${chat.url}api/turn`, { method: 'POST', body: JSON.stringify({ text: 'slowly, what is due?', talk }), signal: gone.signal }).catch(() => null)
+  await new Promise(r => setTimeout(r, 100))
+  gone.abort()
+  await sent
+  let turns = []
+  for (let i = 0; i < 30 && !turns.some(t => t.reply); i++) {
+    await new Promise(r => setTimeout(r, 100))
+    turns = (await (await fetch(`${chat.url}api/talk?talk=${talk}`)).json()).turns
+  }
+  assert.equal(turns.at(-1)?.request, 'slowly, what is due?', JSON.stringify(turns))
+  assert.equal(turns.at(-1)?.reply, 'Took a while.')
 })
 
 test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { skip }, async () => {
