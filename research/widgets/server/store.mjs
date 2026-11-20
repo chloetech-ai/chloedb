@@ -33,6 +33,9 @@ const SHOWN = `CREATE TABLE ia_shown (id KEYWORD PRIMARY KEY, talk KEYWORD, app 
 // that takes entries out), so what it kept yesterday can come back
 // (LENA-1, INES-1).
 const HISTORY = `CREATE TABLE ia_history (id KEYWORD PRIMARY KEY, owner KEYWORD, app KEYWORD, name KEYWORD, value TEXT OPTIONS(indexed = false), at INT)`
+// Who made each change through a link made for a person, so Earlier
+// versions says who did what (LENA-4, MARCUS-8).
+const SIGNED = `CREATE TABLE ia_by (id KEYWORD PRIMARY KEY, owner KEYWORD, app KEYWORD, by KEYWORD, at INT)`
 const TALK = `CREATE TABLE ia_talk (id KEYWORD PRIMARY KEY, talk KEYWORD, at INT, request TEXT OPTIONS(indexed = false), reply TEXT OPTIONS(indexed = false), shown TEXT OPTIONS(indexed = false))`
 
 // The apps "made before", so the rail is not empty on the first start: the
@@ -109,7 +112,7 @@ export class Apps {
       if (!/already exists/i.test(error.message)) throw error
     })
     const tables = new Set((await db.tables()).map(t => t.table ?? t.name ?? t))
-    for (const [name, sql] of [['ia_state', STATE], ['ia_shown', SHOWN], ['ia_talk', TALK], ['ia_history', HISTORY]]) if (!tables.has(name)) await create(sql)
+    for (const [name, sql] of [['ia_state', STATE], ['ia_shown', SHOWN], ['ia_talk', TALK], ['ia_history', HISTORY], ['ia_by', SIGNED]]) if (!tables.has(name)) await create(sql)
     const apps = new Apps(db, { meaning })
     apps.child = child
     // Each seed once, by its id: a folder from before a seed was added gets
@@ -185,6 +188,8 @@ export class Apps {
       ops.push({ op: 'upsert', table: 'ia_versions', doc: { id: `${row.id}@${row.version}`, app: row.id, version: row.version, change, made: now(), source: row.source } })
     }
     await this.db.write(ops)
+    // A new version (or an undo) is told to every phone that has it open (R).
+    try { this.onput?.(row.id, row.version, change) } catch {}
     return tidy(row)
   }
 
@@ -243,6 +248,8 @@ export class Apps {
     for (const row of state) ops.push({ op: 'delete', table: 'ia_state', key: row.id })
     const history = await this.db.query('SELECT id FROM ia_history WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])
     for (const row of history) ops.push({ op: 'delete', table: 'ia_history', key: row.id })
+    const signed = await this.db.query('SELECT id FROM ia_by WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])
+    for (const row of signed) ops.push({ op: 'delete', table: 'ia_by', key: row.id })
     await this.db.write(ops)
     return app
   }
@@ -254,15 +261,17 @@ export class Apps {
 
   // Kit.keep and Kit.kept: what an app keeps for one browser (its owner),
   // kept across the app's versions.
-  async keep(appId, key, value, owner = '') {
+  async keep(appId, key, value, owner = '', by = '') {
     const text = JSON.stringify(value ?? null)
-    if (text.length > 100_000) throw new Error('That is too much to keep (100 KB at most).')
+    // A pasted file of a few hundred KB is kept (DEV-4); its earlier
+    // versions only while it is small.
+    if (text.length > 1_000_000) throw new Error('That is too much to keep (1 MB at most).')
     const id = stateId(owner, appId, key)
     const at = now()
     const ops = [{ op: 'upsert', table: 'ia_state', doc: { id, owner, app: appId, name: key, value: text, at } }]
     // The chat's own records (links, what a link made) and how each person
     // looks at it (view:) have no history.
-    if (!/^(-|link:|made:|view:)/.test(key) && !String(owner).startsWith('-')) {
+    if (!/^(-|link:|made:|view:)/.test(key) && !String(owner).startsWith('-') && text.length <= 200_000) {
       const [row] = await this.db.get('ia_state', [id])
       if (row && row.value !== text) {
         const was = JSON.parse(row.value)
@@ -272,6 +281,7 @@ export class Apps {
         const doc = { owner, app: appId, name: key, value: row.value, at }
         if (!had) ops.push({ op: 'upsert', table: 'ia_history', doc: { id: minute, ...doc } })
         else if (count(value) < count(was)) ops.push({ op: 'upsert', table: 'ia_history', doc: { id: `${id}|t${at}`, ...doc } })
+        if (by) ops.push({ op: 'upsert', table: 'ia_by', doc: { id: `${id}|t${at}`, owner, app: appId, by: String(by).slice(0, 40), at } })
       }
     }
     await this.db.write(ops)
@@ -281,6 +291,8 @@ export class Apps {
     const mine = stateId(owner, appId, '')
     const rows = await this.db.query('SELECT id FROM ia_history WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])
     const ops = rows.filter(r => r.id.startsWith(mine)).map(r => ({ op: 'delete', table: 'ia_history', key: r.id }))
+    const signed = await this.db.query('SELECT id FROM ia_by WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])
+    ops.push(...signed.filter(r => r.id.startsWith(mine)).map(r => ({ op: 'delete', table: 'ia_by', key: r.id })))
     if (ops.length) await this.db.write(ops)
   }
 
@@ -292,6 +304,13 @@ export class Apps {
     // The oldest go once there are many.
     if (out.length > 600) await this.db.write(out.slice(600).map(r => ({ op: 'delete', table: 'ia_history', key: r.id }))).catch(() => {})
     return out.slice(0, 600).map(r => ({ name: r.name, value: JSON.parse(r.value), at: r.at }))
+  }
+
+  // Who changed it through a person's link, and when, newest first.
+  async signers(appId, owner = '') {
+    const mine = stateId(owner, appId, '')
+    const rows = await this.db.query('SELECT id, by, at FROM ia_by WHERE app = :app LIMIT 2000', { app: appId }).catch(() => [])
+    return rows.filter(r => r.id.startsWith(mine)).map(r => ({ by: r.by, at: r.at })).sort((a, b) => b.at - a.at)
   }
 
   async kept(appId, key, owner = '') {

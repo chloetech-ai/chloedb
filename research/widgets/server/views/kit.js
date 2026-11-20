@@ -68,6 +68,7 @@ function replayed(data, kept) {
 let sharedKept = false
 let keptWhere = ''
 let role = null
+let who = null
 // Draws the last data again from what is kept: after a keep the link can't
 // make, so a helper's screen doesn't show an item gone that is still there.
 let redraw = null
@@ -89,7 +90,12 @@ function drawing(draw, connection, keeps = true) {
       let kept = {}
       let gone = false
       try {
-        if (keeps) kept = (await globalThis.Kit.call(app, 'app_kept', { all: true }))?.values ?? {}
+        if (keeps) {
+          const got = await globalThis.Kit.call(app, 'app_kept', { all: true })
+          kept = got?.values ?? {}
+          // Who this link is (a person's name, what it can do): the app never asks (P).
+          if (got?.who) who = got.who
+        }
       } catch (error) {
         // An app whose host keeps nothing gets none; a stopped link says so.
         if (/stopped/i.test(error?.message ?? '')) {
@@ -112,7 +118,7 @@ function drawing(draw, connection, keeps = true) {
       if (role === 'viewer') banner('Shared with you to look at: what you change here is not kept.')
       const start = performance.now()
       try {
-        draw({ ...replayed(data, kept), kept })
+        draw({ ...replayed(data, kept), kept, ...(who ? { who } : {}) })
       } finally {
         slow(performance.now() - start)
       }

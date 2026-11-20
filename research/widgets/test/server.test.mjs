@@ -275,9 +275,57 @@ test('a keep goes on top of what is there: ids, lists without ids, clashes and t
   assert.equal(mergeKeep(5, 5, 7), 7, 'nothing changed here: theirs')
 })
 
+test('merges at their edges: a delete wins, days merge by place, one number twice is said (Q: MARCUS-1, TOM-5, LENA-3)', async () => {
+  const { mergeKeep, signed } = await import('../server/apps.mjs')
+  // He ticked Kim with no signal; the owner had taken Kim out: Kim stays out.
+  let said = []
+  const jobs = [{ id: 'kim', client: 'Kim', done: false }, { id: 'pat', client: 'Patel', done: false }]
+  assert.deepEqual(mergeKeep(jobs, [{ ...jobs[0], done: true }, jobs[1]], [jobs[1]], said, '/jobs'), [jobs[1]])
+  assert.deepEqual(said, [{ field: 'jobs', gone: 'Kim' }])
+  // Two people on one day's dinner: the first stays, and it is said.
+  said = []
+  const days = [{ day: 'Sat', dinner: '' }, { day: 'Sun', dinner: '' }]
+  const out = mergeKeep(days, [{ day: 'Sat', dinner: 'Tom’s pick' }, days[1]], [{ day: 'Sat', dinner: 'Ruth’s pick' }, { day: 'Sun', dinner: 'fish' }], said, '/plan')
+  assert.deepEqual(out, [{ day: 'Sat', dinner: 'Ruth’s pick' }, { day: 'Sun', dinner: 'fish' }])
+  assert.deepEqual(said, [{ field: 'plan/Sat/dinner', mine: 'Tom’s pick', theirs: 'Ruth’s pick' }])
+  // The same invoice number, two amounts: both stay, and both phones are told.
+  said = []
+  const two = mergeKeep([], [{ id: 'a', number: '1043', amount: 97.85 }], [{ id: 'b', number: '1043', amount: 98.75 }], said, '/invoices')
+  assert.equal(two.length, 2)
+  assert.deepEqual(said, [{ field: 'invoices', both: 'number 1043' }])
+  // A list without ids: a tick on the owner's entry keeps it the owner's.
+  assert.deepEqual(signed([{ item: 'milk', done: false }], [{ item: 'milk', done: true }, { item: 'eggs' }], 'Femi'), [{ item: 'milk', done: true }, { item: 'eggs', by: 'Femi' }])
+})
+
 test('asking for an app to stay in the browser makes it private (DEV-1)', () => {
   const page = readFileSync(new URL('../chat/index.html', import.meta.url), 'utf8')
   const PRIVATE = new Function(`return ${page.match(/const PRIVATE = (\/.*\/i)/)[1]}`)()
   for (const t of ['a JWT decoder that must run only in my browser', 'keep it private', 'it never leaves my laptop', 'runs locally']) assert.ok(PRIVATE.test(t), t)
   assert.ok(!PRIVATE.test('a JWT decoder'))
+})
+
+test('a loop that never ends stops the app, not the page; tools for pastes start private (T: DEV-1, DEV-2, DEV-4)', async () => {
+  const { guardLoops, guardScripts, LOOP_GUARD } = await import('../server/loops.mjs')
+  assert.equal(guardLoops('while(true){x++}'), 'while(__iaLoop() && (true)){x++}')
+  assert.equal(guardLoops('for(;;){}'), 'for(; __iaLoop();){}')
+  assert.equal(guardLoops('for (const x of xs) {}'), 'for (const x of xs) {}')
+  assert.equal(guardLoops('s = `while(${a})`; r = /for(;;)/; a.while(1)'), 's = `while(${a})`; r = /for(;;)/; a.while(1)')
+  assert.match(guardLoops('do { a() } while (b < 3)'), /while \(__iaLoop\(\) && \(b < 3\)\)/)
+  // The guard throws once one task loops for more than two seconds.
+  const g = {}
+  new Function('globalThis', 'setTimeout', LOOP_GUARD.replace(/^<script>|<\/script>$/g, '').replaceAll('globalThis.', 'globalThis.'))(g, () => {})
+  const started = Date.now()
+  assert.throws(() => { while (g.__iaLoop()) {} }, /loop that never ended/)
+  assert.ok(Date.now() - started < 4000)
+  // Only an app's own inline scripts are guarded, and the page puts the guard first.
+  assert.match(guardScripts('<script type="module">while(1){}</script>'), /__iaLoop/)
+  const { render } = await import('../server/index.mjs')
+  const page = render('<p>x</p><script type="module">for(;;){}</script>')
+  assert.ok(page.indexOf('__iaLoop=') < page.indexOf('for(; __iaLoop();)'), 'the guard is there before the app')
+  const html = readFileSync(new URL('../chat/index.html', import.meta.url), 'utf8')
+  const PASTED = new Function(`return ${html.match(/const PASTED = (\/.*\/i)/)[1]}`)()
+  for (const t of ['a JWT decoder', 'a regex tester for my log lines', 'a JSON formatter I can paste into']) assert.ok(PASTED.test(t), t)
+  assert.ok(!PASTED.test('a week of dinners'))
+  const PRIVATE = new Function(`return ${html.match(/const PRIVATE = (\/.*\/i)/)[1]}`)()
+  assert.ok(PRIVATE.test('keep what I paste out of the chat'))
 })

@@ -223,7 +223,9 @@ test('what an app keeps is kept for one browser, and goes when the app is remove
   assert.equal(kept.isError, undefined)
   assert.deepEqual((await post('/api/call', { app: id, me, name: 'app_kept', arguments: { key: 'stars' } })).structuredContent.value, { mon: 3 })
   assert.equal((await post('/api/call', { app: id, me: friend, name: 'app_kept', arguments: { key: 'stars' } })).structuredContent.value, null, 'another browser sees none of it')
-  const big = await post('/api/call', { app: id, me, name: 'app_keep', arguments: { key: 'big', value: 'x'.repeat(100_001) } })
+  // A paste of a few hundred KB is kept (DEV-4); past 1 MB it is not.
+  assert.equal((await post('/api/call', { app: id, me, name: 'app_keep', arguments: { key: 'paste', value: 'x'.repeat(325_000) } })).isError, undefined)
+  const big = await post('/api/call', { app: id, me, name: 'app_keep', arguments: { key: 'big', value: 'x'.repeat(1_000_001) } })
   assert.equal(big.isError, true)
   await post(`/api/apps/${id}/save`)
   assert.ok((await rail()).some(a => a.id === id))
@@ -272,8 +274,20 @@ test('a conversation is kept for its browser, and each app in it opens again as 
   assert.equal(again.args.documents[0].title, 'Quiet headphones, tested')
   assert.equal((await fetch(`${chat.url}api/shown/${answer.shown}?talk=${'d'.repeat(32)}`)).status, 404, 'only in its own conversation')
 
-  // Kept as its own app, it keeps those findings when searches follow.
-  const keptApp = (await post('/api/apps/search-results/keep-answer', { talk, shown: answer.shown, name: 'Quiet headphones · Nov 19', request: 'find reviews of quiet headphones' })).app
+  // Kept as its own app, it keeps those findings when searches follow, and
+  // the notes on it come with it (S: PRIYA-2).
+  const noter = '7'.repeat(32)
+  const notesKey = `notes ${String(again.args.query ?? '').slice(0, 70)}`
+  await post('/api/call', { app: 'search-results', me: noter, name: 'app_keep', arguments: { key: notesKey, value: [{ id: 'n1', on: 'Quiet headphones', text: 'too heavy' }] } })
+  const keptApp = (await post('/api/apps/search-results/keep-answer', { talk, shown: answer.shown, name: 'Quiet headphones · Nov 19', request: 'find reviews of quiet headphones', me: noter })).app
+  assert.equal((await post('/api/call', { app: keptApp.id, me: noter, name: 'app_kept', arguments: { key: notesKey } })).structuredContent.value[0].text, 'too heavy')
+  // Shared, a person's link adds a No under their own name.
+  const kshare = await post('/api/share', { app: keptApp.id, me: noter })
+  const sam = (await post('/api/share', { app: keptApp.id, me: `s-${kshare.token}`, person: { name: 'Sam', role: 'helper' } })).people.at(-1)
+  const had = (await post('/api/call', { app: keptApp.id, me: `s-${sam.token}`, name: 'app_kept', arguments: { key: notesKey } })).structuredContent.value
+  assert.equal((await post('/api/call', { app: keptApp.id, me: `s-${sam.token}`, name: 'app_keep', arguments: { key: notesKey, value: [...had, { id: 'n2', on: 'Quiet headphones', text: 'No', no: true, by: 'helper' }] } })).isError, undefined)
+  const both = (await post('/api/call', { app: keptApp.id, me: `s-${kshare.token}`, name: 'app_kept', arguments: { key: notesKey } })).structuredContent.value
+  assert.deepEqual(both.map(n => [n.text, n.by]), [['too heavy', undefined], ['No', 'Sam']])
   assert.match(keptApp.id, /^answer-/)
   assert.equal(keptApp.saved, true)
   assert.ok((await rail()).some(a => a.id === keptApp.id))
@@ -732,4 +746,62 @@ test('a helper can never take out what the owner added, a part keeps its crew, a
   await post('/api/call', { app: week.id, me: `s-${darnell.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 2, crew: 'B' }, { id: 3, crew: 'A', client: 'Okafor' }] } })
   const jobs = (await post('/api/call', { app: week.id, me: `s-${s2.token}`, name: 'app_kept', arguments: { key: 'jobs' } })).structuredContent.value
   assert.equal(jobs.find(j => j.id === 3).crew, 'B')
+})
+
+test('a link made for a person signs with their name, the app knows who it is, and earlier versions say who (P: MAYA-9, LENA-2, MARCUS-2, LENA-4)', { skip }, async () => {
+  const me = '9'.repeat(32)
+  const app = await chat.apps.put({ name: 'Signed', about: 'Jobs.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('signed'), args: { request: 'signed' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  const keep = (who, key, value) => post('/api/call', { app: app.id, me: who, name: 'app_keep', arguments: { key, value } })
+  const read = async key => (await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { key } })).structuredContent.value
+  await keep(owner, 'jobs', [{ id: 'kim', client: 'Kim', done: false }])
+  const ray = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Ray', role: 'helper' } })).people.at(-1)
+  // The app wrote "helper" and "Luis"; the server writes Ray.
+  assert.equal((await keep(`s-${ray.token}`, 'jobs', [{ id: 'kim', client: 'Kim', done: true, doneBy: 'Luis' }, { id: 'n1', client: 'Patel', by: 'helper' }])).isError, undefined)
+  const jobs = await read('jobs')
+  assert.equal(jobs.find(j => j.id === 'kim').doneBy, 'Ray', 'a tick is signed by the link')
+  assert.equal(jobs.find(j => j.id === 'kim').by, undefined, 'the owner’s job stays the owner’s')
+  assert.equal(jobs.find(j => j.id === 'n1').by, 'Ray', 'what he adds is his, by name')
+  // Lists inside a week are signed too.
+  await keep(owner, 'week', { mon: [{ id: 'm1', item: 'milk' }] })
+  await keep(`s-${ray.token}`, 'week', { mon: [{ id: 'm1', item: 'milk' }, { id: 'm2', item: 'eggs', by: 'guest' }] })
+  assert.equal((await read('week')).mon.find(e => e.id === 'm2').by, 'Ray')
+  // The app is told who the link is, so it never asks.
+  const all = await post('/api/call', { app: app.id, me: `s-${ray.token}`, name: 'app_kept', arguments: { all: true } })
+  assert.deepEqual(all.structuredContent.who, { role: 'helper', name: 'Ray' })
+  assert.equal((await post('/api/call', { app: app.id, me, name: 'app_kept', arguments: { all: true } })).structuredContent.who, undefined)
+  // Earlier versions say what changed in an entry and who did it.
+  const hist = await post('/api/history', { app: app.id, me: owner })
+  const moment = hist.moments.find(m => /Kim ticked/.test(m.then))
+  assert.ok(moment, JSON.stringify(hist.moments))
+  assert.deepEqual(moment.by, ['Ray'])
+})
+
+test('open phones keep up: a new version is told with what changed, and a stopped link is told (R: MAYA-3, DEV-7)', { skip }, async () => {
+  const me = '8'.repeat(32)
+  const app = await chat.apps.put({ name: 'Dinners', about: 'A week.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('dinners'), args: { request: 'dinners' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const femi = (await post('/api/share', { app: app.id, me: `s-${share.token}`, person: { name: 'Femi', role: 'helper' } })).people.at(-1)
+  const res = await fetch(`${chat.url}api/watch?apps=${app.id}|s-${femi.token}`)
+  const reader = res.body.getReader()
+  await reader.read() // ": watching"
+  const next = async () => {
+    const got = await Promise.race([reader.read(), new Promise(r => setTimeout(() => r(null), 5000))])
+    return got ? JSON.parse(new TextDecoder().decode(got.value).replace(/^data: /, '')) : null
+  }
+  await chat.apps.change(app.id, FRAGMENT('dinners for four'), 'changed: amounts for four')
+  const ev = await next()
+  assert.equal(ev.version, 2)
+  assert.match(ev.change, /amounts for four/)
+  // His phone gets the new version, though his link can't change the app.
+  const now = await post(`/api/apps/${app.id}/now`, { links: { [app.id]: femi.token } })
+  assert.equal(now.app.version, 2)
+  assert.ok(now.html.length > 0)
+  // Stopping his link tells his open tab, which then shows it stopped.
+  await post('/api/unshare', { app: app.id, me: `s-${share.token}`, self: me, person: femi.token })
+  assert.equal((await next())?.app, app.id)
+  await reader.cancel()
+  const kept = await post('/api/call', { app: app.id, me: `s-${femi.token}`, name: 'app_kept', arguments: { all: true } })
+  assert.equal(kept.isError, true)
 })

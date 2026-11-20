@@ -9,6 +9,7 @@
 //
 //   node index.mjs               stdio, as Claude Code and Claude Desktop start it
 //   node index.mjs --http 8787   Streamable HTTP at /mcp, for a remote connector
+import { guardScripts, LOOP_GUARD } from './loops.mjs'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
@@ -131,7 +132,9 @@ const FRAME = `<!doctype html>
 // only through the host's tools (Kit.call).
 export function render(source, domains = []) {
   if (source.startsWith('view:')) return html(source.slice(5))
-  const doc = /^\s*<!doctype/i.test(source) ? source : FRAME.replace('<!-- app -->', () => source)
+  // Its own scripts' loops stop after two seconds, before the kit is put in (DEV-1).
+  const own = guardScripts(source)
+  const doc = /^\s*<!doctype/i.test(own) ? own : FRAME.replace('<!-- app -->', () => own)
   return page(doc, domains)
 }
 
@@ -140,7 +143,7 @@ function page(doc, domains) {
   const csp = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: ${domains.join(' ')}; font-src data:; connect-src 'none'`
   // Replaced with functions: the SDK's text holds `$&` and the like.
   return doc
-    .replace(/<head>/i, () => `<head>\n<meta http-equiv="Content-Security-Policy" content="${csp}">`)
+    .replace(/<head>/i, () => `<head>\n<meta http-equiv="Content-Security-Policy" content="${csp}">\n${LOOP_GUARD}`)
     .replace('<!-- kit:css -->', () => `<style>${readFileSync(here('./views/kit.css'), 'utf8')}</style>`)
     .replace('<!-- kit:sdk -->', () => `<script type="module">${SDK.replaceAll('</script', '<\\/script')}</script>`)
     .replace('<!-- kit:js -->', () => `<script type="module">${readFileSync(here('./views/math.js'), 'utf8')}\n${readFileSync(here('./views/kit.js'), 'utf8')}</script>`)

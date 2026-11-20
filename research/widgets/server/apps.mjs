@@ -125,6 +125,43 @@ export function withPart(before, after, { by, only } = {}) {
   for (const e of added) if (e?.id == null || !placed.has(e.id)) out.push(e)
   return out
 }
+// A link made for a person signs what it does with their name, whatever the
+// app wrote: an entry it adds is by them, an entry it changes keeps who
+// added it, and a mark it makes on one (doneBy, ticked_by, who) is theirs.
+// Lists inside an object (a week, a month) too (MAYA-9, LENA-2, MARCUS-2).
+const SIGN = /^(who|.+By|.+_by)$/
+export function signed(before, after, name, depth = 0) {
+  if (!name || depth > 6) return after
+  if (Array.isArray(after)) {
+    const was = new Map((Array.isArray(before) ? before : []).filter(e => e?.id != null).map(e => [String(e.id), e]))
+    const old = new Set((Array.isArray(before) ? before : []).map(e => JSON.stringify(e)))
+    const list = Array.isArray(before) ? before : []
+    const kept = new Set(after.map(e => JSON.stringify(e)))
+    return after.map((e, i) => {
+      if (!e || typeof e !== 'object' || Array.isArray(e)) return e
+      // Without an id, an entry is the same one by what it holds, or else by
+      // where it is, when what was there is gone (a tick on the owner's milk).
+      const at = list[i]
+      const prior = e.id != null ? was.get(String(e.id)) : old.has(JSON.stringify(e)) ? e : at && typeof at === 'object' && at.id == null && !kept.has(JSON.stringify(at)) ? at : undefined
+      if (!prior) return { ...e, by: name }
+      if (JSON.stringify(prior) === JSON.stringify(e)) return e
+      const out = { ...e }
+      if ('by' in prior || 'by' in e) out.by = prior.by
+      if (out.by === undefined) delete out.by
+      for (const k of Object.keys(e)) {
+        if (k !== 'by' && SIGN.test(k) && JSON.stringify(e[k]) !== JSON.stringify(prior[k]) && !blank(e[k])) out[k] = name
+        else if (e[k] && typeof e[k] === 'object') out[k] = signed(prior[k], e[k], name, depth + 1)
+      }
+      return out
+    })
+  }
+  if (after && typeof after === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(after)) out[k] = v && typeof v === 'object' ? signed(before && typeof before === 'object' ? before[k] : undefined, v, name, depth + 1) : v
+    return out
+  }
+  return after
+}
 // What a helper link added or filled that wasn't there: its own, which it
 // may go on changing and take out again. A note typed one key at a time is
 // kept at each key, and the second key changes what the first one filled
@@ -175,6 +212,7 @@ export function madeBy(before, after, path = '', out = [], depth = 0) {
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const leaf = v => v == null || typeof v !== 'object'
 const IGNORED = /^(id|by|at|added|addedAt|created|createdAt|updated|updatedAt|time|ts)$/i
+const NUMBERED = /^(number|no|num|invoice|invoice_?(no|num|number|id)|invoiceNumber|ref|reference|code)$/i
 const alike = (a, b) => a && b && typeof a === 'object' && typeof b === 'object' && same(Object.fromEntries(Object.entries(a).filter(([k]) => !IGNORED.test(k)).sort()), Object.fromEntries(Object.entries(b).filter(([k]) => !IGNORED.test(k)).sort()))
 const nameOf = e => (e && typeof e === 'object' ? Object.entries(e).find(([k, v]) => !IGNORED.test(k) && typeof v === 'string' && v.trim())?.[1] ?? '' : String(e ?? ''))
 export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
@@ -193,10 +231,29 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
         if (at >= 0) continue
         const twin = out.find(x => !was.has(String(x.id)) && alike(x, e))
         if (twin) said.push({ field: `${path}`.replace(/^\//, '') || 'list', twice: nameOf(e) })
-        else out.push(e)
-      } else if (!same(e, old)) at < 0 ? out.push(e) : (out[at] = mergeKeep(old, e, out[at], said, `${path}/${nameOf(e) || e.id}`, depth + 1))
+        else {
+          // The same invoice number added on both phones with something else
+          // different: both stay, and both phones are told to check (LENA-3).
+          const k = Object.keys(e).find(f => NUMBERED.test(f) && e[f] != null && String(e[f]).trim())
+          const other = k && out.find(x => !was.has(String(x.id)) && x[k] != null && String(x[k]).trim() === String(e[k]).trim())
+          if (other) said.push({ field: `${path}`.replace(/^\//, '') || 'list', both: `${k} ${e[k]}` })
+          out.push(e)
+        }
+      } else if (!same(e, old)) {
+        // Taken out on the other phone and changed on this one: it stays out,
+        // and this phone is told (MARCUS-1).
+        if (at < 0) said.push({ field: `${path}`.replace(/^\//, '') || 'list', gone: nameOf(e) || String(e.id) })
+        else out[at] = mergeKeep(old, e, out[at], said, `${path}/${nameOf(e) || e.id}`, depth + 1)
+      }
     }
     return out
+  }
+  // Without ids, the same number of entries on all three (the days of a
+  // trip): each entry is merged with the one in its place, so two people on
+  // one day's dinner are told, not both kept or one lost (TOM-5).
+  const plainList = v => Array.isArray(v) && v.every(e => e && typeof e === 'object' && !Array.isArray(e) && e.id == null)
+  if (plainList(mine) && plainList(theirs) && plainList(base) && mine.length === base.length && theirs.length === base.length) {
+    return theirs.map((e, i) => mergeKeep(base[i], mine[i], e, said, `${path}/${nameOf(base[i]) || i + 1}`, depth + 1))
   }
   if (Array.isArray(mine) && Array.isArray(theirs) && Array.isArray(base ?? [])) {
     // Without ids: what this side took out goes, what it added comes in, the rest is theirs.
@@ -265,7 +322,7 @@ export function withHidden(before, after, hide, depth = 0) {
   for (const [k, v] of Object.entries(before)) if (hidden(k, hide)) out[k] = v
   return out
 }
-export async function keeping(apps, appId, name, args = {}, owner = '', self = '') {
+export async function keeping(apps, appId, name, args = {}, owner = '', self = '', by = '') {
   // All of it at once, for the kit to hand draw as data.kept.
   if (name === 'app_kept' && args?.all === true) {
     try {
@@ -282,7 +339,7 @@ export async function keeping(apps, appId, name, args = {}, owner = '', self = '
   if (self && isView(key)) owner = self
   try {
     if (name === 'app_keep') {
-      await apps.keep(appId, key, args.value, owner)
+      await apps.keep(appId, key, args.value, owner, by)
       return { content: [{ type: 'text', text: `Kept as ${key}.` }], structuredContent: { key, kept: true } }
     }
     const value = await apps.kept(appId, key, owner)

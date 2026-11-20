@@ -63,7 +63,15 @@
   .doc a.t { color: var(--ink); text-decoration: none; cursor: pointer; } .doc a.t:hover { text-decoration: underline; }
   .doc .m { font-size: 11.5px; color: var(--ink-3); }
   .doc .s { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; margin-top: 1px; }
+  .notes-on { margin-top: 8px; display: grid; gap: 4px; }
+  .note-on { font-size: 12.5px; color: var(--ink-2); display: flex; gap: 6px; align-items: baseline; }
+  .note-on.no b { color: var(--bad, #b3261e); }
+  .note-on small { color: var(--ink-3); }
+  .note-on button { font-size: 11px; padding: 0 6px; }
+  .noteform { display: flex; gap: 6px; margin-top: 6px; }
+  .noteform input { flex: 1; min-width: 0; }
 </style>
+<meta name="kit-keeps" content="notes">
 </head>
 <body>
 <div id="root" class="empty">Looking…</div>
@@ -76,12 +84,31 @@
 // for a question its answer and points, for a how-to its steps, for news
 // its events. Every claim cites its sources, which are listed last.
 const { connect, ask, tell, link, money, esc } = globalThis.Kit
+const Kit = globalThis.Kit
 const root = document.getElementById('root')
 let app = null
 let data = null
 let view = 'cards'
 let chosen = null
 const open = new Set()
+// Notes on the options, kept with the answer: what the person and the people
+// they share it with think of each pick ("No", "too heavy"), each by its
+// writer's name (PRIYA-2, PRIYA-4).
+let notes = []
+let who = null
+let role = 'own'
+let writing = null
+const notesKey = () => `notes ${String(data?.query ?? '').slice(0, 70)}`
+const mayNote = () => role !== 'viewer'
+const mayRemove = n => role === 'own' || role === 'full' || (who?.name && n.by === who.name)
+function notesOn(item) {
+  const mine = notes.filter(n => n.on === item.name)
+  return `<div class="notes-on">${mine.map(n => `<div class="note-on${n.no ? ' no' : ''}"><span>${n.no ? '<b>No</b>' : esc(n.text)}${n.no && n.text && n.text !== 'No' ? ` · ${esc(n.text)}` : ''} <small>${n.by ? `· ${esc(n.by)}` : ''}</small></span>${mayRemove(n) ? `<button class="btn" data-unnote="${esc(n.id)}" title="Take this note out">Remove</button>` : ''}</div>`).join('')}
+    ${writing === item.n ? `<form class="noteform" data-noteform="${item.n}"><input name="t" maxlength="200" placeholder="Your note on ${esc(item.name)}" autocomplete="off"><button class="btn" type="submit">Add note</button></form>` : ''}</div>`
+}
+function keepNotes() {
+  Kit.keep(app, notesKey(), notes)
+}
 
 const GOAL = { pick: 'To pick', answer: 'Answer', overview: 'Overview', 'how-to': 'How to', news: 'What happened' }
 // Money in dollars with its commas, by the fact's name; other big whole
@@ -121,7 +148,7 @@ function card(item) {
       ${facts.length ? `<div class="row wrap facts">${facts.map(c => `<span class="chip">${esc(label(c))} <b>${esc(value(c, item.facts[c]))}</b></span>`).join('')}</div>` : ''}
       ${item.pros.length || item.cons.length ? `<div class="pc"><div>${item.pros.map(p => `<div class="p">${esc(p)}</div>`).join('')}</div><div>${item.cons.map(c => `<div class="c">${esc(c)}</div>`).join('')}</div></div>` : ''}
       ${says(item)}
-      ${data.goal === 'pick' ? `<div class="row acts"><button class="btn" data-ask="${item.n}">Ask about it</button>${item.url ? `<button class="btn" data-link="${esc(item.url)}">Its page</button>` : ''}</div>` : ''}
+      ${data.goal === 'pick' ? `<div class="row acts"><button class="btn" data-ask="${item.n}">Ask about it</button>${item.url ? `<button class="btn" data-link="${esc(item.url)}">Its page</button>` : ''}${mayNote() ? `<button class="btn" data-note="${item.n}">Note</button><button class="btn" data-no="${item.n}" title="Say no to this one, with your name">No to this one</button>` : ''}</div>${notesOn(item)}` : ''}
     </div>
   </div>`
 }
@@ -151,7 +178,12 @@ function sources(expanded) {
 }
 
 function draw(next) {
-  if (next) data = { goal: 'answer', answer: null, needs: [], criteria: [], items: [], documents: [], ...next }
+  if (next) {
+    data = { goal: 'answer', answer: null, needs: [], criteria: [], items: [], documents: [], ...next }
+    notes = Array.isArray(next.kept?.[notesKey()]) ? next.kept[notesKey()] : notes
+    who = next.who ?? who
+    role = next.who?.role ?? next.role ?? role
+  }
   if (!data) return
   if (!data.documents.length && !data.items.length) {
     root.className = 'empty'
@@ -185,10 +217,37 @@ function flash(id) {
   setTimeout(() => el.classList.remove('flash'), 1600)
 }
 
+root.addEventListener('submit', e => {
+  const f = e.target.closest('[data-noteform]')
+  if (!f) return
+  e.preventDefault()
+  const text = f.querySelector('input').value.trim()
+  const item = data.items.find(x => x.n === Number(f.dataset.noteform))
+  if (!text || !item) return
+  notes = [...notes, { id: Date.now().toString(36), on: item.name, text, ...(who?.name ? { by: who.name } : {}) }]
+  writing = null
+  keepNotes()
+  draw()
+  tell(app, `Noted on ${item.name}: ${text}`)
+})
 root.addEventListener('click', async e => {
-  const t = e.target.closest('[data-cite],[data-need],[data-view],[data-more],[data-ask],[data-link]')
+  const t = e.target.closest('[data-cite],[data-need],[data-view],[data-more],[data-ask],[data-link],[data-note],[data-no],[data-unnote]')
   if (!t) return
-  if (t.dataset.cite) {
+  if (t.dataset.note) {
+    writing = writing === Number(t.dataset.note) ? null : Number(t.dataset.note)
+    draw()
+    document.querySelector(`[data-noteform="${writing}"] input`)?.focus()
+  } else if (t.dataset.no) {
+    const item = data.items.find(x => x.n === Number(t.dataset.no))
+    notes = [...notes, { id: Date.now().toString(36), on: item.name, text: 'No', no: true, ...(who?.name ? { by: who.name } : {}) }]
+    keepNotes()
+    draw()
+    tell(app, `Said no to ${item.name}.`)
+  } else if (t.dataset.unnote) {
+    notes = notes.filter(n => n.id !== t.dataset.unnote)
+    keepNotes()
+    draw()
+  } else if (t.dataset.cite) {
     document.getElementById('sources').open = true
     flash(`doc-${t.dataset.cite}`)
   } else if (t.dataset.need) {

@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 import { described } from '../server/guide.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
-import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep } from '../server/apps.mjs'
+import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep, signed } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
 
@@ -142,6 +142,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   const watchers = new Map()
   const told = (appId, owner, self, said = []) => {
     for (const w of watchers.get(`${appId}|${owner}`) ?? []) w({ app: appId, self, ...(said.length ? { said } : {}) })
+  }
+  // A new version of an app reaches every phone that has it open by a link,
+  // whoever's it is: it draws the new one and says so (MAYA-3).
+  apps.onput = (appId, version, change) => {
+    for (const [k, set] of watchers) if (k.startsWith(`${appId}|`)) for (const w of set) w({ app: appId, version, change: String(change ?? 'an earlier version brought back').replace(/^(made for|changed|change):\s*/i, '').slice(0, 120) })
   }
   // Each app sent to a page with a conversation is recorded as shown in it,
   // with what it was filled with, so it opens again as it was.
@@ -543,7 +548,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             const own_ = name === 'app_keep' && who && !isView(key)
             const before = own_ ? await apps.kept(app.id, key, who.owner).catch(() => null) : null
             if (own_ && (who.name || who.only || who.hide)) asked = { ...args, value: withHidden(before, withPart(before, args?.value, { by: who.name, only: who.only }), who.hide) }
-            const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine)
+            // A link made for a person signs with their name, whatever the app wrote (P).
+            if (own_ && who.name) asked = { ...asked, value: signed(before, asked?.value, who.name) }
+            const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine, who?.name ?? (who && who.role !== 'own' && who.role !== 'full' ? 'someone with a link' : ''))
             if (own_ && !out.isError) {
               if (who.role === 'helper' && who.token) {
                 const made = await made_(app.id, who.token)
@@ -553,6 +560,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
               told(app.id, who.owner, String(self ?? ''), said)
             }
             if (name === 'app_keep' && !out.isError && (mergedIn || said.length)) out.structuredContent = { ...out.structuredContent, merged: true, value: args.value, ...(said.length ? { said } : {}) }
+            // The app knows who this link is, so it never asks for a name (P).
+            if (who && who.role !== 'own' && name === 'app_kept' && args?.all && out.structuredContent) out.structuredContent.who = { role: who.role, ...(who.name ? { name: who.name } : {}) }
             if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {
               const sc = out.structuredContent
               const seen = v => hideIn(partOf(v, who.only), who.hide)
@@ -658,11 +667,14 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           await apps.keep(app.id, `link:${person}`, { owner: who.owner, role: 'gone' }, LINKS)
           const people = links.people.filter(p => p.token !== person)
           await apps.keep(app.id, '-links', { ...links, people }, who.owner)
+          // A tab that has it open now is told, and shows it stopped (DEV-7).
+          told(app.id, who.owner, '')
           return json(res, { stopped: true, people })
         }
         for (const [key, value] of Object.entries(values)) if (!key.startsWith('-')) await apps.keep(app.id, key, value, mine)
         for (const tok of [token, links?.helper, links?.viewer, ...(links?.people ?? []).map(p => p.token)].filter(Boolean)) await apps.keep(app.id, `link:${tok}`, { owner: who.owner, role: 'gone' }, LINKS)
         for (const key of Object.keys(values)) await apps.keep(app.id, key, null, who.owner)
+        told(app.id, who.owner, '')
         return json(res, { stopped: true })
       }
       // What an app held before, and bringing it back (LENA-1, INES-1): for
@@ -695,27 +707,45 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const says = values => Object.entries(mine(values)).map(([k, v]) => (Array.isArray(v) ? `${v.length} in ${k}` : v && typeof v === 'object' ? Object.entries(v).filter(([, x]) => Array.isArray(x)).map(([n, x]) => `${x.length} in ${n}`).join(', ') || k : `${k} ${String(v).slice(0, 20)}`)).filter(Boolean).join(', ').slice(0, 120)
           const label = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at|done|checked|ticked)$/i.test(k) && typeof v === 'string' && v.trim())?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 30)
           const lists = (v, path = '') => (Array.isArray(v) ? [[path, v]] : v && typeof v === 'object' ? Object.entries(v).flatMap(([k, x]) => lists(x, path ? `${path} ${k}` : k)) : [])
+          const short = v => (v == null || v === '' ? 'empty' : typeof v === 'object' ? 'changed' : String(v).slice(0, 24))
+          const TICK = /^(done|checked|ticked|paid|bought|got|packed|booked|complete[d]?)$/i
           const changed = (before, after) => {
             const out = []
             for (const k of new Set([...Object.keys(mine(before)), ...Object.keys(mine(after))])) {
               if (JSON.stringify(before[k]) === JSON.stringify(after[k])) continue
               const a = new Map(lists(before[k], k)), b = new Map(lists(after[k], k))
               let said = false
-              for (const [path, list] of a) {
-                const names = new Set((b.get(path) ?? []).map(label))
-                const gone = list.map(label).filter(n => n && !names.has(n))
-                const was = new Set(list.map(label))
-                const added = (b.get(path) ?? []).map(label).filter(n => n && !was.has(n))
+              for (const path of new Set([...a.keys(), ...b.keys()])) {
+                const was = a.get(path) ?? [], now = b.get(path) ?? []
+                const ided = [...was, ...now].every(e => e && typeof e === 'object' && e.id != null)
+                const keyOf = e => (ided ? String(e.id) : label(e))
+                const then = new Map(was.map(e => [keyOf(e), e])), next = new Map(now.map(e => [keyOf(e), e]))
+                const gone = was.filter(e => !next.has(keyOf(e))).map(label).filter(Boolean)
+                const added = now.filter(e => !then.has(keyOf(e))).map(label).filter(Boolean)
+                // What changed in an entry still there: a tick, an amount (LENA-4, MARCUS-8).
+                const edits = []
+                for (const e of now) {
+                  const old = then.get(keyOf(e))
+                  if (!old || JSON.stringify(old) === JSON.stringify(e) || typeof e !== 'object') continue
+                  for (const f of new Set([...Object.keys(old), ...Object.keys(e)])) {
+                    if (/^(id|at|by)$/.test(f) || JSON.stringify(old[f]) === JSON.stringify(e[f])) continue
+                    edits.push(TICK.test(f) && typeof (e[f] ?? false) === 'boolean' ? `${label(e)} ${e[f] ? '' : 'un'}${f === 'done' || f === 'checked' ? 'ticked' : f}` : `${label(e)} ${f} ${short(old[f])} to ${short(e[f])}`)
+                  }
+                }
                 if (gone.length) out.push(`${gone.slice(0, 3).join(', ')} taken out of ${path}`)
                 if (added.length) out.push(`${added.slice(0, 3).join(', ')} added to ${path}`)
-                if (gone.length || added.length) said = true
+                if (edits.length) out.push(edits.slice(0, 3).join(', ') + (edits.length > 3 ? ` and ${edits.length - 3} more` : ''))
+                if (gone.length || added.length || edits.length) said = true
               }
-              if (!said) out.push(`${k} changed`)
+              if (!said) out.push(typeof before[k] === 'object' || typeof after[k] === 'object' ? `${k} changed` : `${k} ${short(before[k])} to ${short(after[k])}`)
             }
-            return out.join('; ').slice(0, 160)
+            return out.join('; ').slice(0, 200)
           }
+          // Who made the change, when it came through a person's link.
+          const signers = await apps.signers(app.id, who.owner)
+          const whoIn = (from, to) => [...new Set(signers.filter(s => s.at >= from && (to == null || s.at < to)).map(s => s.by))]
           const states = times.map(t => ({ ...now, ...at(t) }))
-          return json(res, { now: says(now), moments: times.map((t, i) => ({ at: t, says: says(states[i]), then: changed(states[i], i ? states[i - 1] : now) })) })
+          return json(res, { now: says(now), moments: times.map((t, i) => ({ at: t, says: says(states[i]), then: changed(states[i], i ? states[i - 1] : now), by: whoIn(t, i ? times[i - 1] : null) })) })
         }
         const t = Number(input.at)
         if (!Number.isFinite(t)) return json(res, { error: 'when?' }, 400)
@@ -737,7 +767,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const input = await body(req)
         if (!(await apps.get(appId))) return json(res, { error: 'no such app' }, 404)
         // A helper's or a viewer's phone changes no app, and removes none (MAYA-3, LENA-1).
-        if (parts[3] !== 'open') {
+        if (parts[3] !== 'open' && parts[3] !== 'now') {
           const refused = await mayChange(appId, input)
           if (refused) return json(res, { error: refused }, 403)
         }
@@ -761,8 +791,17 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           if (!args) return json(res, { error: 'that answer is not here any more' }, 404)
           const name = String(input.name ?? '').trim().slice(0, 60) || 'Kept answer'
           const kept = await apps.keepAnswer(appId, { name, request: String(input.request ?? name).slice(0, 300), args })
+          // The notes on it come with it (PRIYA-2).
+          const who = input.me ? await owning(appId, input.me) : null
+          if (who && who.role !== 'gone') {
+            const key = `notes ${String(args.query ?? '').slice(0, 70)}`
+            const notes = await apps.kept(appId, key, who.owner).catch(() => null)
+            if (notes != null) await apps.keep(kept.id, key, notes, who.owner)
+          }
           return json(res, { app: view(kept) })
         }
+        // The app as it is now, for a phone told of a new version (R).
+        if (parts[3] === 'now') return json(res, { app: view(await apps.get(appId)), html: htmlOf(await apps.get(appId)) })
         if (parts[3] === 'save') return json(res, { app: view(await apps.save(appId, true, input.name)) })
         if (parts[3] === 'unsave') return json(res, { app: view(await apps.save(appId, false)) })
         if (parts[3] === 'undo' || parts[3] === 'redo') {
