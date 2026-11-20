@@ -298,7 +298,7 @@ pub async fn place(c: &Ctx<'_>, id: &str) -> R<Value> {
     let dlon = |d: f64| d / lat.to_radians().cos().max(0.2);
     let (ps, pn, pw, pe) = (lat - 0.1, lat + 0.1, lon - dlon(0.1), lon + dlon(0.1));
     let (gs, gn, gw, ge) = (lat - 0.23, lat + 0.23, lon - dlon(0.23), lon + dlon(0.23));
-    let (like, twins, near, years, change, perimeters, burns, goes, nearby) = tokio::join!(
+    let (like, twins, near, years, change, perimeters, burns, goes, nearby, sky) = tokio::join!(
         c.soft("places here that look like it", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r AND {away} ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": region, "v": me, "s": s, "n": n, "w": w, "e": e})),
         c.soft("its twins in the other region", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": other(&region), "v": me})),
         c.soft("fires near it", format!("SELECT {FIRE_CARD} FROM ea_fires WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e ORDER BY start DESC LIMIT 30"), json!({"s": fs, "n": fnn, "w": fw, "e": fe})),
@@ -308,9 +308,10 @@ pub async fn place(c: &Ctx<'_>, id: &str) -> R<Value> {
         c.soft("the fires that burned this square", "SELECT perimeter, share FROM ea_burns WHERE place = :p LIMIT 100", json!({"p": id})),
         c.soft("the fires GOES saw within 25 km", format!("SELECT {FIRE_CARD}, perimeter FROM ea_fires WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e ORDER BY start DESC LIMIT 200"), json!({"s": gs, "n": gn, "w": gw, "e": ge})),
         c.soft("places nearby that changed", "SELECT id, town, lat, lon, from_label, to_label, step_year, drift FROM ea_changes WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e AND drift > 0 ORDER BY drift DESC LIMIT 6", json!({"s": ps, "n": pn, "w": pw, "e": pe})),
+        c.soft("its sky", "SELECT t, clear, smoke, sun, day_end, days, nights, clear_days, clear_nights, good_days, good_nights FROM ea_sky WHERE id = :p", json!({"p": id})),
     );
     let story = story(&p, &perimeters, &burns, &goes, &nearby);
-    Ok(json!({"place": p, "like": like, "twins": twins, "fires": near, "years": years, "change": change.first(), "story": story}))
+    Ok(json!({"place": p, "like": like, "twins": twins, "fires": near, "years": years, "change": change.first(), "story": story, "sky": sky.first()}))
 }
 
 /// What happened around a place, newest first: the headline, the events,
@@ -818,6 +819,7 @@ pub const SOURCES: &[(&str, &str, &str, &str)] = &[
     ("GeoNames", "towns and their populations", "CC BY 4.0", "https://www.geonames.org/"),
     ("EOX Sentinel-2 cloudless 2016", "the map's picture of the ground", "CC BY 4.0 (EOX IT Services, Copernicus Sentinel data 2016)", "https://s2maps.eu/"),
     ("GOES GeoColor from NASA GIBS", "Satellite now on Live: the newest picture of the sky, every 10 minutes", "free to use with credit (NOAA, CIRA, NASA GIBS)", "https://www.earthdata.nasa.gov/gibs"),
+    ("GOES-18 and -19 Clear Sky Mask and Aerosol Detection (ABI L2 ACM, ADP)", "the clouds and the smoke over each place: CONUS every 5 minutes, the full disk every 10", "public domain (NOAA)", "https://registry.opendata.aws/noaa-goes/"),
     ("Element 84 Earth Search (Sentinel-2 L2A)", "each place's picture every year, for how it changed", "free licence (Copernicus Sentinel data)", "https://earth-search.aws.element84.com/v1"),
 ];
 

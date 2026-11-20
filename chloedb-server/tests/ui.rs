@@ -91,7 +91,7 @@ async fn the_command_center_is_served_with_every_module_it_imports() {
     // Each served file is used, and each view is among them.
     let served: BTreeSet<String> = ui::FILES.iter().map(|(p, ..)| p.to_string()).filter(|p| p.ends_with(".js")).collect();
     assert_eq!(seen, served, "the modules main.js reaches, and those the server serves");
-    for v in ["overview", "timeline", "querypath", "tables", "statement", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "oncall", "queries", "logs", "explorer", "sql", "builder", "schema", "inspector", "import", "relevance", "blend", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
+    for v in ["overview", "timeline", "querypath", "tables", "statement", "rollout", "autoscale", "cloud", "cluster", "performance", "alerts", "oncall", "queries", "logs", "explorer", "sql", "builder", "views", "schema", "inspector", "import", "relevance", "blend", "recsys", "sid", "autocomplete", "media", "graph", "access", "system"] {
         assert!(seen.contains(&format!("views/{v}.js")), "{v}");
     }
 
@@ -129,5 +129,29 @@ fn the_number_format_big_answers_and_column_health() {
             return;
         }
     };
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+}
+
+/// The counts the command center shows, against SQL and arithmetic on the
+/// same rows (`ui_counts.mjs`, GRACE-401 to 407 and 417): the Search tab's
+/// count, pages and order, Export all of a filtered list, the builder's
+/// weeks, median and share, NOT IN of two picks, a list split at import
+/// and a team view kept as a row, on a server of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_centers_counts_are_the_sqls() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/ui_counts.mjs");
+    if std::process::Command::new("node").arg("--version").output().is_err() {
+        eprintln!("node is not on the PATH: skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::create(&dir.path().join("counts.strata"), demo::schema(10), DbOptions::default()).unwrap();
+    let schema = (*db.schema()).clone();
+    let agent = AgentConfig { api_key: None, model: String::new(), base_url: String::new() };
+    let svc = Arc::new(Service::new(Backend::Local(Arc::new(db)), schema, agent, 4, Duration::from_secs(5)));
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+    tokio::spawn(server::serve_http(svc, l, Default::default()));
+    let out = tokio::process::Command::new("node").arg(&script).arg(&base).output().await.unwrap();
     assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }

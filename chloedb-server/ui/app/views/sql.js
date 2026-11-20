@@ -24,7 +24,9 @@ import { state, isProduction, isSandbox } from "../data.js";
 import { parseStatement, runLabel, mode, askAllow, checkWrite, endWrites, writesAllowed, whereName, reach, nearNames, replaceWord } from "../sqlguard.js";
 import { followsWho, writeThere, followBanner } from "../follows.js";
 
-export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, range: false, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams };
+export default { id: "sql", title: "SQL workbench", icon: "sql", group: "Data", full: true, range: false, keywords: "query editor sql run explain plan results chart history saved snippets parameters", render, onParams, shareParams: () => shareNow?.() || null };
+/** What the header's Share puts in its link: the query on screen (GRACE-407). */
+let shareNow = null;
 
 let openSql = null;
 function onParams(r) { const q = r.params.get("q"); if (q && openSql) openSql(q, r.params.get("p"), r.params.get("store")); }
@@ -329,7 +331,8 @@ function render(page, r) {
     h("span", { class: "sep" }),
     h("span", { class: "small muted hide-sm" }, h("kbd", {}, "Ctrl"), " ", h("kbd", {}, "Enter"), " run · ", h("kbd", {}, "Ctrl"), " ", h("kbd", {}, "Space"), " complete"),
     h("button", { class: "btn ghost icon", title: "Copy a link to this query", onclick: () => copy(location.origin + "/#/sql?q=" + encodeURIComponent(ed.value), "Link copied") }, icon("link")),
-    h("button", { class: "btn ghost icon", title: "Save this query", onclick: saveQuery }, icon("plus")),
+    h("button", { class: "btn ghost icon", title: "Save this query in this browser", onclick: saveQuery }, icon("plus")),
+    h("button", { class: "btn ghost", title: "Keep this query on the server for the team, with its chart: a link opens it, on a phone too", onclick: saveAsView }, icon("eye"), h("span", { class: "hide-sm" }, "Save as a view")),
     h("button", { class: "btn ghost", title: "Saved queries and history", onclick: library }, icon("clock"), "Library"),
     // NEW-data-tools-9: under 1,100 px the sidebar is a sheet this opens.
     h("button", { class: "btn ghost wb-tables-btn", title: "The tables, their fields and snippets", onclick: () => sideOpen(true) }, icon("table"), "Tables"));
@@ -656,7 +659,7 @@ function render(page, r) {
     if (kind === "results" && (j.written != null || last.p?.write)) clear(outBody, written(j, last));
     else if (kind === "results") clear(outBody, j.capped ? cappedBanner(j, last.sql, last.params) : null, grid(j, j.capped ? { max: j.rows.length } : undefined));
     else if (kind === "health") clear(outBody, healthView(j, last.logs ? null : last.sql, last.params));
-    else if (kind === "chart") clear(outBody, h("div", { style: { padding: "12px 14px" } }, resultChart(j)));
+    else if (kind === "chart") clear(outBody, h("div", { style: { padding: "12px 14px" } }, resultChart(j, { init: chartCfg, onChange: (c) => { chartCfg = c; } })));
     else if (kind === "profile") {
       const steps = explain ? j.steps : j.stats?.steps;
       const cpu = steps?.some((x) => x.cpu_us != null);
@@ -713,12 +716,25 @@ function render(page, r) {
       h("details", { class: "more" }, h("summary", {}, "The query as bound to the schema"), h("pre", { class: "code", style: { maxHeight: "40vh" } }, j.logical))));
   }
 
+  // ------------------------------------------------------------ team views
+  // The chart's choices, kept with a view saved from the Chart tab.
+  let chartCfg = null;
+  async function saveAsView() {
+    const sql = ed.value.trim().replace(/;\s*$/, "");
+    if (!sql) { toast("Write a query first"); return; }
+    let params = {};
+    try { params = buildParams(sql); } catch (e) { toast(e.message, "bad"); return; }
+    const { saveView } = await import("./views.js");
+    const id = await saveView({ kind: "sql", sql, params, chart: lastKind === "chart" ? chartCfg : null }, { suggested: /^Query \d+$/.test(tab().name) ? "" : tab().name });
+    if (id) toast("Kept for the team: Team views lists it", "ok");
+  }
+
   // ------------------------------------------------------------ the library
   function saveQuery() {
     const inp = h("input", { class: "input", value: tab().name, style: { width: "100%" } });
     const m = modal({ title: "Save this query", body: [inp, sqlBlock(ed.value, { style: { maxHeight: "30vh" } })], foot: [h("button", { class: "btn", onclick: () => m.close() }, "Cancel"), h("button", { class: "btn primary", onclick: go }, "Save")] });
     inp.onkeydown = (e) => { if (e.key === "Enter") go(); };
-    function go() { const saved = store.get("sql.saved", []).filter((x) => x.name !== inp.value.trim()); saved.unshift({ name: inp.value.trim() || "Query", sql: ed.value, params: tab().params, ts: Date.now() }); store.set("sql.saved", saved); tab().name = inp.value.trim() || tab().name; save(); drawTabs(); m.close(); toast("Saved in this browser", "ok"); }
+    function go() { const saved = store.get("sql.saved", []).filter((x) => x.name !== inp.value.trim()); saved.unshift({ name: inp.value.trim() || "Query", sql: ed.value, params: tab().params, ts: Date.now() }); store.set("sql.saved", saved); tab().name = inp.value.trim() || tab().name; save(); drawTabs(); m.close(); toast("Saved in this browser: Save as a view keeps it for the team", "ok"); }
   }
   function library() {
     const q = h("input", { class: "input", placeholder: "Search the SQL…", style: { width: "100%" } });
@@ -773,6 +789,7 @@ function render(page, r) {
   tables().then(() => { drawSide(); drawParams(); if (!tab().sql.trim() && cached()[0]) { ed.value = `SELECT * FROM ${quoteName(firstMine(cached()).table)} LIMIT 20;`; tab().sql = ed.value; save(); } }).catch((e) => clear(side, failure(e, "The tables")));
   if (r.params.get("q")) openSql(r.params.get("q"), r.params.get("p"), r.params.get("store"));
   setTimeout(() => { ed.focus(); mark(); }, 50);
-  return () => { openSql = null; running?.abort(); clearInterval(modeTimer); offs.forEach((f) => f()); };
+  shareNow = () => (ed.value.trim() ? { q: ed.value } : null);
+  return () => { openSql = null; shareNow = null; running?.abort(); clearInterval(modeTimer); offs.forEach((f) => f()); };
 }
 

@@ -86,7 +86,7 @@ fn agent_model() -> String {
     "claude-sonnet-5-5".into()
 }
 fn judge_model() -> String {
-    "claude-sonnet-5-5".into()
+    "claude-opus-5-5".into()
 }
 fn budget() -> f64 {
     5.0
@@ -554,6 +554,8 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
         let topical: Vec<&&&Session> = ss.iter().filter(|s| needs.get(s.need.as_str()).is_some_and(|(_, n)| n.kind != "known")).collect();
         let said = of(&|s| s.said);
         let rr: Vec<f64> = known.iter().map(|s| s.target_rank.map_or(0.0, |r| 1.0 / r as f64)).collect();
+        let found = of(&|s| s.success);
+        let cost_per_found = if found > 0 { json!(ss.iter().map(|s| s.cost).sum::<f64>() / found as f64) } else { Value::Null };
         arms.push(json!({
             "name": spec.arms[a].name, "source": spec.arms[a].source, "knobs": spec.arms[a].knobs,
             "sessions": n,
@@ -572,6 +574,11 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
             "seconds": mean_ci(&ss.iter().map(|s| s.seconds).collect::<Vec<_>>()),
             "search_ms": mean_ci(&ss.iter().filter(|s| s.searches > 0).map(|s| s.search_ms / s.searches as f64).collect::<Vec<_>>()),
             "cost": ss.iter().map(|s| s.cost).sum::<f64>(),
+            // The effort of a need found: its searches and seconds, and the
+            // spend over the needs found.
+            "searches_found": mean_ci(&ss.iter().filter(|s| s.success).map(|s| s.searches as f64).collect::<Vec<_>>()),
+            "seconds_found": mean_ci(&ss.iter().filter(|s| s.success).map(|s| s.seconds).collect::<Vec<_>>()),
+            "cost_per_found": cost_per_found,
         }));
     }
     // Each arm against the control, over the needs both tried.
@@ -599,7 +606,7 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
             format!("{name} against {control}: too few needs tried on both yet.")
         } else {
             format!(
-                "{name} found what people came for in {} of {} needs, {control} in {} ({} points, 95% interval {} to {}); {} needs only {name} found, {} only {control} (McNemar p {:.3}).",
+                "{name} found what people came for in {} of {} needs, {control} in {} ({} points, 95% interval {} to {}); {} {} only {name} found, {} only {control} (McNemar p {:.3}).",
                 pairs.iter().filter(|(_, y)| y.success).count(),
                 pairs.len(),
                 pairs.iter().filter(|(x, _)| x.success).count(),
@@ -607,12 +614,27 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
                 pct(succ["lo"].as_f64()),
                 pct(succ["hi"].as_f64()),
                 c,
+                if c == 1 { "need" } else { "needs" },
                 b,
                 p
             )
         };
+        // What this many needs can find: 80% power at 5%, at the spread
+        // seen (or that of a third of the needs going differently).
+        let diffs: Vec<f64> = pairs.iter().map(|(x, y)| f64::from(u8::from(y.success)) - f64::from(u8::from(x.success))).collect();
+        let sd = if diffs.len() >= 2 {
+            let m = diffs.iter().sum::<f64>() / diffs.len() as f64;
+            (diffs.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / (diffs.len() - 1) as f64).sqrt()
+        } else {
+            0.0
+        };
+        let detectable = crate::trial::detectable(if sd > 0.0 { sd } else { 0.55 }, pairs.len());
+        let line = if pairs.len() < 2 { line } else { format!("{line} {} needs can find a difference of about {:.0} points or more.", pairs.len(), detectable * 100.0) };
+        // The needs the control found and this arm did not, first.
+        let lost: Vec<Value> = pairs.iter().filter(|(x, y)| x.success && !y.success).filter_map(|(x, _)| set.personas.iter().flat_map(|p| p.needs.iter()).find(|n| n.id == x.need)).map(|n| json!({"id": n.id, "kind": n.kind, "text": n.text})).collect();
         comparisons.push(json!({
             "arm": a, "name": name, "pairs": pairs.len(), "only_control": b, "only_arm": c, "mcnemar_p": p, "call": call, "line": line,
+            "detectable": detectable, "lost": lost,
             "success": succ,
             "ndcg": d(&|s| ndcg(s)),
             "searches": d(&|s| s.searches as f64),
