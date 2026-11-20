@@ -123,7 +123,16 @@ function drawing(draw, connection, keeps = true) {
       queueMicrotask(() => greyOut())
       const start = performance.now()
       try {
-        draw({ ...replayed(data, kept), kept, ...(who ? { who } : {}) })
+        try {
+          draw({ ...replayed(data, kept), kept, ...(who ? { who } : {}) })
+        } catch (error) {
+          // A request the app can't take ("take off the apples") leaves the
+          // app as it was and says so, never a broken screen (round 10 MAYA-1).
+          const plain = once(data)
+          if (plain === data) throw error
+          draw({ ...replayed(plain, kept), kept, ...(who ? { who } : {}) })
+          banner(`That request couldn't be done in this app (${String(error?.message ?? error).slice(0, 80)}), so nothing was changed.`)
+        }
       } finally {
         slow(performance.now() - start)
       }

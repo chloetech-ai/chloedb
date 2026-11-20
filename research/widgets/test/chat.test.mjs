@@ -40,6 +40,8 @@ function scripted() {
         await new Promise(r => setTimeout(r, 400))
         return { mode: 'chat', kind: 'info', tool: null, args: {}, reply: 'Took a while.', why: 'slow' }
       }
+      const invoice = /^add invoice (\S+) ([\d.]+)/i.exec(input.request)
+      if (invoice) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'invoices', values: { add: { invoice_no: invoice[1], amount: Number(invoice[2]) } } }, why: 'your ledger' }
       const entry = /^add (\w+) ([\d.,]+)/i.exec(input.request)
       if (entry) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'budget', values: { month: 'Nov', add: { item: entry[1], amount: Number(entry[2].replace(',', '.')) } } }, why: 'your budget' }
       const out = /^take (\w+) out/i.exec(input.request)
@@ -1028,4 +1030,17 @@ test('Undo takes back the last change to what an app keeps, after its version; a
   const share = await post('/api/share', { app: app.id, me })
   const helper = await call('app_keep', { key: 'jobs', value: [jobs[0], { id: 'j3', job: 'Baker' }] }, `s-${share.helper}`)
   assert.equal(helper.structuredContent?.removed, undefined)
+})
+
+test('a request writes only what it means: numbers as typed, a lookup for kept options adds none and keeps models apart (AH: round 10 LENA-1, PRIYA-1, PRIYA-2)', { skip }, async () => {
+  const ledger = await chat.apps.put({ name: 'Invoice ledger', about: 'Supplier invoices.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('ledger'), args: { request: 'invoices' }, saved: true }, 'made by hand')
+  const added = (await events('/api/turn', { text: 'add invoice #MM-21240 120.5', talk: '8'.repeat(32), screen: [{ id: ledger.id, version: 1, name: 'Invoice ledger', shows: '', did: [] }] })).find(e => e.type === 'app')
+  assert.equal(added.args.values.add[0].invoice_no, 'MM-21240', 'no "#" in front of the number')
+  const { addFound } = await import('../server/widgets/findings.mjs')
+  const kept = { items: [{ name: 'Bose QuietComfort Ultra Headphones', facts: { price: '$429' } }, { name: 'Sony WH-1000XM5' }] }
+  const priced = addFound(kept, { items: [{ name: 'Bose QuietComfort Headphones', facts: { price: '$169' } }, { name: 'Sony WH1000XM5', facts: { price: '$329' } }] }, { adding: false })
+  assert.equal(priced.items.length, 2, 'a lookup adds no option of its own')
+  assert.equal(priced.items[0].facts.price, '$429', 'the plain QuietComfort’s price is not the Ultra’s')
+  assert.equal(priced.items[1].facts.price, '$329', 'WH-1000XM5 and WH1000XM5 are one')
+  assert.equal(addFound(kept, { items: [{ name: 'Apple AirPods Max' }] }).items.length, 3, 'asked for more, an option is added')
 })

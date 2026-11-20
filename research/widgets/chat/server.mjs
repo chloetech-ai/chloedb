@@ -308,7 +308,11 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   function entries(args) {
     const values = args?.values
     if (!values || typeof values !== 'object' || values.add == null) return args
-    const add = (Array.isArray(values.add) ? values.add : [values.add]).filter(e => e && typeof e === 'object').map(e => ({ id: String(e.id ?? randomBytes(5).toString('hex')), ...e }))
+    // A number goes in as it was typed: "MM-21240", never "#MM-21240", so
+    // the app's own check for the same number finds it (round 10 LENA-1).
+    const NUMBERED = /(number|^no$|^num|invoice|^ref|reference|code|order|receipt|bill)/i
+    const plainNumbers = e => Object.fromEntries(Object.entries(e).map(([k, v]) => [k, NUMBERED.test(k) && typeof v === 'string' ? v.replace(/^\s*(#|no\.?\s|nº\s?)\s*/i, '') : v]))
+    const add = (Array.isArray(values.add) ? values.add : [values.add]).filter(e => e && typeof e === 'object').map(e => plainNumbers({ id: String(e.id ?? randomBytes(5).toString('hex')), ...e }))
     return { ...args, values: { ...values, add } }
   }
   // Whether a query may be about what a kept answer found: it shares a
@@ -437,7 +441,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       send({ type: 'status', text: 'Searching the web' })
       try {
         const found = await model.research({ request: text, query: String(app.args?.query || text), history: history.slice(-6), found: app.args, changes: await apps.changesOf(app.id).catch(() => []) })
-        if (found.documents?.length || found.items?.length) app = await apps.put({ ...app, args: addFound(app.args, found), version: app.version + 1 }, `found again for: ${text}`.slice(0, 300))
+        if (found.documents?.length || found.items?.length) app = await apps.put({ ...app, args: addFound(app.args, found, { adding: /\b(more|another|other|alternatives?|new options?|add (an?|another|more)|also (find|look))\b/i.test(text) }), version: app.version + 1 }, `found again for: ${text}`.slice(0, 300))
       } catch (error) {
         send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
         return

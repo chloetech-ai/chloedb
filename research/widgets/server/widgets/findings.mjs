@@ -256,11 +256,16 @@ export function clip(found = {}) {
 // new goes at the end; a source found again keeps its number. The kept
 // answer's question, bottom line and best-for stay; what the lookup said
 // is its note.
-export function addFound(kept = {}, found = {}) {
-  const words = name => new Set(String(name ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1 && !SAME_SKIP.has(w)))
+export function addFound(kept = {}, found = {}, { adding = true } = {}) {
+  const words = name => new Set(String(name ?? '').replace(/([A-Za-z0-9])-(?=[A-Za-z0-9])/g, '$1').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1 && !SAME_SKIP.has(w)))
+  // Two names are one option when every word that tells products apart is in
+  // both: "QuietComfort" is not "QuietComfort Ultra", nor "XM4" "XM5" (round 10 PRIYA-1).
+  const VARIANT = /\d|^(ultra|pro|max|mini|plus|lite|air|se|neo|studio|sport|solo|elite|prime|xl|ii|iii|iv|gen|edition|kids|open)$/
   const same = (a, b) => {
     const x = words(a), y = words(b)
     if (!x.size || !y.size) return false
+    const only = (p, q) => [...p].filter(w => ![...q].some(v => alike(w, v)))
+    if ([...only(x, y), ...only(y, x)].some(w => VARIANT.test(w))) return false
     const shared = [...x].filter(w => [...y].some(v => alike(w, v))).length
     return shared === Math.min(x.size, y.size) || shared / new Set([...x, ...y]).size >= 0.6
   }
@@ -277,11 +282,15 @@ export function addFound(kept = {}, found = {}) {
   const renumber = list => (list ?? []).map(n => number.get(n)).filter(Boolean)
   const says = list => (list ?? []).map(s => ({ ...s, doc: number.get(s.doc) })).filter(s => s.doc)
   const items = (kept.items ?? []).map(item => ({ ...item }))
+  const unplaced = []
   for (const raw of found.items ?? []) {
     const item = { ...raw, says: says(raw.says) }
     const old = items.find(x => same(x.name, item.name))
     if (!old) {
-      items.push(item)
+      // A lookup for options already kept (a store price, a date) adds none
+      // of its own: a question is not a new option (round 10 PRIYA-2).
+      if (adding) items.push(item)
+      else unplaced.push(item.name)
       continue
     }
     const quoted = new Set((old.says ?? []).map(s => `${s.doc} ${s.text}`))
