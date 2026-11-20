@@ -11,7 +11,6 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
-<<<<<<< HEAD
 - **Fewer pages until you need them, and fixes you can run.** On a single
   server the command center's sidebar shows the twelve pages a newcomer
   uses and folds the others under "More pages" until one is opened (then
@@ -44,7 +43,6 @@ changes collect under "Unreleased".
   that says when, rather than a 400 that says to fetch it by hand; an
   import reads cells such as `N/A`, `null`, `-` or `?` as empty, so a
   column of numbers with a few of them stays a number column.
-=======
 - **UPDATE follows SELECT's NULL rules, and EXPLAIN runs over HTTP.**
   (SAM-401, SAM-403, SAM-404, SAM-405.) `UPDATE t SET n = n + 1` keeps a
   NULL `n` NULL, as `SELECT n + 1`, `1 + n` and `n * 2` already did, and
@@ -87,7 +85,6 @@ changes collect under "Unreleased".
   the database file beside the tables' live data, and `GET
   /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
   its `totals`.
->>>>>>> origin/main
 - **Search by meaning without asking for it.** A table an import makes
   from a file's columns (`chloedb-server import`, `POST /v1/import`, the
   MCP tool `import` with `create`, and the command center's Import) gets
