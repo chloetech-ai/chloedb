@@ -333,7 +333,7 @@ def standard_text(spdx_id, p):
     return None
 
 
-def notices(meta, name, version, platform):
+def notices(meta, name, version, platform, sbom=True):
     root, packages, built, linked = walk(meta)
     crates = sorted((packages[i] for i in built if i != root and packages[i].get("source")), key=lambda p: (p["name"], p["version"]))
     ours = sorted(packages[i]["name"] for i in built if i != root and not packages[i].get("source"))
@@ -359,11 +359,14 @@ def notices(meta, name, version, platform):
     lines = [
         f"# Third-party notices: {name} {version} ({platform})",
         "",
-        f"{name} is Apache-2.0 (LICENSE, beside this file), built from https://github.com/{REPO}"
+        f"{name} is Apache-2.0 (its LICENSE file), built from https://github.com/{REPO}"
         + (f" with this repository's crates {', '.join(ours)}" if ours else "") + ".",
         f"It is compiled with the {len(crates)} crates below, from crates.io, whose licences follow. "
         "A crate marked (build) is only compiled to build it (a build script's dependency or a procedural macro) and is not in the binary.",
-        f"The release's SBOM, {name}-{platform}.cdx.json, lists the same crates with their checksums.",
+    ]
+    if sbom:
+        lines.append(f"The release's SBOM, {name}-{platform}.cdx.json, lists the same crates with their checksums.")
+    lines += [
         "",
         "| crate | version | licence |",
         "|---|---|---|",
@@ -407,7 +410,7 @@ def write(crate, name, platform, binary, cdx, notices_path, target=None):
         pathlib.Path(cdx).write_text(json.dumps(doc, indent=1) + "\n")
     if notices_path:
         pathlib.Path(notices_path).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(notices_path).write_text(notices(meta, name, version, platform))
+        pathlib.Path(notices_path).write_text(notices(meta, name, version, platform, sbom=bool(cdx)))
     return doc
 
 

@@ -199,6 +199,17 @@ changes collect under "Unreleased".
   `followed_table`), as writes already were; adding a column stays
   allowed. The Postgres page has a systemd unit and a container restart
   policy to run the follower under.
+- **A production kit.** `chloedb-server/deploy/monitoring` holds a Prometheus
+  scrape config, alerting rules that mirror every built-in alert the servers
+  page on (with each runbook as `runbook_url`; a test keeps the two in step),
+  and a Grafana dashboard to import (OLU-313). A new guide page, *Back up,
+  restore and upgrade*, runs each step on one server, from a checkpoint to a
+  restore after a bad delete and a rollback, and CI runs it with the other
+  guide pages. The *Security review pack* page collects the threat model of
+  keys and of ChloeCtx's sync, how the controls map to SOC 2's criteria, and
+  what each package ships. The Python wheel and the npm packages that hold
+  the addon now carry `THIRD-PARTY-NOTICES.md`, the licences of every crate
+  compiled into them (LENA-408).
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000
