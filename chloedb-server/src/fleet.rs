@@ -358,6 +358,12 @@ fn fills_in(days: f64) -> String {
     }
 }
 
+/// Whether the shard's copy just elected primary has not taken its writes
+/// yet ([`crate::coord::shard_state`] says so in `electing`, with a primary).
+fn electing_now(s: &Json) -> bool {
+    s["electing"] == true && !s["primary"].is_null()
+}
+
 /// What to do about a shard whose primary answers but cannot write until
 /// it restarts (`failing`: a write failed partway, a full disk): hand the
 /// primary over to a replica in sync, so that writes go on at once, then
@@ -390,9 +396,10 @@ fn hand_over(copies: &[Json], primary: &Json, failover: bool) -> Option<String> 
     })
 }
 
-/// A copy's short name (`s1-0`), else its url.
+/// A copy's name as people say it: its `--node-name`, else its short name
+/// (`s1-0`, or its address), else its url (OLU-402).
 fn short(r: &Json) -> String {
-    r["short"].as_str().or(r["url"].as_str()).unwrap_or("?").to_string()
+    crate::coord::shown(r)
 }
 
 /// How much more of its disk a copy uses than its shard's other copies
@@ -512,20 +519,41 @@ impl Fleet {
                             t[..1].make_ascii_uppercase();
                             t
                         }
+                    } else if electing_now(&s) {
+                        // OLU-401: the copy just elected is not broken, and
+                        // restarting it, with the old primary silent, would
+                        // leave the shard without a majority.
+                        let window = s["failover_window_ms"].as_u64().filter(|&w| w > 0).map_or(String::new(), |w| format!(" A silent primary is given {} (--failover-after-ms), then its lease runs out.", dur(w)));
+                        let p = copies.iter().find(|r| r["url"] == s["primary"]).map_or("the new primary".to_string(), short);
+                        format!("Wait: {p} was just elected primary and takes writes within seconds, once the old primary's lease runs out. Do not restart it.{window} If it still takes none after a minute, find out why on its primary: {why}")
                     } else if let Some(t) = hand_over(&copies, &s["primary"], s["failover"] == true) {
                         t
                     } else {
                         format!("Find out why on its primary: {why}")
                     };
-                    let head = if s["primary"].is_null() { format!("Writes are failing: {name} has no primary") } else { format!("Writes are failing: {name} takes no writes") };
+                    // A failover under way holds writes for seconds, then
+                    // acknowledges them: it is not "failing" (OLU-303).
+                    let electing = s["electing"] == true;
+                    let head = if electing && s["primary"].is_null() {
+                        format!("Writes are held: {name} is electing a primary")
+                    } else if electing {
+                        format!("Writes are held: {name}'s new primary is taking over")
+                    } else if s["primary"].is_null() {
+                        format!("Writes are failing: {name} has no primary")
+                    } else {
+                        format!("Writes are failing: {name} takes no writes")
+                    };
                     let title = if s["primary"].is_null() && s["failover"] == true && !elects {
                         // "Shard 0 cannot elect a primary or take writes until a second copy answers"
                         let c = crate::coord::cannot_elect(copies.len(), up.len());
                         format!("Shard {n} {}", c.trim_start_matches("it ").replacen("elect a primary", "elect a primary or take writes", 1))
+                    } else if electing {
+                        format!("Shard {n} holds writes while its copies elect a primary")
                     } else {
                         format!("Shard {n} takes no writes")
                     };
-                    Some((2, true, head, title, format!("Writes to {name}'s rows fail; searches still answer"), next(todo)))
+                    let impact = if electing { format!("Writes to {name}'s rows wait for the new primary (held for seconds, then answered); searches still answer") } else { format!("Writes to {name}'s rows fail; searches still answer") };
+                    Some((2, true, head, title, impact, next(todo)))
                 }
                 _ if !refusing.is_empty() && refusing.len() == gone.len() => {
                     degraded += 1;
@@ -1124,6 +1152,10 @@ impl Fleet {
                 .then_with(|| a.headline.cmp(&b.headline))
         });
 
+        // Shards of two copies that answer in full and survive no loss
+        // ([`crate::coord::shard_state`]'s `can_lose`): said, not a problem.
+        let pairs: Vec<u64> = shards.iter().enumerate().filter(|(_, s)| s["state"] == "ok" && s["can_lose"] == 0 && s["replicas"].as_array().is_some_and(|r| r.len() == 2)).map(|(k, s)| s["shard"].as_u64().unwrap_or(k as u64)).collect();
+        checks.push(json!({"id": "redundancy", "status": "ok", "survives_no_loss": pairs}));
         let status = checks.iter().fold("ok", |a, c| worst(a, c["status"].as_str().unwrap_or("ok")));
         let since = match m.status {
             Some((s, t)) if s == status => t,
@@ -1139,6 +1171,11 @@ impl Fleet {
                 let mut h = format!("{all}; {copies_up} of {} {} up", copies.len(), if copies.len() == 1 { "copy is" } else { "copies are" });
                 if shards.len() == 1 && i.coordinator.is_none() {
                     h = "This server serves reads and takes writes".into();
+                }
+                // KENJI-405: Home says what the Cluster page says of a pair.
+                if !pairs.is_empty() {
+                    let which = if pairs.len() == 1 { format!("shard {}", pairs[0]) } else { format!("{} shards", pairs.len()) };
+                    h = format!("{h}, but with failover on, losing either copy of {which} stops its reads and writes: give {} a third copy", if pairs.len() == 1 { "it" } else { "each" });
                 }
                 // Steady while nothing changes: the numbers are in the checks.
                 match (ratio, p99) {
@@ -1676,5 +1713,54 @@ mod tests {
         later.now_ms = 20_000;
         assert_eq!(f.judge(later)["since_ms"], 10_000);
         assert!(j["problems"].as_array().unwrap().is_empty());
+    }
+
+    /// KENJI-405: a pair that answers in full is fine, and Home says it
+    /// survives no loss, as the Cluster page does.
+    #[test]
+    fn a_pair_says_it_survives_no_loss() {
+        let member = |short: &str, primary: bool| {
+            let mut r = copy(short, true);
+            (r["role"], r["takes_writes"], r["term"]) = (json!(if primary { "primary" } else { "replica" }), json!(primary), json!(1));
+            r["detail"]["capability"] = json!({"serves_reads": true, "takes_writes": primary, "failover_after_ms": 2000});
+            r
+        };
+        let mut c = json!({"shards": [{"shard": 0, "replicas": [member("p", true), member("r", false)]}]});
+        crate::coord::shard_state(0, &mut c["shards"][0]);
+        assert_eq!(c["shards"][0]["state"], "ok", "{c}");
+        assert_eq!(c["shards"][0]["can_lose"], 0, "{c}");
+        assert!(c["shards"][0]["why"].as_str().unwrap().contains("losing either copy stops its reads and writes"), "{c}");
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        assert_eq!(j["status"], "ok");
+        let h = j["headline"].as_str().unwrap();
+        assert!(h.starts_with("Its 1 shard serves reads and takes writes; 2 of 2 copies are up, but with failover on, losing either copy of shard 0 stops its reads and writes: give it a third copy"), "{h}");
+        let r = j["checks"].as_array().unwrap().iter().find(|x| x["id"] == "redundancy").unwrap().clone();
+        assert_eq!(r["survives_no_loss"], json!([0]));
+        // Three copies survive one loss: nothing said.
+        let mut c3 = json!({"shards": [{"shard": 0, "replicas": [member("a", true), member("b", false), member("c", false)]}]});
+        crate::coord::shard_state(0, &mut c3["shards"][0]);
+        assert_eq!((c3["shards"][0]["state"].as_str(), c3["shards"][0]["can_lose"].as_u64()), (Some("ok"), Some(1)), "{c3}");
+        assert!(!Fleet::default().judge(inputs(&c3, &[]))["headline"].as_str().unwrap().contains("third copy"));
+    }
+
+    /// OLU-401, OLU-303, OLU-402: during a failover Home says writes are held
+    /// (they are answered after seconds), tells on-call to wait and not to
+    /// restart the copy just elected, and names copies by `--node-name`.
+    #[test]
+    fn a_failover_under_way_says_wait_and_names_the_servers() {
+        let mut new = copy("127.0.0.1:17756", true);
+        new["name"] = json!("s1c");
+        let mut old = copy("127.0.0.1:17754", false);
+        old["name"] = json!("s1a");
+        let c = json!({"shards": [{"shard": 1, "state": "no_writes", "failover": true, "majority": true, "electing": true, "failover_window_ms": 2000, "primary": "http://127.0.0.1:17756",
+            "why": "2 of 3 copies answer: s1c was just elected primary", "replicas": [old, copy("127.0.0.1:17755", true), new]}]});
+        let j = Fleet::default().judge(inputs(&c, &[]));
+        let p = &j["problems"][0];
+        assert_eq!(j["headline"], "Writes are held: shard 1's new primary is taking over");
+        let next = p["next"]["text"].as_str().unwrap();
+        assert!(next.starts_with("Wait: s1c was just elected primary") && next.contains("Do not restart it") && next.contains("2 s"), "{next}");
+        assert!(!next.contains("Find out why on its primary: 2") || next.contains("after a minute"), "{next}");
+        assert!(p["impact"].as_str().unwrap().contains("then answered"), "{p}");
+        assert!(p["where"].to_string().contains("s1a") && !p["where"].to_string().contains("17754"), "{p}");
     }
 }

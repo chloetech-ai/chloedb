@@ -527,8 +527,18 @@ export function copyName(url, cluster = ctx.cluster) {
   if (!url) return "–";
   const f = findCopy(url, cluster);
   if (!f) return hostPort(url);
-  // The server's own texts (fleet health, events) say the same name; the node name goes in the title.
-  return f.rep.short || `s${f.shard}-${f.copy}`;
+  return shownName(f.rep) || `s${f.shard}-${f.copy}`;
+}
+/**
+ * A copy's name by the server's rule (crate::coord::shown), which its texts
+ * (fleet health, alerts, cc) say too: the `--node-name` it gave, else its
+ * short name (its address on machines of your own: OLU-402). A pod the
+ * operator runs keeps its short name (s1-0), which its pod name only lengthens.
+ */
+export function shownName(rep) {
+  const short = rep?.short || null;
+  const name = typeof rep?.name === "string" ? rep.name.trim() : "";
+  return name && !(short && /^s\d+-\d+$/.test(short)) ? name : short;
 }
 /** The long form, for a tooltip: "s1-0: shard 1, copy 0, primary · node … · http://…". */
 export function copyTitle(url, cluster = ctx.cluster) {
@@ -537,7 +547,8 @@ export function copyTitle(url, cluster = ctx.cluster) {
   if (!f) return String(url);
   const r = f.rep;
   const role = r.role === "unknown" ? `not answering${r.last_role ? ` (was ${r.last_role})` : ""}` : r.role;
-  return [`${copyName(url, cluster)}: shard ${f.shard}${role ? ", " + role : ""}`, r.name && r.name !== r.node ? `server ${r.name}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
+  const shown = copyName(url, cluster);
+  return [`${shown}: shard ${f.shard}${role ? ", " + role : ""}`, r.name && r.name !== shown && r.name !== r.node ? `server ${r.name}` : null, r.short && r.short !== shown ? `copy ${r.short}` : null, r.node ? `node ${r.node}` : null, r.zone ? `zone ${r.zone}` : null, String(url)].filter(Boolean).join(" · ");
 }
 
 // ---------------------------------------------------------------- links
