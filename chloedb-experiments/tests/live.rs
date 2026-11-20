@@ -129,7 +129,7 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     let metrics = v["metrics"].as_array().unwrap();
-    assert_eq!(metrics.len(), 10, "the eight metrics, the judged quality and the p95 query time");
+    assert_eq!(metrics.len(), 11, "the eight metrics, the judged quality and the p95 and p99 query times");
     let p95 = metrics.iter().find(|m| m["key"] == "latency_p95").unwrap();
     assert_eq!(p95["guardrail"], json!(true));
     assert!(p95["comparisons"][0]["lift_hi"].is_number() && p95["comparisons"][0]["p_always_valid"].is_number(), "{p95}");
@@ -214,7 +214,7 @@ async fn a_live_run_counts_every_second_and_ends_as_an_experiment() {
     c.post(&format!("/v1/live/{id}/stop"), json!({})).await;
     let r = c.done(&id).await;
     let rep = &r["report"];
-    assert_eq!(rep["metrics"].as_array().unwrap().len(), 9, "the eight metrics and the p95 query time");
+    assert_eq!(rep["metrics"].as_array().unwrap().len(), 10, "the eight metrics and the p95 and p99 query times");
     assert_eq!(rep["spec"]["mode"], "live");
     let searches = rep["searches"].as_u64().unwrap();
     assert!(searches >= 300, "{searches}");

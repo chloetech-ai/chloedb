@@ -879,8 +879,18 @@ fn quantile_se(v: &[f64], q: f64) -> (f64, f64) {
 /// times are measured). `latencies` per arm; `av`, the always-valid p
 /// value per arm after the control when the run keeps a series of them.
 pub fn latency_p95(names: &[String], latencies: &[Vec<f64>], av: Option<&[f64]>) -> Value {
+    latency_quantile(names, latencies, 0.95, av)
+}
+
+/// The 99th percentile of query time, read as a diagnostic: the far tail,
+/// which moves before the guardrail's p95 does.
+pub fn latency_p99(names: &[String], latencies: &[Vec<f64>]) -> Value {
+    latency_quantile(names, latencies, 0.99, None)
+}
+
+fn latency_quantile(names: &[String], latencies: &[Vec<f64>], q: f64, av: Option<&[f64]>) -> Value {
     let sorted: Vec<Vec<f64>> = latencies.iter().map(|l| { let mut v = l.clone(); v.sort_by(f64::total_cmp); v }).collect();
-    let qs: Vec<(f64, f64)> = sorted.iter().map(|v| quantile_se(v, 0.95)).collect();
+    let qs: Vec<(f64, f64)> = sorted.iter().map(|v| quantile_se(v, q)).collect();
     let (q0, se0) = qs[0];
     let comps: Vec<Value> = (1..names.len())
         .map(|a| {
@@ -903,6 +913,13 @@ pub fn latency_p95(names: &[String], latencies: &[Vec<f64>], av: Option<&[f64]>)
         })
         .collect();
     let arms: Vec<Value> = names.iter().zip(&qs).zip(&sorted).map(|((n, &(q, se)), v)| json!({"arm": n, "value": if q.is_finite() { json!(q) } else { Value::Null }, "se": if se.is_finite() { json!(se) } else { Value::Null }, "users": Value::Null, "searches": v.len(), "truth": Value::Null})).collect();
+    if q >= 0.99 {
+        return json!({
+            "key": "latency_p99", "title": "Query time, 99th percentile", "unit": "ms", "higher": Value::Null, "guardrail": false, "margin": Value::Null, "diagnostic": true, "quantile": true, "exact": false,
+            "about": "The 99th percentile of the server's time to answer, per arm: the far tail, read beside the guardrail and not deciding. One search in a hundred waits this long or longer; its interval comes from the order statistics, and is wide until there are thousands of searches.",
+            "arms": arms, "comparisons": comps,
+        });
+    }
     json!({
         "key": "latency_p95", "title": "Query time, 95th percentile", "unit": "ms", "higher": false, "guardrail": true, "margin": 0.1, "diagnostic": false, "quantile": true, "exact": false,
         "about": "The 95th percentile of the server's time to answer, per arm: the guardrail on speed, since the slow tail is what people notice. Its interval comes from the order statistics, which assume nothing of the times' shape.",
@@ -1370,6 +1387,7 @@ pub fn report(d: &RunData) -> Value {
     }
     let names: Vec<String> = d.spec.arms.iter().map(|a| a.name.clone()).collect();
     metrics.push(latency_p95(&names, &d.latencies, None));
+    metrics.push(latency_p99(&names, &d.latencies));
     q_values(&mut metrics, k);
     let mut cohorts = serde_json::Map::new();
     for attr in ATTRIBUTES {

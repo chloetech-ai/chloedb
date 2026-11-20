@@ -554,6 +554,8 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
         let topical: Vec<&&&Session> = ss.iter().filter(|s| needs.get(s.need.as_str()).is_some_and(|(_, n)| n.kind != "known")).collect();
         let said = of(&|s| s.said);
         let rr: Vec<f64> = known.iter().map(|s| s.target_rank.map_or(0.0, |r| 1.0 / r as f64)).collect();
+        let found = of(&|s| s.success);
+        let cost_per_found = if found > 0 { json!(ss.iter().map(|s| s.cost).sum::<f64>() / found as f64) } else { Value::Null };
         arms.push(json!({
             "name": spec.arms[a].name, "source": spec.arms[a].source, "knobs": spec.arms[a].knobs,
             "sessions": n,
@@ -572,6 +574,11 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
             "seconds": mean_ci(&ss.iter().map(|s| s.seconds).collect::<Vec<_>>()),
             "search_ms": mean_ci(&ss.iter().filter(|s| s.searches > 0).map(|s| s.search_ms / s.searches as f64).collect::<Vec<_>>()),
             "cost": ss.iter().map(|s| s.cost).sum::<f64>(),
+            // The effort of a need found: its searches and seconds, and the
+            // spend over the needs found.
+            "searches_found": mean_ci(&ss.iter().filter(|s| s.success).map(|s| s.searches as f64).collect::<Vec<_>>()),
+            "seconds_found": mean_ci(&ss.iter().filter(|s| s.success).map(|s| s.seconds).collect::<Vec<_>>()),
+            "cost_per_found": cost_per_found,
         }));
     }
     // Each arm against the control, over the needs both tried.

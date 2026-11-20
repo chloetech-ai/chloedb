@@ -1744,6 +1744,7 @@ const STUDY_BUDGETS = [0.5, 1, 2, 3, 5, 10, 15, 20];
 const SESSION_COST = { "claude-opus-5-5": 0.16, "claude-sonnet-5-5": 0.08, "claude-haiku-5-5": 0.006 };
 const JUDGE_COST = { "claude-opus-5-5": 0.02, "claude-sonnet-5-5": 0.01, "claude-haiku-5-5": 0.001 };
 const pct0 = (v) => (v == null || !Number.isFinite(v) ? "–" : Math.round(v * 100) + "%");
+const pct1 = (v) => (v == null || !Number.isFinite(v) ? "–" : (v * 100).toFixed(1) + "%");
 const kept = (k, v) => { try { if (v === undefined) return JSON.parse(sessionStorage.getItem(k) || "null"); sessionStorage.setItem(k, JSON.stringify(v)); } catch { return null; } };
 
 function studyPill(core, st) {
@@ -2256,9 +2257,12 @@ async function realStudy(ctx, root, go, id, onStop) {
       ["First page nDCG", "of the first page, over the judge's grades of every arm's rows for the need", (a) => mean(a.ndcg, 3)],
       ["Wrongly sure", "of the needs it said it found, those it did not", (a) => (a.overclaim?.n ? pct0(a.overclaim.mean) : "–")],
       ["Searches a need", "", (a) => mean(a.searches)],
+      ["…of a need found", "searches before naming the row that answered it", (a) => mean(a.searches_found)],
       ["Seconds a need", "", (a) => mean(a.seconds, 0)],
+      ["…of a need found", "seconds before naming the row that answered it", (a) => mean(a.seconds_found, 0)],
       ["Search ms", "the site's time to answer one search", (a) => mean(a.search_ms, 0)],
       ["Cost", "the agents' tokens", (a) => `$${(a.cost || 0).toFixed(2)}`],
+      ["Cost a need found", "the agents' spend over the needs they found", (a) => (a.cost_per_found == null ? "–" : `$${a.cost_per_found.toFixed(3)}`)],
     ];
     arms.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t ex-armt" },
       h("thead", {}, h("tr", {}, h("th", {}, ""), A.map(armCol))),
@@ -2509,6 +2513,25 @@ function paired(ds) {
   const p = n > 1 ? (se > 0 ? pT(m / se, n - 1) : (m === 0 ? 1 : 0)) : NaN;
   return { n, mean: m, se, lo: m - tq * se, hi: m + tq * se, p };
 }
+/**
+ * Welch's comparison of two independent samples: the mean of `bs` minus
+ * the mean of `as`, its interval and p (Welch-Satterthwaite's df).
+ */
+function welch(as, bs) {
+  const x = as.filter(Number.isFinite), y = bs.filter(Number.isFinite);
+  const n1 = x.length, n2 = y.length;
+  if (!n1 || !n2) return { n: n1 + n2 };
+  const m1 = x.reduce((a, b) => a + b, 0) / n1, m2 = y.reduce((a, b) => a + b, 0) / n2;
+  const v1 = n1 > 1 ? x.reduce((a, b) => a + (b - m1) ** 2, 0) / (n1 - 1) : NaN;
+  const v2 = n2 > 1 ? y.reduce((a, b) => a + (b - m2) ** 2, 0) / (n2 - 1) : NaN;
+  const s1 = v1 / n1, s2 = v2 / n2;
+  const se = Math.sqrt(s1 + s2);
+  const df = (s1 + s2) ** 2 / ((s1 * s1) / Math.max(1, n1 - 1) + (s2 * s2) / Math.max(1, n2 - 1));
+  const m = m2 - m1;
+  const tq = t975(df);
+  const p = Number.isFinite(se) ? (se > 0 ? pT(m / se, df) : (m === 0 ? 1 : 0)) : NaN;
+  return { n: n1 + n2, mean: m, se, lo: m - tq * se, hi: m + tq * se, p };
+}
 const avg = (xs) => { const v = xs.filter(Number.isFinite); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : NaN; };
 function bhQ(ps) {
   const idx = ps.map((p, i) => [p, i]).filter(([p]) => Number.isFinite(p)).sort((a, b) => a[0] - b[0]);
@@ -2532,8 +2555,10 @@ function heterogeneity(groups) {
 
 /**
  * The report of a step's units. `metrics`: [{key, title, a(u), b(u), d(u)?,
- * higher, fmt, dfmt, about}] (d defaults to b − a); `attrs`: [{key, title,
- * of(u)}]; `xs`: [{key, title, of(u, i), fmt}] (the x axes offered).
+ * higher, fmt, dfmt, about, unpaired?}] (d defaults to b − a; an unpaired
+ * metric's a(u) and b(u) give a unit's value on one side only, NaN on the
+ * other, and the two sides are compared by Welch's test); `attrs`: [{key,
+ * title, of(u)}]; `xs`: [{key, title, of(u, i), fmt}] (the x axes offered).
  */
 function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note }) {
   const { h } = core;
@@ -2547,6 +2572,12 @@ function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note
   const valuesOf = (a) => { const seen = new Map(); for (const u of units) { const v = a.of(u); seen.set(v, (seen.get(v) || 0) + 1); } return [...seen.entries()].sort((x, y) => (typeof x[0] === "number" && typeof y[0] === "number" ? x[0] - y[0] : String(x[0]).localeCompare(String(y[0])))); };
   const kept = () => units.filter((u) => attrs.every((a) => !off[a.key]?.has(a.of(u))));
   const dOf = (m) => m.d || ((u) => m.b(u) - m.a(u));
+  // Whether a unit counts for a metric, its comparison over units, and the
+  // two sides' means.
+  const has = (m, u) => (m.unpaired ? Number.isFinite(m.a(u)) || Number.isFinite(m.b(u)) : Number.isFinite(dOf(m)(u)));
+  const stat = (m, g) => (m.unpaired ? welch(g.map(m.a), g.map(m.b)) : paired(g.map(dOf(m))));
+  const sides = (m, g) => { const k = g.filter((u) => has(m, u)); return [avg(k.map(m.a)), avg(k.map(m.b))]; };
+  const span = (m, r) => (r.n > 1 && Number.isFinite(r.lo) ? `${fmtD(m, r.lo)} to ${fmtD(m, r.hi)}` : "–");
   const tone = (m, r) => (!(r.p < 0.05) || m.higher == null ? "" : (r.mean > 0) === m.higher ? "ex-good" : "ex-bad");
   const fmtD = (m, v) => (m.dfmt ? m.dfmt(v) : signed(v, 3));
   const fmtV = (m, v) => (m.fmt ? m.fmt(v) : fixed(v, 3));
@@ -2574,25 +2605,25 @@ function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note
     table.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, "Metric"), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"), h("th", { class: "num" }, "95% interval"), h("th", { class: "num" }, "p"), h("th", { class: "num" }, "n"))),
       h("tbody", {}, metrics.map((m) => {
-        const d = dOf(m);
-        const pairs = us.filter((u) => Number.isFinite(d(u)));
-        const r = paired(pairs.map(d));
-        return h("tr", { title: m.about || "" }, h("td", {}, m.title, m.higher == null ? h("span", { class: "small dim" }, " · no better direction") : null),
-          h("td", { class: "num ex-num" }, fmtV(m, avg(pairs.map(m.a)))), h("td", { class: "num ex-num" }, fmtV(m, avg(pairs.map(m.b)))),
-          h("td", { class: "num ex-num " + tone(m, r) }, r.n ? fmtD(m, r.mean) : "–"),
-          h("td", { class: "num ex-num" }, r.n > 1 ? `${fmtD(m, r.lo)} to ${fmtD(m, r.hi)}` : "–"),
-          h("td", { class: "num ex-num" }, pText(r.p)), h("td", { class: "num ex-num" }, String(r.n)));
+        const r = stat(m, us);
+        const [va, vb] = sides(m, us);
+        return h("tr", { title: m.about || "" }, h("td", {}, m.title, m.higher == null ? h("span", { class: "small dim" }, " · no better direction") : null, m.unpaired ? h("span", { class: "small dim", title: "each search counts for one side only: the arm that led it, chosen by a fair coin; the sides compared by Welch's test" }, " · unpaired") : null),
+          h("td", { class: "num ex-num" }, fmtV(m, va)), h("td", { class: "num ex-num" }, fmtV(m, vb)),
+          h("td", { class: "num ex-num " + tone(m, r) }, Number.isFinite(r.mean) ? fmtD(m, r.mean) : "–"),
+          h("td", { class: "num ex-num" }, span(m, r)),
+          h("td", { class: "num ex-num" }, pText(r.p)), h("td", { class: "num ex-num" }, String(r.n || 0)));
       })))));
     // Over time.
     const m = metrics.find((x) => x.key === st.metric) || metrics[0];
     const d = dOf(m);
+    const ok = (u) => has(m, u);
     const xa = xs.find((x) => x.key === st.x) || xs[0];
     const ga = attrs.find((a) => a.key === st.group);
     const groups = ga ? valuesOf(ga).map(([v]) => [v, us.filter((u) => ga.of(u) === v)]).filter(([, g]) => g.length) : [["All", us]];
     const series = [];
     groups.forEach(([gname, g], gi) => {
       const color = ARM_COLORS[gi % ARM_COLORS.length];
-      const pts = g.map((u, i) => [xa.of(u, i), d(u)]).filter((p) => Number.isFinite(p[1]) && Number.isFinite(p[0])).sort((a, b) => a[0] - b[0]);
+      const pts = g.map((u, i) => [xa.of(u, i), u]).filter((p) => ok(p[1]) && Number.isFinite(p[0])).sort((a, b) => a[0] - b[0]);
       const buckets = new Map();
       for (const [x, v] of pts) { const k = xa.bucket ? xa.bucket(x) : x; if (!buckets.has(k)) buckets.set(k, []); buckets.get(k).push(v); }
       const keys = [...buckets.keys()].sort((a, b) => a - b);
@@ -2604,8 +2635,8 @@ function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note
         const vs = buckets.get(k);
         acc = st.mode === "cum" ? acc.concat(vs) : (i % step === 0 ? vs.slice() : acc.concat(vs));
         if ((i + 1) % step !== 0 && i !== keys.length - 1) return;
-        const r = paired(acc);
-        if (r.n) line.push([k, r.mean]);
+        const r = stat(m, acc);
+        if (Number.isFinite(r.mean)) line.push([k, r.mean]);
         if (r.n > 1 && Number.isFinite(r.lo)) band.push([k, r.lo, r.hi]);
         if (st.mode !== "cum") acc = [];
       });
@@ -2617,26 +2648,27 @@ function reportView(core, { units, arms, metrics, attrs, xs, defaultMetric, note
       h("div", { class: "small dim" }, `${arms[1]} minus ${arms[0]}, ${m.title.toLowerCase()}; the band is the 95% interval${groups.length > 3 ? " (shown with three groups or fewer)" : ""}.`));
     // By group.
     const ga2 = ga || attrs[0];
-    const rows = valuesOf(ga2).map(([v]) => { const g = us.filter((u) => ga2.of(u) === v && Number.isFinite(d(u))); return { v, g, r: paired(g.map(d)) }; }).filter((x) => x.g.length);
+    const rows = valuesOf(ga2).map(([v]) => { const g = us.filter((u) => ga2.of(u) === v && ok(u)); return { v, g, r: stat(m, g), s: sides(m, g) }; }).filter((x) => x.g.length);
     const qs = bhQ(rows.map((x) => x.r.p));
     const het = heterogeneity(rows.map((x) => x.r));
     segs.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, ga2.title), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"), h("th", { class: "num" }, "95% interval"), h("th", { class: "num" }, "p"), h("th", { class: "num", title: "Benjamini-Hochberg over the groups" }, "q"), h("th", { class: "num" }, "n"))),
-      h("tbody", {}, rows.map((x, i) => h("tr", {}, h("td", {}, String(x.v)), h("td", { class: "num ex-num" }, fmtV(m, avg(x.g.map(m.a)))), h("td", { class: "num ex-num" }, fmtV(m, avg(x.g.map(m.b)))),
-        h("td", { class: "num ex-num " + tone(m, x.r) }, fmtD(m, x.r.mean)), h("td", { class: "num ex-num" }, x.r.n > 1 ? `${fmtD(m, x.r.lo)} to ${fmtD(m, x.r.hi)}` : "–"),
+      h("tbody", {}, rows.map((x, i) => h("tr", {}, h("td", {}, String(x.v)), h("td", { class: "num ex-num" }, fmtV(m, x.s[0])), h("td", { class: "num ex-num" }, fmtV(m, x.s[1])),
+        h("td", { class: "num ex-num " + tone(m, x.r) }, fmtD(m, x.r.mean)), h("td", { class: "num ex-num" }, span(m, x.r)),
         h("td", { class: "num ex-num" }, pText(x.r.p)), h("td", { class: "num ex-num" }, pText(qs[i])), h("td", { class: "num ex-num" }, String(x.r.n))))))),
       h("div", { class: "small", style: { marginTop: "6px" } }, het
         ? [h("b", {}, het.p < 0.05 ? "The groups differ. " : "No sign the groups differ. "), `Cochran's Q = ${het.Q.toFixed(2)} on ${het.df} df, p = ${pText(het.p)}: this tests whether the effect differs between groups; a group's own p tests it against zero, and one group significant while another is not is not evidence that they differ.`]
         : h("span", { class: "dim" }, "Too few units in the groups to test whether they differ.")));
-    // Units, the biggest differences first.
-    const all = us.filter((u) => Number.isFinite(d(u))).sort((x, y) => Math.abs(d(y)) - Math.abs(d(x)));
+    // Units, the biggest differences first (an unpaired metric's, the
+    // latest first: a unit has one side).
+    const all = m.unpaired ? us.filter(ok).sort((x, y) => (y.ts || 0) - (x.ts || 0)) : us.filter(ok).sort((x, y) => Math.abs(d(y)) - Math.abs(d(x)));
     const top = all.slice(0, st.rows || 15);
     const more = all.length > top.length ? h("button", { class: "btn sm", onclick: () => { st.rows = (st.rows || 15) + 50; draw(); } }, `Show ${Math.min(50, all.length - top.length)} more`) : "";
     raw.replaceChildren(h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, "Unit"), attrs.map((a) => h("th", {}, a.title)), h("th", { class: "num" }, arms[0]), h("th", { class: "num" }, arms[1]), h("th", { class: "num" }, "Difference"))),
       h("tbody", {}, top.map((u) => h("tr", {}, h("td", { class: "small" }, u.label || ""), attrs.map((a) => h("td", { class: "small dim" }, String(a.of(u)))),
-        h("td", { class: "num ex-num" }, fmtV(m, m.a(u))), h("td", { class: "num ex-num" }, fmtV(m, m.b(u))), h("td", { class: "num ex-num " + (m.higher == null ? "" : (d(u) > 0) === m.higher ? "ex-good" : d(u) ? "ex-bad" : "") }, fmtD(m, d(u)))))))),
-      h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, h("span", { class: "small dim" }, `${top.length} of ${all.length}, the biggest differences of ${m.title.toLowerCase()} first.`), more));
+        h("td", { class: "num ex-num" }, fmtV(m, m.a(u))), h("td", { class: "num ex-num" }, fmtV(m, m.b(u))), h("td", { class: "num ex-num " + (m.unpaired || m.higher == null ? "" : (d(u) > 0) === m.higher ? "ex-good" : d(u) ? "ex-bad" : "") }, m.unpaired ? "–" : fmtD(m, d(u)))))))),
+      h("div", { class: "row", style: { gap: "8px", alignItems: "center" } }, h("span", { class: "small dim" }, m.unpaired ? `${top.length} of ${all.length}, the latest first; each counts for the arm that led it.` : `${top.length} of ${all.length}, the biggest differences of ${m.title.toLowerCase()} first.`), more));
   };
   drawFilters();
   draw();
@@ -2650,24 +2682,58 @@ const wordsBucket = (n) => (n <= 1 ? "1 word" : n <= 3 ? "2–3 words" : "4+ wor
 
 /** The real visitors' report: one unit a search. */
 function onlineReport(core, on, arms) {
-  const units = (on.units || []).map((u) => ({ ...u, label: u.q }));
+  const { h } = core;
+  const units = (on.units || []).map((u) => ({ ...u, label: u.err ? `${u.q} (failed)` : u.q }));
   const ms = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} ms` : "–");
+  const sec = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} s` : "–");
+  const days = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} d` : "–");
+  const num = (v) => (v == null ? NaN : +v);
+  // A search where an arm failed was served as usual: it counts for the
+  // failures and nothing else.
+  const served = (f) => (u) => (u.err ? NaN : f(u));
+  const opened = (u) => u.ca + u.cb > 0;
+  // The arm that led a search (a fair coin): the unpaired metrics count a
+  // search for that arm only.
+  const led = (arm, f) => served((u) => (!!u.b_first === (arm === "b") ? f(u) : NaN));
+  const t0 = units.reduce((a, u) => Math.min(a, u.ts), Infinity);
+  const tail = (x, y) => (Number.isFinite(x) || Number.isFinite(y) ? `${ms(x)} against ${ms(y)}` : "–");
+  const e = on.errors || {}, z = on.zero || {};
+  const note = h("div", { style: { display: "grid", gap: "4px" } },
+    h("div", {}, "Each search showed both arms' stories drafted into one list; a story opened counts for the arm that picked it. A search the treatment won counts +1, one the control won −1."),
+    h("div", {}, h("b", {}, "Search time "), `p95 ${tail(on.a_p95, on.b_p95)}, p99 ${tail(on.a_p99, on.b_p99)} (${arms[0]} against ${arms[1]}). `,
+      h("b", {}, "Failed "), `${e.a || 0} on ${arms[0]} (${pct1(e.a_rate)}), ${e.b || 0} on ${arms[1]} (${pct1(e.b_rate)}); those searches were served as usual and count for nothing else. `,
+      h("b", {}, "Found nothing "), `${z.a || 0} on ${arms[0]}, ${z.b || 0} on ${arms[1]}.`),
+    h("div", {}, `“Unpaired” metrics count each search for the arm that led its list, chosen by a fair coin, and compare the two sides by Welch's test; next pages and asking again are read on the ${core.fmt.n(on.followed || 0)} searches from browsers that sent their anonymous id.`));
   return reportView(core, {
     units, arms,
     defaultMetric: "pref",
-    note: "Each search showed both arms' stories drafted into one list; a story opened counts for the arm that picked it. A search the treatment won counts +1, one the control won −1.",
+    note,
     metrics: [
-      { key: "pref", title: "Preference (searches won)", a: (u) => (u.outcome < 0 ? 1 : 0), b: (u) => (u.outcome > 0 ? 1 : 0), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3), about: "the share of searches each arm won; the difference is (wins − losses) / searches" },
-      { key: "clicks", title: "Stories opened a search", a: (u) => u.ca, b: (u) => u.cb, higher: true, fmt: (v) => fixed(v, 3) },
-      { key: "first", title: "Opened the first story", a: (u) => (u.ca + u.cb > 0 && !u.b_first && u.ca > 0 ? 1 : 0), b: (u) => (u.ca + u.cb > 0 && u.b_first && u.cb > 0 ? 1 : 0), higher: null, fmt: pct0, dfmt: (v) => signed(v, 3), about: "diagnostic: whose story sat first and was opened" },
-      { key: "ms", title: "Search time", a: (u) => u.a_ms, b: (u) => u.b_ms, higher: false, fmt: ms, dfmt: (v) => `${signed(v, 1)} ms` },
+      { key: "pref", title: "Preference (searches won)", a: served((u) => (u.outcome < 0 ? 1 : 0)), b: served((u) => (u.outcome > 0 ? 1 : 0)), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3), about: "the share of searches each arm won; the difference is (wins − losses) / searches" },
+      { key: "clicks", title: "Stories opened a search", a: served((u) => u.ca), b: served((u) => u.cb), higher: true, fmt: (v) => fixed(v, 3) },
+      { key: "firstopen", title: "Opened first", a: served((u) => (u.first ? (u.first === "a" ? 1 : 0) : NaN)), b: served((u) => (u.first ? (u.first === "b" ? 1 : 0) : NaN)), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3), about: "of the searches where something was opened, the share whose first story opened was each arm's pick" },
+      { key: "rr", title: "Rank of what was opened", a: served((u) => num(u.rr_a)), b: served((u) => num(u.rr_b)), higher: true, fmt: (v) => fixed(v, 3), about: "over the stories opened, the mean reciprocal rank each arm's own list gave them (0 where it did not have them): where each arm put what people wanted; it reads click depth" },
+      { key: "zero", title: "Found nothing", a: served((u) => (u.a_empty ? 1 : 0)), b: served((u) => (u.b_empty ? 1 : 0)), higher: false, fmt: pct1, dfmt: (v) => signed(v, 4), about: "the share of searches where the arm's own list was empty" },
+      { key: "errors", title: "Arm failed", a: (u) => (u.err?.includes("a") ? 1 : 0), b: (u) => (u.err?.includes("b") ? 1 : 0), higher: false, fmt: pct1, dfmt: (v) => signed(v, 4), about: "the share of searches where the arm returned an error; the search was served as usual" },
+      { key: "ms", title: "Search time", a: served((u) => num(u.a_ms)), b: served((u) => num(u.b_ms)), higher: false, fmt: ms, dfmt: (v) => `${signed(v, 1)} ms` },
+      { key: "ttc", title: "Seconds to the first story opened", unpaired: true, a: led("a", (u) => num(u.ttc)), b: led("b", (u) => num(u.ttc)), higher: false, fmt: sec, dfmt: (v) => `${signed(v, 1)} s`, about: "from the search to the first story opened, on the searches where something was opened; each counts for the arm that led its list" },
+      { key: "abandon", title: "Nothing opened", unpaired: true, a: led("a", (u) => (opened(u) ? 0 : 1)), b: led("b", (u) => (opened(u) ? 0 : 1)), higher: false, fmt: pct0, dfmt: (v) => signed(v, 3), about: "the share of searches where no story was opened, by the arm that led the list; some are answered by the list itself" },
+      { key: "paged", title: "Asked for the next page", unpaired: true, a: led("a", (u) => (u.paged == null ? NaN : u.paged ? 1 : 0)), b: led("b", (u) => (u.paged == null ? NaN : u.paged ? 1 : 0)), higher: null, fmt: pct1, dfmt: (v) => signed(v, 4), about: "diagnostic: the share of searches whose next page was asked for within 30 minutes, by the arm that led the first page; more can mean a first page that missed, or a reader digging" },
+      { key: "reform", title: "Searched again in other words", unpaired: true, a: led("a", (u) => (u.reformulated == null ? NaN : u.reformulated ? 1 : 0)), b: led("b", (u) => (u.reformulated == null ? NaN : u.reformulated ? 1 : 0)), higher: false, fmt: pct1, dfmt: (v) => signed(v, 4), about: "the share of searches followed within a minute by another search from the same browser in other words: the first one missed" },
+      { key: "age", title: "Age of the top 10", a: served((u) => num(u.age_a)), b: served((u) => num(u.age_b)), higher: null, fmt: days, dfmt: (v) => `${signed(v, 1)} d`, about: "diagnostic: the mean age in days of the stories each arm put in its own top 10: freshness" },
+      { key: "sites", title: "Sites in the top 10", a: served((u) => num(u.sites_a)), b: served((u) => num(u.sites_b)), higher: null, fmt: (v) => fixed(v, 2), dfmt: (v) => signed(v, 2), about: "diagnostic: how many different sites each arm's own top 10 links to: diversity" },
+      { key: "openage", title: "Age of what was opened", unpaired: true, a: served((u) => num(u.open_age_a)), b: served((u) => num(u.open_age_b)), higher: null, fmt: days, dfmt: (v) => `${signed(v, 1)} d`, about: "diagnostic: the mean age in days of the stories opened from each arm's picks; a search where both arms' were opened counts on both sides" },
+      { key: "first", title: "Opened the first story", a: served((u) => (opened(u) && !u.b_first && u.ca > 0 ? 1 : 0)), b: served((u) => (opened(u) && u.b_first && u.cb > 0 ? 1 : 0)), higher: null, fmt: pct0, dfmt: (v) => signed(v, 3), about: "diagnostic: whose story sat first and was opened" },
     ],
     attrs: [
       { key: "dev", title: "Screen", of: (u) => (u.dev === "m" ? "phone" : u.dev === "d" ? "computer" : "unknown") },
       { key: "words", title: "Query", of: (u) => wordsBucket(u.words) },
+      { key: "freq", title: "Asked", of: (u) => (!(u.freq > 1) ? "once" : u.freq <= 4 ? "2–4 times" : "5+ times") },
+      { key: "period", title: "Test period", of: (u) => { const d = Math.floor((u.ts - t0) / DAY) + 1; return d <= 3 ? "days 1–3" : d <= 7 ? "days 4–7" : "later"; } },
       { key: "wd", title: "Weekday (UTC)", of: (u) => { const d = new Date(u.ts * 1000).getUTCDay(); return `${(d + 6) % 7 + 1} ${WEEKDAYS[d]}`; } },
       { key: "hr", title: "Hours (UTC)", of: (u) => { const x = new Date(u.ts * 1000).getUTCHours(); return x < 6 ? "00–06" : x < 12 ? "06–12" : x < 18 ? "12–18" : "18–24"; } },
-      { key: "clicked", title: "Opened", of: (u) => (u.ca + u.cb > 0 ? "something" : "nothing") },
+      { key: "clicked", title: "Opened", of: (u) => (opened(u) ? "something" : "nothing") },
+      { key: "served", title: "Served", of: (u) => (u.err ? "an arm failed" : "both arms") },
     ],
     xs: [
       { key: "day", title: "day", of: (u) => u.ts, bucket: (t) => Math.floor(t / DAY) * DAY, fmt: dayFmt },
@@ -2688,6 +2754,9 @@ function judgedReport(core, j, arms) {
       { key: "ndcg", title: "nDCG@10", a: (u) => u.a, b: (u) => u.b, higher: true, fmt: (v) => fixed(v, 3) },
       { key: "known", title: "Known item on the first page", a: (u) => (u.kind === "known" ? found(u.a_rank) : NaN), b: (u) => (u.kind === "known" ? found(u.b_rank) : NaN), higher: true, fmt: pct0, dfmt: (v) => signed(v, 3) },
       { key: "rr", title: "Reciprocal rank of the known item", a: (u) => (u.kind === "known" ? (u.a_rank ? 1 / u.a_rank : 0) : NaN), b: (u) => (u.kind === "known" ? (u.b_rank ? 1 / u.b_rank : 0) : NaN), higher: true, fmt: (v) => fixed(v, 3) },
+      { key: "p5", title: "Precision@5", a: (u) => u.p5_a ?? NaN, b: (u) => u.p5_b ?? NaN, higher: true, fmt: (v) => fixed(v, 3), about: "the share of the first five rows the judge graded as answering the need (2 of 2)" },
+      { key: "err10", title: "ERR@10", a: (u) => u.err_a ?? NaN, b: (u) => u.err_b ?? NaN, higher: true, fmt: (v) => fixed(v, 3), about: "expected reciprocal rank: the chance-weighted place where a reader going down the list is satisfied, each row satisfying with (2^grade − 1) / 4" },
+      { key: "cov", title: "Judged coverage", a: (u) => u.cov_a ?? NaN, b: (u) => u.cov_b ?? NaN, higher: null, fmt: pct0, dfmt: (v) => signed(v, 3), about: "diagnostic: the share of each arm's first ten rows the judge graded; below 100%, the scores count an ungraded row as not relevant" },
       { key: "ms", title: "Search time", a: (u) => u.a_ms, b: (u) => u.b_ms, higher: false, fmt: (v) => `${fixed(v, 1)} ms`, dfmt: (v) => `${signed(v, 1)} ms` },
     ],
     attrs: [
@@ -2937,7 +3006,9 @@ async function xPage(ctx, root, go, id, tab, onStop) {
         on.share != null ? h("span", {}, `${on.running ? `Day ${days}: ` : "Stopped: "}${core.fmt.n(on.searches || 0)} interleaved searches, ${on.wins || 0} won by the treatment, ${on.losses || 0} by the control. `,
           on.searches ? `Preference ${signed(on.delta, 3)} (95% interval ${signed(on.lo, 3)} to ${signed(on.hi, 3)}), always-valid p = ${pText(on.p_always_valid)}. ` : "",
           on.searches >= 20 ? `Can find ${on.detectable?.toFixed(3)} or more today${on.days_left != null ? `; about ${on.days_left} more days for ${sp.smallest}` : ""}. ` : "",
-          on.searches ? h("span", { class: on.coin?.ok === false ? "ex-bad" : "dim" }, `Coin: the treatment first in ${on.coin?.b_first} of ${on.searches}${on.coin?.ok === false ? " — broken" : ""}.`) : "") :
+          on.searches ? h("span", { class: on.coin?.ok === false ? "ex-bad" : "dim" }, `Coin: the treatment first in ${on.coin?.b_first} of ${on.searches}${on.coin?.ok === false ? " — broken" : ""}. `) : "",
+          on.searches ? h("span", { class: "dim" }, `Search time p95 ${Math.round(on.a_p95 ?? NaN) || "–"} against ${Math.round(on.b_p95 ?? NaN) || "–"} ms, p99 ${Math.round(on.a_p99 ?? NaN) || "–"} against ${Math.round(on.b_p99 ?? NaN) || "–"} ms.`) : "",
+          on.errors?.searches ? h("span", { class: "ex-bad" }, ` ${on.errors.searches} ${on.errors.searches === 1 ? "search" : "searches"} had an arm fail (${on.errors.a} ${sp.control_name}, ${on.errors.b} ${sp.treatment_name}).`) : "") :
         d?.interleave ? "Visitors' searches show the two arms' stories drafted into one list; what they open says which they prefer. Real people see the treatment's stories while it runs." : "This site cannot interleave its visitors' searches.",
         on.searches ? view("online") : null,
         on.running ? h("button", { class: "btn sm", onclick: () => call("/online/stop", {}, "Stopped on real visitors") }, "Stop") :

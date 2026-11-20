@@ -290,8 +290,9 @@ any can be skipped:
    team draft, and a click counts for the arm that placed the row. The
    report gives the preference (wins less losses over searches) with its
    interval, the always-valid p value, the coin's balance, each arm's
-   p95 time, what the searches so far can detect and the days still
-   needed. It starts only when you press it, and stops when you stop it.
+   p95 and p99 time, the searches where an arm failed or found nothing,
+   what the searches so far can detect and the days still needed. It
+   starts only when you press it, and stops when you stop it.
 
 The rule declared up front then says **ship**, **don't ship**, **not yet**,
 **a trade-off** (the treatment wins but a guardrail failed), **flat** or
@@ -300,9 +301,26 @@ box records the call (ship, don't ship, iterate) with a note, and whether
 it overrode the rule. Below it the report has every metric with its
 difference, 95% interval, p value and n; a chart over days or over the
 units as they came, cumulative or per period, with its interval; and every
-attribute (device, need kind, query length, day) as chips that filter and
-as groups, each with Benjamini-Hochberg q values over the groups and
-Cochran's Q on whether the effect differs between them.
+attribute (device, need kind, query length, how often the query is asked,
+the test's period, day) as chips that filter and as groups, each with
+Benjamini-Hochberg q values over the groups and Cochran's Q on whether the
+effect differs between them.
+
+The real visitors' metrics: the preference; stories opened; which arm's
+story was opened first; the rank each arm's own list gave what was opened
+(the mean reciprocal rank, 0 where the arm did not have it); searches
+where an arm found nothing, or failed; search time; and as diagnostics the
+age and the number of sites of each arm's top 10, and the age of what was
+opened. Some metrics are read on one list per search, so they cannot be
+paired: seconds to the first story opened, searches with nothing opened,
+the next page asked for and the same browser searching again in other
+words within a minute. Those count each search for the arm that led its
+draft, which a fair coin picks, and compare the two sides by Welch's
+test. The last two need the site's anonymous browser id. The judged
+queries' metrics: nDCG@10, the known item on the first page and its
+reciprocal rank, precision@5, ERR@10, the share of rows the judge graded,
+and search time. A study's arms add the searches, seconds and cost of a
+need found.
 
 | route | what |
 |---|---|

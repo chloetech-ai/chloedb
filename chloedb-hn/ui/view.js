@@ -370,6 +370,23 @@ const SPARK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke
 
 // ---- small helpers ---------------------------------------------------------
 
+/** An anonymous id of this browser: random, kept in its storage, never
+ *  tied to an address or an account. A logged search carries it so an
+ *  experiment can tell a search asked again or a next page from a new
+ *  visitor's; clearing the site's data makes a new one. */
+function visitor() {
+  try {
+    let v = localStorage.getItem("hn-vid");
+    if (!v || !/^[0-9a-z]{16}$/.test(v)) {
+      v = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem("hn-vid", v);
+    }
+    return v;
+  } catch {
+    return "";
+  }
+}
+
 function h(tag, attrs, ...kids) {
   const el = tag === "svg" || tag === "g" || tag === "line" || tag === "circle" || tag === "path" || tag === "text" || tag === "rect" || tag === "polyline"
     ? document.createElementNS("http://www.w3.org/2000/svg", tag) : document.createElement(tag);
@@ -900,7 +917,7 @@ async function results(main, app, q, opts, alive) {
   // shown when they come; the facets once the results are on the page.
   const all = !only;
   const cP = all ? app.ctx.api(`/v1/search?${base}&only=comment&per=8&facets=0`).catch(() => null) : null;
-  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}&log=1&dev=${matchMedia("(max-width: 700px)").matches ? "m" : "d"}`);
+  const j = await app.api(`/v1/search?${qs}&facets=0${all ? "&comments=0" : ""}&log=1&dev=${matchMedia("(max-width: 700px)").matches ? "m" : "d"}&vid=${visitor()}`);
   // A logged search: the stories opened from it are kept, to value rankings on.
   const req = j.log?.request;
   const opened = (id) => { if (req) app.ctx.api(`/v1/click?r=${enc(req)}&id=${enc(id)}`).catch(() => null); };
@@ -977,7 +994,7 @@ async function results(main, app, q, opts, alive) {
     const more = h("button", { class: "hn-more", onclick: async () => {
       page++;
       more.textContent = "Loading…";
-      const k = app.add(await app.ctx.api(`/v1/search?${qs}&page=${page}&facets=0`), `page ${page + 1}`);
+      const k = app.add(await app.ctx.api(`/v1/search?${qs}&page=${page}&facets=0&log=1&vid=${visitor()}`), `page ${page + 1}`);
       const add2 = [...(k.stories || []).map((s) => storyItem(app, s, re)), ...(k.comments || []).map((c) => commentItem(app, c, re))];
       more.before(h("ul", { class: "hn-res" }, add2));
       more.textContent = "More results";

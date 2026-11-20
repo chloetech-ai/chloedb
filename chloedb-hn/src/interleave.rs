@@ -134,7 +134,36 @@ pub fn serve(a: Vec<Row>, b: Vec<Row>, page: Vec<Row>, per: usize, coins: u32) -
 pub async fn create_tables(db: &Strata) -> crate::strata::Result<()> {
     db.sql(&format!("CREATE TABLE IF NOT EXISTS {TESTS} (id KEYWORD PRIMARY KEY, name TEXT OPTIONS(indexed = false), a TEXT OPTIONS(indexed = false), b TEXT OPTIONS(indexed = false), share DOUBLE, started INT, stopped INT)")).await?;
     db.sql(&format!("CREATE TABLE IF NOT EXISTS {LOG} (id KEYWORD PRIMARY KEY, test KEYWORD, ts INT, q TEXT OPTIONS(indexed = false), a TEXT OPTIONS(indexed = false), b TEXT OPTIONS(indexed = false), shown TEXT OPTIONS(indexed = false), teams KEYWORD OPTIONS(indexed = false), dev KEYWORD, a_ms DOUBLE, b_ms DOUBLE)")).await?;
+    // Since: what a search was (drafted, a next page, another search, an
+    // arm's failure), the browser's anonymous id, and each story's age and site.
+    for col in ["kind KEYWORD", "err KEYWORD", "vid KEYWORD", "page INT", "meta TEXT OPTIONS(indexed = false)"] {
+        db.sql(&format!("ALTER TABLE {LOG} ADD COLUMN IF NOT EXISTS {col}")).await?;
+    }
     Ok(())
+}
+
+/// The browser's anonymous id as the page sent it, or none when it is not
+/// one (16 hex digits).
+pub fn visitor(v: &str) -> String {
+    if v.len() == 16 && v.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        v.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Each story's age in days (at `now`) and its site, by id: what the
+/// report reads for freshness and diversity.
+pub fn meta<'a>(rows: impl Iterator<Item = &'a crate::strata::Row>, now: i64) -> Value {
+    let mut m = serde_json::Map::new();
+    for r in rows {
+        let Some(id) = r.get("id").and_then(Value::as_i64) else { continue };
+        let created = r.get("created").and_then(Value::as_str).and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()).map(|d| d.timestamp());
+        let age = created.map(|c| ((now - c).max(0) as f64 / 86_400.0 * 10.0).round() / 10.0);
+        let site = r.get("site").and_then(Value::as_str).unwrap_or("");
+        m.insert(id.to_string(), json!([age, site]));
+    }
+    Value::Object(m)
 }
 
 /// A test from its row or its request.
@@ -179,18 +208,21 @@ pub fn row(t: &Test, stopped: i64) -> Value {
 /// A test's searches since `since`, newest first, with the stories opened
 /// from each.
 pub async fn read(db: &Strata, test: &str, since: i64, limit: usize) -> crate::strata::Result<Value> {
-    let reqs = db.query(&format!("SELECT id, ts, q, a, b, shown, teams, dev, a_ms, b_ms FROM {LOG} WHERE test = :t AND ts >= :s ORDER BY ts DESC LIMIT {limit}"), json!({"t": test, "s": since})).await?;
+    let reqs = db.query(&format!("SELECT id, ts, q, a, b, shown, teams, dev, a_ms, b_ms, kind, err, vid, page, meta FROM {LOG} WHERE test = :t AND ts >= :s ORDER BY ts DESC LIMIT {limit}"), json!({"t": test, "s": since})).await?;
     let ids: Vec<String> = reqs.iter().filter_map(|r| r.get("id").and_then(Value::as_str).map(str::to_string)).collect();
-    let mut clicks: std::collections::HashMap<String, Vec<i64>> = Default::default();
+    let mut clicks: std::collections::HashMap<String, Vec<(i64, i64)>> = Default::default();
     for chunk in ids.chunks(500) {
         let list = chunk.iter().map(|k| format!("'{}'", k.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
-        let cs = db.query(&format!("SELECT request, story FROM {} WHERE request IN ({list}) LIMIT 10000", crate::explore::CLICKS), json!({})).await?;
+        let cs = db.query(&format!("SELECT request, story, ts FROM {} WHERE request IN ({list}) LIMIT 10000", crate::explore::CLICKS), json!({})).await?;
         for c in &cs {
             let r = c.get("request").and_then(Value::as_str).unwrap_or("").to_string();
             let s = c.get("story").and_then(Value::as_i64).unwrap_or(0);
+            let t = c.get("ts").and_then(Value::as_i64).unwrap_or(0);
             let v = clicks.entry(r).or_default();
-            if !v.contains(&s) {
-                v.push(s);
+            match v.iter_mut().find(|x| x.0 == s) {
+                // A story opened twice: its first time.
+                Some(x) => x.1 = x.1.min(t),
+                None => v.push((s, t)),
             }
         }
     }
@@ -199,10 +231,13 @@ pub async fn read(db: &Strata, test: &str, since: i64, limit: usize) -> crate::s
         .iter()
         .map(|r| {
             let id = r.get("id").and_then(Value::as_str).unwrap_or("");
+            let cl = clicks.get(id).cloned().unwrap_or_default();
+            let meta = r.get("meta").and_then(Value::as_str).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null);
             json!({
                 "request": id, "ts": r.get("ts"), "q": r.get("q"), "a": parse(r, "a"), "b": parse(r, "b"), "shown": parse(r, "shown"),
                 "teams": r.get("teams"), "dev": r.get("dev"), "a_ms": r.get("a_ms"), "b_ms": r.get("b_ms"),
-                "clicks": clicks.get(id).cloned().unwrap_or_default(),
+                "kind": r.get("kind").cloned().unwrap_or_else(|| json!("drafted")), "err": r.get("err"), "vid": r.get("vid"), "page": r.get("page"), "meta": meta,
+                "clicks": cl.iter().map(|c| c.0).collect::<Vec<_>>(), "click_ts": cl.iter().map(|c| c.1).collect::<Vec<_>>(),
             })
         })
         .collect();

@@ -218,7 +218,7 @@ pub fn side_summary(rows: &[Value]) -> Value {
 // ------------------------------------------------------------ judged queries
 
 /// One need of the judged step, on both arms.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct NeedUnit {
     pub need: String,
     pub kind: String,
@@ -233,6 +233,45 @@ pub struct NeedUnit {
     pub b_rank: Option<usize>,
     pub a_ms: f64,
     pub b_ms: f64,
+    /// Precision@5: the share of the first five rows that answer the need
+    /// (grade 2); ERR@10, the expected reciprocal rank of the row that
+    /// satisfies; and the share of the first ten rows the judge graded.
+    #[serde(default)]
+    pub p5_a: f64,
+    #[serde(default)]
+    pub p5_b: f64,
+    #[serde(default)]
+    pub err_a: f64,
+    #[serde(default)]
+    pub err_b: f64,
+    #[serde(default)]
+    pub cov_a: f64,
+    #[serde(default)]
+    pub cov_b: f64,
+}
+
+/// Precision@5, ERR@10 and the share graded of a need's pages (one per
+/// query), each the mean over its pages; grades from 0 to 2.
+pub fn page_scores(grades: &HashMap<String, u8>, pages: &[Vec<String>]) -> (f64, f64, f64) {
+    if pages.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
+    let n = pages.len() as f64;
+    let (mut p5, mut err, mut cov) = (0.0, 0.0, 0.0);
+    for p in pages {
+        p5 += p.iter().take(5).filter(|id| grades.get(*id).copied() == Some(2)).count() as f64 / 5.0;
+        // ERR: each row satisfies with chance (2^g − 1) / 2^2, read top down.
+        let (mut stay, mut e) = (1.0, 0.0);
+        for (i, id) in p.iter().take(10).enumerate() {
+            let r = ((1u32 << grades.get(id).copied().unwrap_or(0).min(2)) - 1) as f64 / 4.0;
+            e += stay * r / (i + 1) as f64;
+            stay *= 1.0 - r;
+        }
+        err += e;
+        let top: Vec<&String> = p.iter().take(10).collect();
+        cov += if top.is_empty() { 1.0 } else { top.iter().filter(|id| grades.contains_key(id.as_str())).count() as f64 / top.len() as f64 };
+    }
+    (p5 / n, err / n, cov / n)
 }
 
 impl NeedUnit {
@@ -306,6 +345,10 @@ pub fn judged_summary(units: &[NeedUnit], g: &Guardrails, seed: u64) -> Value {
     proof["regressions_ok"] = json!(known_lost <= g.regressions);
     proof["a_p95"] = json!(pa);
     proof["b_p95"] = json!(pb);
+    let m = |f: fn(&NeedUnit) -> f64| mean(&units.iter().map(f).collect::<Vec<_>>());
+    proof["precision5"] = json!([m(|u| u.p5_a), m(|u| u.p5_b)]);
+    proof["err10"] = json!([m(|u| u.err_a), m(|u| u.err_b)]);
+    proof["coverage"] = json!([m(|u| u.cov_a), m(|u| u.cov_b)]);
     proof
 }
 
@@ -436,10 +479,11 @@ impl Trial {
                 let t = need.target.as_ref().filter(|_| need.kind == "known")?;
                 pages.iter().filter_map(|p| p.iter().position(|x| x == t)).min().map(|r| r + 1)
             };
+            let ((p5_a, err_a, cov_a), (p5_b, err_b, cov_b)) = (page_scores(&grades, &pages_a), page_scores(&grades, &pages_b));
             units.push(NeedUnit {
                 need: need.id.clone(), kind: need.kind.clone(), persona: persona.clone(), text: need.text.clone(), queries: qs.clone(),
                 a: need_score(&grades, &pages_a, K), b: need_score(&grades, &pages_b, K), a_rank: rank(&pages_a), b_rank: rank(&pages_b),
-                a_ms: mean(&ams), b_ms: mean(&bms),
+                a_ms: mean(&ams), b_ms: mean(&bms), p5_a, p5_b, err_a, err_b, cov_a, cov_b,
             });
             let done = i + 1;
             self.set(|d| {
@@ -466,8 +510,9 @@ impl Trial {
 // ------------------------------------------------------------ real visitors
 
 /// One interleaved search: when, what, on what screen, which arm each
-/// story shown came from, and what was opened.
-#[derive(Clone, Debug, Serialize)]
+/// story shown came from, and what was opened; or an arm's failure
+/// (`err`), which counts only in the error rates.
+#[derive(Clone, Debug, Serialize, Default)]
 pub struct SearchUnit {
     pub ts: i64,
     pub q: String,
@@ -482,14 +527,69 @@ pub struct SearchUnit {
     pub b_first: bool,
     pub a_ms: Option<f64>,
     pub b_ms: Option<f64>,
+    /// The arm that failed (`a`, `b` or `ab`): the search was served as usual.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub err: Option<String>,
+    /// The arm whose story was opened first.
+    pub first: Option<char>,
+    /// Seconds from the search to its first story opened.
+    pub ttc: Option<f64>,
+    /// Over the stories opened, the mean reciprocal rank each arm's own
+    /// list gave them (0 where it did not have them): where each arm put
+    /// what people wanted.
+    pub rr_a: Option<f64>,
+    pub rr_b: Option<f64>,
+    /// Whether each arm found nothing.
+    pub a_empty: bool,
+    pub b_empty: bool,
+    /// The mean age in days of each arm's own top, and its sites.
+    pub age_a: Option<f64>,
+    pub age_b: Option<f64>,
+    pub sites_a: Option<usize>,
+    pub sites_b: Option<usize>,
+    /// The mean age in days of the stories opened from each arm's picks.
+    pub open_age_a: Option<f64>,
+    pub open_age_b: Option<f64>,
+    /// With the browser's anonymous id: whether it asked for the next page
+    /// of this search (within 30 minutes), and whether it searched again in
+    /// other words within a minute.
+    pub paged: Option<bool>,
+    pub reformulated: Option<bool>,
+    /// How many drafted searches asked these same words.
+    pub freq: usize,
 }
 
+/// The window after a search in which another search by the same browser
+/// counts as asking again, and the one for its next page.
+const REFORMULATE_S: i64 = 60;
+const PAGE_S: i64 = 1800;
+
 pub fn search_units(log: &Value) -> Vec<SearchUnit> {
-    let mut out: Vec<SearchUnit> = log["requests"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let reqs: Vec<&Value> = log["requests"].as_array().into_iter().flatten().collect();
+    // Every logged search of a browser, in time, for what came after one.
+    let mut by_vid: HashMap<&str, Vec<(i64, &str, &str)>> = HashMap::new();
+    for r in &reqs {
+        if let Some(v) = r["vid"].as_str().filter(|v| !v.is_empty()) {
+            by_vid.entry(v).or_default().push((r["ts"].as_i64().unwrap_or(0), r["q"].as_str().unwrap_or(""), r["kind"].as_str().unwrap_or("drafted")));
+        }
+    }
+    for v in by_vid.values_mut() {
+        v.sort_by_key(|x| x.0);
+    }
+    let mut out: Vec<SearchUnit> = reqs
+        .iter()
         .filter_map(|r| {
+            let kind = r["kind"].as_str().unwrap_or("drafted");
+            let q = r["q"].as_str().unwrap_or("").to_string();
+            let ts = r["ts"].as_i64().unwrap_or(0);
+            let dev = r["dev"].as_str().unwrap_or("").to_string();
+            if kind == "error" {
+                let err = r["err"].as_str().unwrap_or("ab").to_string();
+                return Some(SearchUnit { ts, words: q.split_whitespace().count(), q, dev, err: Some(err), a_ms: r["a_ms"].as_f64(), b_ms: r["b_ms"].as_f64(), ..Default::default() });
+            }
+            if kind != "drafted" {
+                return None;
+            }
             // Ids as text: a site's ids are numbers or words.
             let key = |v: &Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
             let shown: Vec<String> = r["shown"].as_array()?.iter().map(key).collect();
@@ -498,22 +598,73 @@ pub fn search_units(log: &Value) -> Vec<SearchUnit> {
                 return None;
             }
             let clicks: Vec<String> = r["clicks"].as_array().into_iter().flatten().map(key).collect();
+            let click_ts: Vec<i64> = r["click_ts"].as_array().into_iter().flatten().filter_map(Value::as_i64).collect();
+            let list = |k: &str| -> Vec<String> { r[k].as_array().into_iter().flatten().map(key).collect() };
+            let (la, lb) = (list("a"), list("b"));
+            let meta = &r["meta"];
+            let age = |id: &str| meta[id][0].as_f64();
+            let mean_of = |xs: Vec<f64>| if xs.is_empty() { None } else { Some(xs.iter().sum::<f64>() / xs.len() as f64) };
             let (mut ca, mut cb) = (0, 0);
+            let (mut open_a, mut open_b) = (Vec::new(), Vec::new());
             for c in &clicks {
                 match shown.iter().position(|s| s == c).map(|i| teams[i]) {
-                    Some('a') => ca += 1,
-                    Some('b') => cb += 1,
+                    Some('a') => {
+                        ca += 1;
+                        open_a.extend(age(c));
+                    }
+                    Some('b') => {
+                        cb += 1;
+                        open_b.extend(age(c));
+                    }
                     _ => {}
                 }
             }
-            let q = r["q"].as_str().unwrap_or("").to_string();
+            // The first story opened, and when.
+            let first_at = if click_ts.len() == clicks.len() { click_ts.iter().enumerate().min_by_key(|x| x.1).map(|(i, t)| (i, *t)) } else { None };
+            let first = first_at.and_then(|(i, _)| shown.iter().position(|s| *s == clicks[i]).map(|j| teams[j]));
+            let ttc = first_at.map(|(_, t)| (t - ts).max(0) as f64);
+            let rr = |l: &[String]| -> Option<f64> {
+                if clicks.is_empty() {
+                    return None;
+                }
+                mean_of(clicks.iter().map(|c| l.iter().position(|x| x == c).map_or(0.0, |i| 1.0 / (i + 1) as f64)).collect())
+            };
+            let ages = |l: &[String]| mean_of(l.iter().filter_map(|id| age(id)).collect());
+            let sites = |l: &[String]| -> Option<usize> {
+                if !meta.is_object() || l.is_empty() {
+                    return None;
+                }
+                let s: std::collections::HashSet<&str> = l.iter().filter_map(|id| meta[id.as_str()][1].as_str()).filter(|x| !x.is_empty()).collect();
+                Some(s.len())
+            };
+            // What the same browser did next.
+            let (paged, reformulated) = match r["vid"].as_str().and_then(|v| by_vid.get(v)) {
+                Some(seq) => {
+                    let after = seq.iter().filter(|x| x.0 >= ts && !(x.0 == ts && x.1 == q && x.2 == "drafted"));
+                    let paged = after.clone().any(|x| x.2 == "page" && x.1 == q && x.0 - ts <= PAGE_S);
+                    let again = after.clone().any(|x| x.2 != "page" && x.1 != q && x.0 - ts <= REFORMULATE_S);
+                    (Some(paged), Some(again))
+                }
+                None => (None, None),
+            };
             Some(SearchUnit {
-                ts: r["ts"].as_i64().unwrap_or(0), words: q.split_whitespace().count(), q, dev: r["dev"].as_str().unwrap_or("").to_string(),
+                ts, words: q.split_whitespace().count(), q, dev,
                 ca, cb, outcome: (cb as i64 - ca as i64).signum() as i8, b_first: teams[0] == 'b', a_ms: r["a_ms"].as_f64(), b_ms: r["b_ms"].as_f64(),
+                err: None, first, ttc, rr_a: rr(&la), rr_b: rr(&lb),
+                a_empty: r["a"].is_array() && la.is_empty(), b_empty: r["b"].is_array() && lb.is_empty(),
+                age_a: ages(&la), age_b: ages(&lb), sites_a: sites(&la), sites_b: sites(&lb),
+                open_age_a: mean_of(open_a), open_age_b: mean_of(open_b), paged, reformulated, freq: 0,
             })
         })
         .collect();
     out.sort_by_key(|u| u.ts);
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for u in out.iter().filter(|u| u.err.is_none()) {
+        *freq.entry(u.q.to_lowercase()).or_default() += 1;
+    }
+    for u in &mut out {
+        u.freq = freq.get(&u.q.to_lowercase()).copied().unwrap_or(0);
+    }
     out
 }
 
@@ -531,7 +682,12 @@ fn preference(units: &[SearchUnit]) -> (f64, f64) {
 /// The real visitors' step: the preference and its interval, the
 /// always-valid p value, each day, the coin's balance, the latency
 /// guardrail, and how long until it can tell.
-pub fn online_summary(units: &[SearchUnit], spec: &TrialSpec, now: i64) -> Value {
+pub fn online_summary(all: &[SearchUnit], spec: &TrialSpec, now: i64) -> Value {
+    let units: Vec<SearchUnit> = all.iter().filter(|u| u.err.is_none()).cloned().collect();
+    let units = &units[..];
+    let failed = all.len() - units.len();
+    let err_a = all.iter().filter(|u| u.err.as_deref().is_some_and(|e| e.contains('a'))).count();
+    let err_b = all.iter().filter(|u| u.err.as_deref().is_some_and(|e| e.contains('b'))).count();
     let n = units.len();
     let wins = units.iter().filter(|u| u.outcome > 0).count();
     let losses = units.iter().filter(|u| u.outcome < 0).count();
@@ -567,6 +723,7 @@ pub fn online_summary(units: &[SearchUnit], spec: &TrialSpec, now: i64) -> Value
     let ams: Vec<f64> = units.iter().filter_map(|u| u.a_ms).collect();
     let bms: Vec<f64> = units.iter().filter_map(|u| u.b_ms).collect();
     let (pa, pb) = (quantile(&ams, 0.95), quantile(&bms, 0.95));
+    let (pa99, pb99) = (quantile(&ams, 0.99), quantile(&bms, 0.99));
     let latency_ok = match (pa, pb) {
         (Some(a), Some(b)) if a > 0.0 => Some(b <= a * (1.0 + spec.guardrails.latency_p95)),
         _ => None,
@@ -586,7 +743,10 @@ pub fn online_summary(units: &[SearchUnit], spec: &TrialSpec, now: i64) -> Value
         "searches": n, "wins": wins, "losses": losses, "ties": n - wins - losses, "clicked": clicked,
         "delta": delta, "se": se, "lo": delta - Z975 * se, "hi": delta + Z975 * se, "p": if se > 0.0 { p_two(delta / se) } else { 1.0 }, "p_always_valid": p_av,
         "coin": {"b_first": first_b, "p": coin_p, "ok": coin_p >= 0.001},
-        "a_p95": pa, "b_p95": pb, "latency_ok": latency_ok,
+        "a_p95": pa, "b_p95": pb, "a_p99": pa99, "b_p99": pb99, "latency_ok": latency_ok,
+        "errors": {"searches": failed, "a": err_a, "b": err_b, "a_rate": err_a as f64 / (n + failed).max(1) as f64, "b_rate": err_b as f64 / (n + failed).max(1) as f64},
+        "zero": {"a": units.iter().filter(|u| u.a_empty).count(), "b": units.iter().filter(|u| u.b_empty).count()},
+        "followed": units.iter().filter(|u| u.paged.is_some()).count(),
         "detectable": detectable(spread, n), "needed": need.ceil(), "per_day": per_day, "days_left": if days_left.is_finite() { json!(days_left) } else { Value::Null },
         "days": days,
     })
@@ -689,7 +849,7 @@ mod tests {
     }
 
     fn unit(ts: i64, outcome: i8, b_first: bool) -> SearchUnit {
-        SearchUnit { ts, q: "q".into(), dev: "d".into(), words: 1, ca: (outcome < 0) as usize, cb: (outcome > 0) as usize, outcome, b_first, a_ms: Some(10.0), b_ms: Some(10.5) }
+        SearchUnit { ts, q: "q".into(), dev: "d".into(), words: 1, ca: (outcome < 0) as usize, cb: (outcome > 0) as usize, outcome, b_first, a_ms: Some(10.0), b_ms: Some(10.5), ..Default::default() }
     }
 
     #[test]
@@ -703,6 +863,46 @@ mod tests {
         assert_eq!(u.len(), 2, "a broken row is left out");
         assert_eq!((u[0].ca, u[0].cb, u[0].outcome), (1, 0, -1));
         assert_eq!((u[1].cb, u[1].outcome, u[1].b_first, u[1].words), (2, 1, true, 2));
+    }
+
+    #[test]
+    fn page_scores_read_precision_err_and_coverage() {
+        let g: HashMap<String, u8> = [("a", 2u8), ("b", 0), ("c", 1)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let page = vec!["a".to_string(), "b".into(), "c".into(), "x".into()];
+        let (p5, err, cov) = page_scores(&g, &[page]);
+        assert!((p5 - 0.2).abs() < 1e-12);
+        // ERR: 3/4 at rank 1, then (1/4) × 1/4 / 3 at rank 3.
+        assert!((err - (0.75 + 0.25 * 0.25 / 3.0)).abs() < 1e-12, "{err}");
+        assert!((cov - 0.75).abs() < 1e-12);
+    }
+
+    #[test]
+    fn units_read_what_came_after_and_where_each_arm_ranked_the_clicks() {
+        let log = json!({"requests": [
+            // Drafted: the control ranks 1, 2, 3; the treatment 3, 4. Story 3
+            // is opened at 12 s, then story 1 at 20 s.
+            {"ts": 100, "q": "rust async", "kind": "drafted", "vid": "v1", "a": [1, 2, 3], "b": [3, 4], "shown": [3, 1, 4, 2], "teams": "baba",
+             "clicks": [1, 3], "click_ts": [120, 112], "meta": {"1": [2.0, "x.com"], "2": [400.0, "y.com"], "3": [10.0, "x.com"], "4": [30.0, "z.org"]}},
+            // The same browser: the next page, then other words 30 s later.
+            {"ts": 140, "q": "rust async", "kind": "page", "vid": "v1", "page": 1},
+            {"ts": 150, "q": "tokio", "kind": "other", "vid": "v1"},
+            // A treatment that failed, and a search with no browser id where the treatment found nothing.
+            {"ts": 200, "q": "go", "kind": "error", "err": "b"},
+            {"ts": 300, "q": "rust async", "kind": "drafted", "a": [5], "b": [], "shown": [5], "teams": "a", "clicks": []},
+        ]});
+        let u = search_units(&log);
+        assert_eq!(u.len(), 3, "the page and the other search are not units");
+        let d = &u[0];
+        assert_eq!((d.ca, d.cb, d.first, d.ttc), (1, 1, Some('b'), Some(12.0)));
+        // Story 3: rank 3 for the control, 1 for the treatment; story 1: 1 and none.
+        assert!((d.rr_a.unwrap() - (1.0 / 3.0 + 1.0) / 2.0).abs() < 1e-9 && (d.rr_b.unwrap() - 0.5).abs() < 1e-9, "{d:?}");
+        assert_eq!((d.sites_a, d.sites_b), (Some(2), Some(2)));
+        assert!((d.age_a.unwrap() - 412.0 / 3.0).abs() < 1e-9 && (d.open_age_b.unwrap() - 10.0).abs() < 1e-9);
+        assert_eq!((d.paged, d.reformulated, d.freq), (Some(true), Some(true), 2));
+        assert_eq!(u[1].err.as_deref(), Some("b"));
+        assert!(u[2].b_empty && !u[2].a_empty && u[2].paged.is_none());
+        let on = online_summary(&u, &spec(), 400);
+        assert_eq!((on["searches"].as_u64(), on["errors"]["b"].as_u64(), on["zero"]["b"].as_u64()), (Some(2), Some(1), Some(1)));
     }
 
     #[test]
@@ -731,7 +931,7 @@ mod tests {
 
     #[test]
     fn judged_summary_lists_regressions() {
-        let u = |a: f64, b: f64, ar: Option<usize>, br: Option<usize>| NeedUnit { need: "n".into(), kind: "known".into(), persona: "p".into(), text: "t".into(), queries: vec![], a, b, a_rank: ar, b_rank: br, a_ms: 10.0, b_ms: 10.0 };
+        let u = |a: f64, b: f64, ar: Option<usize>, br: Option<usize>| NeedUnit { need: "n".into(), kind: "known".into(), persona: "p".into(), text: "t".into(), queries: vec![], a, b, a_rank: ar, b_rank: br, a_ms: 10.0, b_ms: 10.0, ..Default::default() };
         let units = vec![u(1.0, 0.0, Some(1), None), u(0.5, 0.6, Some(2), Some(1)), u(0.4, 0.5, None, None), u(0.3, 0.4, None, None)];
         let s = judged_summary(&units, &Guardrails::default(), 1);
         assert_eq!(s["known_lost"], 1);

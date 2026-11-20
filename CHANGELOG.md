@@ -43,6 +43,21 @@ changes collect under "Unreleased".
   Cohorts open with an interaction test (Cochran's Q) before the cells,
   What-if says in one line what the log predicts against the A/B test,
   and power for the true effect is marked as the simulator's alone.
+- **Experiments: more metrics in every report** (`chloedb-experiments`,
+  `chloedb-hn`). Real visitors: which arm's story was opened first, the
+  rank each arm's own list gave what was opened, searches where an arm
+  found nothing or failed (an arm's error is logged and the search served
+  as usual), p99 beside p95, the age and the number of sites of each
+  arm's top 10 and the age of what was opened; and, compared unpaired
+  between the searches each arm led (a fair coin), seconds to the first
+  story opened, searches with nothing opened, next pages asked for and
+  searches asked again in other words within a minute. The last two need
+  the page's anonymous browser id (16 random hex characters kept in the
+  browser, `vid`; no account, no address), which chloedb-hn now sends with
+  its logged searches. Groups by how often a query is asked and by the
+  test's period. Judged queries add precision@5, ERR@10 and the share of
+  rows judged. Studies give the searches, seconds and cost of a need
+  found, and the Practice lab the p99 query time as a diagnostic.
 
 - **Experiments tunes a real site's knobs as the relevance autopilot
   does.** On a finished study's page, Tune its knobs takes the study's

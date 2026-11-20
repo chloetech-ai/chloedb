@@ -387,8 +387,12 @@ async fn searches_questions_and_completions() {
     assert!(st.is_success(), "{v}");
     let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
     assert_eq!(d["interleave"]["test"]["id"], "t1", "{d}");
-    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("dev", "m")]).await;
+    let vid = "0123456789abcdef";
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("dev", "m"), ("vid", vid)]).await;
     assert_eq!(page["log"]["test"], "t1", "{page}");
+    // The next page by the same browser is kept, not drafted.
+    let next = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1"), ("page", "1"), ("vid", vid)]).await;
+    assert!(next["log"].is_null(), "{next}");
     let req = page["log"]["request"].as_str().unwrap().to_string();
     let second = page["stories"][1]["id"].as_i64().unwrap();
     let c = get(&http, &app, "/v1/click", &[("r", &req), ("id", &second.to_string())]).await;
@@ -396,9 +400,18 @@ async fn searches_questions_and_completions() {
     let t0 = std::time::Instant::now();
     loop {
         let l: Value = exp("/v1/experiment/interleave/log?test=t1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
-        let r = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
-        if r.len() == 1 && r[0]["clicks"] == json!([second]) {
+        let all = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
+        let r: Vec<&Value> = all.iter().filter(|x| x["kind"] == "drafted").collect();
+        let pages: Vec<&Value> = all.iter().filter(|x| x["kind"] == "page").collect();
+        if r.len() == 1 && r[0]["clicks"] == json!([second]) && pages.len() == 1 {
             assert_eq!(r[0]["dev"], "m");
+            assert_eq!(r[0]["vid"], vid);
+            assert_eq!(pages[0]["vid"], vid);
+            assert_eq!(pages[0]["page"], 1);
+            assert!(r[0]["click_ts"][0].as_i64().unwrap() >= r[0]["ts"].as_i64().unwrap(), "{l}");
+            // Each story either arm ranked has its age and site.
+            let meta = r[0]["meta"].as_object().unwrap_or_else(|| panic!("{l}"));
+            assert!(meta.contains_key(&second.to_string()) && meta[&second.to_string()][0].is_number(), "{l}");
             let shown = r[0]["shown"].as_array().unwrap();
             let teams = r[0]["teams"].as_str().unwrap();
             assert_eq!(shown.len(), teams.len(), "{l}");

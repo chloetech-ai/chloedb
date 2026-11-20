@@ -905,6 +905,7 @@ impl Live {
             }
             let names: Vec<String> = self.spec.arms.iter().map(|a| a.name.clone()).collect();
             metrics.push(ab::latency_p95(&names, &tails, Some(&avs)));
+            metrics.push(ab::latency_p99(&names, &tails));
         }
         ab::q_values(&mut metrics, k);
         st.checkpoints.push((searches, deltas8));

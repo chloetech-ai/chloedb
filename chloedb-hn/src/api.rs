@@ -417,6 +417,11 @@ pub struct SearchParams {
     /// The page's kind of screen, `m` (a phone) or `d`, kept with a logged search.
     #[serde(default)]
     dev: String,
+    /// An anonymous id of the browser (16 hex digits the page makes and
+    /// keeps), kept with a logged search while an interleaving runs, so
+    /// a search asked again or a next page can be told apart.
+    #[serde(default)]
+    vid: String,
 }
 
 /// The query understood, with a word that may be a person checked against
@@ -490,12 +495,14 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
     // The page's first page of stories by the best match, logged and with
     // a share exploring: its top in a random order, each place's chance known.
     let mut logged = Value::Null;
+    let mut drafted = false;
     if let Some(e) = &svc.explore {
         let plain = matches!(r.mode.as_str(), "" | "hybrid" | "words");
         if a.log == Some(1) && a.page == 0 && want_s && r.sort == "best" && plain && !words.is_empty() && !stories.is_empty() {
             let request = e.request();
             let now = crate::ingest::now();
             let dev = if a.dev == "m" || a.dev == "d" { a.dev.as_str() } else { "" };
+            let vid = crate::interleave::visitor(&a.vid);
             // A share of them interleave the running test's two arms.
             let mut done_ = false;
             if let Some((t, coins)) = svc.interleave.current().and_then(|t| t.take(&request).map(|c| (t, c))) {
@@ -516,9 +523,23 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
                     }
                 };
                 let ((xa, ma), (xb, mb)) = tokio::join!(timed(&pa, &ra), timed(&pb, &rb));
-                if let (Ok((ra, _)), Ok((rb, _))) = (xa, xb) {
+                if xa.is_err() || xb.is_err() {
+                    // An arm that failed: the page is served as usual and
+                    // the failure kept, for each arm's error rate.
+                    let err = match (xa.is_err(), xb.is_err()) { (true, true) => "ab", (true, false) => "a", _ => "b" };
+                    let row = json!({"id": request, "test": t.id, "ts": now, "q": a.q.chars().take(300).collect::<String>(), "kind": "error", "err": err, "dev": dev, "vid": vid, "a_ms": (ma * 10.0).round() / 10.0, "b_ms": (mb * 10.0).round() / 10.0});
+                    let db = svc.db.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = db.upsert(crate::interleave::LOG, vec![row]).await {
+                            eprintln!("chloedb-hn: logging an interleaved search: {err}");
+                        }
+                    });
+                    drafted = true;
+                } else if let (Ok((ra, _)), Ok((rb, _))) = (xa, xb) {
                     let ids = |rs: &[crate::strata::Row]| -> Vec<i64> { rs.iter().take(crate::interleave::TOP).map(|x| x.get("id").and_then(Value::as_i64).unwrap_or(0)).collect() };
                     let (ia, ib) = (ids(&ra), ids(&rb));
+                    // Each story either arm ranked: its age in days and its site.
+                    let meta = crate::interleave::meta(ra.iter().chain(rb.iter()).take(2 * crate::interleave::TOP), now);
                     let (s2, shown, teams) = crate::interleave::serve(ra, rb, std::mem::take(&mut stories), per, coins);
                     stories = s2;
                     e.remember(&request, shown.clone(), now);
@@ -526,6 +547,7 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
                     let row = json!({
                         "id": request, "test": t.id, "ts": now, "q": a.q.chars().take(300).collect::<String>(), "a": json!(ia).to_string(), "b": json!(ib).to_string(),
                         "shown": json!(shown).to_string(), "teams": teams, "dev": dev, "a_ms": (ma * 10.0).round() / 10.0, "b_ms": (mb * 10.0).round() / 10.0,
+                        "kind": "drafted", "vid": vid, "meta": meta.to_string(),
                     });
                     let db = svc.db.clone();
                     tokio::spawn(async move {
@@ -535,6 +557,7 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
                     });
                     logged = json!({"request": request, "test": t.id});
                     done_ = true;
+                    drafted = true;
                 }
             }
             if !done_ && e.share > 0.0 {
@@ -547,6 +570,24 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
                     }
                 });
                 logged = json!({"request": request});
+            }
+        }
+    }
+    // While a test runs, a logged search it did not draft (a next page, or
+    // a search not drafted) is kept with the browser's anonymous id, so a
+    // drafted one can be followed: the next page asked, the search asked
+    // again in other words.
+    if !drafted && a.log == Some(1) {
+        if let (Some(e), Some(t)) = (&svc.explore, svc.interleave.current()) {
+            let vid = crate::interleave::visitor(&a.vid);
+            if !vid.is_empty() {
+                let row = json!({"id": e.request(), "test": t.id, "ts": crate::ingest::now(), "q": a.q.chars().take(300).collect::<String>(), "kind": if a.page > 0 { "page" } else { "other" }, "page": a.page, "vid": vid});
+                let db = svc.db.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = db.upsert(crate::interleave::LOG, vec![row]).await {
+                        eprintln!("chloedb-hn: logging a search: {err}");
+                    }
+                });
             }
         }
     }
