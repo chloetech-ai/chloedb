@@ -545,7 +545,11 @@ impl Db {
         // A vector of no stated size: the body is checked when called.
         let Some(params) = function::sample_params(def) else { return Ok(()) };
         let snap = self.snapshot();
-        let q = qsql::parse_query(&def.body)?;
+        let catalog: Vec<&Schema> = snap.schemas().collect();
+        // A body that reads a blend is checked when it runs; one that
+        // gives text where vectors go plans as a call would, embedded.
+        let Some((body, params)) = function::body_to_check(def, &catalog, &params, &|t, name| snap.table(t).and_then(|v| v.rank_profile(name).cloned()))? else { return Ok(()) };
+        let q = qsql::parse_query(&body)?;
         plan_of(&snap, &q, &params, &*self.functions_at(&snap)?).map(drop).map_err(|e| Error::Query(format!("the body of {} does not plan: {e}", def.name)))
     }
 
@@ -2026,6 +2030,57 @@ impl Db {
         self.run_on(snap, plan, opts)
     }
 
+    /// Runs `INSERT ... SELECT` or `CREATE TABLE ... AS SELECT` `st`
+    /// ([`crate::query::from_select`]): its SELECT, on a snapshot, with
+    /// no row window; for `CREATE TABLE`, the table its rows make; then
+    /// their write, in one transaction. A table made for rows that cannot
+    /// be written is dropped. The rows written.
+    fn from_select(&self, st: &crate::query::from_select::Statement, params: &Params, opts: &ExecOptions) -> Result<u64> {
+        if st.creates() && self.storage.table(st.table()).is_some() {
+            return match st.if_not_exists() {
+                true => Ok(0),
+                false => Err(Error::Query(format!("table {} already exists: DROP TABLE {} first, or CREATE TABLE IF NOT EXISTS", st.table(), st.table()))),
+            };
+        }
+        if !st.creates() {
+            // Refused before the SELECT runs: a table that is not there.
+            self.table(st.table()).map_err(|_| Error::Query(crate::query::hint::no_table(st.table(), self.catalog().iter().map(|t| t.table.as_str()))))?;
+        }
+        let rs = self.query_with(&st.query_sql(), params, &ExecOptions { max_rows: None, ..opts.clone() })?;
+        if st.creates() {
+            let catalog = self.catalog();
+            let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+            self.create_table(st.table_for(&rs, &tables)?)?;
+            let r = self.write_selected(st, params, rs);
+            if r.is_err() {
+                let _ = self.drop_tables(&[st.table()], DropOptions::default());
+            }
+            return r;
+        }
+        self.write_selected(st, params, rs)
+    }
+
+    /// The write of the rows `rs` of `st`'s SELECT into its table.
+    fn write_selected(&self, st: &crate::query::from_select::Statement, params: &Params, rs: ResultSet) -> Result<u64> {
+        match self.prepare_selected(st, params, rs)? {
+            Some(p) => self.write_queued(writes::Job::Sql(p)).map(|(n, _)| n),
+            None => Ok(0),
+        }
+    }
+
+    /// The write of the rows `rs` that the SELECT of `INSERT ... SELECT`
+    /// or `CREATE TABLE ... AS SELECT` `st` returned, into its table as it
+    /// is now, prepared as [`Db::prepare_write`] prepares one (a server
+    /// runs the SELECT, then queues this); `None` for no rows.
+    pub fn prepare_selected(&self, st: &crate::query::from_select::Statement, params: &Params, rs: ResultSet) -> Result<Option<PreparedWrite>> {
+        if rs.rows.is_empty() {
+            return Ok(None);
+        }
+        let schema = self.table(st.table())?;
+        let write = st.write(&schema, params, rs)?;
+        self.prepare(schema, write).map(Some)
+    }
+
     /// [`Db::prepare_write`] of a plan that writes.
     pub fn prepare_plan(&self, plan: &Plan) -> Result<PreparedWrite> {
         if !plan.is_write() {
@@ -2107,6 +2162,11 @@ impl Db {
                 }
             }
             return Ok(SqlResult::Written(n));
+        }
+        // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT`: the
+        // SELECT's rows, then their write (SAM-8).
+        if let Some(st) = crate::query::from_select::parse_statement(sql, params)? {
+            return self.from_select(&st, params, opts).map(SqlResult::Written);
         }
         self.sql_with_bound(sql, params, opts)
     }
@@ -3708,25 +3768,6 @@ fn plan_sets(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[
                 Assign::Value(v) => v.clone(),
                 Assign::Excluded(g) => proposed[*g].clone(),
                 Assign::Expr(e) => qsql::assigned(&schema.fields[f], eval::eval(e, &read)?)?,
-                // NULL counts as zero; a sum that overflows is an
-                // error, as in Postgres.
-                Assign::Add(x) => {
-                    let overflow = || Error::Query(format!("{} + {x:?} overflows", schema.fields[f].name));
-                    match (&schema.fields[f].ty, x) {
-                        (FieldType::Int, Value::Int(x)) => Value::Int(row[f].as_i64().unwrap_or(0).checked_add(*x).ok_or_else(overflow)?),
-                        (FieldType::Int, Value::Float(y)) if y.fract() == 0.0 && y.abs() < 9.2e18 => {
-                            Value::Int(row[f].as_i64().unwrap_or(0).checked_add(*y as i64).ok_or_else(overflow)?)
-                        }
-                        (FieldType::Int, _) => return Err(Error::Query(format!("{} is INT: add an integer", schema.fields[f].name))),
-                        _ => {
-                            let y = row[f].as_f64().unwrap_or(0.0) + x.as_f64().unwrap_or(0.0);
-                            if !y.is_finite() {
-                                return Err(overflow());
-                            }
-                            Value::Float(y)
-                        }
-                    }
-                }
             })
         };
         if !rewrite {
@@ -3865,7 +3906,7 @@ fn lacking(schema: &Schema, backfill: Option<usize>, mut rows: Vec<Vec<Value>>) 
 }
 
 /// The row an UPDATE by key ([`keyed_update`]) changes, as [`plan_sets`]
-/// reads it: its key, and the fields it adds to, as transaction `tt`
+/// reads it: its key, and the fields its expressions read, as transaction `tt`
 /// finds them, its own writes included, without running a query; none
 /// when no live row has the key. Reading the transaction's own writes is
 /// what lets two keyed updates of one row share a transaction
@@ -3874,7 +3915,9 @@ fn lacking(schema: &Schema, backfill: Option<usize>, mut rows: Vec<Vec<Value>>) 
 fn keyed_rows(tt: &mut TableTxn, schema: &Schema, key: Value, sets: &[(usize, Assign)]) -> Result<Vec<Vec<Value>>> {
     let pk = schema.primary_key.expect("a keyed update has a key");
     let mut row = vec![Value::Null; schema.fields.len()];
-    let read: Vec<usize> = sets.iter().filter(|(_, a)| matches!(a, Assign::Add(_))).map(|(f, _)| *f).collect();
+    let mut read: Vec<usize> = sets.iter().flat_map(|(_, a)| a.reads_in_place(schema).unwrap_or_default()).collect();
+    read.sort_unstable();
+    read.dedup();
     if read.is_empty() && !tt.has(&key)? {
         return Ok(Vec::new());
     }
@@ -3894,12 +3937,13 @@ fn keyed_rows(tt: &mut TableTxn, schema: &Schema, key: Value, sets: &[(usize, As
 /// and its statement runs as bound, without a plan. `None` for any other
 /// write, which runs as before: a WHERE over other columns, a key of
 /// another type than the column's (`'7'` for 7), a LIMIT, a SET of an
-/// expression or of a field that is not a number.
+/// expression other than arithmetic on numbers ([`Assign::reads_in_place`])
+/// or of a field that is not a number.
 fn keyed_update(schema: &Schema, write: &Write) -> Option<Value> {
     use crate::query::logical::Pred;
     let Write::Update { select, sets, pick: None } = write else { return None };
     let pk = schema.primary_key?;
-    if sets.is_empty() || !in_place(schema, sets) || !sets.iter().all(|(_, a)| matches!(a, Assign::Value(_) | Assign::Add(_))) {
+    if sets.is_empty() || !in_place(schema, sets) || !sets.iter().all(|(_, a)| a.reads_in_place(schema).is_some()) {
         return None;
     }
     if select.limit.is_some() || select.offset != 0 || select.order.is_some() || !select.phases.is_empty() || !select.group_by.is_empty() || !select.graphs.is_empty() || select.guard.is_some() || select.per.is_some() {

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -202,7 +204,7 @@ print(r.where, r.why, r.fetched)      # &quot;device&quot;, &quot;proved&quot;, 
 <pre data-lang="js" data-title="JavaScript">const tracks = await openNearby(&quot;http://127.0.0.1:7700&quot;, &quot;tracks&quot;, &quot;./tracks&quot;);
 await tracks.focus(taste, { rows: 20000 });
 const r = await tracks.similar(taste, { k: 10 });</pre>
-<p><code>focus</code> keeps the clusters that fit in <code>rows</code> rows and drops those that fall beyond half as many again, so a taste that drifts does not fetch and drop the same clusters over and over. <code>codes=False</code> (<code>codes: false</code>) skips the codes; <code>{"codes": false}</code> builds a slice without them.</p>
+<p><code>focus</code> keeps the clusters that fit in <code>rows</code> rows and drops those that fall beyond half as many again, so a taste that drifts does not fetch and drop the same clusters over and over. A cluster dropped is deleted from the device's database, and once the rows deleted since the last time outnumber the rows held (and are 1,000 or more), the database is compacted, so the folder stays within about twice what the device holds however far the taste drifts; a geo slice's tiles go the same way. <code>codes=False</code> (<code>codes: false</code>) skips the codes; <code>{"codes": false}</code> builds a slice without them.</p>
 <p>On Yambda's 629,298 tracks (64-dimension vectors, 4,599 users, measured in a cloud container; <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/slices#vector-slices-on-yambda-proving-similarity-search-on-the-device">the replay</a> has every number), with 4,096 clusters and 20,000 tracks on the device:</p>
 <div class="doc-table"><table>
 <thead>

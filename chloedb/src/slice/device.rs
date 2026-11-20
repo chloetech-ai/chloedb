@@ -21,6 +21,10 @@ use crate::query::stats::{FieldStats, TermStats};
 use crate::storage::DbOptions;
 use crate::value::Value;
 
+/// Rows deleted since the last compaction below which
+/// [`Device::drop_tile`] does not compact the file.
+pub const COMPACT_FLOOR: u64 = 1000;
+
 /// A device holding some of a slice's tiles.
 pub struct Device {
     db: Db,
@@ -36,6 +40,9 @@ pub struct Device {
     /// A vector slice's codes of every row, when fetched
     /// ([`Device::add_codes`]), and where each tile's start.
     codes: Option<(Vec<u8>, HashMap<Tile, std::ops::Range<usize>>)>,
+    /// Rows deleted ([`Device::drop_tile`]) since the file was last
+    /// compacted.
+    dropped_rows: u64,
 }
 
 /// Which tiles to fetch and which to let go ([`Device::plan`]).
@@ -169,7 +176,7 @@ impl Device {
         let db = Db::create(&own.join("slice.strata"), m.schema.clone(), DbOptions::default())?;
         let words = m.word_map().into_iter().map(|(w, v)| (w.to_string(), v)).collect();
         let tiles = m.tiles.iter().map(|t| (t.tile(), t.bytes)).collect();
-        Ok(Device { db, m, words, tiles, held: BTreeMap::new(), stale: false, codes: None })
+        Ok(Device { db, m, words, tiles, held: BTreeMap::new(), stale: false, codes: None, dropped_rows: 0 })
     }
 
     /// Adds a vector slice's codes of every row from the bytes of its
@@ -302,14 +309,34 @@ impl Device {
         Ok(n)
     }
 
-    /// Lets a tile go: deletes its rows.
+    /// Lets a tile go: deletes its rows. A delete leaves the rows in their
+    /// segments and the file as long as it was, so when the rows deleted
+    /// since the last time outnumber the rows held (and are at least
+    /// [`COMPACT_FLOOR`]), the file is compacted ([`Device::compact`]): the
+    /// device's folder stays within about twice what it holds, however many
+    /// tastes it has followed.
     pub fn drop_tile(&mut self, t: Tile) -> Result<()> {
         let Some(keys) = self.held.remove(&t) else { return Ok(()) };
         if keys.is_empty() {
             return Ok(());
         }
         let table = self.m.schema.table.clone();
+        self.dropped_rows += keys.len() as u64;
         self.db.write_ops(keys.into_iter().map(|key| WriteOp::Delete { table: table.clone(), key }).collect())?;
+        let held: u64 = self.held.values().map(|k| k.len() as u64).sum();
+        if self.dropped_rows >= COMPACT_FLOOR && self.dropped_rows >= held {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
+    /// Merges the device's segments without the deleted rows and gives the
+    /// space back to the file system ([`Db::optimize`]), so that its folder
+    /// is the size of the tiles it holds. [`Device::drop_tile`] does it
+    /// when the rows it deleted outnumber those held.
+    pub fn compact(&mut self) -> Result<()> {
+        self.db.optimize()?;
+        self.dropped_rows = 0;
         Ok(())
     }
 

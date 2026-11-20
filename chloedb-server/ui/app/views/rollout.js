@@ -297,7 +297,7 @@ function render(page, r) {
     for (const [i, x] of (state.cluster?.shards || []).entries()) {
       for (const [j, rr] of (x.replicas || []).entries()) {
         out.push({
-          url: rr.url, short: rr.short || (typeof core.copyName === "function" ? core.copyName(rr.url, state.cluster) : `s${x.shard ?? i}-${j}`),
+          url: rr.url, short: core.shownName(rr) || (typeof core.copyName === "function" ? core.copyName(rr.url, state.cluster) : `s${x.shard ?? i}-${j}`),
           shard: x.shard ?? i, role: rr.takes_writes ? "primary" : rr.role || "replica", node: rr.node || rr.name || null,
           down: rr.status === "down" || rr.role === "unknown", since: rr.down_since_ms || null, was: rr.last_role || null,
           // Two builds of one version (a hotfix) are told apart by their commit.

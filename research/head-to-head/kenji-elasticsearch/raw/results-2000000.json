@@ -1,0 +1,170 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "docs": 2000000,
+ "searches": 1000,
+ "at": "2026-11-20T07:04:01Z",
+ "tenants": 200,
+ "biggest_tenant": [
+  "t001",
+  399238
+ ],
+ "agreement": {
+  "total": 200,
+  "ids_in_order": 181,
+  "ids_as_set": 186,
+  "buckets": 200,
+  "highlighted": 200,
+  "compared": 200,
+  "errors": 0,
+  "top10_overlap_mean": 9.71
+ },
+ "elasticsearch": {
+  "name": "elasticsearch",
+  "bulk_s": 136.67,
+  "count": 2000000,
+  "memory_after_load_kb": 4909432,
+  "mix": [
+   {
+    "clients": 1,
+    "searches": 1000,
+    "per_s": 110.3,
+    "p50_ms": 7.92,
+    "p95_ms": 15.62,
+    "p99_ms": 19.95,
+    "errors": 0
+   },
+   {
+    "clients": 4,
+    "searches": 1000,
+    "per_s": 308.8,
+    "p50_ms": 11.41,
+    "p95_ms": 23.64,
+    "p99_ms": 31.81,
+    "errors": 0
+   }
+  ],
+  "parts": {
+   "text query": {
+    "p50_ms": 13.782,
+    "p95_ms": 23.198,
+    "n": 15
+   },
+   "+ highlight": {
+    "p50_ms": 13.216,
+    "p95_ms": 20.259,
+    "n": 15
+   },
+   "terms on status (filters only)": {
+    "p50_ms": 3.017,
+    "p95_ms": 7.55,
+    "n": 15
+   },
+   "terms on tags, an array (filters only)": {
+    "p50_ms": 2.968,
+    "p95_ms": 4.366,
+    "n": 15
+   },
+   "sort by date": {
+    "p50_ms": 4.211,
+    "p95_ms": 6.101,
+    "n": 15
+   },
+   "sort by date, id tie-breaker": {
+    "p50_ms": 4.004,
+    "p95_ms": 6.086,
+    "n": 15
+   },
+   "terms on tags, whole index": {
+    "p50_ms": 2.496,
+    "p95_ms": 2.82,
+    "n": 15
+   }
+  },
+  "paging": {
+   "tenant": "t007",
+   "pages": 498,
+   "unique": 49758,
+   "in_order": true,
+   "page_p50_ms": 5.23
+  },
+  "memory_after_kb": 4994367,
+  "disk_bytes": 692638172,
+  "version": "Elasticsearch 9.5.5 (Docker mirror.gcr.io/library/elasticsearch:9.5.5, heap 4g)"
+ },
+ "chloedb": {
+  "name": "chloedb",
+  "bulk_s": 249.98,
+  "count": 2000000,
+  "memory_after_load_kb": 943400,
+  "mix": [
+   {
+    "clients": 1,
+    "searches": 1000,
+    "per_s": 8.4,
+    "p50_ms": 91.35,
+    "p95_ms": 277.67,
+    "p99_ms": 372.35,
+    "errors": 0
+   },
+   {
+    "clients": 4,
+    "searches": 1000,
+    "per_s": 14.4,
+    "p50_ms": 220.29,
+    "p95_ms": 652.85,
+    "p99_ms": 883.3,
+    "errors": 0
+   }
+  ],
+  "parts": {
+   "text query": {
+    "p50_ms": 11.613,
+    "p95_ms": 13.372,
+    "n": 15
+   },
+   "+ highlight": {
+    "p50_ms": 11.001,
+    "p95_ms": 12.695,
+    "n": 15
+   },
+   "terms on status (filters only)": {
+    "p50_ms": 8.106,
+    "p95_ms": 9.891,
+    "n": 15
+   },
+   "terms on tags, an array (filters only)": {
+    "p50_ms": 493.549,
+    "p95_ms": 546.406,
+    "n": 15
+   },
+   "sort by date": {
+    "p50_ms": 3.033,
+    "p95_ms": 9.715,
+    "n": 15
+   },
+   "sort by date, id tie-breaker": {
+    "p50_ms": 933.897,
+    "p95_ms": 1014.458,
+    "n": 15
+   },
+   "terms on tags, whole index": {
+    "error": "{\"_error\": 504, \"error\": {\"reason\": \"timeout: the query ran past its deadline\", \"root_cause\": [{\"reason\": \"timeout: the query ran past its deadline\", \"type\": \"exception\"}], \"type\": \"exception\"}, \"status\": 504}"
+   }
+  },
+  "paging": {
+   "tenant": "t007",
+   "pages": 498,
+   "unique": 49758,
+   "in_order": true,
+   "page_p50_ms": 174.67
+  },
+  "memory_after_kb": 1959704,
+  "disk_bytes": 969970036,
+  "version": "chloedb-server 0.3.9 (built from 2f21f4dd0c) (its OpenSearch API)"
+ }
+}

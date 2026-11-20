@@ -45,7 +45,7 @@ function copyOf(key) {
   return null;
 }
 /** A copy's name for an entry of an alert's `where`: {copy (url), short}. */
-const whereName = (c) => findCopy(c.copy) ? copyName(c.copy) : c.short || copyName(c.copy);
+const whereName = (c) => findCopy(c.copy) ? copyName(c.copy) : c.name || c.short || copyName(c.copy);
 /** A server's node name (as the log store names it) as the copy's name. */
 function nodeShort(name) {
   const c = copyOf(name);
@@ -620,6 +620,8 @@ function statePill(r, x) {
   // Some copies ok, others without the metric (a primary-only or replica-only metric): say both.
   if (x.state === "no_data" && x.copies?.ok > 0) return h("span", { class: "pill al-nodata", title: `${x.copies.ok} of ${x.copies.total} copies are ok. ${x.copies.no_data} have no ${r.metric} value: only primaries or only replicas report some metrics.` }, icon("minus"), `ok on ${x.copies.ok} · no data on ${x.copies.no_data}`);
   if (x.state === "no_data") return h("span", { class: "pill al-nodata", title: "The metric has no value here, so the rule cannot tell. It keeps its last state and never resolves on its own." }, icon("minus"), `no data${x.no_data_since_ms || x.since_ms ? " " + dur(Date.now() - (x.no_data_since_ms || x.since_ms)) : ""}`);
+  // A query that has matched no row since it was made (MARCO-402): ok, but it could not have fired.
+  if (r.sql_run?.quiet_since_ms) return h("span", { class: "pill al-nodata", title: "Its query has answered 0 on every run since this server began running it: check that its WHERE matches what the table holds (a severity spelt as the table spells it, a service name that exists). A rule that never matched cannot fire." }, icon("warn"), `never matched ${dur(Date.now() - r.sql_run.quiet_since_ms)}`);
   return pill("ok", "ok");
 }
 function ackPill(r, x, fleet) {
@@ -1408,6 +1410,7 @@ function editRule(rule, opts = {}) {
       h("div", { class: "grid g2 al-ed-names" }, field("Name", name), h("label", { class: "f" }, "Metric", metric, metricHint)),
       field("Or a query", sqlIn, "A SELECT whose first number is the value, run every 30 s; :since and :now are the window's start and end. Any table: orders, otel_logs, yours."),
       x.sql_run ? h("div", { class: "small " + (x.sql_run.error ? "error" : "muted") }, x.sql_run.error ? `Its last run failed: ${x.sql_run.error}` : `Last run ${fmt.ago(x.sql_run.at_ms)}: ${fmt.n(x.sql_run.value, 3)} in ${fmt.ms(x.sql_run.took_ms)}`) : null,
+      x.sql_run?.quiet_since_ms ? h("div", { class: "small warn" }, icon("warn"), ` Its query has answered 0 on every run since ${fmt.ago(x.sql_run.quiet_since_ms)}: check that its WHERE matches what the table holds (a severity spelt as the table spells it, a service name that exists). A rule that never matched cannot fire.`) : null,
       h("div", { class: "row al-ed-row" }, field("Evaluated on", scopeSeg), field("Value", evalSeg), h("label", { class: "f" }, "Window", h("span", { class: "row nw", style: { gap: "4px" } }, win, winUnit)), field("Compared with", vsSeg, "the window before: fires when the value is the threshold times the one before")),
       h("div", { class: "row al-ed-row" }, field("Fires when the value is", opSeg), h("label", { class: "f" }, "Threshold", h("span", { class: "row nw", style: { gap: "4px" } }, thr, unitEls[0])), field("Held for, seconds", forS), field("Severity", sevSeg), h("label", { class: "f" }, "Resolves at", h("span", { class: "row nw", style: { gap: "4px" } }, res, unitEls[1]))),
       h("section", { class: "card al-edbt", style: { marginTop: "4px" } }, h("div", { class: "hd" }, btTitle, btSub, btTools), h("div", { class: "bd" }, btChart, verdict)),

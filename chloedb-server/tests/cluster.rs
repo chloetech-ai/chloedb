@@ -1104,3 +1104,55 @@ async fn a_rebalance_by_load_moves_the_busy_slots() {
     let (products, _) = rows(&svc).await;
     assert_eq!(products.len(), N, "every row, once, after the moves");
 }
+
+/// A TCP line to `to` that `cut` closes: open connections end and new ones
+/// are dropped, as when the server behind it is killed.
+async fn cuttable(to: &str, cut: Arc<tokio::sync::watch::Sender<bool>>) -> String {
+    let to = to.trim_start_matches("http://").to_string();
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut client, _)) = l.accept().await else { return };
+            let mut gone = cut.subscribe();
+            if *gone.borrow() {
+                continue;
+            }
+            let to = to.clone();
+            tokio::spawn(async move {
+                let Ok(mut server) = tokio::net::TcpStream::connect(&to).await else { return };
+                tokio::select! {
+                    _ = tokio::io::copy_bidirectional(&mut client, &mut server) => {}
+                    _ = gone.wait_for(|c| *c) => {}
+                }
+            });
+        }
+    });
+    url
+}
+
+/// KENJI-405: a statement the coordinator runs in parts (a WITH of an
+/// aggregate) while every copy of a shard is down is refused 503, as a
+/// plain search is, not 400: a client retries a 503 on another node and
+/// takes a 400 for its own mistake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_down_refuses_a_compound_statement_with_503_not_400() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let cut = Arc::new(tokio::sync::watch::channel(false).0);
+    let mut urls = Vec::new();
+    for s in 0..2 {
+        let name = format!("s{s}.strata");
+        let url = serve(create(d, &name, |i| shard_of(&key(i), 2) == s), d, &name).await.1;
+        urls.push(if s == 1 { cuttable(&url, cut.clone()).await } else { url });
+    }
+    let (_c, svc) = coordinator(&urls).await;
+    let compound = "WITH g AS (SELECT category AS k, COUNT(*) AS c FROM products GROUP BY category) SELECT k, c FROM g ORDER BY c DESC LIMIT 3";
+    assert_eq!(select(&svc, compound).await.len(), 3);
+    cut.send_replace(true);
+    for sql in ["SELECT id FROM products WHERE MATCH(body, 'kettle') LIMIT 5", compound] {
+        let e = svc.query(QueryReq { sql: sql.into(), ..Default::default() }).await.err().unwrap_or_else(|| panic!("{sql}: answered with a shard down"));
+        assert_eq!(e.status, 503, "{sql}: {}", e.message);
+        assert!(!e.message.starts_with("query error"), "{sql}: {}", e.message);
+    }
+}

@@ -49,6 +49,7 @@ mod feedback;
 mod fleet;
 mod funnel;
 mod follow;
+mod from_select;
 mod follow_retries;
 mod hash_cluster;
 mod hosted_models;

@@ -80,8 +80,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="server.html">chloedb-server</a>
       <a href="operate-cluster.html">Operate a cluster</a>
       <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
       <a href="runbooks.html">Runbooks</a>
       <a href="security.html" aria-current="page">Security model</a>
+      <a href="security-review.html">Security review pack</a>
       <a href="sqlite.html">SQLite in and out</a>
       <a href="parquet.html">Parquet and S3</a>
       <a href="postgres.html">Following Postgres</a>
@@ -121,7 +123,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#before-a-server-leaves-your-machine">Before a server leaves your machine</a></li><li><a href="#listeners">Listeners</a></li><li><a href="#credentials">Credentials</a></li><li><a href="#api-keys-and-scopes">API keys and scopes</a></li><li><a href="#browsers">Browsers</a></li><li><a href="#tls">TLS</a></li><li><a href="#apps">Apps</a></li><li><a href="#requests-the-server-makes">Requests the server makes</a></li><li><a href="#data-at-rest">Data at rest</a></li><li><a href="#logs">Logs</a></li><li><a href="#chloectx">ChloeCtx</a></li><li><a href="#what-it-does-not-do">What it does not do</a></li></ol></details>
     <div class="doc-body">
 
-<p>This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in <a href="server.html#security">the server's security section</a>. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+<p>This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in <a href="server.html#security">the server's security section</a>. For a review before a team runs it (the threat model, how the controls map to SOC 2, and the notices each package ships), see the <a href="security-review.html">security review pack</a>. To report a vulnerability, see <a href="https://github.com/chloetech-ai/chloedb/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 <h2 id="before-a-server-leaves-your-machine">Before a server leaves your machine<a class="anchor" href="#before-a-server-leaves-your-machine" aria-label="Link to this section">#</a></h2>
 <p>A server on one machine for one person needs nothing: it listens on loopback only. Before it listens anywhere else:</p>
 <ol>
@@ -277,7 +279,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <h2 id="logs">Logs<a class="anchor" href="#logs" aria-label="Link to this section">#</a></h2>
 <ul>
 <li><strong>The log store</strong> (<code>--log-store</code>, by default <code>DB.logs</code> beside the database; <code>off</code> keeps none; a coordinator keeps none unless given one) keeps the server's log lines and the queries it answered for 7 days (<code>--log-retain</code>), up to 1 GiB (<code>--log-store-mb</code>). It keeps every slow and failed query, and up to 200 others a second (<code>--log-queries</code>).</li>
-<li><strong>Queries' values.</strong> The running and finished queries, and the log store, keep each query's parameters with their values. <code>--redact-params</code> (<code>CHLOEDB_REDACT_PARAMS</code>) keeps only their types. A value written into the SQL text is part of the statement and kept with it: pass anything secret as a parameter.</li>
+<li><strong>Queries' values.</strong> The running and finished queries, and the log store, keep each query's parameters as their types (<code>{"q": "text"}</code>), not their values. <code>--keep-params</code> (<code>CHLOEDB_KEEP_PARAMS</code>) keeps the values too, up to 1 KB for each query; <code>--redact-params</code> is accepted and means the default. A value written into the SQL text is part of the statement and kept with it: pass anything secret as a parameter.</li>
 <li><strong>Credentials.</strong> A token or a key is not written to the log, the log store or the audit log, a wrong one included; the log and the audit log name a key by its name and id, and the token as <code>root token</code> (the log) or <code>token</code> (the audit log).</li>
 <li><strong>The audit log</strong> keeps every change (a request that needs the admin scope and changes something), every note and every refused request, the latest 2,000 in memory and every one in <code>--audit-log FILE</code> and the log store's <code>audit</code> table: who (the key's name and id), the route, the status, the client's address, the reason given, and what changed, before and after. Reads are not audited, nor writes of rows, by <code>/v1/write</code> or by SQL, except those the command center sends (<a href="server.html#security">audit log</a>). Behind a proxy, <code>--trust-proxy</code> names the proxies whose <code>X-Forwarded-For</code> the audit log believes.</li>
 </ul>
@@ -300,7 +302,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloedb/security.md">Edit this page on GitHub</a>
-      <span class="pager"><a href="runbooks.html">← Runbooks</a><a href="sqlite.html">SQLite in and out →</a></span>
+      <span class="pager"><a href="runbooks.html">← Runbooks</a><a href="security-review.html">Security review pack →</a></span>
     </footer>
   </article>
 </div></main>

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Back up, restore and upgrade · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="Before ChloeDB holds data someone depends on, whoever runs it will ask three things. How is it backed up? How is a backup put back after a bad write or a lost disk? How is it upgraded, and rolled back if the new…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/guide/backup.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html" aria-current="page">Back up, restore and upgrade</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Server and cluster</span>
+      <h1>Back up, restore and upgrade</h1>
+      <p class="doc-badge tested">Every example on this page runs in CI against the code it documents (<a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/guide/run.py">docs/guide/run.py</a>).</p>
+      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#a-server-with-a-backup-folder">A server with a backup folder</a></li><li><a href="#back-up">Back up</a></li><li><a href="#restore-after-a-bad-write">Restore after a bad write</a></li><li><a href="#upgrade-and-roll-back">Upgrade, and roll back</a></li><li><a href="#an-embedded-database">An embedded database</a></li><li><a href="#chloectxs-stores">ChloeCtx's stores</a></li></ol></details>
+    <div class="doc-body">
+
+<p>Before ChloeDB holds data someone depends on, whoever runs it will ask three things. How is it backed up? How is a backup put back after a bad write or a lost disk? How is it upgraded, and rolled back if the new version misbehaves? This page answers all three for one server and runs every step. The same page runs in CI on every change, so the commands and what they print are rehearsed. A cluster does the same per copy: see <a href="operate-cluster.html#checkpoints">Operate a cluster</a> and the <a href="runbooks.html#restore-from-checkpoints">restore runbook</a>.</p>
+<p>You need <code>chloedb-server</code> on your <code>PATH</code> (<a href="quickstart.html">install</a>), and <code>curl</code> and <code>python3</code>.</p>
+<h2 id="a-server-with-a-backup-folder">A server with a backup folder<a class="anchor" href="#a-server-with-a-backup-folder" aria-label="Link to this section">#</a></h2>
+<p><code>--backup-dir</code> names the folder its checkpoints go to. Put it on another disk, or sync it off the machine (below), since a backup on the database's own disk goes with that disk.</p>
+<pre data-lang="sh">mkdir -p backups
+chloedb-server --db ./shop.chloedb --backup-dir ./backups --listen 127.0.0.1:7700 --grpc off --start-apps off &gt; server.log 2&gt;&amp;1 &amp;
+echo $! &gt; server.pid
+until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; done
+export ADMIN_KEY=$(curl -s -X POST localhost:7700/v1/admin/keys -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;name&quot;: &quot;admin&quot;, &quot;scope&quot;: &quot;admin&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;secret&quot;])&#x27;)</pre>
+<p>A table and a thousand orders to keep safe:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;CREATE TABLE orders (id KEYWORD PRIMARY KEY, customer KEYWORD, total FLOAT)&quot;}&#x27; &gt; /dev/null
+python3 - &lt;&lt;&#x27;EOF&#x27; &gt; orders.json
+import json
+ops = [{&quot;op&quot;: &quot;upsert&quot;, &quot;table&quot;: &quot;orders&quot;, &quot;doc&quot;: {&quot;id&quot;: f&quot;o{i}&quot;, &quot;customer&quot;: f&quot;c{i % 40}&quot;, &quot;total&quot;: float(i % 97)}} for i in range(1000)]
+print(json.dumps({&quot;ops&quot;: ops}))
+EOF
+curl -s localhost:7700/v1/write -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; -d @orders.json \
+  | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;written&quot;], &quot;rows written&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">1000 rows written</pre>
+<h2 id="back-up">Back up<a class="anchor" href="#back-up" aria-label="Link to this section">#</a></h2>
+<p>Copying the database's files while the server runs is not a backup: a copy can pair one version's manifest with another's pages (<a href="server.html#backups">why</a>). A checkpoint is a consistent copy, made while the server serves, and checked against its checksums before it is kept:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/admin/checkpoint -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;name&quot;: &quot;nightly&quot;}&#x27; | python3 -c &#x27;import json, sys; c = json.load(sys.stdin)[&quot;checkpoint&quot;]; print(c[&quot;name&quot;], c[&quot;live_docs&quot;], &quot;rows&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">nightly 1000 rows</pre>
+<p>Run it from cron or a systemd timer with a dated name (<code>shop-$(date +%F)</code>), and list what is kept with <code>GET /v1/admin/checkpoints</code>. A directory checkpoint (<code>"layout": "dir"</code>, <code>"link_from"</code> the one before) shares the files that did not change with the one before, so syncing each one to object storage sends only what changed (<a href="server.html#backups">how</a>).</p>
+<h2 id="restore-after-a-bad-write">Restore after a bad write<a class="anchor" href="#restore-after-a-bad-write" aria-label="Link to this section">#</a></h2>
+<p>Someone deletes the wrong rows:</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &quot;{\&quot;sql\&quot;: \&quot;DELETE FROM orders WHERE customer = &#x27;c7&#x27;\&quot;}&quot; &gt; /dev/null
+curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;SELECT COUNT(*) FROM orders&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;rows&quot;][0][0], &quot;rows&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">975 rows</pre>
+<p>Stop the server, put the checkpoint in place of its database, and start it again with the flags it had. <code>restore</code> copies the checkpoint and checks every checksum before it changes anything, and moves the database it replaces aside rather than deleting it, so a restore can be undone too:</p>
+<pre data-lang="sh">kill $(cat server.pid) &amp;&amp; while kill -0 $(cat server.pid) 2&gt; /dev/null; do sleep 0.2; done
+chloedb-server restore --from ./backups/nightly --db ./shop.chloedb</pre>
+<pre data-lang="text" data-title="Output" class="output">restored ./shop.chloedb from the checkpoint ./backups/nightly (one file): ...
+...</pre>
+<pre data-lang="sh">chloedb-server --db ./shop.chloedb --backup-dir ./backups --listen 127.0.0.1:7700 --grpc off --start-apps off &gt;&gt; server.log 2&gt;&amp;1 &amp;
+echo $! &gt; server.pid
+until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; done
+curl -s localhost:7700/v1/sql -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;sql&quot;: &quot;SELECT COUNT(*) FROM orders&quot;}&#x27; | python3 -c &#x27;import json, sys; print(json.load(sys.stdin)[&quot;rows&quot;][0][0], &quot;rows&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">1000 rows</pre>
+<p>The admin key still works: the server's keys are kept beside its database, and <code>restore</code> merges those kept with the checkpoint into them (a key revoked since stays revoked). What a checkpoint does not carry is listed under <a href="server.html#restoring-a-checkpoint">Restoring a checkpoint</a>: the log store, connectors' settings, and a coordinator's own state. Writes made after the checkpoint are not in it. ChloeDB has no point-in-time recovery yet, so take checkpoints as often as you can afford to lose writes.</p>
+<h2 id="upgrade-and-roll-back">Upgrade, and roll back<a class="anchor" href="#upgrade-and-roll-back" aria-label="Link to this section">#</a></h2>
+<p>An upgrade is a stop and a start with the new binary on the same <code>--db</code>. <a href="compatibility.html">Versions and compatibility</a> says what each version promises about the file format: a newer server opens an older database, and once it has written to it an older one may not. So the order is: checkpoint, stop, start the new version, check.</p>
+<pre data-lang="sh">curl -s localhost:7700/v1/admin/checkpoint -H &quot;authorization: Bearer $ADMIN_KEY&quot; -H &#x27;content-type: application/json&#x27; \
+  -d &#x27;{&quot;name&quot;: &quot;before-upgrade&quot;}&#x27; &gt; /dev/null
+kill $(cat server.pid) &amp;&amp; while kill -0 $(cat server.pid) 2&gt; /dev/null; do sleep 0.2; done
+# Install the new version here, then start it with the same flags:
+chloedb-server --db ./shop.chloedb --backup-dir ./backups --listen 127.0.0.1:7700 --grpc off --start-apps off &gt;&gt; server.log 2&gt;&amp;1 &amp;
+echo $! &gt; server.pid
+until curl -sf http://127.0.0.1:7700/v1/health &gt; /dev/null; do sleep 0.2; done
+curl -s localhost:7700/v1/health -H &quot;authorization: Bearer $ADMIN_KEY&quot; | python3 -c &#x27;import json, sys; h = json.load(sys.stdin); print(h[&quot;status&quot;], h[&quot;docs&quot;], &quot;rows&quot;)&#x27;</pre>
+<pre data-lang="text" data-title="Output" class="output">ok 1000 rows</pre>
+<p>To roll back, stop the new version, install the old one, and restore <code>before-upgrade</code> with the old version's <code>chloedb-server restore</code>, as above. Writes made between the upgrade and the rollback are not in that checkpoint, so decide how long you watch the new version before you let writes depend on it. A cluster upgrades one server at a time while it serves: see <a href="operate-cluster.html#upgrade-one-server-at-a-time">Upgrade one server at a time</a>.</p>
+<h2 id="an-embedded-database">An embedded database<a class="anchor" href="#an-embedded-database" aria-label="Link to this section">#</a></h2>
+<p>A program that opens the database file itself (Python, JavaScript, Rust, Java) backs it up the same way, without a server: <code>db.checkpoint("backup.chloedb")</code> in Python writes a consistent, checked copy while the database is open and in use (<a href="python.html">Python</a>). Restore by opening the copy in place of the file, with the program stopped. A database closed with <code>db.close()</code> is whole in its file, so a copy of a closed file is a backup too.</p>
+<h2 id="chloectxs-stores">ChloeCtx's stores<a class="anchor" href="#chloectxs-stores" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx backup DEST</code>, run in a project's directory, copies that project's store while sessions go on (<a href="chloectx-setup.html">how</a>). Stores live under <code>~/.local/share/chloectx/projects/</code>, and they are transcripts of your sessions: back them up to a place only you can read.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/guide/backup.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="cluster-limits.html">← Cluster limits</a><a href="runbooks.html">Runbooks →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

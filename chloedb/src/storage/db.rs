@@ -569,7 +569,7 @@ fn spill_place<'a>(path: &'a Path, dir: Option<&'a Path>) -> (&'a Path, String) 
 /// (`examples/merge_memory.rs`, the `probe` shape), counted against the
 /// process's memory limit while queries and other merges allocate
 /// elsewhere.
-fn release_freed_memory() {
+pub(crate) fn release_freed_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim only returns free memory to the system.
     unsafe {
@@ -3912,6 +3912,26 @@ impl Database {
     /// is written twice. Space a live snapshot can still reach stays.
     /// Returns the number of bytes the file shrank by.
     pub fn vacuum(&self) -> Result<u64> {
+        self.compact(true, None)
+    }
+
+    /// Returns space to the file system without the one step of
+    /// [`vacuum`](Self::vacuum) that makes the file grow first: moves
+    /// segments from the end of the file into free runs below them and
+    /// truncates the free tail, committing until nothing moves. It never
+    /// needs more room than it frees, so a server may run it by itself
+    /// ([`Database::file_stats`]'s `free_pages` says when it is worth it).
+    /// A file whose free runs are all too small for the segments above
+    /// them stays as it is; `vacuum` packs those. It holds the writer while
+    /// it runs, so it moves segments for at most `budget` (a move started
+    /// finishes) and then only commits until the moved segments' old
+    /// places are free and the tail is cut; what is left is moved by the
+    /// next call. Returns the number of bytes the file shrank by.
+    pub fn trim(&self, budget: Duration) -> Result<u64> {
+        self.compact(false, Some(Instant::now() + budget))
+    }
+
+    fn compact(&self, lift_allowed: bool, deadline: Option<Instant>) -> Result<u64> {
         let mut wal = self.try_writer()?;
         self.check_poisoned()?;
         if let Some(d) = &self.dir {
@@ -3946,12 +3966,12 @@ impl Database {
             let mut moved = 0;
             if wait > 0 {
                 wait -= 1;
-            } else {
-                moved = vw.relocate_down()?;
+            } else if deadline.is_none_or(|d| Instant::now() < d) {
+                moved = vw.relocate_down(deadline)?;
                 // Nothing has fitted for a second commit running, so what
                 // earlier moves freed is reusable by now: if much of the file
                 // is still free, move everything out of the way once.
-                if moved == 0 && idle == 1 && !lifted && vw.fragmented() {
+                if lift_allowed && moved == 0 && idle == 1 && !lifted && vw.fragmented() {
                     moved = vw.lift_all()?;
                     lifted = true;
                     // The old places come free two commits on. Packing waits
@@ -4997,6 +5017,9 @@ impl Database {
         let logged = wal.append(txn, seq, &ops, sync).map_err(|e| self.poison(e))?;
         let full = {
             let mut st = lock(&self.state);
+            // The record is kept only to be shipped: a big transaction's
+            // would otherwise be held through the flush that follows.
+            let logged = (seq.is_some() && st.ship.keeps()).then_some(logged);
             let now = super::state::now_ms();
             // Rows changed per table, for its activity.
             let mut changed: Vec<(usize, u64)> = Vec::new();
@@ -5017,7 +5040,7 @@ impl Database {
             st.txn = txn;
             if let Some(n) = seq {
                 st.seq = n.seq;
-                if st.ship.keeps() {
+                if let Some(logged) = logged.filter(|_| st.ship.keeps()) {
                     st.ship.push(Shipped { seq: n, bytes: logged.into() });
                 }
             }
@@ -5580,7 +5603,11 @@ impl<'a> WriteTxn<'a> {
                 crate::query::recommend::feed(&mut self, d)?;
             }
         }
-        let WriteTxn { db, mut wal, ops, .. } = self;
+        let WriteTxn { db, mut wal, ops, keys, ties, .. } = self;
+        // What the transaction kept of its rows goes before they are
+        // applied, so that the memtable takes each row rather than a copy
+        // of it (`State::apply`).
+        drop((keys, ties));
         db.commit_ops(&mut wal, ops)
     }
 
@@ -6089,7 +6116,7 @@ impl<'a> VersionWriter<'a> {
 
     /// Copies extents into free runs below them, highest first. Returns how
     /// many moved.
-    fn relocate_down(&mut self) -> Result<usize> {
+    fn relocate_down(&mut self, deadline: Option<Instant>) -> Result<usize> {
         if self.db.dir.is_some() {
             return Ok(0);
         }
@@ -6098,6 +6125,9 @@ impl<'a> VersionWriter<'a> {
         extents.sort_by_key(|&(e, _, _)| std::cmp::Reverse(e.page));
         let mut moved = 0;
         for (e, at, what) in extents {
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
             let Some(page) = self.fl.alloc_below(e.pages(), e.page) else { continue };
             self.move_extent(&map, e, at, what, page)?;
             moved += 1;
