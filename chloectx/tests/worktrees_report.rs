@@ -103,6 +103,32 @@ fn worktrees_share_a_store_and_check_notes_against_their_own_files() {
     std::env::remove_var("CHLOECTX_PER_WORKTREE");
 }
 
+/// ANA-403: a decision made in a sibling worktree that names a file only
+/// that worktree has (nothing committed) reaches the main checkout whole,
+/// as the user's decision, and says "not in this worktree" of the file, not
+/// "no longer exists" and not "not a description of this worktree's code".
+#[test]
+fn a_sibling_worktrees_decision_keeps_its_convention_and_says_which_file_is_missing() {
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("CHLOECTX_HOME", home.path());
+    let t = tempfile::tempdir().unwrap();
+    let (main, wt) = repo(t.path());
+    std::fs::write(wt.join("src/retry.py"), "def retry_after(resp):\n    return resp.headers['Retry-After']\n").unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let d = open(store.path(), &main);
+    let text = "All calls to the payments API treat HTTP 429 as retryable and 402 as final: retry_after in src/retry.py waits for the Retry-After header, never a fixed delay, \
+        and the error code PAY-4291 is shown to the user as it is, because support searches for it by that code when a customer writes in about a declined card.";
+    assert!(text.len() > 220);
+    let r = call(&d, json!({"op": "remember", "kind": "decision", "text": text, "said_by": "user", "files": ["src/retry.py"], "worktree": wt}));
+    assert!(r.get("error").is_none(), "{r}");
+    let brief = call(&d, json!({"op": "briefing", "session": "", "worktree": main}))["text"].as_str().unwrap().to_string();
+    assert!(brief.contains("PAY-4291 is shown to the user as it is"), "the decision is cut or hidden:\n{brief}");
+    assert!(brief.contains("when a customer writes in about a declined card"), "{brief}");
+    assert!(brief.contains("src/retry.py is not in this worktree"), "{brief}");
+    assert!(!brief.contains("no longer exist") && !brief.contains("not a description of this worktree's code"), "{brief}");
+    assert!(!brief.contains("may be out of date or from another branch"), "a user's decision is not demoted whole:\n{brief}");
+}
+
 #[test]
 fn events_are_recorded_never_shown_and_reported() {
     let t = tempfile::tempdir().unwrap();

@@ -218,11 +218,12 @@ Every record is redacted as it is stored, whatever wrote it (the hooks, `ingest-
 - `Authorization:` headers (`Bearer`, `Basic` and others), `Bearer` tokens, `curl -u user:password`, and the password in a URL (`postgres://app:…@db`);
 - a command line's password and key flags (`--password=…`, `--token …`, `--api-key …`, not `--password-file` or `--token-stdin`), `mysql -p…` and `sshpass -p …`;
 - the credentials of a Docker `config.json` (`"auth"`) and an `.npmrc` (`_auth`);
-- values assigned to a name that ends in a word for a secret (token, secret, password, passwd, passphrase, credential, or a key such as `api_key`, `AWS_SECRET_ACCESS_KEY`, `apiKey`): `NAME=value` in an environment dump or a `.env` file, `name: value` in YAML, `"name": "value"` in JSON, `name = "value"` in code, also after a label (`here is my config: DB_PASSWORD=…`, a CI file's `run: PGPASSWORD=… psql`), and `NAME value` with a long value of letters and digits (a Dockerfile's `ENV`).
+- values assigned to a name that ends in a word for a secret (token, secret, password, passwd, passphrase, credential, or a key such as `api_key`, `AWS_SECRET_ACCESS_KEY`, `apiKey`): `NAME=value` in an environment dump or a `.env` file, `name: value` in YAML, `"name": "value"` in JSON, `name = "value"` in code, also after a label (`here is my config: DB_PASSWORD=…`, a CI file's `run: PGPASSWORD=… psql`), and `NAME value` with a long value of letters and digits (a Dockerfile's `ENV`);
+- a secret named just before its value in a sentence: "the staging password is …", "password: …", "the token is …", "api key …", when the value has a letter and a digit and is no path, date or URL ("the password reset page" and "the token is invalid" keep their words). A session whose prompt held a secret is told that the prompt is recorded with the secret replaced.
 
-It is pattern-based, so it is best effort: a password written in prose, or a random string under an unremarkable name, is stored as it is. It leaves alone what only looks random (git hashes, digests, UUIDs) and code that names a secret without holding one (`token = get_token()`, `password: string`, `primary_key`).
+It is pattern-based, so it is best effort: a password written in prose in any other way (one of letters only, or one the sentence calls "it"), or a random string under an unremarkable name, is stored as it is. It leaves alone what only looks random (git hashes, digests, UUIDs) and code that names a secret without holding one (`token = get_token()`, `password: string`, `primary_key`).
 
-A store written before this redaction can hold secrets it would now catch (before 0.3.9, the shapes above from PyPI on, the flags, `auth`, and an assignment after a label were stored as typed). `chloectx redact`, in the project directory, rewrites them:
+A store written before this redaction can hold secrets it would now catch (before 0.3.9, the shapes above from PyPI on, the flags, `auth`, and an assignment after a label were stored as typed; before 0.3.10, a secret named in a sentence). `chloectx redact`, in the project directory, rewrites them:
 
 ```bash
 chloectx redact --dry-run   # count what would change; change nothing

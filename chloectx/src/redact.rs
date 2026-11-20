@@ -36,8 +36,13 @@
 //!   `NAME value` with a long value (a Dockerfile's `ENV`). The name is
 //!   kept.
 //!
-//! It is best effort: a secret in no shape it knows (a password in prose, a
-//! random string under an unremarkable name) is stored as it is. It leaves
+//! - a secret named in a sentence just before its value ("the staging
+//!   password is tangerine-77", "api key V", "token: V"), when the value has
+//!   a letter and a digit and is no path, date or URL.
+//!
+//! It is best effort: a secret in no shape it knows (a password the user
+//! only calls "it", a random string under an unremarkable name) is stored
+//! as it is. It leaves
 //! alone what only looks random: git hashes, digests, UUIDs, and code that
 //! names a secret without holding one (`token = get_token()`,
 //! `password: string`).
@@ -117,6 +122,12 @@ fn rules() -> &'static [Rule] {
             Rule::Custom(re(r#"\b(mysql(?:dump|admin|import|sh|check|slap)?|mariadb(?:-dump|-admin|dump|admin)?|sshpass)\b([^\n|;&]*?[ \t])-p([ \t]*)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&]+)"#), short_password),
             // `ENV DB_PASSWORD hunter2...`, `DD_API_KEY 0123...`: a long value after a space.
             Rule::Custom(re(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)([ \t]+)([A-Za-z0-9+/=_\-]{16,})"), spaced),
+            // LENA-401: a secret named in a sentence just before its value
+            // ("the staging password is V", "api key V", "token: V").
+            Rule::Custom(
+                re(r#"(?i)\b((?:pass(?:word|wd|phrase)|token|secret|api[ \-_]?key|access[ \-_]?key|credentials?)[ \t]*(?:[ \t]+(?:for|of|on|to|in)[ \t]+(?:the[ \t]+|our[ \t]+|my[ \t]+)?[\w.\-]+(?:[ \t]+[\w.\-]+)?)?(?:[ \t]*[:=][ \t]*|[ \t]+(?:is|was|are|will[ \t]+be|should[ \t]+be|to)[ \t]+|[ \t]+))(\S+)"#),
+                prose_secret,
+            ),
             Rule::Custom(
                 re(r#"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<q>(?:\\?["'])?)(?P<sep>[ \t]*(?:=>|:=|[:=])[ \t]*)(?P<val>\\"[^"\\\n]*\\"|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\s"'`,;&\\]+)"#),
                 assignment,
@@ -131,6 +142,11 @@ fn worth_a_look() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ|pypi-|hv[sbr]\.|shp|sq0|lin_|PMAK-|NR..-|glsa_|glc_|sntry|dp\.|dapi|sbp_|ATATT|pul-|atlasv1|mysql|mariadb").unwrap())
 }
+
+/// What a session is told when a prompt held a secret (LENA-401): the
+/// prompt is recorded, with the secret replaced, so "I did not save it" is
+/// not true of the prompt, and a secret in no shape redaction knows is kept.
+pub const NOTICE: &str = "ChloeCtx records every prompt of this session in the project's memory. A secret in this one was replaced by a [REDACTED:...] marker first; a secret in a shape it does not know would be kept as typed, so do not tell the user that nothing they typed was saved, and tell them that memory_forget deletes a record.";
 
 /// The marker that replaces a secret of `kind`.
 pub fn marker(kind: &str) -> String {
@@ -280,6 +296,47 @@ fn assignment(c: &Captures) -> String {
 fn assignments(text: &str) -> String {
     let Some(Rule::Custom(re, f)) = rules().last() else { unreachable!("the assignments rule is the last") };
     re.replace_all(text, |c: &Captures| f(c)).into_owned()
+}
+
+/// A secret named in a sentence (LENA-401): the word for it, then its value
+/// after "is", a colon or just a space. The value must look like one (a
+/// letter and a digit, no path, date or URL), so that "the password reset
+/// page", "the token is invalid" and "token expires 2026-12-01" keep their
+/// words.
+fn prose_secret(c: &Captures) -> String {
+    let (head, word) = (&c[1], &c[2]);
+    let lead_len = word.len() - word.trim_start_matches(['"', '\'', '`']).len();
+    let rest = &word[lead_len..];
+    let core_len = rest.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', '"', '\'', '`']).len();
+    let core = &rest[..core_len];
+    let looks_like_a_date = {
+        let b = core.as_bytes();
+        b.len() >= 8 && b[..4].iter().all(u8::is_ascii_digit) && b[4] == b'-'
+    };
+    if core.len() < 8
+        || is_marker(core)
+        || !has_digit(core)
+        || !core.chars().any(|ch| ch.is_ascii_alphabetic())
+        || looks_like_a_date
+        || core.contains(['/', '(', ')', '[', ']', '{', '}', '<', '>', '$', '\\', '@'])
+        || core.contains("://")
+        || core.starts_with(['%', '-'])
+    {
+        return c[0].to_string();
+    }
+    let lower = head.to_ascii_lowercase();
+    let kind = if lower.starts_with("pass") {
+        "password"
+    } else if lower.starts_with("token") {
+        "token"
+    } else if lower.starts_with("secret") {
+        "secret"
+    } else if lower.starts_with("cred") {
+        "credential"
+    } else {
+        "key"
+    };
+    format!("{head}{}{}{}", &word[..lead_len], marker(kind), &word[lead_len + core_len..])
 }
 
 /// `--password=value`, `--token value` and their kin on a command line
@@ -865,6 +922,43 @@ mod tests {
         // What only ends like one, or names something else, still is not.
         for name in ["PASS", "PASS_2", "BYPASS", "COMPASS", "PASS_THROUGH", "token_url", "PASSWORD_MIN_LENGTH", "max_tokens_2", "primary_key_2", "TOKEN_COUNT", "key2", "v2", "PWD", "PWD_OLD"] {
             assert_eq!(secret_name(name), None, "{name}");
+        }
+    }
+
+    /// LENA-401, LENA-10, LENA-302: a secret named in a sentence.
+    #[test]
+    fn a_secret_named_in_prose_is_redacted() {
+        let v = "tangerine-lena-prose-77";
+        for text in [
+            format!("Also note: we deploy only on Tuesdays, and the staging password is {v} (in case you need it)."),
+            format!("password: {v}"),
+            format!("the token is {v}."),
+            format!("my api key {v}, thanks"),
+            format!("The admin password for staging was \"{v}\"."),
+            format!("secret = {v}"),
+        ] {
+            let r = redact(&text);
+            assert!(!r.contains(v), "{text:?} -> {r:?}");
+            assert!(r.contains("[REDACTED:"), "{r:?}");
+            assert_eq!(redact(&r), r, "not idempotent");
+        }
+        let r = redact(&format!("the staging password is {v} (in case you need it)."));
+        assert_eq!(r, "the staging password is [REDACTED:password] (in case you need it).");
+    }
+
+    #[test]
+    fn prose_about_secrets_keeps_its_words() {
+        for text in [
+            "Fix the password reset page so the token is shown once.",
+            "The token is invalid after a restart, so the password is required again.",
+            "token expires 2026-12-01T10:00:00Z and the secret scanning job runs nightly",
+            "the api key rotation is tracked in INC-1234",
+            "set the password to a long passphrase",
+            "see the token at https://example.com/auth/token2",
+            "the secret is in ~/keys/prod2.pem",
+            "password hashing uses bcrypt cost 12",
+        ] {
+            kept(text);
         }
     }
 }

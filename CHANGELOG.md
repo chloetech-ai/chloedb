@@ -11,6 +11,21 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx believes less of what it reads.** A secret named just before
+  its value in a sentence ("the staging password is …", "password: …",
+  "api key …") is redacted as `KEY=value` is, and a session whose prompt
+  held one is told the prompt is recorded with it replaced (LENA-401). A
+  line of a recalled record that begins like a record's header is shown
+  escaped, so a file the agent read cannot forge a decision of the user's
+  (LENA-402). Consolidation checks a merged note against the notes it
+  replaces and keeps them when it turns one around, adds or drops a "not",
+  loses or makes up a number or path, or merges notes about the old and
+  the new version of a thing or about different files; a merge with an
+  agent's note in it is the agent's (JONAH-401). A decision the user made
+  on another branch stays with the decisions, whole, labelled for what it
+  says of files only, and a file that worktree never had is "not in this
+  worktree" (ANA-403). A fact or decision an agent kept as its own is
+  marked "said by the assistant, not the user" in the briefing (LENA-411).
 - **Experiments: an experiment on a real site is one object, with its
   evidence in steps, a decision rule and a detailed report**
   (`chloedb-experiments`, `chloedb-hn`, demos). The home lists
@@ -170,6 +185,11 @@ changes collect under "Unreleased".
   clearest places near a town (for the stars, a picnic or a picture),
   each place's sky on its page, and a fire watch that says when the night
   over it is clear.
+- **Earth explorer: Future climate.** Every place of California and Chile
+  in 2071-2100 if emissions keep rising (SSP3-7.0, five models downscaled
+  by CHELSA 2.1): its hottest month, coldest nights, rain and climate
+  class now and later, a map of the change, and where its future climate
+  can be visited today, found by the distance between climate vectors.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,

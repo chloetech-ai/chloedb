@@ -1005,7 +1005,11 @@ impl Daemon {
                 // (state.json) and in the context of the turn's records.
                 // A harness's envelopes around the prompt go first: recalled
                 // later, they read as the conversation ([`crate::envelope`]).
-                let prompt = crate::redact::redact(&crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or("")));
+                let unredacted = crate::envelope::clean(p.get("prompt").and_then(|v| v.as_str()).unwrap_or(""));
+                let prompt = crate::redact::redact(&unredacted);
+                // Said when a secret was in the prompt, so that Claude does
+                // not tell the user it saved nothing (LENA-401).
+                let redacted = prompt != unredacted;
                 // What the user asked not to keep goes before anything is
                 // written: the state, the turn's records, its context, its
                 // card and what the distiller reads ([`crate::private`]).
@@ -1098,6 +1102,10 @@ impl Daemon {
                 // say what was kept (WEI-301, JONAH-301).
                 if cut.any() {
                     let n = crate::private::notice(&cut);
+                    text = if text.is_empty() { n } else { format!("{n}\n\n{text}") };
+                }
+                if redacted {
+                    let n = crate::redact::NOTICE.to_string();
                     text = if text.is_empty() { n } else { format!("{n}\n\n{text}") };
                 }
                 Ok((
@@ -1605,7 +1613,7 @@ impl Daemon {
         match crate::consolidate::run(&self.store, &self.cfg.consolidate, &self.distill_cfg(), now()) {
             Ok(r) => {
                 let j = json!({"ts": now(), "event": "consolidate", "live_before": r.live_before, "groups": r.groups, "replaced": r.replaced,
-                    "written": r.written, "cost_usd": r.cost_usd, "tokens": r.usage.json(), "errors": r.errors, "ms": t0.elapsed().as_millis() as u64});
+                    "written": r.written, "rejected": r.rejected, "cost_usd": r.cost_usd, "tokens": r.usage.json(), "errors": r.errors, "ms": t0.elapsed().as_millis() as u64});
                 self.log(&j);
                 j
             }
@@ -2855,6 +2863,10 @@ impl Daemon {
             replaced.as_ref().map(|o| format!(", replacing {o}")).unwrap_or_default(), place.display());
         if !twins.is_empty() {
             said += &format!(" It replaces the copy this session kept already ({}).", twins.join(", "));
+        }
+        if kind != Kind::Preference && kind.is_knowledge() && !by.is_user() {
+            // LENA-411: an agent's fact is shown as its own, not the user's.
+            said += " It is kept as the assistant's claim, not the user's: later sessions see it marked so.";
         }
         if kind == Kind::Preference && !by.is_user() {
             said += if unconfirmed {
