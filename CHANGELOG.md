@@ -11,6 +11,11 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **`chloectx remember preference` says it is kept for this project only.**
+  Memory is per project, so a preference stored there is not recalled in
+  another repository; the command now prints a note naming
+  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
+  `chloectx remember --help` and the ChloeCtx page say the same.
 - **Earth explorer: What happened here.** A place's page is now a story: a
   headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
   since 1878, named GOES fires, FIRMS years, places nearby that changed)
