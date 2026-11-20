@@ -359,6 +359,9 @@ pub struct Opened {
 /// directory?, models?, threads?}) or "from_parquet" ({parquet_path, path,
 /// table?, schema?, key?, blobs_base64?, directory?, models?, threads?}).
 fn open_db(op: &str, a: &Args) -> Result<Opened> {
+    // A schema that names a model ChloeDB knows works on a new machine:
+    // the model is downloaded on first use (CHLOEDB_FETCH_MODELS=0 stops it).
+    chloedb::fetch::set_auto_fetch(true);
     let threads = threads_or_cores(a.uint("threads")?)?;
     let models = models_of(a)?;
     let path = a.need_path("path")?;

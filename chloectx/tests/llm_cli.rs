@@ -11,6 +11,17 @@ use std::time::{Duration, Instant};
 
 use chloectx::llm::{complete, Cli};
 
+/// One call to a fake CLI at a time. On macOS a pipe is made and then
+/// marked close-on-exec in two steps, so a child spawned by another test's
+/// thread in between inherits this test's end of the pipe and holds it
+/// open: the reader waits for an end of file that comes only when that
+/// child exits (the hanging one's `sleep 30` outlives the timeout of a
+/// call that had already exited).
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// ChloeCtx's home for this test binary (set once, before any call reads it).
 fn home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
@@ -43,6 +54,7 @@ fn cli(exe: &Path, timeout: Duration) -> Cli<'_> {
 /// shared, predictable one in /tmp.
 #[test]
 fn the_model_runs_in_a_private_directory() {
+    let _one = one_at_a_time();
     home();
     let t = tempfile::tempdir().unwrap();
     let exe = fake_cli(t.path(), 10);
@@ -70,6 +82,7 @@ fn the_model_runs_in_a_private_directory() {
 /// rather than blocking the CLI on its write until the timeout kills it.
 #[test]
 fn a_long_answer_is_read_while_the_cli_writes_it() {
+    let _one = one_at_a_time();
     home();
     let t = tempfile::tempdir().unwrap();
     let exe = fake_cli(t.path(), 300_000);
@@ -82,10 +95,11 @@ fn a_long_answer_is_read_while_the_cli_writes_it() {
 /// The timeout still holds for a CLI that never answers.
 #[test]
 fn a_cli_that_hangs_times_out() {
+    let _one = one_at_a_time();
     home();
     let t = tempfile::tempdir().unwrap();
     let exe = t.path().join("claude");
-    std::fs::write(&exe, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::write(&exe, "#!/bin/sh\nexec sleep 30\n").unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     let t0 = Instant::now();
     let e = complete(&cli(&exe, Duration::from_secs(1)), "s", "p").unwrap_err();
@@ -98,6 +112,7 @@ fn a_cli_that_hangs_times_out() {
 /// and how it exited, not only "EOF while parsing".
 #[test]
 fn a_failed_call_keeps_what_the_cli_said() {
+    let _one = one_at_a_time();
     home();
     let t = tempfile::tempdir().unwrap();
     let exe = t.path().join("claude");

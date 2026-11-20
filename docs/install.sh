@@ -88,7 +88,7 @@ Options:
                 netops (chloedb-netops, network operations) by name
   -h, --help    this text
 
-Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.8 sh):
+Settings (after the pipe: curl ... | CHLOEDB_VERSION=0.3.9 sh):
   CHLOEDB_VERSION       the version to install; the newest release by default
   CHLOEDB_WITH          the programs --with names, when it is not given
   CHLOEDB_INSTALL_DIR   where to put the programs (default ~/.local/bin)
@@ -260,7 +260,7 @@ if [ -z "$VERSION" ]; then
   fi
   if [ -z "$VERSION" ]; then
     printf 'chloedb install: could not tell which chloedb-server release is the newest:%s\n' "$tried" >&2
-    printf 'Name the version after the pipe (the releases are https://github.com/%s/releases, chloedb-server-v<version>; 0.3.8 was the newest when this script was written):\n' "$REPO" >&2
+    printf 'Name the version after the pipe (the releases are https://github.com/%s/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):\n' "$REPO" >&2
     printf '  %s\n' "$(again '<version>')" >&2
     exit 1
   fi

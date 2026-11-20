@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-hn"
-version = "0.3.8"
+version = "0.3.9"
 edition = "2021"
 license = "Apache-2.0"
 description = "Hacker News on ChloeDB: every story and comment searched by words and meaning, with typo tolerance, facets, threads, trends, experts, the reply graph and cited answers, kept live from the HN API"

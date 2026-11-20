@@ -138,12 +138,12 @@ impl NotOpen {
         if let Some(why) = &self.why {
             let why = why.strip_prefix("schema error: ").unwrap_or(why);
             return Error::Schema(format!(
-                "{}.{} is embedded by model {}, which did not open here: {why}. The row would be written without its vector, which similarity() never finds: give the vector in the write, use a model this build runs (potion-retrieval-32M runs in every build), or, to write rows without vectors on purpose and fill them in later with embed_backfill where the model opens, call Db::set_embed_later(true) (db.set_embed_later(True) in Python)",
+                "{}.{} is embedded by model {}, which did not open here: {why}. The row would be written without its vector, which similarity() never finds: give the vector in the write, use a model this build runs (potion-retrieval-32M runs in every build), or, to write rows without vectors on purpose and fill them in later with embed_backfill where the model opens, turn on embed-later (db.set_embed_later(True) in Python, db.setEmbedLater(true) in Java, Db::set_embed_later(true) in Rust)",
                 self.table, self.field, self.model
             ));
         }
         Error::Schema(format!(
-            "{}.{} is embedded by model {}, which is not open: the row would be written without its vector, which similarity() never finds. Open the model (Db::open_embedders with its models directory; chloedb.open(..., models=DIR) in Python; chloedb-server fetches it), give the vector in the write, or, to write rows without vectors on purpose and fill them in later with embed_backfill, call Db::set_embed_later(true) (db.set_embed_later(True) in Python)",
+            "{}.{} is embedded by model {}, which is not open: the row would be written without its vector, which similarity() never finds. Open the model (Db::open_embedders with its models directory; chloedb.open(..., models=DIR) in Python; chloedb-server fetches it), give the vector in the write, or, to write rows without vectors on purpose and fill them in later with embed_backfill, turn on embed-later (db.set_embed_later(True) in Python, db.setEmbedLater(true) in Java, Db::set_embed_later(true) in Rust)",
             self.table, self.field, self.model
         ))
     }
@@ -356,6 +356,7 @@ pub const KNOWN_MODELS: &[(&str, &str, &str)] = &[
     ("bge-small-en-v1.5", "BAAI/bge-small-en-v1.5", "BERT, 384 dimensions (feature bert)"),
     ("snowflake-arctic-embed-m-v1.5", "Snowflake/snowflake-arctic-embed-m-v1.5", "BERT, 768 dimensions (feature bert)"),
     ("siglip-base-patch16-224", "google/siglip-base-patch16-224", "SigLIP, images and text, 768 dimensions (feature vision)"),
+    ("siglip-so400m-patch14-384", "google/siglip-so400m-patch14-384", "SigLIP so400m, images and text, 1152 dimensions, 384-pixel images, 3.5 GB (feature vision): the model of Major TOM's Sentinel-2 vectors"),
     ("clap-htsat-unfused", "laion/clap-htsat-unfused", "CLAP, sound and text, 512 dimensions (feature audio)"),
     ("answerai-colbert-small-v1", "answerdotai/answerai-colbert-small-v1", "ColBERT, a 96-dimension vector a token, for a multi-vector field (feature bert)"),
 ];
@@ -369,7 +370,7 @@ pub fn known_dim(model: &str) -> Option<usize> {
     if let Some(k) = crate::hosted::known_model(model) {
         return Some(k.dim);
     }
-    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
+    let dims = [("potion-retrieval-32M", 512), ("potion-base-8M", 256), ("potion-retrieval-32M-int8", 512), ("potion-base-8M-int8", 256), ("bge-small-en-v1.5", 384), ("snowflake-arctic-embed-m-v1.5", 768), ("siglip-base-patch16-224", 768), ("siglip-so400m-patch14-384", 1152), ("clap-htsat-unfused", 512), ("answerai-colbert-small-v1", 96)];
     dims.iter().find(|(m, _)| m.eq_ignore_ascii_case(model)).map(|&(_, d)| d)
 }
 
@@ -625,6 +626,10 @@ pub fn fingerprint(model: &str, models: &Path) -> Option<String> {
 pub fn stamp_fingerprints(schema: &mut crate::schema::Schema, models: &Path) {
     for f in schema.fields.iter_mut() {
         if let Some(e) = f.embed.as_mut().filter(|e| e.fingerprint.is_none()) {
+            // Where downloads on first use are on (the language packages),
+            // the model comes before the table records what it is; a
+            // download that fails is said again when the model is opened.
+            let _ = crate::fetch::ensure(&e.model, models);
             e.fingerprint = fingerprint(&e.model, models);
         }
     }
@@ -683,7 +688,7 @@ pub fn open_for(model: &str, dim: Option<usize>, models: &Path) -> Result<Arc<dy
         return Err(model_err(format!("model {model} is an ONNX model: build with the `onnx` feature")));
     }
     if !has_weights {
-        return Err(model_err(format!("model {model}: no {} (fetch it first)", dir.join("model.safetensors").display())));
+        return Err(model_err(format!("model {model}: no {} (fetch it first: chloedb-server fetch-model {model}; the Python, JavaScript and Java packages download a model ChloeDB knows on first use)", dir.join("model.safetensors").display())));
     }
     let config: serde_json::Value = std::fs::read_to_string(dir.join("config.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     if config["model_type"] == "bert" && dir.join("artifact.metadata").exists() {

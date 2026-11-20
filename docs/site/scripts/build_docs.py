@@ -201,6 +201,7 @@ NAV = [
         ("github", "GitHub explorer", "docs/chloedb/github.md", "reference"),
         ("sound", "Sound Explorer", "docs/chloedb/sound.md", "reference"),
         ("backbone", "Backbone explorer", "docs/chloedb/backbone.md", "reference"),
+        ("earth", "Earth explorer", "docs/chloedb/earth.md", "reference"),
         ("app-engine", "App engine (prototype)", "docs/chloedb/apps.md", "reference"),
     ]),
 ]

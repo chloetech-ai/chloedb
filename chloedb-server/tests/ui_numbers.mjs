@@ -498,6 +498,37 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.equal(rel.fmtP(0.0421), "p = 0.042");
 }
 
+// PRIYA-401: a binary qrels file (BEIR's 0 and 1) is read as relevant = good,
+// so "good in top k" and MRR agree with trec_eval's success and recip_rank.
+{
+  const rel = await import(new URL("views/relevance.js", app));
+  const bin = rel.parseQrels("q1\td1\t1\nq1\td2\t0\n");
+  assert.equal(bin.binary, true);
+  assert.deepEqual(bin.qrels, { q1: { d1: 2, d2: 0 } });
+  assert.equal(rel.parseQrels("q1\td1\t1\nq1\td2\t2\n").binary, false);
+  assert.deepEqual(rel.parseQrels("q1\td1\t1\nq1\td2\t2\n").qrels, { q1: { d1: 1, d2: 2 } });
+  // The relevant doc at rank 2: reciprocal rank 0.5, a good row in the top 10, nDCG as with the raw 1.
+  const m = rel.measures(["x", "d1"], bin.qrels.q1, 10, "linear");
+  assert.equal(m.mrr, 0.5); assert.equal(m.precision, 0.1); assert.equal(m.success, 1);
+  assert.equal(rel.measures(["x", "y"], bin.qrels.q1, 10, "linear").success, 0);
+  assert.ok(Math.abs(m.ndcg - rel.measures(["x", "d1"], { d1: 1, d2: 0 }, 10, "linear").ndcg) < 1e-12);
+  assert.ok(Math.abs(m.ndcg - 1 / Math.log2(3)) < 1e-12);
+}
+
+// NADIA-403: the recsys eval's nDCG counts every request, 0 for a miss.
+{
+  const rx = await import(new URL("views/recsys.js", app));
+  const row = (key, position, label) => ({ row_key: key, position, label, shown: true });
+  const miss = rx.requestMeasures([row("a", 0, 0), row("b", 1, 0)], 10);
+  assert.equal(miss.ndcg, 0); assert.equal(miss.hit, 0);
+  const hit = rx.requestMeasures([row("a", 0, 0), row("b", 1, 1)], 10);
+  assert.ok(Math.abs(hit.ndcg - 1 / Math.log2(3)) < 1e-12);
+  // A variant that hits more users cannot show a lower mean nDCG for it: 1 hit of 2 vs 2 hits of 2 at rank 2.
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  assert.ok(mean([hit.ndcg, miss.ndcg]) < mean([hit.ndcg, hit.ndcg]));
+  assert.ok(mean([hit.ndcg, miss.ndcg]) <= 0.5);
+}
+
 // GRACE-301: the answer's header says how many rows match only when it
 // was counted (the builder's COUNT of the same WHERE); the executor's
 // filter_docs counts the rows of the segments a LIMIT let it look at, so
