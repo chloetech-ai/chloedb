@@ -492,6 +492,11 @@ pub struct ExecOptions {
     /// facets and counts return every group, and fused scores return every
     /// candidate with each input's raw score ([`RankParts`]).
     pub shard: bool,
+    /// A shard that holds every row of its tables, the only shard of its
+    /// cluster: a graph walk runs here as on one database, where another
+    /// shard refuses one whose result the coordinator did not give
+    /// ([`crate::query::logical::Seeds::Given`]).
+    pub whole: bool,
     /// Threads a query may use to search its segments in parallel (1: the
     /// calling thread only): the calling thread and up to `threads - 1` of
     /// the process's shared pool ([`Pool::global`](super::pool::Pool::global)),
@@ -610,6 +615,7 @@ impl Default for ExecOptions {
             expansions: None,
             filter_cache: None,
             shard: false,
+            whole: false,
             threads: 1,
             fan_out_rows: FAN_OUT_ROWS,
             deadline: None,
@@ -1911,7 +1917,7 @@ impl<'a> Executor<'a> {
         let q = settled.as_ref().unwrap_or(q);
         self.refuse(q)?;
         let columns: Vec<String> = q.projection.iter().map(|(n, _)| n.clone()).collect();
-        if self.opts.shard && has_graphs(q) {
+        if self.opts.shard && !self.opts.whole && !shard_graphs(q, self.schema) {
             return Err(err("graph queries (REACHABLE, PATH, hops(), ppr) run on one database, not split across shards: a row's edges point at rows other shards hold"));
         }
         let m = self.mark();
@@ -5827,8 +5833,25 @@ pub(crate) fn bm25_leaves<'q>(q: &'q Select, out: &mut Vec<(usize, &'q str, &'q 
     }
 }
 
-fn has_graphs(q: &Select) -> bool {
-    !q.graphs.is_empty()
+/// Whether a shard answers each graph of `q` alone: one whose result its
+/// coordinator found and gives ([`Seeds::Given`]), or one hop against an
+/// EDGES field from keys ([`one_hop_in`]), which every shard answers for
+/// the rows it holds whatever shard holds the keys' own rows.
+fn shard_graphs(q: &Select, schema: &Schema) -> bool {
+    q.graphs.iter().all(|g| matches!(g.seeds, Seeds::Given(_)) || one_hop_in(g, schema))
+}
+
+/// A walk of one hop against an EDGES field's edges from keys
+/// (`REACHABLE(f, keys, hops => 1, dir => 'in')`): the rows whose edges
+/// point at the keys (and with `min_hops => 0` the keys' own rows), found
+/// by the keys in each segment's reverse index, so a row whose key is not
+/// held here still has its in-edges found here. A coordinator reads a
+/// walk's in-edges with it, and a join along links (`b.cites = a.id`)
+/// restricts its right side with it.
+pub fn one_hop_in(g: &crate::query::logical::GraphQuery, schema: &Schema) -> bool {
+    g.edges.is_none()
+        && schema.fields.get(g.field).is_some_and(|f| f.ty == FieldType::Edges)
+        && g.dir == crate::query::logical::Direction::In && matches!(g.kind, crate::query::logical::GraphKind::Reach { min_hops: 0 | 1, max_hops: 1 }) && matches!(g.seeds, Seeds::Keys(_))
 }
 
 /// How `bm25` reads its text (`syntax => ...`): with its operators

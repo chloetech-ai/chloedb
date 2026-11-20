@@ -8,13 +8,13 @@ A coordinator over shards ([sharding](server.md#sharding-one-coordinator-many-sh
 
 | what | on one server | on a cluster | instead |
 |---|---|---|---|
-| Graph queries: `REACHABLE`, `PATH`, `hops()`, `ppr()` | run | refused: a row's edges point at rows other shards hold | run them on a server that holds the whole table, or walk from the application a round of reads by key per hop ([graphs](graphs.md#on-a-cluster)) |
+| Graph walks over a `VECTOR` column (`REACHABLE(emb, ...)`, `ppr(emb, ...)` over the nearest-neighbour graph) | run | refused: the graph is each shard's own index | walk an `EDGES` column or an edge table, or run it on a server that holds the whole table |
 | `ALTER TABLE ... DROP COLUMN` | runs | refused: the coordinator's plans name columns by place | add a column and stop reading the old one |
 | `INSERT ... ON CONFLICT DO UPDATE` whose rows go to several shards | runs | refused (400) | one statement per row or per shard, or `INSERT OR REPLACE` |
 | The relevance autopilot (`POST /v1/relevance/autopilot`) | runs | refused: it replays queries on one snapshot | run it on a server with a copy of the tables |
 | `/v1/export` of the database as SQLite (`format=sqlite`) | the admin's | refused: a coordinator holds no files | `format=parquet`, `jsonl`, `csv` or `arrow` export one table's rows from a cluster |
 | `EXPLAIN` through `/v1/sql` | refused on both | | `POST /v1/explain` |
-| Recommenders: `CREATE RECOMMENDER`, `recommend(...)` ([query language](query-language.md#recommenders-create-recommender-and-recommend)) | run | refused: a recommender counts each user's events in order, and they are spread over the shards | run it on a server that holds the events table; or keep counts in an [edge table](query-language.md#edge-tables) or [next-items table](next-items.md) and rank with `ranked(...)` of what you read |
+| `CREATE RECOMMENDER` over an events table that is not placed by its user column, on a coordinator of several shards | runs | refused: each user's events are counted in order, on one shard | create the events table with `OPTIONS(shard_by = '<user column>')` and load its events again ([below](#graphs-and-recommenders)) |
 
 ## Different on a cluster
 
@@ -31,6 +31,14 @@ A coordinator over shards ([sharding](server.md#sharding-one-coordinator-many-sh
 - **Rank-log export and interleaving credit** (`/v1/rank_log/export`, `/v1/rank_log/interleaving`) run their queries over every shard, each read whole by a scroll, rather than from one snapshot: a request logged during the export may be left out or come with part of its events.
 - **Conditional writes** (`if_seq_no`, `seq_no()`) need every shard to number its writes alike (one replica, or a primary its replicas follow), and answers carry each shard's number (`seq_nos`), not one.
 - **Write receipts** count per shard (`receipt.per_shard`); a shard from before protocol 21 does not count, and its counts are `null`. A strict write goes only to shards of protocol 21.
+
+## Graphs and recommenders
+
+- **Graph walks** (`REACHABLE`, `PATH`, `hops()`, `ppr()`) over an `EDGES` column or an [edge table](query-language.md#edge-tables) run on the coordinator: it runs the same walk one database runs, over what it has read so far, and reads what the walk is missing in one round of reads by key over every shard (keys in batches of 2,000, all at once), then walks again, until nothing is missing. `REACHABLE` and `hops()` take about one round per hop, `PATH` one per hop from either end, `ppr()` one each time its pushes reach rows it has not read. Each shard is then given the walk's answer (hops, place on the path, score) for its own rows, and the rest of the query (filters, `bm25`, `GROUP BY`, joins) runs as for any query. The plan says `walked by the coordinator in N rounds`, and the answer is one database's, but for two things: `PATH` may pick another path of the same length, and `ppr()` scores may differ in the last digits, since it pushes rows in the order it met them (more when it adapts its own `eps`). A walk is refused past `max_nodes` rows, as on one database, and after 256 rounds.
+- **A coordinator of one shard** that holds every slot (no move in progress) sends graph queries to that shard, which walks them itself.
+- **Joins along links** (`JOIN items b ON b.cooc = a.id`, rows that point at a key) run on a cluster too: each shard answers one hop in by key from its own rows' edges, whatever shard the key's row is on.
+- **Recommenders** run when the events table is placed by its user column (`OPTIONS(shard_by = 'usr')`). `CREATE RECOMMENDER` runs on every shard, and each shard counts the events it holds, as they are written, in its own rows of the counts table (keys that end with its slot map's epoch and shard). `recommend(...)` reads the counts summed over the shards (`sum(next)`, `sum(co)` and `sum(n)` grouped by item, and every row of the user's), ranks as one database does, and runs the query with each call as `ranked(...)` of the keys; the plan says `counts summed over the shards`. So a counts table read directly on a cluster holds each shard's part, not the totals. After a move of slots, the shards that take a user's events count them in new rows of their own, and a user's recent events are those of all their rows; `CREATE OR REPLACE RECOMMENDER` counts everything again.
+- **Kept whole on every shard:** not yet. An edge table is placed by its key like any table, so a walk over it reads by key each round. Keeping a small edge table whole on every shard would let each shard walk it alone; that is next.
 
 ## A table placed by a column (`shard_by`)
 

@@ -282,7 +282,7 @@ impl Lower<'_> {
 
     fn graph(&self, g: &GraphQuery) -> Graph {
         let (seeds, weights) = match &g.seeds {
-            Seeds::Weighted(ws) => (Expr::Lit(Value::List(ws.iter().map(|(k, _)| k.clone()).collect())), ws.iter().map(|(_, w)| *w).collect()),
+            Seeds::Weighted(ws) | Seeds::Given(ws) => (Expr::Lit(Value::List(ws.iter().map(|(k, _)| k.clone()).collect())), ws.iter().map(|(_, w)| *w).collect()),
             s => (self.seeds(s), Vec::new()),
         };
         Graph {
@@ -301,13 +301,14 @@ impl Lower<'_> {
             max_nodes: g.max_nodes as u64,
             k: g.k as u64,
             min_sim: (g.min_sim != f64::NEG_INFINITY).then_some(g.min_sim),
+            given: matches!(g.seeds, Seeds::Given(_)),
         }
     }
 
     fn seeds(&self, s: &Seeds) -> Expr {
         match s {
             Seeds::Keys(keys) => Expr::Lit(Value::List(keys.clone())),
-            Seeds::Weighted(ws) => Expr::Lit(Value::List(ws.iter().map(|(k, _)| k.clone()).collect())),
+            Seeds::Weighted(ws) | Seeds::Given(ws) => Expr::Lit(Value::List(ws.iter().map(|(k, _)| k.clone()).collect())),
             Seeds::Query(q) => Expr::Subquery(Box::new(Lower { schema: self.schema, graphs: &q.graphs }.select(q))),
             Seeds::Plan(e) => (**e).clone(),
         }

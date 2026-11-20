@@ -270,6 +270,9 @@ pub struct Db {
     /// Held while a `CREATE FUNCTION` or `DROP FUNCTION` reads the
     /// versions and writes the next one.
     function_ddl: std::sync::Mutex<()>,
+    /// On a shard of a cluster, the part its recommenders' counts are
+    /// kept under ([`crate::query::recommend::Def::part`]).
+    counts_part: std::sync::RwLock<Option<String>>,
     /// The gazetteers of keyword fields query understanding read
     /// ([`crate::query::understand`]), by table, field and analyzer, with
     /// the stamp of the table's snapshot they were read from and when.
@@ -384,6 +387,7 @@ impl Db {
             writes: writes::Writes::default(),
             functions: std::sync::Mutex::new(None),
             function_ddl: std::sync::Mutex::new(()),
+            counts_part: std::sync::RwLock::new(None),
             gazetteers: std::sync::Mutex::new(HashMap::new()),
             gazetteer_reads: std::sync::Mutex::new(HashMap::new()),
             rollups: rollup::Rollups::default(),

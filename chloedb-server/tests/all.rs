@@ -51,6 +51,7 @@ mod funnel;
 mod follow;
 mod from_select;
 mod follow_retries;
+mod graph_bench;
 mod hash_cluster;
 mod hosted_models;
 mod hub;

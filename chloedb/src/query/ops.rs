@@ -1496,6 +1496,7 @@ impl<'a> Ops<'a, '_> {
                 max_nodes: (MAX_ROWS + 1) as u64,
                 k: 10,
                 min_sim: None,
+                given: false,
             })));
         }
         let vals = equal_to(Some(schema), Some(*f as usize), vals)?;

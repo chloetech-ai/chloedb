@@ -1,0 +1,173 @@
+{
+  "machine": {
+    "cores": 4,
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz"
+  },
+  "results": {
+    "FROM recommend(...)": {
+      "coordinator, 1 shard": {
+        "p50_ms": 9.75,
+        "p90_ms": 12.98,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 15.59,
+        "p90_ms": 17.46,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 18.47,
+        "p90_ms": 20.63,
+        "runs": 25
+      }
+    },
+    "PATH, both ways": {
+      "coordinator, 1 shard": {
+        "p50_ms": 0.96,
+        "p90_ms": 1.1,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 8.97,
+        "p90_ms": 12.93,
+        "rounds_p50": 6,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 0.2,
+        "p90_ms": 0.33,
+        "runs": 25
+      }
+    },
+    "REACHABLE 1 hop, COUNT": {
+      "coordinator, 1 shard": {
+        "p50_ms": 0.81,
+        "p90_ms": 0.99,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 2.5,
+        "p90_ms": 2.92,
+        "rounds_p50": 2,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 0.13,
+        "p90_ms": 0.24,
+        "runs": 25
+      }
+    },
+    "REACHABLE 2 hops, COUNT": {
+      "coordinator, 1 shard": {
+        "p50_ms": 0.93,
+        "p90_ms": 1.17,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 4.26,
+        "p90_ms": 4.61,
+        "rounds_p50": 3,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 0.23,
+        "p90_ms": 0.29,
+        "runs": 25
+      }
+    },
+    "REACHABLE 2 hops, filter and top 10": {
+      "coordinator, 1 shard": {
+        "p50_ms": 1.72,
+        "p90_ms": 1.95,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 4.58,
+        "p90_ms": 5.46,
+        "rounds_p50": 3,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 0.84,
+        "p90_ms": 1.0,
+        "runs": 25
+      }
+    },
+    "REACHABLE 3 hops, COUNT": {
+      "coordinator, 1 shard": {
+        "p50_ms": 0.8,
+        "p90_ms": 0.97,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 6.32,
+        "p90_ms": 7.72,
+        "rounds_p50": 4,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 0.3,
+        "p90_ms": 0.4,
+        "runs": 25
+      }
+    },
+    "application's own walk, 2 hops (reads only)": {
+      "coordinator, 3 shards": {
+        "p50_ms": 2.1,
+        "p90_ms": 2.55,
+        "runs": 25
+      }
+    },
+    "application's own walk, 3 hops (reads only)": {
+      "coordinator, 3 shards": {
+        "p50_ms": 3.49,
+        "p90_ms": 4.02,
+        "runs": 25
+      }
+    },
+    "ppr eps 1e-4, top 10": {
+      "coordinator, 1 shard": {
+        "p50_ms": 2.56,
+        "p90_ms": 3.3,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 82.79,
+        "p90_ms": 96.81,
+        "rounds_p50": 6,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 1.75,
+        "p90_ms": 2.03,
+        "runs": 25
+      }
+    },
+    "recommend, ORDER BY over a table": {
+      "coordinator, 1 shard": {
+        "p50_ms": 10.59,
+        "p90_ms": 12.07,
+        "runs": 25
+      },
+      "coordinator, 3 shards": {
+        "p50_ms": 17.17,
+        "p90_ms": 19.43,
+        "runs": 25
+      },
+      "one database": {
+        "p50_ms": 20.04,
+        "p90_ms": 21.57,
+        "runs": 25
+      }
+    }
+  },
+  "rows": {
+    "events": 24000,
+    "goods": 500,
+    "items": 20000,
+    "links_per_item": 5,
+    "users": 2000
+  },
+  "runs_per_query": 25,
+  "what": "graph walks and recommendations: one database, a coordinator of 3 shards and of 1 shard, all in one process over gRPC on loopback"
+}

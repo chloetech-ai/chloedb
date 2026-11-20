@@ -22,6 +22,7 @@ use crate::query::plan::{FilterMode, VectorStrategy};
 use crate::schema::FieldType;
 use crate::segment::{DocFilter, DocId, DocSet};
 use crate::storage::{key_hash, Snapshot, Updates};
+use crate::value::Value;
 use crate::vector::{SearchParams, VectorReader};
 
 /// The result of one graph computation.
@@ -372,6 +373,12 @@ impl<'a> Executor<'a> {
 
     fn run_graph(&mut self, id: usize, g: &GraphQuery) -> Result<GraphOut> {
         let t0 = Instant::now();
+        if let Seeds::Given(given) = &g.seeds {
+            return Ok(self.given_graph(id, g, given, t0));
+        }
+        if self.opts.shard && super::one_hop_in(g, self.schema) {
+            return self.one_hop_in(id, g, t0);
+        }
         let seeds = self.resolve_seeds(&g.seeds)?;
         let seed_nodes: Vec<Node> = seeds.iter().map(|s| s.0).collect();
         let targets: Vec<Node> = match &g.kind {
@@ -430,7 +437,22 @@ impl<'a> Executor<'a> {
                 ("ppr", r.edges, format!(", {} pushes{lowered}, {:.0}% settled{cut}{short}", r.pushes, 100.0 * r.settled))
             }
         };
-        // PageRank is a score, never a filter: it needs no document sets.
+        let per_seg = self.graph_sets(g, &nodes);
+        self.stats.max_pushes_reached |= capped;
+        self.stats.ppr_unsettled |= unsettled;
+        self.stats.plan.push(format!(
+            "graph {id}: {what} over {}, {} seeds, {} rows, {edges} edges followed{extra}, {:.2} ms",
+            g.edges.as_deref().unwrap_or(&self.schema.fields[g.field].name),
+            seed_nodes.len(),
+            nodes.len(),
+            t0.elapsed().as_secs_f64() * 1e3
+        ));
+        Ok(GraphOut { nodes, per_seg })
+    }
+
+    /// The document sets of a graph's rows, by segment: none for PageRank,
+    /// which is a score, never a filter.
+    fn graph_sets(&self, g: &GraphQuery, nodes: &NodeMap<(u32, f64)>) -> HashMap<usize, Arc<DocSet>> {
         let mut by_seg: HashMap<usize, Vec<DocId>> = HashMap::new();
         for &n in nodes.keys().filter(|_| !matches!(g.kind, GraphKind::Ppr { .. })) {
             let (s, d) = split(n);
@@ -442,12 +464,78 @@ impl<'a> Executor<'a> {
             let n = self.snap.segments()[s].file.n_docs() as u32;
             per_seg.insert(s, Arc::new(DocSet::from_sorted(docs, n)));
         }
-        self.stats.max_pushes_reached |= capped;
-        self.stats.ppr_unsettled |= unsettled;
+        per_seg
+    }
+
+    /// A graph whose result its coordinator found, walking over the
+    /// shards ([`Seeds::Given`]): the rows of the keys given that this
+    /// database holds, with their values, and no walk.
+    fn given_graph(&mut self, id: usize, g: &GraphQuery, given: &[(Value, f64)], t0: Instant) -> GraphOut {
+        let mut nodes: NodeMap<(u32, f64)> = traverse::node_map();
+        for (k, v) in given {
+            let Some((s, d)) = self.snap.lookup(k) else { continue };
+            let x = match g.kind {
+                GraphKind::Ppr { .. } => (u32::MAX, *v),
+                _ => (*v as u32, -*v),
+            };
+            nodes.entry(node(s, d)).or_insert(x);
+        }
+        let per_seg = self.graph_sets(g, &nodes);
         self.stats.plan.push(format!(
-            "graph {id}: {what} over {}, {} seeds, {} rows, {edges} edges followed{extra}, {:.2} ms",
-            g.edges.as_deref().unwrap_or(&self.schema.fields[g.field].name),
-            seed_nodes.len(),
+            "graph {id}: given, {} of its {} rows here, {:.2} ms",
+            nodes.len(),
+            given.len(),
+            t0.elapsed().as_secs_f64() * 1e3
+        ));
+        GraphOut { nodes, per_seg }
+    }
+
+    /// One hop against an EDGES field's edges from keys, on a shard
+    /// ([`super::one_hop_in`]): the rows here whose edges point at a key,
+    /// found by the key in each segment's reverse index, at 1, and with
+    /// `min_hops => 0` the keys' own rows here at 0. A key whose row
+    /// another shard holds has its in-edges here found all the same,
+    /// where a walk on one database starts only from rows it holds.
+    fn one_hop_in(&mut self, id: usize, g: &GraphQuery, t0: Instant) -> Result<GraphOut> {
+        let (Seeds::Keys(keys), GraphKind::Reach { min_hops, .. }) = (&g.seeds, &g.kind) else { return Err(err("one hop against the edges starts from keys")) };
+        let from = self.segs.clone();
+        let adj = self.adjacency(g, &from, None)?;
+        // The keys' own rows here are at 0, as seeds are: a row linking to
+        // a key that is a key itself stays at 0.
+        let mut nodes: NodeMap<(u32, f64)> = traverse::node_map();
+        for k in keys {
+            if let Some((s, d)) = self.snap.lookup(k) {
+                nodes.insert(node(s, d), (0, 0.0));
+            }
+        }
+        let mut edges = 0u64;
+        for k in keys {
+            let Some(key) = crate::storage::KeyRef::of(k) else { continue };
+            let h = key_hash(key);
+            for (s2, r) in adj.segs.iter().enumerate() {
+                let Some(r) = r else { continue };
+                let Some(gr) = r.graph else { continue };
+                for i in gr.in_group(key, h) {
+                    let (src, e) = (gr.in_source(i), gr.in_edge(i));
+                    if r.label_ok(gr, e) && r.live(src) {
+                        edges += 1;
+                        nodes.entry(node(s2, src)).or_insert((1, -1.0));
+                    }
+                }
+            }
+            if nodes.len() > g.max_nodes.saturating_add(keys.len()) {
+                return Err(err(format!("REACHABLE meets more than max_nodes => {} rows within hops => 1: raise max_nodes or lower hops", g.max_nodes)));
+            }
+        }
+        drop(adj);
+        if *min_hops == 1 {
+            nodes.retain(|_, x| x.0 == 1);
+        }
+        let per_seg = self.graph_sets(g, &nodes);
+        self.stats.plan.push(format!(
+            "graph {id}: one hop in by key over {}, {} keys, {} rows, {edges} edges followed, {:.2} ms",
+            self.schema.fields[g.field].name,
+            keys.len(),
             nodes.len(),
             t0.elapsed().as_secs_f64() * 1e3
         ));
@@ -486,6 +574,8 @@ impl<'a> Executor<'a> {
                 hits.into_iter().map(|h| (node(h.seg, h.doc), h.score)).collect()
             }
             Seeds::Plan(_) => return Err(super::unresolved()),
+            // A result, not a start: run_graph took it.
+            Seeds::Given(given) => given.iter().filter_map(|(k, _)| self.snap.lookup(k)).map(|(s, d)| (node(s, d), 1.0)).collect(),
         })
     }
 

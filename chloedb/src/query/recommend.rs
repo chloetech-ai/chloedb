@@ -87,6 +87,14 @@ pub struct Def {
     pub window: usize,
     /// A user's events kept to recommend from (and left out of the answer).
     pub history: usize,
+    /// On a shard of a cluster, the mark its counts' keys end with: the
+    /// shard and the slot map it holds ([`crate::Db::set_counts_part`]).
+    /// Each shard counts the events of the users it holds, under keys no
+    /// other shard writes, so that the sum of every row of a pair is its
+    /// count however the rows move between shards. Not kept: the
+    /// definition is the same function on every shard.
+    #[serde(skip)]
+    pub part: Option<String>,
 }
 
 impl Def {
@@ -269,7 +277,7 @@ pub fn parse_statement(text: &str) -> Result<Option<Statement>> {
             i += 3;
         }
     }
-    let mut def = Def { name, events, user, item, ts, items, vector, window: 3, history: 20 };
+    let mut def = Def { name, events, user, item, ts, items, vector, window: 3, history: 20, part: None };
     if word(i) == "OPTIONS" {
         if toks.get(i + 1) != Some(&Token::LParen) {
             return Err(bad("expected OPTIONS (name = value, ...)"));
@@ -323,12 +331,18 @@ fn time_of(v: &Value) -> Option<i64> {
     }
 }
 
-fn pair_key(a: &str, b: &str) -> String {
-    serde_json::to_string(&("p", a, b)).expect("strings")
+fn pair_key(a: &str, b: &str, part: Option<&str>) -> String {
+    match part {
+        None => serde_json::to_string(&("p", a, b)).expect("strings"),
+        Some(p) => serde_json::to_string(&("p", a, b, p)).expect("strings"),
+    }
 }
 
-fn item_key(i: &str) -> String {
-    serde_json::to_string(&("i", i)).expect("strings")
+fn item_key(i: &str, part: Option<&str>) -> String {
+    match part {
+        None => serde_json::to_string(&("i", i)).expect("strings"),
+        Some(p) => serde_json::to_string(&("i", i, p)).expect("strings"),
+    }
 }
 
 /// The key of a user's row.
@@ -408,11 +422,13 @@ impl Deltas {
         }
     }
 
-    /// Writes them, and the users' rows, into `counts` in transaction `t`.
-    pub fn write(self, t: &mut WriteTxn<'_>, counts: &str, users: HashMap<String, Vec<(i64, String)>>) -> Result<()> {
+    /// Writes them, and the users' rows, into recommender `d`'s counts in
+    /// transaction `t`, under keys of its part ([`Def::part`]).
+    pub fn write(self, t: &mut WriteTxn<'_>, d: &Def, users: HashMap<String, Vec<(i64, String)>>) -> Result<()> {
+        let part = d.part.as_deref();
         let Deltas { names, ids, pairs, n } = self;
         drop(ids);
-        let mut c = t.table(counts)?;
+        let mut c = t.table(&d.counts())?;
         let row = |id: String, kind: &str, src: &str, dst: Option<&str>| {
             vec![Value::Str(id), Value::Str(kind.into()), Value::Str(src.into()), dst.map_or(Value::Null, |d| Value::Str(d.into())), Value::Null, Value::Null, Value::Null, Value::Null]
         };
@@ -423,7 +439,7 @@ impl Deltas {
             // and log a set besides (NADIA-401).
             let changes: Vec<(usize, &str, f64)> = [(4, "next", next), (5, "co", co)].into_iter().filter(|c| c.2 != 0.0).collect();
             let Some(&(_, first, d)) = changes.first() else { continue };
-            let key = Value::Str(pair_key(a, b));
+            let key = Value::Str(pair_key(a, b, part));
             if c.add(&key, first, &Value::Float(d))? {
                 for &(_, field, d) in &changes[1..] {
                     c.add(&key, field, &Value::Float(d))?;
@@ -439,7 +455,7 @@ impl Deltas {
         }
         for (i, d) in n {
             let i = &names[i as usize];
-            c.add_or_insert(row(item_key(i), "item", i, None), "n", &Value::Float(d))?;
+            c.add_or_insert(row(item_key(i, part), "item", i, None), "n", &Value::Float(d))?;
         }
         for (u, recent) in users {
             let mut r = row(user_key(&u), "user", &u, None);
@@ -491,7 +507,7 @@ pub fn feed(t: &mut WriteTxn<'_>, d: &Def) -> Result<()> {
         }
         deltas.place(d, users.get_mut(&u).expect("read"), ts, item);
     }
-    deltas.write(t, &d.counts(), users)
+    deltas.write(t, d, users)
 }
 
 // ---- Reading ----
@@ -597,11 +613,11 @@ impl Reads {
     }
 
     pub fn pairs(d: &Def, field: &str) -> String {
-        format!("SELECT dst, {field} FROM {} WHERE kind = 'pair' AND src = :k AND {field} > 0 ORDER BY {field} DESC LIMIT {DEPTH}", crate::query::sql::ident(&d.counts()))
+        format!("SELECT dst, {field} FROM {} WHERE kind = 'pair' AND src = :k AND {field} > 0 ORDER BY {field} DESC, dst LIMIT {DEPTH}", crate::query::sql::ident(&d.counts()))
     }
 
     pub fn popular(d: &Def, k: usize) -> String {
-        format!("SELECT src, n FROM {} WHERE kind = 'item' AND n > 0 ORDER BY n DESC LIMIT {}", crate::query::sql::ident(&d.counts()), k.min(MAX_K))
+        format!("SELECT src, n FROM {} WHERE kind = 'item' AND n > 0 ORDER BY n DESC, src LIMIT {}", crate::query::sql::ident(&d.counts()), k.min(MAX_K))
     }
 
     /// The items nearest the user's last ones by `maxsim`, or `None` without
@@ -873,7 +889,7 @@ mod tests {
     use super::*;
 
     fn def() -> Def {
-        Def { name: "shop".into(), events: "events".into(), user: "usr".into(), item: "item".into(), ts: "ts".into(), items: None, vector: None, window: 2, history: 4 }
+        Def { name: "shop".into(), events: "events".into(), user: "usr".into(), item: "item".into(), ts: "ts".into(), items: None, vector: None, window: 2, history: 4, part: None }
     }
 
     #[test]

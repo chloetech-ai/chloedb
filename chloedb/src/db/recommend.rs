@@ -31,7 +31,24 @@ impl Db {
     /// The recommenders `CREATE RECOMMENDER` made: the current versions of
     /// the stored functions that hold one.
     pub fn recommenders(&self) -> Result<Vec<Def>> {
-        Ok(self.functions()?.currents().filter(|f| !f.dropped).filter_map(|f| Def::of_body(&f.def.body)).collect())
+        let part = self.counts_part();
+        Ok(self.functions()?.currents().filter(|f| !f.dropped).filter_map(|f| Def::of_body(&f.def.body)).map(|d| Def { part: part.clone(), ..d }).collect())
+    }
+
+    /// The part recommenders' counts are kept under here
+    /// ([`Db::set_counts_part`]).
+    pub fn counts_part(&self) -> Option<String> {
+        self.counts_part.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Keeps the counts the recommenders add from here on under keys that
+    /// end with `part` ([`Def::part`]): a server that is a shard of a
+    /// cluster gives the shard and its slot map, so that no two shards,
+    /// and no shard before and after its slots change, write the same
+    /// row of counts. A coordinator sums a pair's rows over the shards.
+    pub fn set_counts_part(&self, part: Option<String>) {
+        *self.counts_part.write().unwrap_or_else(|e| e.into_inner()) = part;
+        self.refresh_feeds();
     }
 
     /// Gives the storage the recommenders' feeds as the functions now
@@ -64,6 +81,7 @@ impl Db {
 
     fn create_recommender(&self, def: &Def, replace: bool, opts: &ExecOptions) -> Result<ResultSet> {
         let t0 = Instant::now();
+        let def = &Def { part: self.counts_part(), ..def.clone() };
         if let Some(f) = self.functions()?.current(&def.name).filter(|f| !f.dropped) {
             match (Def::of_body(&f.def.body), replace) {
                 (None, _) => return Err(err(format!("function {} exists and is not a recommender: name the recommender otherwise", def.name))),
@@ -113,7 +131,7 @@ impl Db {
                 deltas.place(def, users.entry(u).or_default(), ts, item);
             }
             let n_users = users.len();
-            deltas.write(&mut t, &def.counts(), users)?;
+            deltas.write(&mut t, &def, users)?;
             if let function::Change::Put(f) = &change {
                 t.table(FUNCTIONS)?.upsert(f.to_row())?;
             }
