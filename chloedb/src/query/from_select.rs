@@ -297,13 +297,13 @@ enum Hint {
 }
 
 /// A hint per column of the answer (`columns`) of query `q` over `tables`.
-fn hints(q: &sql::Query, columns: &[String], tables: &[&Schema]) -> Vec<Hint> {
+fn hints<'s>(q: &sql::Query, columns: &[String], tables: &[&'s Schema]) -> Vec<Hint> {
     let mut out = vec![Hint::None; columns.len()];
     let Some(s) = first_select(q) else { return out };
     // The tables it reads, by the name it gives them; a WITH table is not
     // one of the database's.
     let ctes: Vec<String> = q.with.iter().flat_map(|w| w.cte_tables.iter().map(|c| c.alias.name.value.to_ascii_lowercase())).collect();
-    let mut from: Vec<(String, &Schema)> = Vec::new();
+    let mut from: Vec<(String, &'s Schema)> = Vec::new();
     for t in &s.from {
         for f in std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation)) {
             if let sql::TableFactor::Table { name, alias, .. } = f {
@@ -317,7 +317,7 @@ fn hints(q: &sql::Query, columns: &[String], tables: &[&Schema]) -> Vec<Hint> {
             }
         }
     }
-    let field_of = |e: &Expr| -> Option<(&Schema, usize)> {
+    let field_of = |e: &Expr| -> Option<(&'s Schema, usize)> {
         match e {
             Expr::Identifier(id) => {
                 let mut found = from.iter().filter_map(|(_, s)| s.field_index(&id.value).map(|i| (*s, i)));
@@ -401,7 +401,7 @@ fn short_field(schema: &Schema, i: usize) -> J {
 }
 
 /// What expression `e` says of its type.
-fn hint_of(e: &Expr, field_of: &dyn Fn(&Expr) -> Option<(&Schema, usize)>) -> Hint {
+fn hint_of<'s>(e: &Expr, field_of: &dyn Fn(&Expr) -> Option<(&'s Schema, usize)>) -> Hint {
     if let Some((s, i)) = field_of(e) {
         return Hint::Field(short_field(s, i));
     }
@@ -427,7 +427,7 @@ fn cast_type(ty: &sql::DataType) -> Option<&'static str> {
 
 /// The type of an expression from its operands, where they say it: a
 /// number's, a comparison's (BOOL), an aggregate's.
-fn expr_type(e: &Expr, field_of: &dyn Fn(&Expr) -> Option<(&Schema, usize)>) -> Option<&'static str> {
+fn expr_type<'s>(e: &Expr, field_of: &dyn Fn(&Expr) -> Option<(&'s Schema, usize)>) -> Option<&'static str> {
     use sql::BinaryOperator as B;
     let ty = |e: &Expr| expr_type(e, field_of);
     if let Some((s, i)) = field_of(e) {
