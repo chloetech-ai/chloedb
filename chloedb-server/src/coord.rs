@@ -3819,8 +3819,14 @@ impl Coordinator {
                     // deep body needs, and stopped at a deadline.
                     let opts = chloedb::query::exec::ExecOptions { deadline: Some(std::time::Instant::now() + std::time::Duration::from_secs(10)), ..Default::default() };
                     let functions = self.functions();
-                    chloedb::query::budget::guarded(&f.def.body, &opts, |_| chloedb::query::compound::plan_read_calling(&f.def.body, &refs, &params, &profile, &functions))
-                        .map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    // A body that reads a blend is checked when it runs;
+                    // one that gives text where vectors go plans as a call
+                    // would, embedded.
+                    let checked = function::body_to_check(&f.def, &refs, &params, &profile).map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    if let Some((body, params)) = checked {
+                        chloedb::query::budget::guarded(&body, &opts, |_| chloedb::query::compound::plan_read_calling(&body, &refs, &params, &profile, &functions))
+                            .map_err(|e| ApiError::bad(format!("query error: the body of {} does not plan: {e}", f.def.name)))?;
+                    }
                 }
                 Some(Statement::Create { def: f.def.clone(), replace: true, at: Some(f.version) })
             }
