@@ -2997,7 +2997,7 @@ impl<'a> Planner<'a> {
             // A scanned side is restricted to the left's join values.
             for (le, c) in &keys[i] {
                 if !in_memory(i) && !is_edges(table(i), c) && !table(i).and_then(|t| t.field(c)).is_some_and(|f| matches!(f.ty, FieldType::Keyword | FieldType::Int | FieldType::Float)) {
-                    return Err(err(format!("joins compare KEYWORD, INT or FLOAT fields, the key or EDGES links, not {c}")));
+                    return Err(err(join_key_refused(table(i), c)));
                 }
                 // Keys of two kinds never equal (INT and FLOAT compare as numbers).
                 if let (Some(rf), Some((j, lc))) = (table(i).and_then(|t| t.field(c)), sides.column(le)?) {
@@ -5014,6 +5014,22 @@ fn having_with_aliases(h: &Expr, items: &[(String, Expr)]) -> Expr {
     go(&mut h, items);
     h
 }
+
+/// Why column `c` of `table` (the table a join scans, if it is one) is not
+/// a join key, and what to do (SAM-402): a TEXT column, which a Postgres
+/// follower makes of `text` and `varchar`, is split into words for search.
+fn join_key_refused(table: Option<&Schema>, c: &str) -> String {
+    let base = format!("joins compare KEYWORD, INT or FLOAT fields, the key or EDGES links, not {c}");
+    match table.and_then(|t| t.field(c).map(|f| (t, f))) {
+        Some((t, f)) if matches!(f.ty, FieldType::Text { .. }) => format!(
+            "{base}, a TEXT field of {t} (split into words for search; a Postgres follower makes text and varchar columns TEXT): make it a KEYWORD (for a followed table, create {t} with {c} KEYWORD before the follower's first run, docs/chloedb/postgres.md), or join a copy that has one: CREATE TABLE {t}_k AS SELECT *, CAST({c} AS KEYWORD) AS {c}_k FROM {t}",
+            t = t.table
+        ),
+        Some((_, f)) => format!("{base}, a {} field", f.type_name()),
+        None => base,
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

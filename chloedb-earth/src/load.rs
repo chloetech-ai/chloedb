@@ -48,11 +48,13 @@ pub async fn create(db: &Strata) -> Result<Vec<String>> {
             }
         }
     }
-    if have.iter().any(|t| t == "ea_watches") && db.query("SELECT sky FROM ea_watches LIMIT 1", json!({})).await.is_err() {
-        if let Err(e) = db.sql("ALTER TABLE ea_watches ADD COLUMN sky BOOL").await {
-            let m = e.to_string();
-            if !m.contains("exist") && !m.contains("duplicate") {
-                tracing::warn!(error = %m, "ea_watches.sky");
+    for col in ["sky", "change"] {
+        if have.iter().any(|t| t == "ea_watches") && db.query(&format!("SELECT {col} FROM ea_watches LIMIT 1"), json!({})).await.is_err() {
+            if let Err(e) = db.sql(&format!("ALTER TABLE ea_watches ADD COLUMN {col} BOOL")).await {
+                let m = e.to_string();
+                if !m.contains("exist") && !m.contains("duplicate") {
+                    tracing::warn!(error = %m, column = col, "ea_watches");
+                }
             }
         }
     }

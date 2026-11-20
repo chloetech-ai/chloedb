@@ -2030,6 +2030,57 @@ impl Db {
         self.run_on(snap, plan, opts)
     }
 
+    /// Runs `INSERT ... SELECT` or `CREATE TABLE ... AS SELECT` `st`
+    /// ([`crate::query::from_select`]): its SELECT, on a snapshot, with
+    /// no row window; for `CREATE TABLE`, the table its rows make; then
+    /// their write, in one transaction. A table made for rows that cannot
+    /// be written is dropped. The rows written.
+    fn from_select(&self, st: &crate::query::from_select::Statement, params: &Params, opts: &ExecOptions) -> Result<u64> {
+        if st.creates() && self.storage.table(st.table()).is_some() {
+            return match st.if_not_exists() {
+                true => Ok(0),
+                false => Err(Error::Query(format!("table {} already exists: DROP TABLE {} first, or CREATE TABLE IF NOT EXISTS", st.table(), st.table()))),
+            };
+        }
+        if !st.creates() {
+            // Refused before the SELECT runs: a table that is not there.
+            self.table(st.table()).map_err(|_| Error::Query(crate::query::hint::no_table(st.table(), self.catalog().iter().map(|t| t.table.as_str()))))?;
+        }
+        let rs = self.query_with(&st.query_sql(), params, &ExecOptions { max_rows: None, ..opts.clone() })?;
+        if st.creates() {
+            let catalog = self.catalog();
+            let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+            self.create_table(st.table_for(&rs, &tables)?)?;
+            let r = self.write_selected(st, params, rs);
+            if r.is_err() {
+                let _ = self.drop_tables(&[st.table()], DropOptions::default());
+            }
+            return r;
+        }
+        self.write_selected(st, params, rs)
+    }
+
+    /// The write of the rows `rs` of `st`'s SELECT into its table.
+    fn write_selected(&self, st: &crate::query::from_select::Statement, params: &Params, rs: ResultSet) -> Result<u64> {
+        match self.prepare_selected(st, params, rs)? {
+            Some(p) => self.write_queued(writes::Job::Sql(p)).map(|(n, _)| n),
+            None => Ok(0),
+        }
+    }
+
+    /// The write of the rows `rs` that the SELECT of `INSERT ... SELECT`
+    /// or `CREATE TABLE ... AS SELECT` `st` returned, into its table as it
+    /// is now, prepared as [`Db::prepare_write`] prepares one (a server
+    /// runs the SELECT, then queues this); `None` for no rows.
+    pub fn prepare_selected(&self, st: &crate::query::from_select::Statement, params: &Params, rs: ResultSet) -> Result<Option<PreparedWrite>> {
+        if rs.rows.is_empty() {
+            return Ok(None);
+        }
+        let schema = self.table(st.table())?;
+        let write = st.write(&schema, params, rs)?;
+        self.prepare(schema, write).map(Some)
+    }
+
     /// [`Db::prepare_write`] of a plan that writes.
     pub fn prepare_plan(&self, plan: &Plan) -> Result<PreparedWrite> {
         if !plan.is_write() {
@@ -2111,6 +2162,11 @@ impl Db {
                 }
             }
             return Ok(SqlResult::Written(n));
+        }
+        // `INSERT ... SELECT` and `CREATE TABLE ... AS SELECT`: the
+        // SELECT's rows, then their write (SAM-8).
+        if let Some(st) = crate::query::from_select::parse_statement(sql, params)? {
+            return self.from_select(&st, params, opts).map(SqlResult::Written);
         }
         self.sql_with_bound(sql, params, opts)
     }
