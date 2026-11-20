@@ -141,6 +141,7 @@ NAV = [
     ("Start", [
         ("index", "Overview", "docs/guide/index.md", "guide"),
         ("quickstart", "Quickstart", "docs/quickstart.md", "guide"),
+        ("agents", "Build with an AI agent", "docs/guide/agents.md", "guide"),
         ("concepts", "Concepts", "docs/guide/concepts.md", "guide"),
         ("build-an-app", "Build an app on the HTTP API", "docs/chloedb/build-an-app.md", "reference"),
         ("troubleshooting", "Troubleshooting", "docs/chloedb/troubleshooting.md", "reference"),
@@ -263,6 +264,10 @@ def render_fence(lang, attrs, flags, body):
     if lang == "mermaid":
         return f'<pre class="mermaid">{html.escape(body)}</pre>'
     title = attrs.get("file") or attrs.get("title")
+    if attrs.get("prompt"):
+        # A prompt of Build with an AI agent, which the server's MCP
+        # prompts are too (chloedb-server/src/mcp.rs).
+        title = f"Prompt: /mcp__chloedb__{attrs['prompt']}"
     if "output" in flags:
         title = title or "Output"
     if not title:
@@ -602,6 +607,40 @@ def build(out):
     return written
 
 
+SITE_URL = "https://chloetech-ai.github.io/chloedb"
+
+
+def llms(all_pages):
+    """docs/llms.txt, the documentation's pages for a language model, each
+    with what it covers (https://llmstxt.org), and docs/llms-full.txt,
+    their Markdown in one file. Pages publishes docs/ as it is, so each
+    page's Markdown is at the site's address of its file."""
+    def url(p):
+        return f"{SITE_URL}/{p.source.relative_to(DOCS).as_posix()}"
+
+    head = ("# ChloeDB\n\n"
+            "> ChloeDB is a search database with SQL: full text (BM25), vectors, graphs and structured fields in tables, "
+            "embedded in a process (Rust, Python, JavaScript, Java) or served by chloedb-server over HTTP, gRPC and MCP, "
+            "on one machine or a cluster. Its SQL is its own dialect, not Postgres: MATCH and bm25 for words, similarity for "
+            "meaning, rrf to fuse them.\n\n"
+            f"An agent connected to a chloedb-server over MCP (`{{server}}/v1/mcp`) gets these documents through its `search_docs` tool "
+            f"and its prompts. [Build with an AI agent]({SITE_URL}/guide/agents.md) says how to connect one and the prompts that work. "
+            f"The rendered site is {SITE_URL}/site/docs/.\n")
+    index = [head]
+    full = [head]
+    for section, items in NAV:
+        here = [p for p in all_pages if p.section == section]
+        if not here:
+            continue
+        index.append(f"\n## {section}\n\n")
+        for p in here:
+            text = p.source.read_text()
+            index.append(f"- [{p.title}]({url(p)}): {description(text)}\n")
+            text = re.sub(r"^<!--\s*run:.*?-->\n?", "", text, flags=re.M)
+            full.append(f"\n\n---\n\n<!-- {p.title}: {url(p)} -->\n\n{text.strip()}\n")
+    return "".join(index), "".join(full)
+
+
 def snapshot(ref):
     """Renders the docs of `ref` (a release's tag) into docs/site/docs/v<its
     version>/, from `git archive` of the tag, with this checkout's sidebar,
@@ -637,6 +676,10 @@ def main():
                 if not old.exists() or old.read_text() != (pathlib.Path(tmp) / name).read_text():
                     stale.append(name)
             extra = sorted(f.name for f in OUT.glob("*.html") if f.name not in written) if OUT.exists() else []
+        all_pages = [Page(*x) for x in pages()]
+        for name, text in zip(("llms.txt", "llms-full.txt"), llms(all_pages)):
+            if not (DOCS / name).exists() or (DOCS / name).read_text() != text:
+                stale.append(f"../../{name}")
         if stale or extra:
             for n in stale:
                 print(f"stale: docs/site/docs/{n}")
@@ -650,7 +693,9 @@ def main():
     for f in OUT.glob("*.html"):
         if f.name not in written:
             f.unlink()
-    print(f"wrote {len(written) - 1} pages and the search index to docs/site/docs/")
+    for name, text in zip(("llms.txt", "llms-full.txt"), llms([Page(*x) for x in pages()])):
+        (DOCS / name).write_text(text)
+    print(f"wrote {len(written) - 1} pages and the search index to docs/site/docs/, and docs/llms.txt and docs/llms-full.txt")
 
 
 if __name__ == "__main__":

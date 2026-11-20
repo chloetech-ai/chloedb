@@ -215,9 +215,10 @@ async fn agents_list_query_check_and_change_tables_within_their_keys_scope() {
     assert!(!sections.is_empty() && sections.len() <= 2, "{docs}");
     assert!(sections[0]["text"].as_str().unwrap().to_lowercase().contains("profile"), "{docs}");
 
-    // resources: the two documents, whole.
+    // resources: the documents, whole.
     let list = rpc(&base, &read, "resources/list", json!({})).await;
-    assert_eq!(list["resources"].as_array().unwrap().len(), 2, "{list}");
+    assert_eq!(list["resources"].as_array().unwrap().len(), chloedb_server::mcp::RESOURCES.len(), "{list}");
+    assert!(list["resources"].as_array().unwrap().iter().any(|r| r["uri"] == "strata://docs/agents"), "{list}");
     let doc = rpc(&base, &read, "resources/read", json!({"uri": "strata://docs/query-language"})).await;
     assert_eq!(doc["contents"][0]["text"].as_str().unwrap(), chloedb_server::mcp::QUERY_LANGUAGE);
 

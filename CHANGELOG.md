@@ -27,6 +27,38 @@ changes collect under "Unreleased".
   admits nowhere. Existing keys are unchanged: a key of every table still
   reads every index there, and a key limited to tables is still refused.
   An authentication change: it waits for a maintainer's review.
+- **Fewer pages until you need them, and fixes you can run.** On a single
+  server the command center's sidebar shows the twelve pages a newcomer
+  uses and folds the others under "More pages" until one is opened (then
+  it stays in its group), has a badge or is pinned; a coordinator shows
+  them all. A statement refused for a misspelt table, column or function
+  is answered with `fixes`, the statement with each suggested name in its
+  place, which the MCP tools hand the agent as the corrected statement.
+- **One command from a database to a cluster.** `chloedb-server grow --db
+  films.chloedb --shards 3` serves the database as the first of three
+  shards on this machine, with a coordinator at the address it was served
+  on, makes its tables on the new shards and moves their share of the rows
+  to them while queries answer; Ctrl+C stops it and the same command
+  starts it again.
+- **Built for AI agents.** A new guide page, [Build with an AI agent](docs/guide/agents.md),
+  gives the prompt to type for each common job (explore a database, load a
+  file, search, answer with citations, a search page, app code, change a
+  table, a slow query, check the server) with the steps an agent should
+  take in ChloeDB. chloedb-server's MCP server offers the same recipes as
+  prompts (`prompts/list`, `prompts/get`; `/mcp__chloedb__search` in
+  Claude Code), its `search_docs` reads the agent, search, search-page,
+  Python, JavaScript and troubleshooting pages too, and its instructions
+  say what agents got wrong in our sessions (a page opened from a file
+  cannot call the server; a 503 `unavailable` while a model downloads
+  means wait). The website publishes `llms.txt` and `llms-full.txt`.
+- **Setup that heals itself.** A server started without `--listen` whose
+  port is taken (another chloedb-server, or anything else) moves to the
+  next free one, 7710, 7720 and on, and says so; a model download that
+  failed tries again by itself after 30 s, 2 min, 10 min and then every
+  half hour, and a query that needs it meanwhile gets a 503 `unavailable`
+  that says when, rather than a 400 that says to fetch it by hand; an
+  import reads cells such as `N/A`, `null`, `-` or `?` as empty, so a
+  column of numbers with a few of them stays a number column.
 - **UPDATE follows SELECT's NULL rules, and EXPLAIN runs over HTTP.**
   (SAM-401, SAM-403, SAM-404, SAM-405.) `UPDATE t SET n = n + 1` keeps a
   NULL `n` NULL, as `SELECT n + 1`, `1 + n` and `n * 2` already did, and

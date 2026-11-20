@@ -126,6 +126,18 @@ const side = h("aside", { class: "side" }, brand, nav,
 
 const PINS = "labs.pinned";
 let labsOpen = store.get("labs.open", false);
+// The pages this browser opened on this server, which the sidebar keeps
+// out of "More pages" from then on (views/index.js, `first`).
+const USED = "nav.used";
+let moreOpen = store.get("nav.more.open", false);
+const used = () => new Set(store.get(USED, []));
+function markUsed(id) {
+  if (!id) return;
+  const u = used();
+  if (u.has(id)) return;
+  u.add(id); store.set(USED, [...u].slice(-200));
+  if (single() && nav.querySelector(`.more a[data-view="${CSS.escape(id)}"]`)) { drawNav(); drawBadges(); }
+}
 function navLink(e) {
   const v = viewOf(e);
   const a = h("a", { href: "#/" + e.id, dataset: { view: e.id }, title: e.title + (e.key ? ` (g then ${e.key})` : "") }, icon(e.icon || v.icon), h("span", { class: "t" }, e.title));
@@ -149,8 +161,15 @@ function drawNav() {
   navShape = shapeOf();
   const pins = new Set(store.get(PINS, []));
   const groups = isCoordinator() ? ["Watch", "Run the cluster", "Build", "Apps", "Labs"].map((g) => NAV.find((x) => x[0] === g)).filter(Boolean) : NAV;
+  const opened = used();
+  const later = [];
   for (const [g, all] of groups) {
-    const list = all.filter((e) => !(e.cluster && single()));
+    const list = all.filter((e) => !(e.cluster && single())).filter((e) => {
+      if (!single() || g === "Labs" || e.first || opened.has(e.id) || pins.has(e.id) || shellBadge(e.id) || viewOf(e)?.badge?.()) return true;
+      if (viewOf(e)) later.push({ ...e, group: g });
+      return false;
+    });
+    if (g === "Labs" && later.length) nav.append(moreFold(later));
     if (g === "Apps") {
       const as = listApps();
       if (as.length) { nav.append(h("h6", {}, "Apps")); for (const a of as) nav.append(appLink(a)); }
@@ -170,6 +189,16 @@ function drawNav() {
     nav.append(box);
   }
   markCurrent();
+}
+/** "More pages · N": the pages of a single server not opened yet. */
+function moreFold(es) {
+  const box = h("div", { class: "labs more" + (moreOpen ? " open" : "") });
+  const toggle = h("button", { class: "labs-toggle", "aria-expanded": String(moreOpen), title: "Pages for later: alerts, monitoring, access and more. One you open stays in the sidebar" },
+    icon("dots"), h("span", { class: "t" }, `More pages · ${es.length}`), icon(moreOpen ? "down" : "right", "chev"));
+  toggle.onclick = () => { moreOpen = !moreOpen; store.set("nav.more.open", moreOpen); drawNav(); drawBadges(); };
+  box.append(toggle);
+  if (moreOpen) for (const e of es) { const a = navLink(e); a.classList.add("lab"); box.append(a); }
+  return box;
 }
 /** An app's entry: #/app/<name>, with the app's own icon. */
 function appLink(a) {
@@ -500,6 +529,7 @@ async function route() {
   const { v, e, unknown } = resolve(r);
   rangeFromUrl(r.params);
   currentEntry = e || { id: v.id, title: v.title, icon: v.icon, parent: v.parent };
+  markUsed(currentEntry.parent || currentEntry.id);
   if (v.id === "app" && r.rest[0]) { const a = listApps().find((x) => x.name === r.rest[0]); currentEntry = { id: "app/" + r.rest[0], title: a?.title || r.rest[0], icon: "box" }; }
   markCurrent();
   // A view with no time axis (the SQL workbench, Schema, Labs) hides the range and Live.
