@@ -462,6 +462,145 @@ async fn an_oncall_key_imports_and_searches_log_lines() {
     assert_eq!(s, 403, "{j}");
 }
 
+/// A log shipper's key (MARCO-403): a grant of `append` inserts new rows
+/// into its tables, by OTLP, an import, `/v1/write` and `INSERT`, and
+/// reads nothing, not even those tables; it never replaces a row, and
+/// every refusal names its grant.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_append_key_inserts_and_reads_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, _svc) = start(dir.path(), Vec::new()).await;
+    ok(&base, "CREATE TABLE logs_syslog (ts TIMESTAMP NOT NULL, host KEYWORD, body TEXT)").await;
+    ok(&base, "CREATE TABLE logs_kv (id KEYWORD PRIMARY KEY, body TEXT)").await;
+    ok(&base, "INSERT INTO logs_kv (id, body) VALUES ('a', 'token=hunter2')").await;
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "collector", "tables": {"logs_*": "append"}}))).await;
+    assert_eq!((s, &made["key"]["tables"], made["key"]["scope"].as_str()), (200, &json!({"logs_*": "append"}), Some("append")), "{made}");
+    let secret = made["secret"].as_str().unwrap().to_string();
+    let k = Some(secret.as_str());
+
+    // What it may: OTLP logs (into a table it makes, too), JSON lines, an
+    // insert, an INSERT, and an INSERT that skips a key a row has.
+    let logs = json!({"resourceLogs": [{"resource": {"attributes": []}, "scopeLogs": [{"logRecords": [{"timeUnixNano": "1700000000000000000", "severityText": "ERROR", "body": {"stringValue": "Gi0/1 down"}}]}]}]});
+    // Two lines, sent apart: the first makes the table. (A request sent
+    // again is a retry and writes nothing more.)
+    for line in ["Gi0/1 down", "Gi0/2 down"] {
+        let mut req = logs.clone();
+        req["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["body"]["stringValue"] = json!(line);
+        let (s, j) = call(&base, "POST", "/v1/logs?table=logs_otel", k, Some(req)).await;
+        assert_eq!(s, 200, "{j}");
+    }
+    let c = chloedb_server::http_client().build().unwrap();
+    let import = |table: &str, lines: &str| {
+        let r = c.post(format!("{base}/v1/import?table={table}&format=jsonl")).bearer_auth(&secret).header("content-type", "application/x-ndjson").body(lines.to_string()).send();
+        async move {
+            let r = r.await.unwrap();
+            (r.status().as_u16(), r.text().await.unwrap())
+        }
+    };
+    let (s, j) = import("logs_syslog", "{\"ts\": \"2026-11-13T03:00:01Z\", \"host\": \"core-rtr-02\", \"body\": \"%LINK-3-UPDOWN\"}\n").await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = import("logs_kv", "{\"id\": \"b\", \"body\": \"new\"}\n").await;
+    assert_eq!(s, 200, "{j}");
+    let (s, j) = call(&base, "POST", "/v1/write", k, Some(json!({"ops": [{"op": "insert", "table": "logs_kv", "doc": {"id": "c", "body": "new"}}]}))).await;
+    assert_eq!(s, 200, "{j}");
+    for sql in ["INSERT INTO logs_kv (id, body) VALUES ('d', 'new')", "INSERT INTO logs_kv (id, body) VALUES ('a', 'x') ON CONFLICT DO NOTHING", "INSERT INTO logs_syslog (ts, host, body) VALUES ('2026-11-13T03:00:02Z', 'fw-01', 'deny')"] {
+        let (s, j) = call(&base, "POST", "/v1/sql", k, Some(json!({"sql": sql}))).await;
+        assert_eq!(s, 200, "{sql}: {j}");
+    }
+
+    // An INSERT of a key a row has fails, as an insert does and an import
+    // of one: nothing overwrites row a.
+    let (s, j) = call(&base, "POST", "/v1/sql", k, Some(json!({"sql": "INSERT INTO logs_kv (id, body) VALUES ('a', 'overwritten')"}))).await;
+    assert!(s >= 400 && s != 500, "{s} {j}");
+    let (s, j) = call(&base, "POST", "/v1/write", k, Some(json!({"ops": [{"op": "insert", "table": "logs_kv", "doc": {"id": "a", "body": "overwritten"}}]}))).await;
+    assert!(s >= 400 && s != 500, "{s} {j}");
+    let (s, j) = import("logs_kv", "{\"id\": \"e\", \"body\": \"new\"}\n{\"id\": \"a\", \"body\": \"overwritten\"}\n").await;
+    assert_eq!(s, 409, "{j}");
+
+    // What it may not, each refusal naming the grant.
+    let refused = |s: u16, j: &Json, what: &str| {
+        assert_eq!(s, 403, "{what}: {j}");
+        assert!(j["error"].as_str().is_some_and(|e| e.contains("append")), "{what}: {j}");
+    };
+    for sql in [
+        "SELECT body FROM logs_kv",
+        "SELECT count(*) FROM logs_syslog",
+        "UPDATE logs_kv SET body = 'x' WHERE id = 'a'",
+        "DELETE FROM logs_kv WHERE id = 'a'",
+        "INSERT OR REPLACE INTO logs_kv (id, body) VALUES ('a', 'overwritten')",
+        "INSERT INTO logs_kv (id, body) VALUES ('a', 'overwritten') ON CONFLICT (id) DO UPDATE SET body = 'overwritten'",
+        "INSERT INTO logs_syslog (ts, host, body) SELECT now(), id, body FROM logs_kv",
+        "INSERT INTO products (id, title) VALUES ('p', 'x')",
+        "CREATE TABLE logs_new (id KEYWORD PRIMARY KEY)",
+    ] {
+        let (s, j) = call(&base, "POST", "/v1/sql", k, Some(json!({"sql": sql}))).await;
+        if sql.contains("products") {
+            assert_eq!(s, 403, "{sql}: {j}");
+        } else if sql.contains(" SELECT ") && s == 400 {
+            // A server that runs no INSERT ... SELECT refuses it before
+            // any key is weighed, and reads nothing either way.
+            assert!(j["error"].as_str().is_some_and(|e| e.contains("not supported")), "{sql}: {j}");
+        } else {
+            refused(s, &j, sql);
+        }
+    }
+    for (method, path, body) in [
+        ("POST", "/v1/query", Some(json!({"sql": "SELECT body FROM logs_kv"}))),
+        ("GET", "/v1/feed", None),
+        ("GET", "/v1/alerts", None),
+        ("GET", "/v1/tables", None),
+        ("GET", "/v1/schema?table=logs_kv", None),
+        ("GET", "/v1/export?table=logs_kv", None),
+        ("POST", "/v1/kv/get", Some(json!({"table": "logs_kv", "keys": ["a"]}))),
+        ("GET", "/v1/kv/logs_kv/a", None),
+        ("PUT", "/v1/kv/logs_kv/a", Some(json!({"body": "overwritten"}))),
+        ("POST", "/v1/write", Some(json!({"ops": [{"op": "upsert", "table": "logs_kv", "doc": {"id": "a", "body": "overwritten"}}]}))),
+        ("POST", "/v1/write", Some(json!({"ops": [{"op": "delete", "table": "logs_kv", "key": "a"}]}))),
+    ] {
+        let (s, j) = call(&base, method, path, k, body).await;
+        refused(s, &j, &format!("{method} {path}"));
+    }
+    // Into a table it was not given: refused, and the table not made.
+    assert_eq!(call(&base, "POST", "/v1/logs?table=otel_logs", k, Some(logs)).await.0, 403);
+    let (s, j) = import("products", "{\"id\": \"p\", \"title\": \"x\"}\n").await;
+    assert_eq!(s, 403, "{j}");
+
+    // Row a is as it was, and the rows it added are there.
+    let (_, j) = call(&base, "POST", "/v1/sql", ROOT, Some(json!({"sql": "SELECT id, body FROM logs_kv ORDER BY id"}))).await;
+    assert_eq!(j["rows"], json!([["a", "token=hunter2"], ["b", "new"], ["c", "new"], ["d", "new"]]), "{j}");
+    let (_, j) = call(&base, "POST", "/v1/sql", ROOT, Some(json!({"sql": "SELECT count(*) FROM logs_syslog"}))).await;
+    assert_eq!(j["rows"], json!([[2]]), "{j}");
+    let (_, j) = call(&base, "POST", "/v1/sql", ROOT, Some(json!({"sql": "SELECT count(*) FROM logs_otel"}))).await;
+    assert_eq!(j["rows"], json!([[2]]), "{j}");
+
+    // Who it is, and what it may call: the routes that append, and none
+    // that reads.
+    let (s, me) = call(&base, "GET", "/v1/whoami", k, None).await;
+    assert_eq!((s, me["name"].as_str(), me["scope"].as_str(), &me["tables"]), (200, Some("collector"), Some("append"), &json!({"logs_*": "append"})), "{me}");
+    let routes: Vec<&str> = me["may"]["routes"].as_array().unwrap_or_else(|| panic!("{me}")).iter().filter_map(Json::as_str).collect();
+    for r in ["POST /v1/logs", "POST /v1/import", "POST /v1/write", "POST /v1/sql"] {
+        assert!(routes.contains(&r), "{r}: {routes:?}");
+    }
+    for r in ["POST /v1/query", "GET /v1/feed", "GET /v1/alerts", "GET /v1/tables", "GET /v1/schema", "GET /v1/export"] {
+        assert!(!routes.contains(&r), "{r}: {routes:?}");
+    }
+
+    // A grant of append beside one of read reads only the other.
+    let (s, made) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "mixed", "tables": {"logs_kv": "append", "logs_syslog": "read"}}))).await;
+    assert_eq!((s, made["key"]["scope"].as_str()), (200, Some("read")), "{made}");
+    let m = made["secret"].as_str();
+    assert_eq!(call(&base, "POST", "/v1/sql", m, Some(json!({"sql": "SELECT count(*) FROM logs_syslog"}))).await.0, 200);
+    assert_eq!(call(&base, "POST", "/v1/sql", m, Some(json!({"sql": "INSERT INTO logs_kv (id, body) VALUES ('m', 'new')"}))).await.0, 200);
+    let (s, j) = call(&base, "POST", "/v1/sql", m, Some(json!({"sql": "SELECT body FROM logs_kv"}))).await;
+    refused(s, &j, "mixed SELECT");
+    let (s, j) = call(&base, "POST", "/v1/sql", m, Some(json!({"sql": "DELETE FROM logs_kv WHERE id = 'a'"}))).await;
+    refused(s, &j, "mixed DELETE");
+
+    // The scope is a grant's, never a key's own.
+    let (s, j) = call(&base, "POST", "/v1/admin/keys", ROOT, Some(json!({"name": "nope", "scope": "append"}))).await;
+    assert_eq!(s, 400, "{j}");
+}
+
 /// Apps: one that checks its callers takes a key limited to tables and a
 /// write key's changes; one that does not takes neither, but lets a key
 /// given it that reads every table read through it.

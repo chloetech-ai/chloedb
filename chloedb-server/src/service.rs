@@ -5075,6 +5075,12 @@ impl Service {
     #[allow(clippy::too_many_arguments)]
     pub async fn sql_budgeted(self: &Arc<Self>, who: &Principal, sql: &str, params: &Params, after: After, timeout_ms: u64, slots: Option<Vec<usize>>, key: Option<String>, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
         self.statement_fits(sql)?;
+        // A key that only appends (MARCO-403) sends an INSERT: the other
+        // statements with a statement of their own (a classifier, a
+        // recommender, a blend...) are refused before they are read.
+        if who.append_only() && !sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("insert")) {
+            return Err(ApiError { code: Some("scope_refused"), status: 403, message: format!("this statement needs a key with the read scope or more; the key {:?} has append: it inserts new rows into {} and does nothing else", who.name, who.tables.as_deref().map(keys::grants_text).unwrap_or_default()) });
+        }
         chloedb::query::budget::check_text(&self.budget_for(Some(who), budget), sql, params)?;
         if let Some(st) = chloedb::query::classify::parse_statement(sql)? {
             return self.classifier_statement(who, &st, timeout_ms).await;
@@ -5169,11 +5175,29 @@ impl Service {
             }
         }
         let need = command_scope(&command);
+        // A key that only appends (MARCO-403) runs an INSERT of new rows
+        // into the tables it appends to, and no other statement.
+        if who.append_only() && !crate::scoped::is_append(who, &command) {
+            let what = format!("a {} statement", match need { Scope::Append | Scope::Feed | Scope::Read => "query", Scope::Write => "write (other than an INSERT of new rows)", Scope::Admin => "table, rank profile or function" });
+            // The key's scope is `append`, below every statement's.
+            return Err(who.may(need, &what).err().unwrap_or_else(|| ApiError::bad("a key that only appends inserts new rows")));
+        }
         // An UPDATE or DELETE with a LIMIT, or whose WHERE reads other rows
         // (a subquery), which a coordinator runs by picking its rows first
         // ([`Self::limited_write`]).
         let limited = matches!(&command, Command::Write { write, .. } if write.picks_first());
-        who.may(need, &format!("a {} statement", match need { Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?;
+        match crate::scoped::is_append(who, &command) {
+            // An INSERT of new rows into a table the key appends to: its
+            // grant, checked below with the tables it names.
+            true => {}
+            // Any other write of a table the key appends to: its grant
+            // there inserts new rows only, and the refusal says so.
+            false if matches!(&command, Command::Write { table, .. } if who.appends(table) && who.table_scope(table).is_none_or(|s| s < Scope::Write)) => {
+                let Command::Write { table, .. } = &command else { unreachable!() };
+                return Err(ApiError { code: None, status: 403, message: format!("the key {:?} has a grant of append on {table}, which inserts new rows only: an UPDATE, a DELETE or a write that replaces a row needs the write scope there", who.name) });
+            }
+            false => who.may(need, &format!("a {} statement", match need { Scope::Append | Scope::Feed | Scope::Read => "query", Scope::Write => "write", Scope::Admin => "table, rank profile or function" }))?,
+        }
         if who.limited() {
             crate::scoped::check_statement(who, sql, &command, &self.table_names(), &self.functions())?;
         }

@@ -76,7 +76,7 @@ FROM <table> [JOIN <table> ON ...] | <WITH name> | (SELECT ...) AS t
 | type | indexed as | filters |
 |---|---|---|
 | `INT`, `FLOAT` (finite: no NaN or infinity) | frame-of-reference column with zone maps, range histogram | `=`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IS [NOT] NULL` |
-| `KEYWORD` | dictionary codes and one docID list per value; with `substring = true`, a [substring index](#substrings-like-and-ilike-anywhere-in-a-value) too | `=`, `!=`, `IN`, `NOT IN`, `IS [NOT] NULL`, [prefixes](#prefixes-and-autocomplete) (`LIKE 'p%'`, `PREFIX`); `GROUP BY`; with a substring index, any `LIKE` and `ILIKE` |
+| `KEYWORD` | dictionary codes and one docID list per value; with `substring = true`, a [substring index](#substrings-like-and-ilike-anywhere-in-a-value) too | `=`, `!=`, `IN`, `NOT IN`, `IS [NOT] NULL`, [prefixes](#prefixes-and-autocomplete) (`LIKE 'p%'`, `PREFIX`), `<`, `<=`, `>`, `>=` and `BETWEEN` (a single-valued field); `GROUP BY`; with a substring index, any `LIKE` and `ILIKE` |
 | `BOOL` | an `INT` column of 1 and 0 | the field alone (`WHERE done`, `NOT done`), `=`, `!=`, `IS [NOT] TRUE`, `IS [NOT] FALSE`, `IS [NOT] NULL`; `GROUP BY` |
 | `TIMESTAMP` | an `INT` column of microseconds since 1970-01-01 UTC | as `INT`, with times written as text: `at >= '2026-10-01'` |
 | `TEXT` | inverted index (optionally with positions); may be generated from other text fields; with `substring = true`, a [substring index](#substrings-like-and-ilike-anywhere-in-a-value) too | `MATCH`; with a substring index, `LIKE` and `ILIKE` |
@@ -334,6 +334,8 @@ A group with `@n` matches a row with at least `n` of its items: its operands, wh
 ## Prefixes and autocomplete
 
 `kw LIKE 'p%'` and `PREFIX(kw, 'p')` select the rows of a `KEYWORD` field whose value starts with `p`, byte for byte (no case folding). A field's values are sorted in its dictionary, so the values with a prefix are one run of it, found by two binary searches per segment: a short run unions its values' lists, and one of more than 1,024 values of a single-valued field scans the code column, as a range of numbers does. A multi-valued field matches a row when one of its values starts with the prefix, and `NOT` when none does.
+
+A single-valued `KEYWORD` compares by order too, byte for byte as `ORDER BY` sorts it: `id > 't007-006015'`, `id <= :last`, `id BETWEEN 'a' AND 'm'` are one run of the dictionary each, as a prefix is, and a row without a value is `UNKNOWN` to them. So a keyset page of `ORDER BY created_at DESC, id` starts after the last row of the one before with `WHERE created_at < :at OR (created_at = :at AND id > :id)`. A `KEYWORD[]` keeps to `=`, `IN` and prefixes. A plan with such a comparison names the feature `keyword_ranges`, which a server from before it refuses. **Changed:** an order comparison of a `KEYWORD` was refused before.
 
 ```sql
 -- autocomplete: the ten most asked queries that start with what was typed

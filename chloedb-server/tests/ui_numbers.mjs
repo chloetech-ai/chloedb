@@ -172,6 +172,9 @@ assert.ok(!core.can("write", ACK));
 assert.equal(core.needs("write", ACK), "needs a write key given POST /v1/alerts/:rule/ack (this key is limited to tables: logs_* read)");
 core.provide({ whoami: { name: "old", scope: "write", tables: { "logs_*": "write" }, may: { data: "write" } } });
 assert.ok(core.can("write", ACK), "a server that lists no routes: by the key's scope, as before");
+// MARCO-403: a key whose grants only append reads nothing, the feed included.
+core.provide({ whoami: { name: "collector", scope: "append", tables: { "logs_*": "append" }, may: { data: "append", server_views: false, routes: ["POST /v1/logs", "POST /v1/import", "POST /v1/write", "POST /v1/sql", "GET /v1/health", "GET /v1/whoami"] } } });
+assert.ok(!core.can("feed") && !core.can("read") && !core.can("write") && !core.can("read", "GET /v1/alerts") && core.can("write", "POST /v1/logs"));
 core.provide({ whoami: null });
 core.provideRoutes(null);
 
@@ -414,6 +417,9 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.deepEqual([is.msg, is.texts], ["title", ["title", "body"]]);
   assert.deepEqual(lx.searchSql("graph body:graph", is).conds, ["MATCH(title, 'graph')", "body ILIKE '%graph%'"]);
   assert.equal(lx.logColumns([{ name: "id", type: "keyword" }, { name: "about", type: "text" }]), null, "no TIMESTAMP: not in the explorer");
+  // MARCO-403: "Send logs here" gives the Collector a key that only appends to its table, not the oncall key.
+  assert.deepEqual(lx.shipperKey("logs_app"), { name: "logs-app-collector", tables: { logs_app: "append" } });
+  assert.ok(lx.collectorYaml("http://x", "logs_app").includes("${env:CHLOEDB_SHIP_KEY}") && lx.importCurl("http://x", "logs_app").includes("$CHLOEDB_SHIP_KEY"));
   // Values on one line: whitespace folded, cut, arrays joined, times to the second.
   assert.equal(lx.shortValue("a\n  b", "text"), "a b");
   assert.equal(lx.shortValue("x".repeat(100), "keyword").length, 80);
@@ -570,6 +576,17 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.equal(near.settled, 18);
   assert.match(near.warn, /stayed near the node: its scores hold 18% of the walk; pick a lower eps/);
   assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
+}
+
+// WEI-403: the audit banner called a key that never expires "expired": its
+// `expires_ms` is null, which compares as 0.
+{
+  const { expiredBy } = await import(new URL("views/access.js", app));
+  assert.equal(expiredBy({ expires_ms: null }, 1_700_000_000_000), false);
+  assert.equal(expiredBy({}, 1_700_000_000_000), false);
+  assert.equal(expiredBy(undefined, 1_700_000_000_000), false);
+  assert.equal(expiredBy({ expires_ms: 1_600_000_000_000 }, 1_700_000_000_000), true);
+  assert.equal(expiredBy({ expires_ms: 1_800_000_000_000 }, 1_700_000_000_000), false);
 }
 
 // OLU-403: signed out, every read but /v1/health's status is refused, and

@@ -247,6 +247,19 @@ pub fn mark_term(path: &str) -> String {
     format!("{path}{SEP}x")
 }
 
+/// The term of the rows marked at `path` ([`mark_term`]) whose values
+/// there are their value terms, each value given exactly by its term: a
+/// list of strings, numbers and booleans (`"tags": ["a", "b"]`), with no
+/// object, nested list, long string or number its term spells otherwise
+/// ([`terms`]). Counts by value read such a row from its terms, a value
+/// once however often the list holds it, as a group counts a row (finding
+/// KENJI-401); its value in order, duplicates kept, is still read from its
+/// object. `path \0 v`: outside the run of value terms and beside the
+/// mark, so that a version from before it reads the row from its object.
+pub fn list_term(path: &str) -> String {
+    format!("{path}{SEP}v")
+}
+
 /// The section a segment has when its JSON field `key`'s terms include
 /// marks ([`mark_term`]).
 pub fn marks_section(key: &str) -> String {
@@ -498,6 +511,9 @@ pub fn terms(v: &Value) -> Result<Vec<String>> {
         };
         if !exact {
             marks.push(mark_term(path));
+            if listed(&j, path) {
+                marks.push(list_term(path));
+            }
         }
         at = end;
     }
@@ -573,6 +589,33 @@ fn gives_exactly(j: &Json, path: &str, term: &str) -> bool {
         Some(x @ (Json::Number(_) | Json::Bool(_))) => value_of_term(term).is_some_and(|v| plain(x) == Some(v)),
         _ => value_of_term(term).is_some_and(|v| extract_json(j, path, None) == v),
     }
+}
+
+/// Whether the values at `path` of `j` are a list of strings, numbers and
+/// booleans, at least one, each of which its term gives exactly
+/// ([`list_term`]): what [`extract_json`] reads there is then those
+/// values, whose distinct ones are the path's value terms.
+fn listed(j: &Json, path: &str) -> bool {
+    let mut found = Vec::new();
+    gather(j, &keys(path), &mut found);
+    let mut values = 0;
+    for x in found {
+        let xs = match x {
+            Json::Array(xs) => xs.as_slice(),
+            x => std::slice::from_ref(x),
+        };
+        for x in xs {
+            match x {
+                Json::Null => {}
+                Json::String(_) | Json::Number(_) | Json::Bool(_) => match plain(x) {
+                    Some(v) if term("", &v).and_then(|t| value_of_term(&t)).as_ref() == Some(&v) => values += 1,
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+    }
+    values > 0
 }
 
 /// [`extract`] of a parsed object.
@@ -731,8 +774,10 @@ impl PathValues {
     /// values ([`crate::query::agg::Part::group`]) one group each, and the
     /// rows without a value the NULL group. The values come in no order,
     /// and one value may come more than once (from the terms and from
-    /// objects). Rows whose value is one term are counted from its
-    /// postings, without a pass over the rows.
+    /// objects). Rows whose values are their terms (one term, or a list
+    /// [`list_term`] marks, for values of any type) are counted from the
+    /// terms' postings, without a pass over the rows; the others are read
+    /// from their objects, whose number comes second.
     pub fn counts(
         kw: &crate::forward::KeywordColumn,
         marks: bool,
@@ -742,21 +787,34 @@ impl PathValues {
         mut object: impl FnMut(crate::segment::DocId) -> Result<Value>,
     ) -> Result<(Vec<(Value, u64)>, usize)> {
         let odd = odd_rows(kw, marks, path, rows);
+        // A list of values of several types is NULL to a test of one it
+        // lacks, which its terms do not tell apart from a row without the
+        // path: such counts read the objects.
+        let listed = match (marks, kind) {
+            (true, None) => rows_of(kw, &list_term(path), rows),
+            _ => crate::segment::DocSet::empty(rows.universe()),
+        };
+        let read = odd.difference(&listed);
+        let counted = rows.difference(&read).to_bits();
         let mut out: Vec<(Value, u64)> = Vec::new();
-        let mut valued = 0u64;
-        let mut docs = Vec::new();
+        let mut sum = 0u64;
         let (lo, hi) = value_run(path, kind);
         for code in kw.lower_bound(&lo)..kw.lower_bound(&hi) {
-            kw.docs_code_into(code, &mut docs);
-            let c = docs.iter().filter(|&&d| rows.contains(d) && !odd.contains(d)).count() as u64;
+            let c = kw.count_code_in(code, &counted);
             if c > 0 {
                 out.push((term_value(kw, code)?, c));
-                valued += c;
+                sum += c;
             }
         }
+        // The rows counted that hold a value: each one value term but the
+        // lists, which hold one at least and the path's own term.
+        let valued = match listed.is_empty() {
+            true => sum,
+            false => kw.code(&has_term(path)).map_or(0, |c| kw.count_code_in(c, &counted)),
+        };
         let mut objects = 0;
-        let mut null = rows.len() as u64 - valued - odd.len() as u64;
-        for d in odd.iter() {
+        let mut null = rows.len() as u64 - valued - read.len() as u64;
+        for d in read.iter() {
             objects += 1;
             match extract(&object(d)?, path, kind)? {
                 Value::Null => null += 1,
@@ -794,11 +852,15 @@ impl PathValues {
 /// those marked ([`mark_term`]), or in a segment whose terms have no
 /// marks every row holding the path.
 fn odd_rows(kw: &crate::forward::KeywordColumn, marks: bool, path: &str, rows: &crate::segment::DocSet) -> crate::segment::DocSet {
-    let read = match marks {
-        true => kw.code(&mark_term(path)),
-        false => kw.code(&has_term(path)),
-    };
-    let Some(c) = read else { return crate::segment::DocSet::empty(rows.universe()) };
+    match marks {
+        true => rows_of(kw, &mark_term(path), rows),
+        false => rows_of(kw, &has_term(path), rows),
+    }
+}
+
+/// The rows of `rows` that have `term`.
+fn rows_of(kw: &crate::forward::KeywordColumn, term: &str, rows: &crate::segment::DocSet) -> crate::segment::DocSet {
+    let Some(c) = kw.code(term) else { return crate::segment::DocSet::empty(rows.universe()) };
     let mut docs = Vec::new();
     kw.docs_code_into(c, &mut docs);
     docs.retain(|&d| rows.contains(d));
@@ -997,6 +1059,12 @@ mod tests {
             json!({"p": "n/a", "l": ["x"], "b": 1}),
             json!({"p": [3, "n/a"], "l": 3, "m": {"k": 1}}),
             json!({"b": false, "p": 1e300}),
+            json!({"t": ["a", "b", "a"], "i": [{"k": "a"}, {"k": ["b", "c"]}]}),
+            json!({"t": ["b", 2, true, null], "i": [{"k": "a"}, {"k": {"z": 1}}]}),
+            json!({"t": ["x".repeat(300), "a"], "i": [{"k": [["a"]]}, {"k": "b"}]}),
+            json!({"t": [[1], "a"], "i": {"k": ["c", 5.0]}}),
+            json!({"t": ["a", 5.0], "i": {"k": ["c", 9007199254740993u64]}}),
+            json!({"t": ["c", -0.5]}),
         ];
         let docs: Vec<Value> = objects.iter().map(|j| s(&j.to_string())).collect();
         // Marked: rows whose one value term is not their value.
@@ -1004,6 +1072,12 @@ mod tests {
         assert!(!marked(0, "p") && marked(1, "p") && marked(2, "p") && !marked(3, "p") && marked(5, "p") && !marked(6, "p"));
         assert!(marked(0, "l") && marked(1, "l") && !marked(2, "l") && marked(3, "l") && !marked(4, "l") && !marked(5, "l"));
         assert!(marked(1, "o") && !marked(1, "o.w") && marked(3, "c") && !marked(0, "c") && !marked(4, "b"));
+        // Marked lists whose values are their terms (finding KENJI-401).
+        let listed = |d: usize, path: &str| terms(&docs[d]).unwrap().contains(&list_term(path));
+        assert!(listed(0, "l") && listed(1, "l") && !listed(3, "l") && !listed(2, "p") && listed(5, "p"));
+        assert!(listed(7, "t") && listed(8, "t") && !listed(9, "t") && !listed(10, "t") && !listed(11, "t") && listed(12, "t"));
+        assert!(listed(7, "i.k") && !listed(8, "i.k") && !listed(9, "i.k") && !listed(10, "i.k") && !listed(11, "i.k"));
+        assert!((0..docs.len()).all(|d| ["l", "t", "i.k", "p"].iter().all(|p| !listed(d, p) || marked(d, p))));
         assert_eq!(value_of_term(&term("p", &Value::Int(5)).unwrap()), Some(Value::Int(5)));
         assert_eq!(value_of_term(&term("p", &Value::Float(1e300)).unwrap()), Some(Value::Float(1e300)));
         // A segment of them, its terms read with marks and without (as a
@@ -1015,9 +1089,9 @@ mod tests {
         assert!(seg.has(&marks_section(&schema.fields[0].key())));
         let kw = crate::forward::KeywordColumn::open(&seg, &schema.fields[0].key()).unwrap();
         let n = docs.len() as u32;
-        for path in ["c", "p", "l", "o", "o.w", "b", "m", "m.k", "absent"] {
+        for path in ["c", "p", "l", "o", "o.w", "b", "m", "m.k", "t", "i", "i.k", "absent"] {
             for kind in [None, Some(Kind::Str), Some(Kind::Number), Some(Kind::Bool)] {
-                for rows in [crate::segment::DocSet::all(n), crate::segment::DocSet::from_sorted(vec![1, 2, 5], n)] {
+                for rows in [crate::segment::DocSet::all(n), crate::segment::DocSet::from_sorted(vec![1, 2, 5, 7, 9, 12], n)] {
                     let mut seen = Vec::new();
                     for marks in [true, false] {
                         let pv = PathValues::read(&kw, marks, path, kind, &rows, |d| Ok(docs[d as usize].clone())).unwrap();
@@ -1025,7 +1099,12 @@ mod tests {
                             let want = if rows.contains(d) { extract(&docs[d as usize], path, kind).unwrap() } else { Value::Null };
                             assert_eq!(pv.get(d), &want, "{path} {kind:?} row {d}, marks {marks}");
                         }
-                        let (counts, _) = PathValues::counts(&kw, marks, path, kind, &rows, |d| Ok(docs[d as usize].clone())).unwrap();
+                        let (counts, objects) = PathValues::counts(&kw, marks, path, kind, &rows, |d| Ok(docs[d as usize].clone())).unwrap();
+                        // Only rows whose values are not their terms are read.
+                        if marks && kind.is_none() {
+                            let unlisted = rows.iter().filter(|&d| marked(d as usize, path) && !listed(d as usize, path)).count();
+                            assert_eq!(objects, unlisted, "{path}: objects read for counts");
+                        }
                         let mut by: std::collections::BTreeMap<crate::query::agg::Part, u64> = Default::default();
                         for (v, c) in counts {
                             *by.entry(crate::query::agg::Part::group(&v)).or_default() += c;

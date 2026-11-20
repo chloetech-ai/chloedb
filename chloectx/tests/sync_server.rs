@@ -236,7 +236,7 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(!brief.contains("bootstrap.sh") && brief.contains("deploys on Tuesdays"), "{brief}");
     let (pending, _) = sync::accept(&home_b, &b, "acme/web", &[], false).unwrap();
-    assert_eq!(pending.iter().map(|p| (p.origin.clone(), p.records)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 2)]);
+    assert_eq!(pending.iter().map(|p| (p.origin.clone(), p.records)).collect::<Vec<_>>(), vec![(sync::origin(&home_a), 1)], "only the rule waits: the note is shown already, labelled (ANA-402)");
     sync::accept(&home_b, &b, "acme/web", &[sync::origin(&home_a)], false).unwrap();
     let (brief, _) = chloectx::recall::briefing(&b, "s-now", 8000, 1_800_000_000).unwrap();
     assert!(brief.contains("bootstrap.sh"), "{brief}");
@@ -250,8 +250,23 @@ fn a_project_key_reads_its_project_only_and_what_another_machine_sent_waits_to_b
     assert_eq!(code, 200, "{k}");
     let (rk, _) = machine("home-k", k["secret"].as_str().unwrap());
     assert_eq!(rk.count("acme/web").unwrap(), 2);
+    // WEI-403: it is not asked for the shared table it may not read, and
+    // an admin's key is.
+    assert!(!rk.may_read(sync::TABLE) && rk.may_read(&sync::table_for("acme/web")) && ra.may_read(sync::TABLE));
+    // ... so its routine pull makes no refused request for Access and
+    // audit to show.
+    let refused = || {
+        let out = Command::new("curl").args(["-sS", "-H", &format!("authorization: Bearer {admin}"), &format!("{url}/v1/admin/audit?kind=refusal&who=sync-web-ana")]).output().unwrap();
+        let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        j["entries"].as_array().unwrap_or_else(|| panic!("{j}")).len()
+    };
+    let web = store(dir.path(), "k-web.strata");
+    sync::pull(&rk, &web, "acme/web", &mut SyncState::default(), dir.path()).unwrap();
+    assert_eq!(web.len(), 2);
+    assert_eq!(refused(), 0, "a project key's pull asked for what it may not read");
     let e = rk.count("acme/payroll").unwrap_err().to_string();
     assert!(e.contains("403"), "{e}");
+    assert!(refused() >= 1, "the audit log lists a refusal");
     let stolen = store(dir.path(), "k.strata");
     assert!(sync::pull(&rk, &stolen, "acme/payroll", &mut SyncState::default(), dir.path()).is_err());
     assert_eq!(stolen.len(), 0);
@@ -812,4 +827,54 @@ fn sync_set_up_in_one_project_uploads_no_other_projects_store() {
     assert!(code == 0 && out.contains("no longer syncs every project"), "{out}");
     let (_, out) = chloectx_here(&home, &shapes, &["sync", "status"], "");
     assert!(out.contains("\"syncs\": false") && out.contains("sent 1 record to"), "{out}");
+}
+
+/// ANA-401: two machines that pulled the same records each keep a note in a
+/// terminal; the notes have ids of their own, so both reach the server and
+/// the other machine. A store with the old, alike ids is told by `clashing`.
+#[test]
+fn notes_kept_in_a_terminal_on_two_machines_both_arrive() {
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    std::env::remove_var("CHLOECTX_SYNC_ORIGIN");
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), None);
+    let machine = |name: &str| {
+        let home = dir.path().join(name);
+        sync::setup(&home, &dir.path().to_string_lossy(), &url, None, "", &[], false).unwrap();
+        sync::remote(&home).unwrap()
+    };
+    let (ra, rb) = (machine("home-a"), machine("home-b"));
+    let project = "acme/ledger";
+    let (a, b) = (store(dir.path(), "a.strata"), store(dir.path(), "b.strata"));
+    let (mut sa, mut sb) = (SyncState::default(), SyncState::default());
+    load(&a, &records("s", 1..=5));
+    sync::push(&ra, &a, project, &mut sa).unwrap();
+    sync::pull(&rb, &b, project, &mut sb, dir.path()).unwrap();
+    assert_eq!(b.len(), 5);
+    let kept = |s: &Store, text: &str| {
+        let d = chloectx::record::Draft::new(Kind::Fact, text.to_string());
+        s.append("manual", 0, 1_700_000_100_000, vec![d]).unwrap().pop().unwrap()
+    };
+    let (na, nb) = (kept(&a, "Staging resets every night at 02:00"), kept(&b, "The queue workers run under systemd"));
+    assert_ne!(na.id, nb.id, "numbered alike: {}", na.id);
+    sync::push(&ra, &a, project, &mut sa).unwrap();
+    sync::push(&rb, &b, project, &mut sb).unwrap();
+    assert_eq!(ra.count(project).unwrap(), 7);
+    sync::pull(&ra, &a, project, &mut sa, dir.path()).unwrap();
+    sync::pull(&rb, &b, project, &mut sb, dir.path()).unwrap();
+    assert!(a.get(&[nb.id.clone()]).unwrap().len() == 1 && b.get(&[na.id.clone()]).unwrap().len() == 1);
+    assert!(ra.clashing(&a, project, 100).unwrap().is_empty());
+
+    // A store from before: its note and another machine's share an id.
+    let old = store(dir.path(), "old.strata");
+    let mut r = note("manual", Kind::Fact, "An old note that took the id", 6);
+    r.id = na.id.clone();
+    load(&old, &[r]);
+    let home = dir.path().join("home-old");
+    sync::setup(&home, &dir.path().to_string_lossy(), &url, None, "", &[], false).unwrap();
+    let ro = sync::remote(&home).unwrap();
+    assert_eq!(ro.clashing(&old, project, 100).unwrap(), vec![na.id]);
 }

@@ -203,6 +203,12 @@ impl<E: Estimator> Planner<'_, E> {
                 let cost = self.est.prefix_cost(*field, prefix, *edits).unwrap_or(card * (c.posting + c.emit));
                 PredEstimate { card, mat_cost: c.leaf + cost, probe_cost: c.probe_keyword, probeable: true }
             }
+            // A run of the dictionary, as a prefix is; a third of the
+            // rows, as no histogram of keywords is kept.
+            Pred::KeyRange { .. } => {
+                let card = n / 3.0;
+                PredEstimate { card, mat_cost: c.leaf + card * (c.posting + c.emit), probe_cost: c.probe_keyword, probeable: true }
+            }
             // From a substring index or a scan of the values, for the
             // whole segment. A probe of it would be that set too (a
             // filter's test of a document cannot fail, and a read of a

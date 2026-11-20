@@ -1685,6 +1685,76 @@ async fn a_replica_is_asked_its_protocol_again_after_failing() {
     assert_eq!(shard.last().map(|s| (s.protocol, s.typed)), Some((1, false)));
 }
 
+/// A shard down fails a query the operators run (`WITH`, a join, a
+/// subquery) with the 503 a plain query gets, not a 400 "query error"
+/// (finding KENJI-403): clients retry a 503 on another node, never a 400.
+/// Over the OpenSearch API, a search with aggregations (which are such
+/// queries) is answered as a plain search is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shard_down_fails_a_query_of_operators_with_a_503() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = |i: usize| Value::Str(format!("p{i:07}"));
+    let (mut urls, mut shards) = (Vec::new(), Vec::new());
+    for s in 0..2 {
+        let (url, shard) = recording(create(dir.path(), &format!("s{s}.strata"), |i| shard_of(&key(i), 2) == s), chloedb_server::grpc::PROTOCOL).await;
+        urls.push(url);
+        shards.push(shard);
+    }
+    let coord = cluster(Coordinator::connect(urls).await.unwrap());
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let os = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(server::serve_opensearch(coord.clone(), l, Access::default(), chloedb_server::opensearch::VERSION_NUMBER));
+    let http = chloedb_server::http_client().build().unwrap();
+    let call = |method: reqwest::Method, path: &str, body: Option<Json>| {
+        let mut r = http.request(method, format!("{os}{path}"));
+        if let Some(b) = body {
+            r = match b {
+                Json::String(nd) => r.header("content-type", "application/x-ndjson").body(nd),
+                b => r.json(&b),
+            };
+        }
+        async move {
+            let r = r.send().await.unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Json>().await.unwrap_or(Json::Null))
+        }
+    };
+    let (s, j) = call(reqwest::Method::PUT, "/tickets", Some(json!({"mappings": {"properties": {"tags": {"type": "keyword"}, "body": {"type": "text"}}}}))).await;
+    assert_eq!(s, 200, "{j}");
+    let nd: String = (0..40)
+        .map(|i| {
+            let tag = if i % 2 == 0 { "b" } else { "c" };
+            format!("{}\n{}\n", json!({"index": {"_id": format!("t{i}")}}), json!({"tags": ["a", tag], "body": "refund please"}))
+        })
+        .collect();
+    let (s, j) = call(reqwest::Method::POST, "/tickets/_bulk?refresh=true", Some(Json::String(nd))).await;
+    assert_eq!(s, 200, "{j}");
+    let plain = json!({"query": {"match": {"body": "refund"}}, "size": 3});
+    // Its aggregation alone reads the shards.
+    let faceted = json!({"query": {"match": {"body": "refund"}}, "size": 0, "track_total_hits": false, "aggs": {"t": {"terms": {"field": "tags"}}}});
+    for b in [&plain, &faceted] {
+        let (s, j) = call(reqwest::Method::POST, "/tickets/_search", Some(b.clone())).await;
+        assert_eq!(s, 200, "{j}");
+    }
+    let sqls = ["SELECT COUNT(*) FROM products WHERE year >= 2020", "WITH g AS (SELECT year, COUNT(*) AS c FROM products GROUP BY 1) SELECT SUM(c) FROM g"];
+    for sql in sqls {
+        coord.query(QueryReq { sql: sql.into(), ..Default::default() }).await.unwrap_or_else(|e| panic!("{sql}: {}", e.message));
+    }
+
+    shards[1].down.store(true, Ordering::Relaxed);
+    for sql in sqls {
+        let e = coord.query(QueryReq { sql: sql.into(), ..Default::default() }).await.err().expect("a shard is down");
+        assert_eq!(e.status, 503, "{sql}: {}", e.message);
+        assert!(!e.message.starts_with("query error") && e.message.contains("restarting"), "{sql}: {}", e.message);
+    }
+    let (s, a) = call(reqwest::Method::POST, "/tickets/_search", Some(plain)).await;
+    let (t, b) = call(reqwest::Method::POST, "/tickets/_search", Some(faceted)).await;
+    assert_eq!((s, t), (503, 503), "{a} / {b}");
+    assert_eq!(a["error"]["type"], b["error"]["type"], "{a} / {b}");
+    assert_eq!(b["status"], 503, "{b}");
+    assert!(!b["error"]["reason"].as_str().unwrap().starts_with("query error"), "{b}");
+}
+
 /// A read that must see a write goes only to a copy that waits for it. A
 /// replica that speaks a protocol before 5 would answer what it holds, so
 /// the coordinator sends such a read to the shard's primary until the
