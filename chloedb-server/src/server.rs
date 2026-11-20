@@ -1255,6 +1255,11 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
         // the server that serves it, which fetches it and fills the
         // vectors in.
         let meaning = (!how.no_meaning).then_some(chloedb::ingest::MEANING_MODEL);
+        // What this file made, taken back when its rows fail to load
+        // (MAYA-512: a failed import left an empty table that the next try
+        // loaded into).
+        let mut made_db = false;
+        let mut made_table = false;
         let (d, into) = match db.take() {
             Some(d) => {
                 let into = match table {
@@ -1272,6 +1277,7 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
                 None => {
                     let schema = chloedb::ingest::schema_for(&named, &sample()?, rows_format, None, meaning).map_err(|e| format!("{shown}: no table could be made from its rows: {e}"))?;
                     tracing::info!(file = %shown, table = %named, sql = %one_line(&chloedb::query::ddl::create_sql(&schema)), "made the database and its table from the file's columns (--schema gives one of your own)");
+                    made_db = true;
                     (created(Db::create_in(path, schema, opts(), models).map_err(|e| format!("create {}: {e}", path.display()))?), named.clone())
                 }
             },
@@ -1283,9 +1289,25 @@ pub fn import_files(path: &Path, schema: Option<&Path>, table: Option<&str>, mod
                 d.create_table(s).map(|_| sql).map_err(|e| format!("{shown}: create table {into}: {e}"))
             });
             let sql = made?;
+            made_table = true;
             tracing::info!(file = %shown, table = %into, sql = %sql, "made the table from the file's columns");
         }
         let r = chloedb::ingest::import_file_into(&d, &into, file, Some(rows_format)).map_err(|e| format!("{shown}: {e}"));
+        if r.is_err() && made_db {
+            // A database this import made for this file, and nothing else.
+            drop(d);
+            let wal = format!("{}-wal", path.display());
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(&wal);
+            tracing::warn!(db = %path.display(), "removed the database this import made, since its rows did not load");
+            return Err(r.unwrap_err());
+        }
+        if r.is_err() && made_table {
+            match d.drop_table(&into) {
+                Ok(()) => tracing::warn!(table = %into, "dropped the table this import made, since its rows did not load"),
+                Err(e) => tracing::warn!(table = %into, error = %e, "the table this import made is left empty"),
+            }
+        }
         db = Some(d);
         let r = r?;
         let how = if r.bulk { "loaded" } else { "upserted" };

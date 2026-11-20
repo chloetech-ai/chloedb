@@ -2601,6 +2601,35 @@ async fn an_import_makes_its_table_and_never_mixes_rows_in() {
     assert!(r["error"].as_str().unwrap().contains("one of items, movies"), "{r}");
 }
 
+/// MAYA-512: JSON Lines whose rows hold lists (tags, diets) make list
+/// columns and load; rows that then fail leave no table behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_of_lists_loads_and_a_failed_one_leaves_no_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = chloedb::Schema::from_json(ITEMS).unwrap();
+    let db = Db::create(&dir.path().join("i.strata"), schema.clone(), DbOptions { publish_snapshots: true, ..DbOptions::default() }).unwrap();
+    let svc = Service::new(Backend::Local(Arc::new(db)), schema, agent_config("http://unused"), 16, Duration::from_secs(10));
+    let base = http(Arc::new(svc), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let import = |q: &str, body: &str| c.post(format!("{base}/v1/import{q}")).header("content-type", "application/x-ndjson").body(body.to_string()).send();
+    let r = import("?table=r300", "{\"id\":\"a\",\"name\":\"Dal\",\"diet\":[\"vegetarian\",\"vegan\"]}\n{\"id\":\"b\",\"name\":\"Stew\",\"diet\":[]}\n").await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert_eq!((status, &r["written"]), (200, &json!(2)), "{r}");
+    assert!(r["create_table"].as_str().unwrap().contains("diet KEYWORD[]"), "{r}");
+    let (_, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT id FROM r300 WHERE diet = 'vegan'"})).await;
+    assert_eq!(r["rows"], json!([["a"]]), "{r}");
+    // A row the made table refuses (past the rows its columns are read
+    // from): the table is dropped, and says so.
+    let mut body: String = (0..1100).map(|i| format!("{{\"id\":\"r{i}\",\"n\":{i}}}\n")).collect();
+    body.push_str("{\"id\":\"last\",\"n\":\"many\"}\n");
+    let r = import("?table=broken", &body).await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert_eq!(status, 400, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("the table broken this import made was dropped"), "{r}");
+    let (status, r) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT COUNT(*) FROM broken"})).await;
+    assert!(status != 200, "{r}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn imports_files_over_http() {
     let dir = tempfile::tempdir().unwrap();

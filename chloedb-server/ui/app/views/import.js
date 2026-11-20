@@ -253,7 +253,12 @@ function render(page) {
       if (t.type === "keyword" && !t.multi && PROSE.test(c) && s.objs.some((o) => typeof o[c] === "string" && /\s/.test(o[c].trim()))) t.type = "text";
       return { name: c, ...t, use: true };
     });
-    const keyGuess = cols.find((c) => /^(id|key|_id|pk)$/i.test(c.name) && (c.type === "keyword" || c.type === "int")) || cols.find((c) => (c.type === "keyword" || c.type === "int") && new Set(s.objs.map((o) => o[c.name])).size === s.objs.length);
+    const keyGuess = cols.find((c) => /^(id|key|_id|pk)$/i.test(c.name) && (c.type === "keyword" || c.type === "int")) 
+      // Else a column named as an identity (user_id, sku, uuid) whose values
+      // here are all different. Not any unique column: a cooking time that
+      // happened to differ in the sample became the key, and a later recipe
+      // with the same time replaced another (MAYA-513). No key is safer.
+      || cols.find((c) => /(^|_|-)(id|uuid|guid|key|sku|slug|code)$|[a-z]Id$/.test(c.name) && (c.type === "keyword" || c.type === "int") && new Set(s.objs.map((o) => o[c.name])).size === s.objs.length);
     const overlap = (t) => (t.short?.fields || []).filter((f) => s.cols.includes(f.name)).length;
     const best = [...ts].sort((a, b) => overlap(b) - overlap(a))[0];
     // Where the rows go is asked when a table could take them: the table
