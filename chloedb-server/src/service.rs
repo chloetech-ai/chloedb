@@ -431,6 +431,17 @@ fn no_rows() -> ResultSet {
     ResultSet { columns: Vec::new(), rows: Vec::new(), keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() }
 }
 
+/// How long after the `n`th failed try a model's fetch is tried again: half
+/// a minute, then two, ten, and every half hour after.
+pub fn fetch_backoff(n: u32) -> Duration {
+    Duration::from_secs(match n {
+        0 | 1 => 30,
+        2 => 120,
+        3 => 600,
+        _ => 1800,
+    })
+}
+
 /// A model the command center asked this server to fetch or convert
 /// ([`Service::start_model_job`]), by the model it makes.
 #[derive(Clone, Debug, serde::Serialize)]
@@ -696,8 +707,12 @@ pub struct Service {
     models_changed: tokio::sync::watch::Sender<u64>,
     /// Each embedded field's backfill, by table (lower case) and field.
     backfills: Mutex<HashMap<(String, String), Backfill>>,
-    /// The models a fetch was tried for, once each.
-    fetch_tried: Mutex<HashSet<String>>,
+    /// The models a fetch was tried for: how many times, and when the next
+    /// try is due after one failed ([`fetch_backoff`]). A network that was
+    /// down, a proxy that refused, Hugging Face answering 503: the server
+    /// tries again by itself rather than leave search by meaning off until
+    /// someone restarts it.
+    fetch_tried: Mutex<HashMap<String, (u32, std::time::Instant)>>,
     /// The tables without a key that a SQLite import is writing (lower
     /// case), which another import may not write too
     /// ([`Self::import_sqlite`]).
@@ -951,7 +966,7 @@ impl Service {
             fetch_models: false,
             models_changed: tokio::sync::watch::Sender::new(0),
             backfills: Mutex::new(HashMap::new()),
-            fetch_tried: Mutex::new(HashSet::new()),
+            fetch_tried: Mutex::new(HashMap::new()),
             keyless_imports: Default::default(),
             model_jobs: Mutex::new(HashMap::new()),
             ranking: Models::default(),
@@ -1749,26 +1764,46 @@ impl Service {
         loop {
             // A change from here on is another pass.
             changed.borrow_and_update();
-            if self.fetch_models {
-                self.fetch_known_models().await;
-            }
+            let retry = if self.fetch_models { self.fetch_known_models().await } else { None };
             let again = self.backfill && self.backfill_all().await;
-            match again {
-                true => drop(tokio::time::timeout(Duration::from_secs(300), changed.changed()).await),
-                false => drop(changed.changed().await),
+            let wait = match (again, retry) {
+                (true, r) => Some(r.map_or(Duration::from_secs(300), |r| r.min(Duration::from_secs(300)))),
+                (false, r) => r,
+            };
+            match wait {
+                Some(w) => drop(tokio::time::timeout(w, changed.changed()).await),
+                None => drop(changed.changed().await),
             }
         }
     }
 
-    /// Fetches the models [`Self::keep_models`] fetches, each once, and
-    /// opens them.
-    async fn fetch_known_models(&self) {
-        let Some(dir) = self.models_dir.clone() else { return };
+    /// Fetches the models [`Self::keep_models`] fetches and opens them; a
+    /// fetch that failed is tried again later, sooner at first
+    /// ([`fetch_backoff`]). Answers how soon the next try is due, if one is.
+    async fn fetch_known_models(&self) -> Option<Duration> {
+        let dir = self.models_dir.clone()?;
         let mut fetched = false;
+        let mut soonest: Option<Duration> = None;
         for m in self.models().iter().filter(|m| m.model.is_err()) {
             let Some(name) = chloedb::embed::to_fetch(&m.spec.model, &dir) else { continue };
-            if !self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string()) {
-                continue;
+            {
+                let mut tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner());
+                let now = std::time::Instant::now();
+                match tried.get_mut(name) {
+                    Some((_, due)) if *due > now => {
+                        let left = *due - now;
+                        soonest = Some(soonest.map_or(left, |s| s.min(left)));
+                        continue;
+                    }
+                    Some((n, due)) => {
+                        *n += 1;
+                        // Not due again until this try ends and says when.
+                        *due = now + Duration::from_secs(86_400);
+                    }
+                    None => {
+                        tried.insert(name.to_string(), (1, now + Duration::from_secs(86_400)));
+                    }
+                }
             }
             tracing::info!(table = %m.table, field = %m.field, model = name, "fetching the model of an embedded field");
             // A job as one asked for over HTTP is, so that the command
@@ -1790,12 +1825,28 @@ impl Service {
             self.model_job_ended(name, r.as_ref().err().cloned());
             match r {
                 Ok(_) => fetched = true,
-                Err(e) => tracing::warn!(model = name, error = %e, "could not fetch the model of an embedded field: fetch it with chloedb-server fetch-model, or start with --no-fetch-models"),
+                Err(e) => {
+                    let mut tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner());
+                    let n = tried.get(name).map_or(1, |t| t.0);
+                    let wait = fetch_backoff(n);
+                    tried.insert(name.to_string(), (n, std::time::Instant::now() + wait));
+                    soonest = Some(soonest.map_or(wait, |s| s.min(wait)));
+                    tracing::warn!(model = name, error = %e, attempt = n, retry_in_s = wait.as_secs(), "could not fetch the model of an embedded field; trying again later (chloedb-server fetch-model fetches it by hand, --no-fetch-models turns this off)");
+                }
             }
         }
         if fetched {
             self.reopen_models();
         }
+        soonest
+    }
+
+    /// How long until the next try of a model's fetch, `Some` while one is
+    /// due after a failed try.
+    fn fetch_retry_in(&self, model: &str) -> Option<Duration> {
+        let tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner());
+        let (_, due) = tried.iter().find(|(k, _)| k.eq_ignore_ascii_case(model))?.1;
+        due.checked_duration_since(std::time::Instant::now()).filter(|d| *d < Duration::from_secs(86_000))
     }
 
     /// The fetches and conversions of models: asked for over HTTP, and the
@@ -1825,11 +1876,17 @@ impl Service {
     /// fetch, or has.
     pub fn model_fetch(&self, model: &str) -> Option<serde_json::Value> {
         if let Some(j) = self.model_jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&model.to_lowercase()) {
-            return serde_json::to_value(j).ok();
+            let mut v = serde_json::to_value(j).ok()?;
+            if j.state == "failed" {
+                if let Some(d) = self.fetch_retry_in(model) {
+                    v["retry_in_s"] = serde_json::json!(d.as_secs().max(1));
+                }
+            }
+            return Some(v);
         }
         let dir = self.models_dir.as_ref()?;
         let name = chloedb::embed::to_fetch(model, dir).filter(|_| self.fetch_models)?;
-        let tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner()).contains(name);
+        let tried = self.fetch_tried.lock().unwrap_or_else(|e| e.into_inner()).contains_key(name);
         (!tried).then(|| serde_json::json!({"action": "fetch", "state": "queued", "bytes": 0, "size": 0}))
     }
 
@@ -2033,6 +2090,10 @@ impl Service {
                     let mb = |k: &str| j[k].as_u64().unwrap_or(0) / 1_000_000;
                     let so_far = if j["size"].as_u64().unwrap_or(0) > 0 { format!(" ({} of {} MB)", mb("bytes"), mb("size")) } else { String::new() };
                     return Err(ApiError::coded(503, "unavailable", format!("{}'s model {} is downloading{so_far}: this server fetches it once and then fills in the vectors; send the query again in a few seconds (GET /v1/models, or the list_models tool, says when it is ready), or search by words meanwhile", m.field, m.spec.model)));
+                }
+                if let Some(j) = self.model_fetch(&m.spec.model).filter(|j| j["retry_in_s"].is_u64()) {
+                    let why = j["error"].as_str().unwrap_or("it failed");
+                    return Err(ApiError::coded(503, "unavailable", format!("{}'s model {} could not be downloaded yet ({why}); this server tries again by itself in {} s, and search by words works meanwhile (chloedb-server fetch-model {} fetches it by hand)", m.field, m.spec.model, j["retry_in_s"], m.spec.model)));
                 }
                 Err(ApiError::bad(format!("{}'s model {} is not available here ({why}); pass a vector", m.field, m.spec.model)))
             }
@@ -8713,7 +8774,15 @@ mod tests {
         assert!(e.message.contains("downloading (3 of 30 MB)") && !e.message.contains("fetch it first"), "{}", e.message);
         svc.model_job_ended("potion-base-8M", Some("https://huggingface.co/...: 503".into()));
         let e = svc.model(Some("listings"), Some("emb")).err().unwrap();
-        assert_eq!(e.status, 400, "a failed fetch is not a wait: {}", e.message);
+        assert_eq!(e.status, 400, "a failed fetch that is not tried again is not a wait: {}", e.message);
+        // One that is tried again says when, and is a wait.
+        svc.fetch_tried.lock().unwrap().insert("potion-base-8M".into(), (1, std::time::Instant::now() + fetch_backoff(1)));
+        let f = svc.model_fetch("potion-base-8M").unwrap();
+        assert!((1..=30).contains(&f["retry_in_s"].as_u64().unwrap()), "{f}");
+        let e = svc.model(Some("listings"), Some("emb")).err().unwrap();
+        assert_eq!((e.status, e.code()), (503, "unavailable"), "{}", e.message);
+        assert!(e.message.contains("tries again by itself") && e.message.contains("503"), "{}", e.message);
+        assert_eq!([1, 2, 3, 4, 9].map(|n| fetch_backoff(n).as_secs()), [30, 120, 600, 1800, 1800]);
         let f = svc.model_fetch("potion-base-8M").unwrap();
         assert_eq!(f["state"], "failed");
         assert!(f["error"].as_str().unwrap().contains("503"), "{f}");

@@ -11,6 +11,25 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Built for AI agents.** A new guide page, [Build with an AI agent](docs/guide/agents.md),
+  gives the prompt to type for each common job (explore a database, load a
+  file, search, answer with citations, a search page, app code, change a
+  table, a slow query, check the server) with the steps an agent should
+  take in ChloeDB. chloedb-server's MCP server offers the same recipes as
+  prompts (`prompts/list`, `prompts/get`; `/mcp__chloedb__search` in
+  Claude Code), its `search_docs` reads the agent, search, search-page,
+  Python, JavaScript and troubleshooting pages too, and its instructions
+  say what agents got wrong in our sessions (a page opened from a file
+  cannot call the server; a 503 `unavailable` while a model downloads
+  means wait). The website publishes `llms.txt` and `llms-full.txt`.
+- **Setup that heals itself.** A server started without `--listen` whose
+  port is taken (another chloedb-server, or anything else) moves to the
+  next free one, 7710, 7720 and on, and says so; a model download that
+  failed tries again by itself after 30 s, 2 min, 10 min and then every
+  half hour, and a query that needs it meanwhile gets a 503 `unavailable`
+  that says when, rather than a 400 that says to fetch it by hand; an
+  import reads cells such as `N/A`, `null`, `-` or `?` as empty, so a
+  column of numbers with a few of them stays a number column.
 - **Search by meaning without asking for it.** A table an import makes
   from a file's columns (`chloedb-server import`, `POST /v1/import`, the
   MCP tool `import` with `create`, and the command center's Import) gets

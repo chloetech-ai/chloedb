@@ -81,9 +81,9 @@ Load {path} into ChloeDB as a table I can search by words and by meaning.
 ```
 
 1. It looks at the file's first lines and its size, and names the table after the file unless you said otherwise.
-2. A file of up to a few megabytes goes through the `import` tool, its text as `data`, with `create: true`. The table is made from the file's columns: numbers become `INT` or `FLOAT`, short labels `KEYWORD`, and prose `TEXT`. A table with prose also gets `emb`, a vector of that prose by `potion-retrieval-32M`, which the server downloads once (about 130 MB) and fills in. The answer's `create_table` is the statement it made.
+2. A file of up to a few megabytes goes through the `import` tool, its text as `data`, with `create: true`. The table is made from the file's columns: numbers become `INT` or `FLOAT`, short labels `KEYWORD`, and prose `TEXT`. A cell that says it has no value (`N/A`, `null`, `-`) in a column of numbers or dates is `NULL`, so nothing needs cleaning first. A table with prose also gets `emb`, a vector of that prose by `potion-retrieval-32M`, which the server downloads once (about 130 MB) and fills in. The answer's `create_table` is the statement it made.
 3. A larger file is sent from the shell instead, which needs an admin key on a server with a token: `curl -s --data-binary @{path} -H 'content-type: text/csv' 'http://127.0.0.1:7700/v1/import?table=NAME'`. The content type is `text/tab-separated-values` for TSV and `application/x-ndjson` for JSON Lines. With the server stopped, `chloedb-server import {path} --db chloedb.chloedb` does the same ([loading rows](../chloedb/server.md#loading-rows)).
-4. Search by meaning works once the model has arrived. Until then such a query answers 503 `unavailable`, saying the model is downloading. The agent waits, and `list_models` shows the download, rather than fetching the model itself. Search by words works at once.
+4. Search by meaning works once the model has arrived. Until then such a query answers 503 `unavailable`, saying how far the download is, or, when it failed, when the server tries again by itself. The agent waits, and `list_models` shows the download, rather than fetching the model itself. Search by words works at once.
 5. It ends with one search by words and one by meaning, so you see the table work.
 
 ### Search, and say why each row matched

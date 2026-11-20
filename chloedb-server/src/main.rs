@@ -1337,7 +1337,12 @@ fn args_command() -> clap::Command {
 }
 
 async fn run() {
-    let a = <Args as clap::FromArgMatches>::from_arg_matches(&args_command().get_matches()).unwrap_or_else(|e| e.exit());
+    let matches = args_command().get_matches();
+    let mut a = <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // The addresses nobody chose: those a server may move off when another
+    // program holds them ([`free_defaults`]).
+    let defaulted = |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue);
+    let (listen_defaulted, grpc_defaulted) = (defaulted("listen"), defaulted("grpc"));
     chloedb::query::llm::set_limits(chloedb::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });
     let format = obs::LogFormat::parse(&a.log_format).unwrap_or_else(|| {
         eprintln!("chloedb-server: --log-format is text or json, not {:?}", a.log_format);
@@ -1850,6 +1855,18 @@ async fn run() {
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     // ONB-13: every address is taken before the database is opened or
     // made, so that one in use, or no address at all, leaves no files.
+    // A port nobody chose that another program holds is not a reason to
+    // stop: the server takes the next free pair and says so.
+    if let Some((listen, grpc, msg)) = free_defaults(&a.listen, &a.grpc, listen_defaulted, grpc_defaulted && !coordinator).await {
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            eprintln!("chloedb-server: {msg}");
+        }
+        tracing::warn!("{msg}");
+        a.listen = listen;
+        if let Some(g) = grpc {
+            a.grpc = g;
+        }
+    }
     let http_l = take(&a.listen, "--listen").await;
     let grpc_l = match a.grpc != "off" && !coordinator {
         true => Some(take(&a.grpc, "--grpc").await),
@@ -2072,6 +2089,55 @@ fn fail(msg: &str) -> ! {
 /// do about it ([`listen_error`]).
 async fn take(addr: &str, flag: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| fail(&listen_error(addr, flag, &e)))
+}
+
+/// When the default HTTP address (and gRPC's, when it is the default too)
+/// is held by another program: the first pair of free ports ten above it
+/// (7710 and 7711, then 7720 ...), and who holds the default, when it is a
+/// chloedb-server (` by another chloedb-server, at http://...`). `None`:
+/// the default is free, or was chosen, or no pair is free in ten tries.
+async fn free_defaults(listen: &str, grpc: &str, listen_defaulted: bool, grpc_defaulted: bool) -> Option<(String, Option<String>, String)> {
+    // A server given --listen is placed by someone (a cluster's shard,
+    // whose coordinator dials the addresses it was told): it stops rather
+    // than moves.
+    if !listen_defaulted {
+        return None;
+    }
+    let free = |addr: String| async move { tokio::net::TcpListener::bind(&addr).await.is_ok() };
+    let grpc_moves = grpc_defaulted && grpc != "off";
+    let http_free = free(listen.to_string()).await;
+    let grpc_free = !grpc_moves || free(grpc.to_string()).await;
+    if http_free && grpc_free {
+        return None;
+    }
+    let split = |a: &str| -> Option<(String, u16)> { a.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse().ok()?))) };
+    let shifted = |a: &Option<(String, u16)>, k: u16| -> Option<String> { a.as_ref().and_then(|(h, p)| Some(format!("{h}:{}", p.checked_add(10 * k)?))) };
+    let (hp, gp) = (split(listen), if grpc_moves { split(grpc) } else { None });
+    if http_free {
+        // Only the gRPC port is taken: the address people open stays.
+        for k in 1..=10u16 {
+            let g = shifted(&gp, k)?;
+            if free(g.clone()).await {
+                return Some((listen.to_string(), Some(g.clone()), format!("{grpc} (gRPC) is in use, so this server takes gRPC on {g} instead (give --grpc to choose)")));
+            }
+        }
+        return None;
+    }
+    for k in 1..=10u16 {
+        let cand = shifted(&hp, k)?;
+        let g = if grpc_moves { Some(shifted(&gp, k)?) } else { None };
+        if free(cand.clone()).await && match &g { Some(g) => free(g.clone()).await, None => true } {
+            let url = format!("http://{}", chloedb_server::ready::browsable(listen));
+            let other = chloedb_server::http_client().no_proxy().timeout(std::time::Duration::from_secs(2)).build().ok()?;
+            let holder = match other.get(format!("{url}/livez")).send().await {
+                Ok(r) if r.status().is_success() || r.status().as_u16() == 401 => format!(" by another chloedb-server, at {url}"),
+                _ => String::new(),
+            };
+            let msg = format!("{listen} is in use{holder}, so this server listens on http://{} instead (give --listen to choose)", chloedb_server::ready::browsable(&cand));
+            return Some((cand, g, msg));
+        }
+    }
+    None
 }
 
 /// Why `addr` (option `flag`) could not be listened on (ONB-13).
