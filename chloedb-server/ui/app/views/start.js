@@ -5,7 +5,7 @@
 // server holds anything that matters. Home sends a server without tables
 // of its own here.
 
-import { h, icon, clear, api, card, fmt, toast, gate, can, copy, store, bus } from "../core.js";
+import { h, icon, clear, api, card, fmt, toast, gate, can, copy, store, bus, isOpenServer } from "../core.js";
 import { state, isSandbox, isProduction, environment, clusterName, isCoordinator, kubeInfo, managed, specName } from "../data.js";
 import { tables, invalidate, isTestModel } from "../catalog.js";
 import { isMine, firstMine } from "../owners.js";
@@ -80,13 +80,13 @@ function render(page) {
       { done: fns.length > 0, title: "Save a search, call it from code", what: fns.length ? `${fmt.plural(fns.length, "saved search", "saved searches")}: ${fns.slice(0, 3).map((f) => f.name).join(", ")}.` : "A search you save is a stored function: one definition that SQL, an HTTP call, Python, JavaScript and agents all call.",
         act: [h("a", { class: "btn", href: "#/saved" }, icon("bookmark"), "Saved searches")] },
       { done: false, optional: true, title: "Give an agent the tools", what: "The server speaks MCP: an agent lists the tables, searches, and calls your saved searches as tools (fn_<name>), with the key you give it.",
-        act: [h("button", { class: "btn", onclick: () => copy(`claude mcp add --transport http chloedb ${location.origin}/v1/mcp --header "Authorization: Bearer $CHLOEDB_TOKEN"`, "Command copied: run it where Claude Code runs") }, icon("copy"), "Copy the Claude Code command"), h("a", { class: "btn ghost", href: "#/access?tab=keys&new=1" }, icon("key"), "Make a read key for it")] },
+        act: [h("button", { class: "btn", onclick: () => copy(`claude mcp add --transport http chloedb ${location.origin}/v1/mcp${isOpenServer() ? "" : ' --header "Authorization: Bearer $CHLOEDB_TOKEN"'}`, "Command copied: run it where Claude Code runs") }, icon("copy"), "Copy the Claude Code command"), h("a", { class: "btn ghost", href: "#/access?tab=keys&new=1" }, icon("key"), "Make a read key for it")] },
     ];
     const n = steps.filter((s) => s.done).length;
     // Its steps done, a bare address opens Home again (main.js).
     store.set("start.done", n >= steps.filter((s) => !s.optional).length);
     clear(body,
-      h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Start here"), h("p", {}, `${clusterName() || location.host}: your data, searchable by words and by meaning, from any language or agent. ${n} of ${steps.filter((s) => !s.optional).length} steps done.`))),
+      h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Start here"), h("p", {}, `${clusterName() || location.host}: your data, searchable by words and by meaning, from any language or agent. ${n} of ${steps.filter((s) => !s.optional).length} steps done${steps.some((s) => s.optional) ? ", and the last when you are ready" : ""}.`))),
       modeCard(),
       h("ol", { class: "start-steps" }, steps.map((s, i) => h("li", { class: s.done ? "done" : "" },
         h("span", { class: "start-n" }, s.done ? icon("check") : String(i + 1)),

@@ -251,10 +251,12 @@ function render(page) {
     const keyGuess = cols.find((c) => /^(id|key|_id|pk)$/i.test(c.name) && (c.type === "keyword" || c.type === "int")) || cols.find((c) => (c.type === "keyword" || c.type === "int") && new Set(s.objs.map((o) => o[c.name])).size === s.objs.length);
     const overlap = (t) => (t.short?.fields || []).filter((f) => s.cols.includes(f.name)).length;
     const best = [...ts].sort((a, b) => overlap(b) - overlap(a))[0];
-    // Where the rows go is asked, never assumed: the table that shares the
-    // most columns is offered first.
+    // Where the rows go is asked when a table could take them: the table
+    // that shares the most columns is offered first. When none could (or
+    // there is none), a new table it is, named after the file, which the
+    // page shows before anything is written.
     const fits = best && overlap(best) >= Math.max(1, s.cols.length / 2);
-    const st = { mode: null, suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols, shardBy: null, clusterBy: null };
+    const st = { mode: fits ? null : "new", suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols, shardBy: null, clusterBy: null };
     drawLoad(file, format, s, st);
   }
   function drawLoad(file, format, s, st) {
