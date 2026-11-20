@@ -92,6 +92,24 @@ changes collect under "Unreleased".
   watches belong to a random key the browser keeps. An example plays the
   Park Fire's first 12 hours over three made-up places.
 
+- **The command center does a support lead's Monday numbers without SQL
+  (GRACE-401 to 407, 417).** A table's search says how many rows match,
+  how many of them have the words as typed, pages 20 at a time and opens a
+  row with every field; by words and meaning, rows with every word come
+  first. The Data tab's CSV and JSON Lines hold every row its condition
+  keeps, not the page on screen, and Import and export downloads a table
+  as CSV or JSON Lines. The query builder groups a time by day, week or
+  month, measures the median and the hours between two times, and each
+  group's share of all rows or of its week; *is none of* is `NOT IN`, and
+  turning *is one of* with several picks into *is not* keeps them all. A
+  chart splits its series by a column (a line per priority), and fits a
+  phone. Import finds a column that lists tags in one value and splits it
+  into a `KEYWORD[]`, the separator shown and changeable. **Team views**
+  keep a builder's or the workbench's query, its chart and the builder's
+  state on the server, as rows of `cc_views` (the first save makes the
+  table, with an admin key), opened by anyone whose key reads them, by a
+  link, on a phone too.
+
 ## 0.3.9
 
 What the persona study's third round found, and new ways to see and shape
