@@ -354,7 +354,7 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
     def trends_(h, m, body):
         from . import trends
         terms = [t for t in re.split(r"[,\n]", h.qs.get("terms", "")) if t.strip()]
-        return 200, trends.trends(app, terms, h.qs.get("by", "hour"))
+        return 200, trends.trends(app, terms, h.qs.get("by", "auto"))
 
     @route("GET", "/api/experiments")
     def experiments(h, m, body):

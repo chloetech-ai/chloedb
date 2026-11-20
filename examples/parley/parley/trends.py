@@ -16,6 +16,8 @@ from collections import Counter
 from .service import ParleyError, _epoch, _iso
 
 WINDOWS = {"hour": ("1 hour", 3600, 48), "day": ("1 day", 86400, 30)}
+# For "auto": the narrowest bucket that fits the site's life in 48 of them.
+WIDTHS = [(300, "5 minutes"), (900, "15 minutes"), (1800, "30 minutes"), (3600, "1 hour"), (6 * 3600, "6 hours"), (86400, "1 day")]
 STOP = set("""a an the and or but if of to in on at by for with from as is are was were be been being it its this that these those
 i me my we our you your he she they them their his her not no so do does did done have has had having can could would should will
 just very really also than then there here what which who whom whose when where why how all any each every some more most other
@@ -40,12 +42,18 @@ def _count(app, table: str, field: str, since: str, width: str, term: str | None
                    params, label=f"trends:{table}{':' + term if term else ''}{':kind' if kind else ''}")
 
 
-def trends(app, terms: list[str], by: str = "hour") -> dict:
-    if by not in WINDOWS:
-        raise ParleyError(400, "by is hour or day")
+def trends(app, terms: list[str], by: str = "auto") -> dict:
+    if by not in WINDOWS and by != "auto":
+        raise ParleyError(400, "by is auto, hour or day")
     terms = [t.strip() for t in terms if t.strip()][:6]
-    width, width_s, n = WINDOWS[by]
     now = time.time()
+    if by == "auto":
+        first = app.s.one("SELECT ts FROM posts ORDER BY ts ASC LIMIT 1", label="trends:first")
+        span = max(300.0, now - _epoch(first["ts"])) if first else 3600.0
+        width_s, width = next(((w, name) for w, name in WIDTHS if span / w <= 47), WIDTHS[-1])
+        n = min(48, max(6, math.ceil(span / width_s) + 1))
+    else:
+        width, width_s, n = WINDOWS[by]
     starts = _buckets(width_s, n, now)
     since = _iso(starts[0])
     t0 = time.perf_counter()
@@ -73,8 +81,11 @@ def trends(app, terms: list[str], by: str = "hour") -> dict:
         idx = {int(s // width_s): j for j, s in enumerate(starts)}.get(i)
         if idx is not None:
             kinds[k][idx] += int(r["n"])
-    return {"by": by, "buckets": [_iso(s) for s in starts], "totals": totals, "terms": out_terms,
-            "kinds": kinds, "rising": rising(app), "took_ms": round((time.perf_counter() - t0) * 1000, 1)}
+    span_h = (now - starts[0]) / 3600
+    recent = min(6.0, max(0.5, span_h / 3))
+    return {"by": by, "width": width, "width_s": width_s, "buckets": [_iso(s) for s in starts], "totals": totals, "terms": out_terms,
+            "kinds": kinds, "rising": rising(app, recent, min(42.0, max(0.5, span_h - recent))), "recent_hours": round(recent, 2),
+            "took_ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
 def rising(app, recent_hours: float = 6, before_hours: float = 42, top: int = 16) -> list[dict]:

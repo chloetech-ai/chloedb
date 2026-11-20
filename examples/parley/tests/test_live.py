@@ -535,3 +535,5 @@ def test_trends(live):
     assert sum(by["octopus"]["counts"]) == 3 and sum(by["batteries"]["counts"]) == 1 and sum(by["saturn"]["counts"]) == 0
     assert sum(t["totals"]) == 4 and len(t["buckets"]) == 48 and by["octopus"]["share"][-1] == 0.75
     assert sum(sum(v) for v in t["kinds"].values()) == 4
+    auto = trends.trends(a, ["octopus"])  # a young site: buckets narrow enough to see it
+    assert auto["width_s"] <= 3600 and sum(auto["terms"][0]["counts"]) == 3 and sum(auto["totals"]) == 4
