@@ -65,6 +65,7 @@ pub mod export;
 pub mod fleet;
 pub mod funnel;
 pub mod follow;
+pub mod grow;
 pub mod grpc;
 pub mod heap;
 pub mod hub;

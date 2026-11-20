@@ -8447,6 +8447,14 @@ A query travels as SQL with its parameters or, from protocol 2, as a typed plan 
 
 ## Sharding: one coordinator, many shards
 
+<!-- since 0.3.10 --> The quickest way there is from the database you have: stop its server, then
+
+```sh
+chloedb-server grow --db films.chloedb --shards 3      # films.chloedb becomes shard 0 of three, served at 127.0.0.1:7700
+```
+
+`grow` starts the database as the first shard, a coordinator at the address it was served on (`--listen`, 127.0.0.1:7700 by default), and new shards beside it (their databases, logs and `cluster.json` in `films.chloedb.cluster`, `--dir` another folder; their ports ten above the coordinator's, ten apart), makes the first shard's tables on each new one and moves their share of the rows to them while queries answer. Clients keep the address they had. Ctrl+C stops every server; `chloedb-server grow --db films.chloedb` starts the cluster again as `cluster.json` lists it, and `--shards 5` grows it further. A grow that stopped part way sets the database of a shard that never joined aside (its files end in `.unused-<time>`) and makes it again. `--token` (`CHLOEDB_TOKEN`) is the token of every server. For servers on other machines, start them as below.
+
 ```sh
 chloedb-server --demo 20000 --demo-shard 0/2 --db a.chloedb --listen 127.0.0.1:7710 --grpc 127.0.0.1:7711
 chloedb-server --demo 20000 --demo-shard 1/2 --db b.chloedb --listen 127.0.0.1:7720 --grpc 127.0.0.1:7721

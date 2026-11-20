@@ -11,6 +11,12 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **One command from a database to a cluster.** `chloedb-server grow --db
+  films.chloedb --shards 3` serves the database as the first of three
+  shards on this machine, with a coordinator at the address it was served
+  on, makes its tables on the new shards and moves their share of the rows
+  to them while queries answer; Ctrl+C stops it and the same command
+  starts it again.
 - **Built for AI agents.** A new guide page, [Build with an AI agent](docs/guide/agents.md),
   gives the prompt to type for each common job (explore a database, load a
   file, search, answer with citations, a search page, app code, change a

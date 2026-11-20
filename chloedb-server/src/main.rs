@@ -1114,6 +1114,32 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         wait_s: u64,
     },
+    /// Grow the database a server served into a cluster on this machine,
+    /// answering at the same address: the database becomes the first shard
+    /// as it is, empty shards start beside it with its tables, a coordinator
+    /// takes the address, and rows move to the new shards in the background
+    /// while every query keeps working. Stop the server first. Its shards'
+    /// databases and logs go in DIR, whose cluster.json lets `grow` start the
+    /// same cluster again; a larger --shards adds shards to it. Ctrl+C stops
+    /// them all.
+    Grow {
+        /// The database the server served.
+        #[arg(long, default_value = "chloedb.chloedb")]
+        db: PathBuf,
+        /// How many shards the cluster has.
+        #[arg(long, default_value_t = 3)]
+        shards: usize,
+        /// The address the cluster answers at (the server's).
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        listen: String,
+        /// Where the shards' databases, their logs and cluster.json go
+        /// (default: <db>.cluster beside the database).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// The token every request needs.
+        #[arg(long, env = "CHLOEDB_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
     /// Run the Kubernetes operator: it makes and changes the ChloeDB clusters
     /// that StrataCluster resources describe (see deploy/README.md). In a
     /// pod it talks to the API server as its service account.
@@ -1598,6 +1624,44 @@ async fn run() {
             if let Err(e) = chloedb_server::operator::kube::run(o).await {
                 fail(&e);
             }
+            return;
+        }
+        Some(Command::Grow { db, shards, listen, dir, token }) => {
+            if *shards < 1 {
+                fail("--shards: at least 1");
+            }
+            let dir = dir.clone().unwrap_or_else(|| {
+                let mut d = db.clone().into_os_string();
+                d.push(".cluster");
+                PathBuf::from(d)
+            });
+            let bin = std::env::current_exe().unwrap_or_else(|e| fail(&format!("which chloedb-server this is: {e}")));
+            let o = chloedb_server::grow::Options { db: db.clone(), shards: *shards, listen: listen.clone(), dir: dir.clone(), bin, token: token.clone() };
+            eprintln!("growing {} into a cluster of {shards} shard{} at {listen} (servers' logs in {})", db.display(), if *shards == 1 { "" } else { "s" }, dir.display());
+            let mut c = match chloedb_server::grow::Cluster::start(&o).await {
+                Ok(c) => c,
+                Err(e) => fail(&format!("grow: {e}")),
+            };
+            let (tables, rows) = c.served().await;
+            let shown = chloedb_server::ready::Ready { url: c.url.clone(), db: None, shards: c.shards.len(), tables, rows, token: token.is_some() };
+            eprintln!("{}", shown.text());
+            if c.added > 0 {
+                eprintln!("  {} new shard{} take{} their share of the rows in the background; queries answer meanwhile.", c.added, if c.added == 1 { "" } else { "s" }, if c.added == 1 { "s" } else { "" });
+            }
+            loop {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                        if let Some(n) = c.exited() {
+                            eprintln!("{n} stopped (its log: {}): stopping the cluster", dir.join(format!("{n}.log")).display());
+                            c.stop().await;
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            eprintln!("stopping the cluster; `chloedb-server grow --db {}` starts it again", db.display());
+            c.stop().await;
             return;
         }
         Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan, no_meaning }) => {
