@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>chloedb-sound: Sound Explorer on ChloeDB · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-sound keeps free sounds in ChloeDB and finds them by how they sound: field recordings, effects and music that anyone may reuse with credit, each with its author, licence and a link back to where it came from.…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/sound.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html" aria-current="page">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>chloedb-sound: Sound Explorer on ChloeDB</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/sound.md">docs/chloedb/sound.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#run-it">Run it</a></li><li><a href="#tables">Tables</a></li><li><a href="#the-api">The API</a></li><li><a href="#tests">Tests</a></li></ol></details>
+    <div class="doc-body">
+
+<blockquote>
+<p><strong>A demo.</strong> chloedb-sound shows what ChloeDB can do; it is not part of ChloeDB's releases or their promises. It is tested on a train of its own (the <code>Demos</code> workflow, <code>.github/workflows/demos.yml</code>), outside CI's required check, and the command center marks it as a demo (<a href="compatibility.html#demos">compatibility</a>).</p>
+</blockquote>
+<p><code>chloedb-sound</code> keeps free sounds in ChloeDB and finds them by how they sound: field recordings, effects and music that anyone may reuse with credit, each with its author, licence and a link back to where it came from. It listens with CLAP (<code>clap-htsat-unfused</code>), which puts sounds and sentences in one space of 512 dimensions, run by chloedb-server itself (built with <code>--features audio</code>).</p>
+<ul>
+<li><strong>Search by how it sounds.</strong> "rain on a tin roof", "a crowd cheering far away", "a cello played softly": the words are heard through CLAP's text tower and ranked against every sound's vector, fused with BM25 over its title, tags, labels and description (<code>0.75 * tmm(similarity(emb, :v)) + 0.25 * tmm(bm25(words, :q))</code>). <em>Rank by</em> picks one of the two. Facets count the source, the kind, the licence and the length of the best 200.</li>
+<li><strong>Steer it.</strong> <em>More like this</em> and <em>Less like this</em> on any result move the search towards and away from that sound's vector; <em>not</em> takes words to move away from ("no thunder"); the chips (heavier, lighter, drier, wetter, closer, farther, busier, calmer) move it between two sentences. Each is shown as a chip of what was understood.</li>
+<li><strong>Moments inside long recordings.</strong> Every sound is cut into ten-second windows every five seconds, each with its own vector (<code>au_moments</code>), so a search can land 7:40 into a half-hour dawn chorus. <em>Moments</em> returns the best moment of each sound (<code>DISTINCT ON (sound)</code>) and the other good moments of each.</li>
+<li><strong>What is in it.</strong> A sound's page shows, along its waveform, which of FSD50K's 200 labels each moment sounds like (each moment's vector against the labels', <code>au_labels</code>, embedded by the server from a sentence each).</li>
+<li><strong>Listen.</strong> Record ten seconds with the microphone or drop a file, and find what it sounds like: the clip is embedded by <code>POST /v1/embed</code> and searched like any sound; a moment matched above 0.95, or above 0.9 and at least 0.03 ahead of the next recording's, is called the same recording.</li>
+<li><strong>Scenes.</strong> Describe a place ("a rainy café by a harbour") and get its layers: the sounds nearest the words and each part of them, one for each thing they sound like most (their best label by sound), played together with a level for each.</li>
+<li><strong>Drift.</strong> From one sound to another in steps, each step the sound nearest to a point on the way between their vectors (a slerp).</li>
+<li><strong>Map.</strong> Every sound placed by how it sounds (t-SNE of the vectors, made by <code>tools/prepare.py</code>), or by where it was recorded when its source says.</li>
+<li><strong>Credit and licences.</strong> Each sound carries its title, author, source page and licence, shown on the page and copied as one line ("“Title” by author, source (page), licence (link)"). Only CC0, public domain, CC BY, CC BY-SA and the Free Art License (and the GFDL on Commons) are kept: no non-commercial, no-derivatives or Sampling+ sound is loaded.</li>
+</ul>
+<p>Like <a href="crawler.html">the crawler</a> and <a href="hn.html">Hacker News</a>, it is a program of its own, in Rust, that talks to chloedb-server over HTTP only, and the command center shows it as an app (<strong>Apps → Sound Explorer</strong>). Previews are MP3 files on the app's disk, served by it with HTTP ranges, since a cluster's coordinator keeps no media files.</p>
+<h2 id="run-it">Run it<a class="anchor" href="#run-it" aria-label="Link to this section">#</a></h2>
+<p>Build the server with CLAP and the app, download the sounds, make the rows, and start the app with a server of its own:</p>
+<pre data-lang="sh">(cd chloedb-server &amp;&amp; cargo build --release --bin chloedb-server --features audio)
+cd chloedb-sound &amp;&amp; cargo build --release
+python3 -I tools/fetch.py fsd50k ~/sounds/fsd50k --clips 2500
+python3 -I tools/fetch.py fma ~/sounds/fma --shards 9
+python3 -I tools/fetch.py commons ~/sounds/commons --files 300 --min-seconds 20
+target/release/chloedb-sound serve --local ./sound-data --server-bin ../chloedb-server/target/release/chloedb-server &amp;
+python3 -I tools/prepare.py --fsd50k ~/sounds/fsd50k --fma ~/sounds/fma --commons ~/sounds/commons --out ./sound-rows
+target/release/chloedb-sound load --rows ./sound-rows</pre>
+<p><code>serve --local DIR</code> starts a chloedb-server with its database in <code>DIR</code>, makes the tables and the labels (the server fetches CLAP, 600 MB, the first time a field names it), and lists the app as <code>sound</code>; open <code>http://127.0.0.1:7700</code> and go to <strong>Apps → Sound Explorer</strong>. <code>tools/prepare.py</code> decodes each sound with ffmpeg, writes its preview and waveform, sends each ten-second window to the server's CLAP (<code>POST /v1/embed</code> through <code>au_labels</code>' model, about three windows a second on four cores with AVX-512), and writes the rows; it needs ffmpeg and numpy, and a run that stops goes on where it was. <code>--concurrency</code> sounds are made at once, and <code>--embed URL,URL,...</code> shares the windows among several servers with CLAP (each window to the one with the fewest at work). Of more than 4,000 sounds the map is a t-SNE of 4,000 of them, and each other sound is placed among the ten it sounds most like. Give <code>serve</code> the rows with <code>--rows</code> and it loads them when the tables are empty, and plays the previews from their <code>audio/</code> folder (<code>--audio</code> for another).</p>
+<p>The three sources, and what is kept of each:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>source</th>
+<th>what</th>
+<th>licences kept</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://zenodo.org/records/4060432">FSD50K</a></td>
+<td>Freesound clips labelled by hand with 200 classes of the AudioSet ontology; the evaluation set's, the same number of each class, or with <code>--split both --clips 0</code> every clip of both sets (43,379 of 51,197 qualify)</td>
+<td>CC0, CC BY</td>
+</tr>
+<tr>
+<td><a href="https://github.com/mdeff/fma">Free Music Archive</a></td>
+<td>30-second clips of <code>fma_small</code>, or with <code>--set large --shards 0</code> of all of <code>fma_large</code> (9,918 of its 105,024 tracks qualify), with their genres</td>
+<td>CC BY, CC BY-SA, CC0, Free Art License (about one track in ten)</td>
+</tr>
+<tr>
+<td><a href="https://commons.wikimedia.org/wiki/Category:Sounds_by_type">Wikimedia Commons</a></td>
+<td>sounds under its sound categories, with descriptions and, for some, a place</td>
+<td>CC0, public domain, CC BY, CC BY-SA, GFDL</td>
+</tr>
+</tbody>
+</table></div>
+<p>Freesound's own archive is not used: its terms do not allow a copy of it on another site.</p>
+<p>Against a server or a cluster that runs elsewhere, load into it and give the server the app:</p>
+<pre data-lang="sh">chloedb-sound init --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot;
+python3 -I tools/prepare.py ... --out ./sound-rows --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot;
+chloedb-sound load --rows ./sound-rows --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot;
+chloedb-sound serve --strata http://coordinator:7700 --key &quot;$CHLOEDB_KEY&quot; --token &quot;$SOUND_TOKEN&quot; --audio ./sound-rows/audio --listen 0.0.0.0:7870
+chloedb-server ... --app sound=http://sound-host:7870     # with CHLOEDB_APP_TOKEN=$SOUND_TOKEN</pre>
+<p>On Kubernetes, <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/chloedb-sound/deploy/k8s.yaml"><code>deploy/k8s.yaml</code></a> runs it on one small node of its own (2 vCPUs, 4 GB): the server with CLAP, the app and a pod to work in, with the binaries, the model, the rows, the previews and the database on the node's own disk. A bigger set is made on machines of their own and copied in: <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/chloedb-sound/deploy/batch.yaml"><code>deploy/batch.yaml</code></a> runs a server with CLAP on each node of a temporary pool, and the first downloads the sounds, makes the rows with <code>--embed</code> over all of them and builds the database. The whole of FSD50K and <code>fma_large</code>'s clips that qualify, with a sample of Commons, came to 53,591 sounds and 132,486 moments, embedded in about six hours on three DigitalOcean 8-vCPU machines (s-8vcpu-16gb, AMD and Intel, about 6.5 windows a second together, a third of the speed per core of a Xeon with AVX-512); the database is 735 MB and the previews 8.5 GB.</p>
+<p><code>--public</code> serves the page at <code>/</code> and its reads to anyone, without the token, within <code>--per-minute</code> requests a minute from one address (120 by default; the previews are not counted) and <code>--listens-per-minute</code> clips heard (6), and refuses calls from another site's pages. It serves no SQL: the page's <em>SQL</em> drawer shows the statements each answer ran.</p>
+<p>A server without CLAP (built without the <code>audio</code> feature, or without the model) still serves the app: searches by words are ranked by BM25 alone and say so, and the pages that hear words or clips answer with an error.</p>
+<h2 id="tables">Tables<a class="anchor" href="#tables" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>table</th>
+<th>a row is</th>
+<th>its vector</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>au_sounds</code></td>
+<td>a sound: title, words (title, tags, labels, description), author and its page, source page, licence and its link, kind, tags, labels, genres, length, year, place, preview file, waveform (160 peaks), place on the map, number of moments</td>
+<td><code>emb VECTOR(512)</code>: the mean of its windows that start every ten seconds, the vector the server makes of the whole file</td>
+</tr>
+<tr>
+<td><code>au_moments</code></td>
+<td>ten seconds of a sound, every five seconds (<code>shard_by = 'sound'</code>, so a sound's moments are on one shard)</td>
+<td><code>emb VECTOR(512)</code></td>
+</tr>
+<tr>
+<td><code>au_labels</code></td>
+<td>one of FSD50K's 200 labels, with a sentence ("the sound of rain")</td>
+<td><code>emb VECTOR(512) OPTIONS(embed = 'prompt', model = 'clap-htsat-unfused')</code>: the server embeds it, and words and clips are embedded through this field</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="the-api">The API<a class="anchor" href="#the-api" aria-label="Link to this section">#</a></h2>
+<p>Every answer carries <code>queries</code>, the SQL it ran, for the page's <em>SQL</em> drawer.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>route</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /v1/search?q=&amp;like=&amp;unlike=&amp;not=&amp;steer=&amp;source=&amp;kind=&amp;lic=&amp;min_s=&amp;max_s=&amp;by=&amp;page=</code></td>
+<td>sounds by words and by sound, steered, filtered and faceted; <code>by</code> is <code>both</code>, <code>sound</code> or <code>words</code></td>
+</tr>
+<tr>
+<td><code>GET /v1/sound/:id</code></td>
+<td>a sound with its credit, what is in it moment by moment, sounds like it and more by its author</td>
+</tr>
+<tr>
+<td><code>GET /v1/moments?q=&amp;min=</code></td>
+<td>the best moment of each recording, and its other good moments, in recordings at least <code>min</code> seconds long (15 by default; songs are left to <em>Music</em>)</td>
+</tr>
+<tr>
+<td><code>POST /v1/listen</code></td>
+<td><code>{audio: base64}</code> (WAV, FLAC, MP3 or Ogg, at most 2 MB): what it sounds like, and whether it is one of the sounds</td>
+</tr>
+<tr>
+<td><code>GET /v1/scene?q=</code></td>
+<td>a scene's layers: a sound for each thing the place sounds like, with a level</td>
+</tr>
+<tr>
+<td><code>GET /v1/drift?from=&amp;to=&amp;steps=</code></td>
+<td>the sounds on the way from one to the other</td>
+</tr>
+<tr>
+<td><code>GET /v1/map</code></td>
+<td>every sound's place on the map and by where it was recorded</td>
+</tr>
+<tr>
+<td><code>GET /v1/home</code>, <code>/v1/labels</code>, <code>/v1/status</code></td>
+<td>the front page, the labels, the counts</td>
+</tr>
+<tr>
+<td><code>GET /v1/audio/:id</code></td>
+<td>a preview (MP3), with ranges; <code>?b64=1</code> as JSON for the command center</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="tests">Tests<a class="anchor" href="#tests" aria-label="Link to this section">#</a></h2>
+<p><code>cargo test</code> runs the app against a real chloedb-server (<code>CHLOEDB_SERVER_BIN</code>, or one built in <code>../chloedb-server</code>) with nine made-up sounds and their moments: search by sound, steering, filters, words, a sound's credit, drift, the map, previews with ranges, and the public limits. <code>CHLOEDB_SOUND_CLAP=1</code> against a server built with <code>--features audio</code> tests the pages that hear words and clips too; without it the test checks that words are still searched by BM25.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/sound.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="github.html">← GitHub explorer</a><a href="backbone.html">Backbone explorer →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>
