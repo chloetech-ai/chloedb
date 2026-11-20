@@ -756,3 +756,12 @@ def test_trending_topics(live):
     with pytest.raises(ParleyError) as e:
         topics.explain(a, t["key"])
     assert e.value.status == 503  # no model here
+
+
+def test_a_topic_whose_words_shifted_keeps_its_explanation():
+    from parley.topics import _same_topic
+    old = [{"id": "a" * 20, "terms": ["water line", "beach", "photo", "tide"], "title": "Old beach photo"},
+           {"id": "b" * 20, "terms": ["moss", "roofs"], "title": "Moss on roofs"}]
+    assert _same_topic(old, "a" * 20, ["anything"])["title"] == "Old beach photo"
+    assert _same_topic(old, "c" * 20, ["beach", "water line", "erosion", "tide"])["title"] == "Old beach photo"
+    assert _same_topic(old, "c" * 20, ["beach", "kelp", "otters"]) is None

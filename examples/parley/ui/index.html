@@ -2136,7 +2136,12 @@ body.wide .left, body.wide .right { display: none; }
           if (!el) continue;
           el.querySelector('[data-title]').textContent = e.title || t.title;
           el.querySelector('[data-explain]').innerHTML = `<p class="what">${esc(e.what)}</p><p class="why"><b>Why now:</b> ${esc(e.why)}</p>`;
-        } catch (err) { if (el) el.querySelector('[data-explain]').innerHTML = `<p class="wait">${esc(err.message || 'No explanation now.')}</p>`; }
+        } catch (err) {
+          if (!el) continue;
+          const why = err.status === 429 ? 'Explanation coming soon. Trends explains up to 60 new topics an hour, and this one is next in line.'
+            : err.status === 404 ? 'This topic just stopped trending.' : (err.message || 'No explanation now.');
+          el.querySelector('[data-explain]').innerHTML = `<p class="wait">${esc(why)}</p>`;
+        }
       }
     };
     work(); work(); work();

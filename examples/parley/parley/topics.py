@@ -50,8 +50,9 @@ very want wanted wants wasn't watch week weeks went what's whatever whether whol
 worth wouldn't write wrong year years yes yet you're young yourself""".split())
 MORE_STOP = STOP | set("""post posts comment comments agent agents parley thing things think know good great love nice cool yeah
 people time today tonight right going want need see look looks maybe something anything everything because though while
-first last next never always every little big lot lots bit kind sort used use using says said say tell asked ask""".split())
-EXPLAIN_PER_HOUR = 20
+first last next never always every little big lot lots bit kind sort used use using says said say tell asked ask
+beside besides nearest near next inside outside under over toward towards within without upon onto""".split())
+EXPLAIN_PER_HOUR = 60  # about $0.0003 each on Haiku: under $0.50 a day at the most
 _cache: dict[str, tuple[float, dict]] = {}
 _lock = threading.Lock()
 
@@ -209,21 +210,19 @@ def topics(app: Parley, hours: float | None = None, top: int = 8, fresh: bool = 
         top_posts = sorted(t["posts"], key=lambda p: -(2 * sum(1 for x in t["terms"] if x in _terms(" ".join(filter(None, [p.get("body"), p.get("meme_top"), p.get("meme_bottom"), p.get("link_title")])), names))
                                                          + 0.4 * ((p.get("n_reactions") or 0) + 2 * (p.get("n_comments") or 0)) + (1 if _epoch(p["ts"]) >= cut else 0)))
         sig = signals(app, t, cut)
-        key = hashlib.sha256(("topic-v1|" + "|".join(sorted(t["terms"][:3]))).encode()).hexdigest()[:20]
-        res.append({"key": key, "terms": t["terms"], "rising": [{k: r[k] for k in ("term", "n", "before", "ratio", "agents")} for r in t["rising"]],
+        tkey = hashlib.sha256(("topic-v1|" + "|".join(sorted(t["terms"][:3]))).encode()).hexdigest()[:20]
+        res.append({"key": tkey, "terms": t["terms"], "rising": [{k: r[k] for k in ("term", "n", "before", "ratio", "agents")} for r in t["rising"]],
                     "n_posts": len(t["posts"]), "n_comments": len(t["comments"]), "n_agents": len(t["agents"]),
                     "communities": [{"name": c, "n": n} for c, n in t["communities"].most_common(4)],
                     "agents": [{"agent": a, "n": n} for a, n in t["agents"].most_common(6)], "burst": round(t["burst"], 2), "engaged": t["engaged"],
                     "score": round(t["score"], 2), "series": series, "signals": sig, "post_ids": [p["id"] for p in top_posts[:6]],
                     "search": " OR ".join(f'"{x}"' if " " in x else x.lstrip("#") for x in t["terms"][:3])})
     # The explanations already made, and the posts to show.
-    keys = [r["key"] for r in res]
-    kept = {r["id"]: r for r in app.s.q(f"SELECT id, title, what, why, ts FROM trend_topics WHERE id IN (:k) LIMIT {max(1, len(keys))}",
-                                          {"k": keys or ["-"]}, label="topics:explained")} if keys else {}
+    explained = _explained(app) if res else []
     want = list({x for r in res for x in r["post_ids"][:4]})
     full = {p["id"]: p for p in app.posts_by_ids(want)} if want and hasattr(app, "posts_by_ids") else {}
     for r in res:
-        e = kept.get(r["key"])
+        e = _same_topic(explained, r["key"], r["terms"])
         r["explained"] = bool(e)
         if e:
             r.update({"title": e.get("title"), "what": e.get("what"), "why": e.get("why")})
@@ -286,8 +285,39 @@ def signals(app: Parley, t: dict, cut: float) -> list[dict]:
     return out
 
 
+def _explained(app: Parley, days: float = 3) -> list[dict]:
+    """The explanations of the last few days, newest first."""
+    rows = app.s.q("SELECT id, terms, title, what, why, cost, ts FROM trend_topics WHERE ts >= :t ORDER BY ts DESC LIMIT 400",
+                   {"t": _iso(time.time() - days * 86400)}, label="topics:explained")
+    for r in rows:
+        if isinstance(r.get("terms"), str):
+            try:
+                r["terms"] = json.loads(r["terms"])
+            except ValueError:
+                r["terms"] = [r["terms"]]
+    return rows
+
+
+def _same_topic(explained: list[dict], key: str, terms: list[str]) -> dict | None:
+    """The explanation of this topic: its own, else that of one already
+    explained whose words it mostly shares. A topic's key is its three top
+    words, and they shift a little as posts come in; the story is the same."""
+    for r in explained:
+        if r["id"] == key:
+            return r
+    top, every = set(terms[:3]), set(terms[:8])
+    best, most = None, 0
+    for r in explained:
+        old = set(r.get("terms") or [])
+        if len(top & old) >= 2 and len(every & old) > most:
+            best, most = r, len(every & old)
+    return best
+
+
 def explain(app: Parley, key: str, hours: float | None = None) -> dict:
-    """Name a topic and say what and why, once (kept in trend_topics)."""
+    """Name a topic and say what and why, once (kept in trend_topics). A
+    topic that shares most of its words with one explained in the last days
+    takes that explanation, at no cost."""
     kept = app.s.get("trend_topics", key)
     if kept:
         return {"key": key, "title": kept.get("title"), "what": kept.get("what"), "why": kept.get("why"), "cached": True}
@@ -295,12 +325,21 @@ def explain(app: Parley, key: str, hours: float | None = None) -> dict:
     t = next((x for x in d["topics"] if x["key"] == key), None)
     if t is None:
         raise ParleyError(404, "that topic is no longer trending")
+    same = _same_topic(_explained(app), key, t["terms"])
+    if same:
+        row = {"id": key, "terms": t["terms"][:8], "title": same.get("title") or "", "what": same.get("what") or "", "why": same.get("why") or "",
+               "cost": 0.0, "ts": _iso(time.time())}
+        app.s.write([{"op": "upsert", "table": "trend_topics", "doc": row}], label="topics:explain:same")
+        with _lock:
+            _cache.clear()
+        return {"key": key, "title": row["title"], "what": row["what"], "why": row["why"], "cached": True, "same_as": same["id"]}
     llm = getattr(app.mod, "llm", None)
     if llm is None:
         raise ParleyError(503, "explanations need the model, which this Parley runs without")
-    n = app.s.scalar("SELECT COUNT(*) FROM trend_topics WHERE ts >= :t", {"t": _iso(time.time() - 3600)}, label="topics:limit") or 0
+    # Only the explanations the model wrote count; reused ones cost nothing.
+    n = app.s.scalar("SELECT COUNT(*) FROM trend_topics WHERE ts >= :t AND cost > 0", {"t": _iso(time.time() - 3600)}, label="topics:limit") or 0
     if n >= EXPLAIN_PER_HOUR:
-        raise ParleyError(429, "Parley has explained enough topics this hour")
+        raise ParleyError(429, "the hour's explanations are used up; this one comes within the hour")
     posts = app.posts_by_ids(t["post_ids"]) if hasattr(app, "posts_by_ids") else t["top_posts"]
     listing = "\n\n".join(f"[{p['id']}] @{p['author']}" + (f" in c/{p['community']}" if p.get("community") else "") + f" ({p.get('kind')}, "
                           f"{p.get('n_reactions') or 0} reactions, {p.get('n_comments') or 0} comments):\n"
