@@ -190,6 +190,7 @@ class Search:
         min_seq_nos: Sequence[int] | None = None,
         timeout_ms: int | None = None,
         memory: int | None = None,
+        typos: bool = True,
     ) -> Result:
         """The rows of `table` (or of the only table) that best match
         `text`. `min_seq_no(s)` name writes the
@@ -203,7 +204,9 @@ class Search:
         otherwise. The text fields are those generated from other fields if
         there are any (a combined "body"), else every indexed text field.
         `where` is a condition (`col("year") >= 2000`), or an SQL condition
-        with `params` for its placeholders.
+        with `params` for its placeholders. A word that is in no row is
+        read as a typo of the words near it (`fuzzy => 'auto'`), as a shop's
+        search box reads it; `typos=False` matches words as written.
         """
         # The limits given, as this store's query and run take them: a
         # client's take timeout_ms alone (a server's queries share its
@@ -227,7 +230,8 @@ class Search:
         if mode in ("text", "hybrid"):
             if not text_fields:
                 raise ChloeDBError(f"{s['table']} has no indexed text field to search")
-            scores += [f"bm25({quote(f)}, :_q)" for f in text_fields]
+            fz = ", fuzzy => 'auto'" if typos else ""
+            scores += [f"bm25({quote(f)}, :_q{fz})" for f in text_fields]
         if mode in ("vector", "hybrid"):
             if not vector_field:
                 raise ChloeDBError(f"{s['table']} has no embedded vector field with its model open")
@@ -254,7 +258,7 @@ class Search:
                 p["_v"] = {"embed": text, "field": vector_field, "table": s["table"]}
             return self.query(sql, p, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         # A condition built in Python: the query is a plan.
-        ranks = [bm25(f, text) for f in text_fields] if mode in ("text", "hybrid") else []
+        ranks = [bm25(f, text, fuzzy="auto" if typos else None) for f in text_fields] if mode in ("text", "hybrid") else []
         if mode in ("vector", "hybrid"):
             ranks.append(similarity(vector_field, self.embed(text, vector_field, table=s["table"])))
         q = Query(self, s).where(where).order_by(ranks[0] if len(ranks) == 1 else rrf(*ranks)).limit(limit)
@@ -264,3 +268,74 @@ class Search:
         if min_seq_no is not None or min_seq_nos is not None or limits:
             return self.run(q, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         return q.run()
+
+    def _ask(
+        self,
+        question: str,
+        *,
+        table: str | None = None,
+        k: int = 8,
+        where: Expr | str | None = None,
+        params: Mapping[str, Any] | None = None,
+        model: str | None = None,
+        max_tokens: int = 700,
+    ) -> dict:
+        """`ask` of a `Database`, and of a `Client` given a table: the
+        answer to `question` from the rows `search` finds for it, citing
+        them.
+
+        Returns {"answer", "sources", "model"}: the answer cites its rows as
+        [1], [2], ...; `sources` are those rows in that order, each
+        {"n", "key", "score", "row"}, and the answer says so when they do
+        not hold it. A language model writes it through `llm()`, where the
+        query runs (this process, or the server): `model`, else
+        $CHLOEDB_ASK_MODEL, else "anthropic/claude-haiku-5-5", whose key is
+        ANTHROPIC_API_KEY there; "openai/<model>" takes OPENAI_API_KEY."""
+        import os
+
+        hits = self.search(question, table=table, limit=k, where=where, params=params)
+        s = self.schema if table is None else self._table_schema(table)
+        key = s.get("key")
+        sources = []
+        for i, row in enumerate(hits.dicts()):
+            sources.append({"n": i + 1, "key": row.get(key) if key else (hits.keys[i] if hits.keys else None), "score": hits.scores[i] if hits.scores else None, "row": row})
+        if not sources:
+            return {"answer": f"No row of {s['table']} matches the question, so there is nothing to answer it from.", "sources": [], "model": None}
+        fields = {f["name"]: f for f in s["fields"]}
+
+        def shown(row: dict) -> str:
+            # Text first (the words the answer quotes), then short values.
+            parts = []
+            for name, v in row.items():
+                if v is None or name == key or isinstance(v, (list, dict)) and len(str(v)) > 200:
+                    continue
+                text = str(v)
+                parts.append(f"{name}: {text[:1500]}")
+            parts.sort(key=lambda p: fields.get(p.split(":", 1)[0], {}).get("type") != "text")
+            return "\n".join(parts)
+
+        context = "\n\n".join(f"[{x['n']}]" + (f" ({key} {x['key']})" if key else "") + "\n" + shown(x["row"]) for x in sources)
+        instructions = (
+            "Answer the question from the numbered rows of a database below, and from nothing else. "
+            "Cite each claim with the number of the row it comes from, as [1] or [2][3]. "
+            "If the rows do not hold the answer, say so in one sentence and say what they do hold. "
+            "Be brief: a few sentences, no preamble."
+        )
+        model = model or os.environ.get("CHLOEDB_ASK_MODEL") or "anthropic/claude-haiku-5-5"
+        if "'" in model:
+            raise ValueError(f"model {model!r} has a quote in it")
+        sql = f"SELECT llm('{model}', :i, :q, :c, max_tokens => {int(max_tokens)}) AS answer FROM {quote(s['table'])} LIMIT 1"
+        try:
+            answer = self.query(sql, {"i": instructions, "q": "Question: " + question, "c": "Rows:\n" + context}).scalar()
+        except ChloeDBError as e:
+            m = str(e)
+            if "API_KEY" in m or "api key" in m.lower() or "x-api-key" in m.lower():
+                raise ChloeDBError(
+                    f"ask needs a language model to write the answer, and {model} has no key where the query runs: "
+                    f"set ANTHROPIC_API_KEY there (or pass model='openai/<model>' with OPENAI_API_KEY). "
+                    f"db.search({question!r}) finds the same rows without one. ({m})"
+                ) from e
+            raise
+        return {"answer": answer, "sources": sources, "model": model}
+
+    ask = _ask

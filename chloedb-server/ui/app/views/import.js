@@ -12,6 +12,11 @@ import { tables, cached, invalidate, table as tableOf, typeBadge, typeMeta, TYPE
 import { quoteName } from "../sqledit.js";
 import { grid } from "../results.js";
 import { reach, whereName } from "../sqlguard.js";
+
+// The model a new table's prose is searched by meaning with (the server's
+// imports use the same one: chloedb::ingest::MEANING_MODEL).
+const MEANING_MODEL = "potion-retrieval-32M";
+
 /** "prod-eu1 (production)", or the host when the cluster has no name. */
 const whereTo = () => { const { name, env } = whereName(); return env ? `${name} (${env})` : name; };
 
@@ -207,7 +212,7 @@ function render(page) {
     // there is none), a new table it is, named after the file, which the
     // page shows before anything is written.
     const fits = best && overlap(best) >= Math.max(1, s.cols.length / 2);
-    const st = { mode: fits ? null : "new", suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols, shardBy: null, clusterBy: null };
+    const st = { mode: fits ? null : "new", suggest: fits ? best.table : null, fit: fits ? overlap(best) : 0, table: best?.table, name: file.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^(\d)/, "t_$1") || "imported", key: keyGuess?.name, cols, shardBy: null, clusterBy: null, meaning: true };
     drawLoad(file, format, s, st);
   }
   function drawLoad(file, format, s, st) {
@@ -250,7 +255,15 @@ function render(page) {
     // segment is asked there.
     const sharded = isCoordinator();
     if (!sharded) st.shardBy = null;
-    const placeRow = st.mode === "new" ? h("div", { class: "stack", style: { gap: "6px" } },
+    // Meaning: a new table with prose searches by meaning too, from its
+    // first row (the server downloads the model once, and fills the vectors
+    // in as it comes); one click leaves it out.
+    const prose = st.cols.filter((c) => c.use && c.type === "text" && !/[,'"]/.test(c.name));
+    const embName = ["emb", "meaning", "emb_meaning"].find((n) => !st.cols.some((c) => c.use && c.name.toLowerCase() === n));
+    const meaningRow = st.mode === "new" && prose.length && embName ? h("label", { class: "row nw small", style: { gap: "6px", alignItems: "flex-start" } },
+      h("input", { type: "checkbox", checked: st.meaning, onchange: (e) => { st.meaning = e.target.checked; check(); } }),
+      h("span", {}, h("b", {}, "Search by meaning too"), h("span", { class: "muted" }, ` · finds rows that say it in other words: a vector ${embName} of ${prose.map((c) => c.name).join(", ")}, by ${MEANING_MODEL} (downloaded once, then well under a millisecond a row)`))) : null;
+    const placeRow = st.mode === "new" ? h("div", { class: "stack", style: { gap: "6px" } }, meaningRow,
       h("div", { class: "row", style: { gap: "16px" } },
         sharded ? h("label", { class: "row nw small dim", style: { gap: "6px" } }, "Shard by", shardSel) : null,
         h("label", { class: "row nw small dim", style: { gap: "6px" } }, "Order each segment by", clusterSel)),
@@ -291,6 +304,7 @@ function render(page) {
       if (st.mode !== "new") { ddl = null; clear(checkBox); go.disabled = !target || !can("write"); return; }
       const short = { table: st.name, key: st.key, fields: st.cols.filter((c) => c.use).map((c) => ({ name: c.name, type: c.type, ...(c.multi ? { multi: true } : {}), ...(c.type === "vector" ? { dim: c.dim || 384 } : {}), ...(c.name === st.shardBy ? { not_null: true } : {}) })) };
       if (!short.key) delete short.key;
+      if (st.meaning && prose.length && embName) short.fields.push({ name: embName, type: "vector", embed: { from: prose.map((c) => c.name), model: MEANING_MODEL } });
       if (st.shardBy) short.shard_by = st.shardBy;
       if (st.clusterBy) short.cluster_by = st.clusterBy;
       try { const j = await api("/v1/schema/check", { body: short }); ddl = j.sql; clear(checkBox, h("details", { class: "more" }, h("summary", {}, "The table it makes"), sqlBlock(ddl))); go.disabled = ts.some((t) => t.table === st.name) || shardEmpty > 0; if (go.disabled) checkBox.prepend(h("div", { class: "error small" }, `${st.name} exists: pick it above, or name the new table something else.`)); }

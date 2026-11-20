@@ -11,6 +11,20 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Search by meaning without asking for it.** A table an import makes
+  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
+  MCP tool `import` with `create`, and the command center's Import) gets
+  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
+  `TEXT` columns: the server downloads the model once and fills the
+  vectors in, and the table's search runs by words meanwhile and by words
+  and meaning once the model is open, saying so as it comes
+  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
+  leave it out). Python's `db.search` reads a word in no row as a typo of
+  the words near it (`typos=False` turns it off), and `db.ask(question)`
+  answers from the rows it finds, citing them as `[1]`, `[2]` with the
+  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
+  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
+  mirror of Hugging Face, as the packages' do.
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000

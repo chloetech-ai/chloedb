@@ -36,6 +36,9 @@ export function proseFields(t) {
 }
 /** The vector fields a table embeds from its text (searchable by words). */
 const meaningFields = (t) => (t?.short?.fields || []).filter((f) => f.type === "vector" && f.embed && !f.multi && !/_(next|prev)$/.test(f.name));
+// Those whose model is open here: a field an import just made searches by
+// meaning once its model has downloaded, and by words until then.
+const readyMeaning = (t) => meaningFields(t).filter((f) => { const e = (t?.embeddings || []).find((x) => x.field === f.name); return !e || (e.loaded && !e.error); });
 const TITLE = /^(title|name|subject|headline)$/i;
 const LONG = /(body|content|text|description|desc|summary|abstract|details|article|message|review|notes?)/i;
 /**
@@ -271,7 +274,7 @@ function render(page, r) {
   // ---------------------------------------------------------- Search
   function searchTab(pane, t) {
     const text = proseFields(t);
-    let vecs = meaningFields(t);
+    let vecs = readyMeaning(t);
     const key = `table.search.${t.table}`;
     const saved = store.get(key, {});
     let picked = new Set((saved.fields || text.map((f) => f.name)).filter((n) => text.some((f) => f.name === n)));
@@ -286,12 +289,15 @@ function render(page, r) {
     const tail = h("div", { class: "stack" });
     let running = null, last = null;
     function drawControls() {
-      vecs = meaningFields(tableOf(t.table) || t);
+      const now = tableOf(t.table) || t;
+      vecs = readyMeaning(now);
+      const coming = meaningFields(now).filter((f) => !vecs.some((v) => v.name === f.name));
       if (!vecs.length && mode !== "words") mode = "words";
       if (!text.length && mode !== "meaning") mode = vecs.length ? "meaning" : "words";
       clear(modeBox, seg([["words", "Words", "Rows with your words, the more and rarer the higher"], ["meaning", "Meaning", vecs.length ? (isTestModel(vecs[0].embed.model) ? `${vecs[0].embed.model} is a test model: it hashes words and knows no meaning (change it in Models)` : `Rows close in meaning (${vecs[0].embed.model})`) : "Add meaning first"], ["both", "Both", "Words and meaning fused: the best of the two rankings"]].filter(([k]) => (k === "words" ? text.length : vecs.length) && (k !== "both" || text.length)), mode, (v) => { mode = v; keep(); go(); }, { "aria-label": "Search by" }));
       clear(fieldsBox, mode === "meaning" ? h("span", { class: "muted" }, `by meaning, with ${vecs[0]?.name} (${vecs[0]?.embed?.model})`) : [h("span", { class: "muted" }, "in"), text.map((f) => h("button", { class: "chip", "aria-pressed": String(picked.has(f.name)), title: picked.has(f.name) ? `Stop searching ${f.name}` : `Search ${f.name} too`, onclick: () => { if (picked.has(f.name) && picked.size > 1) picked.delete(f.name); else picked.add(f.name); keep(); drawControls(); go(); } }, typeBadge(f), f.name))]);
-      clear(meaningBox, vecs.length || !text.length ? null : meaningOffer(t, () => { invalidate(); tables(true).then(() => { mode = "both"; drawControls(); go(); }); }));
+      const ready = () => { invalidate(); tables(true).then(() => { mode = "both"; drawControls(); go(); }); };
+      clear(meaningBox, vecs.length || !text.length ? null : coming.length ? meaningComing(t, coming[0], ready) : meaningOffer(t, ready));
     }
     const keep = () => store.set(key, { q: inp.value, mode, fields: [...picked] });
     async function go() {
@@ -383,6 +389,31 @@ function render(page, r) {
     if (f?.state === "running" && f.bytes) return `Downloading the model ${model}: ${fmt.bytes(f.bytes)}${f.size > f.bytes ? ` of ${fmt.bytes(f.size)}` : ""}…`;
     if (f?.state === "done") return "Opening the model…";
     return `Downloading the model ${model}…`;
+  }
+
+  /**
+   * A field that will search by meaning once its model is open (an import
+   * made it, the server is downloading the model): words meanwhile, and
+   * the download as it goes; `done` once the field searches.
+   */
+  function meaningComing(t, f, done) {
+    const status = h("div", { class: "small dim" }, "Getting ready…");
+    const box = h("section", { class: "card meaning-offer" }, h("div", { class: "bd row", style: { gap: "14px", alignItems: "flex-start" } }, icon("sparkle"),
+      h("div", { class: "grow stack", style: { gap: "4px" } }, h("b", {}, "Meaning is on its way"),
+        h("div", { class: "small muted" }, `Words work now. Once ${f.embed.model} is here (it comes once, for every table), ${t.table} searches by meaning too: rows that say it in other words.`), status)));
+    (async () => {
+      for (let i = 0; i < 2400 && box.isConnected; i++) {
+        const tt = (await tables(true).catch(() => [])).find((x) => x.table === t.table);
+        const e = (tt?.embeddings || []).find((x) => x.field === f.name);
+        const b = e?.backfill;
+        if (!e || (e.loaded && !e.error && (!b || b.state === "done" || !b.missing))) { if (box.isConnected) { toast(`${t.table} searches by meaning now`, "ok"); box.remove(); done(); } return; }
+        const failed = e.fetch?.state === "failed" ? `The model did not download: ${e.fetch.error}` : e.error && !e.fetch ? `The model did not open: ${e.error}` : null;
+        status.textContent = failed || (e.error ? fetchLine(e.model, e.fetch) : b?.missing ? `Filling in vectors: ${fmt.n(b.embedded || 0)} done, ${fmt.n(b.missing)} to go…` : "Opening the model…");
+        if (failed) { status.append(" ", h("a", { href: "#/models" }, "Models")); return; }
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+    })();
+    return box;
   }
 
   /** The offer of meaning for a table without vectors: one click, the defaults told. */
