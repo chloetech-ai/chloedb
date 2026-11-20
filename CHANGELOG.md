@@ -40,6 +40,11 @@ changes collect under "Unreleased".
   new table, named after the file, when no table has most of the file's
   columns, and code it shows for a server with no token or keys sends
   none.
+- **`chloectx remember preference` says it is kept for this project only.**
+  Memory is per project, so a preference stored there is not recalled in
+  another repository; the command now prints a note naming
+  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
+  `chloectx remember --help` and the ChloeCtx page say the same.
 
 ## 0.3.9
 
