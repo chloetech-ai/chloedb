@@ -39,7 +39,8 @@ COPY chloedb-sheets chloedb-sheets
 COPY chloedb-netops chloedb-netops
 COPY chloectx chloectx
 # Compiled in (src/mcp.rs, src/runbooks.rs).
-COPY docs/chloedb/query-language.md docs/chloedb/build-an-app.md docs/chloedb/runbooks.md docs/chloedb/
+COPY docs/chloedb/query-language.md docs/chloedb/build-an-app.md docs/chloedb/runbooks.md docs/chloedb/python.md docs/chloedb/javascript.md docs/chloedb/troubleshooting.md docs/chloedb/
+COPY docs/guide/agents.md docs/guide/search.md docs/guide/search-page.md docs/guide/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/chloedb-server/target \
     cargo build --release --manifest-path chloedb-server/Cargo.toml --bins \

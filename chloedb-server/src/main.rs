@@ -1114,6 +1114,33 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         wait_s: u64,
     },
+    /// Grow the database a server served into a cluster on this machine,
+    /// answering at the same address: the database becomes the first shard
+    /// as it is, empty shards start beside it with its tables, a coordinator
+    /// takes the address, and rows move to the new shards in the background
+    /// while every query keeps working. Stop the server first. Its shards'
+    /// databases and logs go in DIR, whose cluster.json lets `grow` start the
+    /// same cluster again; a larger --shards adds shards to it. Ctrl+C stops
+    /// them all.
+    Grow {
+        /// The database the server served.
+        #[arg(long, default_value = "chloedb.chloedb")]
+        db: PathBuf,
+        /// How many shards the cluster has (default: 3 the first time,
+        /// then as many as it had).
+        #[arg(long)]
+        shards: Option<usize>,
+        /// The address the cluster answers at (the server's).
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        listen: String,
+        /// Where the shards' databases, their logs and cluster.json go
+        /// (default: <db>.cluster beside the database).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// The token every request needs.
+        #[arg(long, env = "CHLOEDB_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+    },
     /// Run the Kubernetes operator: it makes and changes the ChloeDB clusters
     /// that StrataCluster resources describe (see deploy/README.md). In a
     /// pod it talks to the API server as its service account.
@@ -1337,7 +1364,12 @@ fn args_command() -> clap::Command {
 }
 
 async fn run() {
-    let a = <Args as clap::FromArgMatches>::from_arg_matches(&args_command().get_matches()).unwrap_or_else(|e| e.exit());
+    let matches = args_command().get_matches();
+    let mut a = <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    // The addresses nobody chose: those a server may move off when another
+    // program holds them ([`free_defaults`]).
+    let defaulted = |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::DefaultValue);
+    let (listen_defaulted, grpc_defaulted) = (defaulted("listen"), defaulted("grpc"));
     chloedb::query::llm::set_limits(chloedb::query::llm::Limits { rows: a.llm_rows, per_minute: (a.llm_per_minute > 0).then_some(a.llm_per_minute) });
     let format = obs::LogFormat::parse(&a.log_format).unwrap_or_else(|| {
         eprintln!("chloedb-server: --log-format is text or json, not {:?}", a.log_format);
@@ -1595,6 +1627,46 @@ async fn run() {
             }
             return;
         }
+        Some(Command::Grow { db, shards, listen, dir, token }) => {
+            let dir = dir.clone().unwrap_or_else(|| {
+                let mut d = db.clone().into_os_string();
+                d.push(".cluster");
+                PathBuf::from(d)
+            });
+            let listed = chloedb_server::grow::listed(&dir).len();
+            let shards = &shards.unwrap_or(if listed == 0 { 3 } else { listed });
+            if *shards < listed.max(1) {
+                fail(&format!("--shards: at least {} (the cluster has {listed} shards, and grow only adds them)", listed.max(1)));
+            }
+            let bin = std::env::current_exe().unwrap_or_else(|e| fail(&format!("which chloedb-server this is: {e}")));
+            let o = chloedb_server::grow::Options { db: db.clone(), shards: *shards, listen: listen.clone(), dir: dir.clone(), bin, token: token.clone() };
+            eprintln!("growing {} into a cluster of {shards} shard{} at {listen} (servers' logs in {})", db.display(), if *shards == 1 { "" } else { "s" }, dir.display());
+            let mut c = match chloedb_server::grow::Cluster::start(&o).await {
+                Ok(c) => c,
+                Err(e) => fail(&format!("grow: {e}")),
+            };
+            let (tables, rows) = c.served().await;
+            let shown = chloedb_server::ready::Ready { url: c.url.clone(), db: None, shards: c.shards.len(), tables, rows, token: token.is_some() };
+            eprintln!("{}", shown.text());
+            if c.added > 0 {
+                eprintln!("  {} new shard{} take{} their share of the rows in the background; queries answer meanwhile.", c.added, if c.added == 1 { "" } else { "s" }, if c.added == 1 { "s" } else { "" });
+            }
+            loop {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                        if let Some(n) = c.exited() {
+                            eprintln!("{n} stopped (its log: {}): stopping the cluster", dir.join(format!("{n}.log")).display());
+                            c.stop().await;
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            eprintln!("stopping the cluster; `chloedb-server grow --db {}` starts it again", db.display());
+            c.stop().await;
+            return;
+        }
         Some(Command::Import { db, schema, table, format, models, directory, files, tables, key, blobs_base64, append, plan, no_meaning }) => {
             let named = |n: &str| format.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(n));
             let files_of = server::FileImport { sqlite: named("sqlite"), parquet: named("parquet"), tables: tables.clone(), key: key.clone(), blobs_base64: *blobs_base64, append: *append, plan: *plan, no_meaning: *no_meaning };
@@ -1850,6 +1922,18 @@ async fn run() {
     server::set_drain(std::time::Duration::from_millis(a.drain_ms));
     // ONB-13: every address is taken before the database is opened or
     // made, so that one in use, or no address at all, leaves no files.
+    // A port nobody chose that another program holds is not a reason to
+    // stop: the server takes the next free pair and says so.
+    if let Some((listen, grpc, msg)) = free_defaults(&a.listen, &a.grpc, listen_defaulted, grpc_defaulted && !coordinator).await {
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            eprintln!("chloedb-server: {msg}");
+        }
+        tracing::warn!("{msg}");
+        a.listen = listen;
+        if let Some(g) = grpc {
+            a.grpc = g;
+        }
+    }
     let http_l = take(&a.listen, "--listen").await;
     let grpc_l = match a.grpc != "off" && !coordinator {
         true => Some(take(&a.grpc, "--grpc").await),
@@ -2072,6 +2156,55 @@ fn fail(msg: &str) -> ! {
 /// do about it ([`listen_error`]).
 async fn take(addr: &str, flag: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| fail(&listen_error(addr, flag, &e)))
+}
+
+/// When the default HTTP address (and gRPC's, when it is the default too)
+/// is held by another program: the first pair of free ports ten above it
+/// (7710 and 7711, then 7720 ...), and who holds the default, when it is a
+/// chloedb-server (` by another chloedb-server, at http://...`). `None`:
+/// the default is free, or was chosen, or no pair is free in ten tries.
+async fn free_defaults(listen: &str, grpc: &str, listen_defaulted: bool, grpc_defaulted: bool) -> Option<(String, Option<String>, String)> {
+    // A server given --listen is placed by someone (a cluster's shard,
+    // whose coordinator dials the addresses it was told): it stops rather
+    // than moves.
+    if !listen_defaulted {
+        return None;
+    }
+    let free = |addr: String| async move { tokio::net::TcpListener::bind(&addr).await.is_ok() };
+    let grpc_moves = grpc_defaulted && grpc != "off";
+    let http_free = free(listen.to_string()).await;
+    let grpc_free = !grpc_moves || free(grpc.to_string()).await;
+    if http_free && grpc_free {
+        return None;
+    }
+    let split = |a: &str| -> Option<(String, u16)> { a.rsplit_once(':').and_then(|(h, p)| Some((h.to_string(), p.parse().ok()?))) };
+    let shifted = |a: &Option<(String, u16)>, k: u16| -> Option<String> { a.as_ref().and_then(|(h, p)| Some(format!("{h}:{}", p.checked_add(10 * k)?))) };
+    let (hp, gp) = (split(listen), if grpc_moves { split(grpc) } else { None });
+    if http_free {
+        // Only the gRPC port is taken: the address people open stays.
+        for k in 1..=10u16 {
+            let g = shifted(&gp, k)?;
+            if free(g.clone()).await {
+                return Some((listen.to_string(), Some(g.clone()), format!("{grpc} (gRPC) is in use, so this server takes gRPC on {g} instead (give --grpc to choose)")));
+            }
+        }
+        return None;
+    }
+    for k in 1..=10u16 {
+        let cand = shifted(&hp, k)?;
+        let g = if grpc_moves { Some(shifted(&gp, k)?) } else { None };
+        if free(cand.clone()).await && match &g { Some(g) => free(g.clone()).await, None => true } {
+            let url = format!("http://{}", chloedb_server::ready::browsable(listen));
+            let other = chloedb_server::http_client().no_proxy().timeout(std::time::Duration::from_secs(2)).build().ok()?;
+            let holder = match other.get(format!("{url}/livez")).send().await {
+                Ok(r) if r.status().is_success() || r.status().as_u16() == 401 => format!(" by another chloedb-server, at {url}"),
+                _ => String::new(),
+            };
+            let msg = format!("{listen} is in use{holder}, so this server listens on http://{} instead (give --listen to choose)", chloedb_server::ready::browsable(&cand));
+            return Some((cand, g, msg));
+        }
+    }
+    None
 }
 
 /// Why `addr` (option `flag`) could not be listened on (ONB-13).

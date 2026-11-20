@@ -307,9 +307,9 @@ fn api(app: &App) -> Router<App> {
         .route("/v1/index/reads", get(index_reads))
         .route("/v1/config", get(config))
         .route("/metrics", get(metrics))
-        .route("/v1/query", post(query))
+        .route("/v1/query", post(query_fixed))
         .route("/v1/query/cursors/:id", axum::routing::delete(close_cursor))
-        .route("/v1/sql", post(sql))
+        .route("/v1/sql", post(sql_fixed))
         .route("/v1/write", post(write).layer(rows.clone()))
         .route("/v1/kv/get", post(kv_get))
         .route("/v1/kv/:table/:key", get(kv_one).merge(put(kv_put)).merge(axum::routing::delete(kv_delete)).layer(rows.clone()))
@@ -1231,7 +1231,15 @@ async fn narrow_answer(app: &App, who: &Principal, res: Response) -> Response {
                     _ => {}
                 }
             }
+            let fixes = j.as_object_mut().and_then(|o| o.remove("fixes"));
             walk(&mut j, &narrow);
+            // Fixes made again from the narrowed sentence, none without it.
+            if let (Some(_), Some(sql), Some(e)) = (fixes, parts.extensions.get::<FixedSql>(), j.get("error").and_then(Json::as_str)) {
+                let again = crate::fixes::fixes(&sql.0, e);
+                if !again.is_empty() {
+                    j["fixes"] = Json::Array(again);
+                }
+            }
             serde_json::to_vec(&j).unwrap_or_default()
         }
         Err(_) => narrow(&String::from_utf8_lossy(&bytes)).into_bytes(),
@@ -2605,6 +2613,63 @@ pub fn as_objects(j: &mut Json) {
 
 /// Any statement: the service checks that the request's credential may
 /// run it ([`Service::sql`]), and audits a table's or rank profile's.
+/// `POST /v1/sql`, with one-click fixes on an error that names a misspelt
+/// name ([`crate::fixes`]).
+async fn sql_fixed(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let statement = b.get("sql").and_then(Json::as_str).map(String::from);
+    with_fixes(statement, sql(State(app), w, headers, AxJson(b)).await).await
+}
+
+/// `POST /v1/query`, with the fixes `POST /v1/sql` has.
+async fn query_fixed(State(app): State<App>, w: Option<axum::Extension<Principal>>, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
+    let statement = b.get("sql").and_then(Json::as_str).map(String::from);
+    with_fixes(statement, query(State(app), w, AxJson(b)).await).await
+}
+
+/// An error's answer with `fixes` when its sentence suggests names for a
+/// word the statement has.
+async fn with_fixes(statement: Option<String>, r: Result<Response, ApiError>) -> Result<Response, ApiError> {
+    let Some(sql) = statement else { return r };
+    let resp = match r {
+        Err(e) => {
+            let fixes = crate::fixes::fixes(&sql, &e.message);
+            if fixes.is_empty() {
+                return Err(e);
+            }
+            let mut body = crate::errors::answer(&e);
+            body["fixes"] = Json::Array(fixes);
+            let mut r = e.into_response();
+            *r.body_mut() = axum::body::Body::from(body.to_string());
+            r.extensions_mut().insert(FixedSql(sql.into()));
+            return Ok(r);
+        }
+        Ok(resp) if resp.status().is_client_error() => resp,
+        Ok(resp) => return Ok(resp),
+    };
+    let (parts, body) = resp.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 1 << 20).await else { return Ok(Response::from_parts(parts, axum::body::Body::empty())) };
+    let fixed = serde_json::from_slice::<Json>(&bytes).ok().and_then(|mut j| {
+        let fixes = crate::fixes::fixes(&sql, j.get("error")?.as_str()?);
+        (!fixes.is_empty()).then(|| {
+            j["fixes"] = Json::Array(fixes);
+            j.to_string()
+        })
+    });
+    let mut parts = parts;
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    if fixed.is_some() {
+        parts.extensions.insert(FixedSql(sql.into()));
+    }
+    Ok(Response::from_parts(parts, axum::body::Body::from(fixed.map(String::into_bytes).unwrap_or_else(|| bytes.to_vec()))))
+}
+
+/// The statement an error's `fixes` were made from, which an answer
+/// narrowed for a key limited to tables makes them again from
+/// ([`narrow_answer`]): the names the error suggested before it was
+/// narrowed may include tables the key does not see.
+#[derive(Clone)]
+struct FixedSql(Arc<str>);
+
 async fn sql(State(app): State<App>, w: Option<axum::Extension<Principal>>, headers: HeaderMap, AxJson(b): AxJson<Json>) -> Result<Response, ApiError> {
     let w = who(w);
     let params = app.svc.params_for(b.get("params"), b.get("sql").and_then(Json::as_str), &w).await?;

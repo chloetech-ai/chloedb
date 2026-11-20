@@ -7,10 +7,11 @@ chloectx/report
 chloectx/scripts
 chloectx/probes
 chloectx/tests
-# The query language reference and the Build an app guide are compiled
-# into the server (its MCP tools' search_docs and resources).
+# The documents compiled into the server (its MCP tools' search_docs,
+# resources and prompts).
 docs/*
 !docs/chloedb
+!docs/guide
 chloedb/results
 chloedb/report
 chloedb/notes
