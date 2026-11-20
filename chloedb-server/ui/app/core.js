@@ -406,7 +406,8 @@ export function provide(x) { Object.assign(ctx, x); }
 export const isPaused = () => ctx.paused;
 
 // ---------------------------------------------------------------- scope
-const RANK = { feed: 1, read: 2, write: 3, admin: 4 };
+// append: a key limited to tables whose grants only insert rows (MARCO-403), below the feed: it reads nothing.
+const RANK = { append: 0.5, feed: 1, read: 2, write: 3, admin: 4 };
 // The routes as the server lists them (GET /v1/catalog: each one's scope,
 // tier, and whether the ops and propose roles may call it), for a key that
 // acts on the server by its role rather than its scope.

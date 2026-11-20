@@ -1071,7 +1071,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         Some(w) if w.limited() && !crate::scoped::route_ok(&method, route) && !w.allowed_route(&method, route) => w.may_server(&format!("{method} {route}")).err(),
         // A key for operations: the server's views, and for `ops` the
         // bounded actions ([`crate::ops::role_may`]).
-        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) => w.may_by_role(need, &format!("{method} {route}"), crate::ops::role_may(Some(keys::Role::Ops), &method, route)).err(),
+        Some(w) if w.scope < need && !crate::ops::role_may(w.role, &method, route) && !(w.appends_any() && crate::scoped::append_route_ok(&method, route)) => w.may_by_role(need, &format!("{method} {route}"), crate::ops::role_may(Some(keys::Role::Ops), &method, route)).err(),
         // A tier 3 action (it loses data or costs money) is never an
         // agent's alone, whatever its key (audit X-D2): it files a change
         // request, which a person applies with their own key.
@@ -1397,17 +1397,30 @@ async fn reads_ok(app: &App, who: &Principal, sql: &str) -> Result<(), ApiError>
     first
 }
 
+/// The name of the table `table` names (the default table when none).
+async fn table_named(app: &App, table: Option<&str>) -> Result<String, ApiError> {
+    Ok(match table {
+        Some(t) => app.svc.table(t).await.map(|s| s.table.clone()).unwrap_or_else(|_| t.to_string()),
+        None => app.svc.default_table()?.table.clone(),
+    })
+}
+
 /// Refuses what a key limited to tables may not do to the table named
 /// `table` (the default table when none is), at `need`.
 async fn table_ok(app: &App, who: &Principal, table: Option<&str>, need: Scope, what: &str) -> Result<(), ApiError> {
     if !who.limited() {
         return Ok(());
     }
-    let name = match table {
-        Some(t) => app.svc.table(t).await.map(|s| s.table.clone()).unwrap_or_else(|_| t.to_string()),
-        None => app.svc.default_table()?.table.clone(),
-    };
-    who.may_table(need, &name, what)
+    who.may_table(need, &table_named(app, table).await?, what)
+}
+
+/// [`table_ok`] for inserting new rows: a key limited to tables may with
+/// the write scope on the table, or a grant of `append` ([`Principal::may_insert`]).
+async fn table_insert_ok(app: &App, who: &Principal, table: Option<&str>, what: &str) -> Result<(), ApiError> {
+    if !who.limited() {
+        return Ok(());
+    }
+    who.may_insert(&table_named(app, table).await?, what)
 }
 
 /// Keeps out pages on other sites: one that reached this server through
@@ -2933,8 +2946,14 @@ async fn write(State(app): State<App>, w: Option<axum::Extension<Principal>>, he
                 Json::String(t) => Some(t.as_str()),
                 _ => return Err(ApiError::bad("an operation's table is a table's name")),
             };
-            if seen.insert(table.map(str::to_ascii_lowercase)) {
-                table_ok(&app, &who, table, Scope::Write, "a write").await?;
+            // An `insert` adds a row and fails on a key a row has: what a
+            // key with a grant of `append` may send (MARCO-403).
+            let inserts = matches!(op.get("op").and_then(Json::as_str), Some("insert" | "insert_if_absent"));
+            if seen.insert((table.map(str::to_ascii_lowercase), inserts)) {
+                match inserts {
+                    true => table_insert_ok(&app, &who, table, "a write").await?,
+                    false => table_ok(&app, &who, table, Scope::Write, "a write").await?,
+                }
             }
         }
     }
@@ -3292,14 +3311,22 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         }
     };
     let format = format.ok_or_else(|| ApiError::bad("name the rows' format: ?format=jsonl, json, csv, tsv, sqlite or parquet"))?;
-    let (table, created) = import_table(&app, &who(w.clone()), &q, &body, format).await?;
-    table_ok(&app, &who(w), table.as_deref(), Scope::Write, "an import").await?;
+    let by = who(w);
+    let (table, created) = import_table(&app, &by, &q, &body, format).await?;
+    // A key that appends to the table (and may not write it) imports its
+    // rows as inserts only, a key twice in the file or one a row has
+    // refused with nothing written: an import never replaces a row of it.
+    let appends = by.limited() && {
+        let name = table_named(&app, table.as_deref()).await?;
+        by.may_insert(&name, "an import")?;
+        by.table_scope(&name).is_none_or(|s| s < Scope::Write)
+    };
     let t0 = std::time::Instant::now();
     let empty = match q.get("empty") {
         None => chloedb::ingest::EmptyCell::Default,
         Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
     };
-    let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)?, empty };
+    let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)? || appends, empty };
     let (w, skipped, ragged) = app.svc.import(table.as_deref(), body, format, opts).await?;
     let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
     if let Some(sql) = created {
@@ -7656,7 +7683,7 @@ pub(crate) fn limited_routes(w: &Principal) -> Vec<String> {
         true => crate::scoped::push_route_ok(m, route),
         false => crate::scoped::route_ok(m, route) || w.allowed_route(m, route),
     };
-    crate::catalog::routes().iter().flat_map(|r| r.methods.iter().filter(|m| reaches(m, r.path) && w.scope >= route_scope(m, r.path)).map(move |m| format!("{m} {}", r.path))).collect()
+    crate::catalog::routes().iter().flat_map(|r| r.methods.iter().filter(|m| reaches(m, r.path) && (w.scope >= route_scope(m, r.path) || (w.appends_any() && crate::scoped::append_route_ok(m, r.path)))).map(move |m| format!("{m} {}", r.path))).collect()
 }
 
 // ----- sign-in: people sign in to the command center with Google ([`crate::signin`])
@@ -7862,7 +7889,11 @@ async fn create_key(State(app): State<App>, w: Option<axum::Extension<Principal>
     let role = keys::Role::parse(asked);
     let scope = match role {
         Some(_) => Scope::Read,
-        None => Scope::parse(asked).ok_or_else(|| ApiError::bad("scope is feed, read, write, admin, ops or propose"))?,
+        // `append` is a table grant's (MARCO-403): with tables, as the
+        // scope of a key whose grants are all `append` (its successor's,
+        // when the command center rotates it), and never a key's alone.
+        None if tables.is_some() && asked.eq_ignore_ascii_case("append") => Scope::Append,
+        None => Scope::parse(asked).ok_or_else(|| ApiError::bad(if asked.eq_ignore_ascii_case("append") { "append is a table grant's scope: give it with tables, {\"tables\": {\"logs_*\": \"append\"}}" } else { "scope is feed, read, write, admin, ops or propose" }))?,
     };
     let mut expires = match (b.get("expires_days"), b.get("expires_minutes")) {
         (Some(d), Some(m)) if !d.is_null() && !m.is_null() => return Err(ApiError::bad("say expires_days or expires_minutes, not both")),

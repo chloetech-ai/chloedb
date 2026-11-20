@@ -58,7 +58,7 @@ use prost::Message;
 use serde_json::{json, Map, Value as Json};
 use chloedb::schema::Schema;
 
-use crate::keys::{Principal, Scope};
+use crate::keys::Principal;
 use crate::service::{After, Service, IMPORT_OPS};
 use crate::ApiError;
 
@@ -303,10 +303,10 @@ async fn table(svc: &Arc<Service>, name: &str) -> Result<Arc<Schema>, ApiError> 
 /// Writes the records of `req` as rows of table `name` (default
 /// [`TABLE`]), for caller `who`.
 pub async fn export(svc: &Arc<Service>, who: &Principal, name: Option<&str>, req: ExportLogsServiceRequest) -> Result<Exported, ApiError> {
-    who.may(Scope::Write, "writing logs")?;
     let name = table_name(name.unwrap_or(TABLE))?;
-    // A key limited to tables writes logs into a table it may write.
-    who.may_table(Scope::Write, name, "OTLP logs")?;
+    // A key limited to tables writes logs into a table it may write, or
+    // appends to (MARCO-403): logs are inserted, never replaced.
+    who.may_insert(name, "writing logs")?;
     let schema = table(svc, name).await?;
     // A request's `batch` and its parts' idempotency keys come from its
     // content, so that a client that sends it again (a Collector whose

@@ -11,6 +11,21 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A key that only appends, for a log shipper.** A key limited to tables
+  takes a grant of `append` (`{"tables": {"logs_*": "append"}}`): it
+  inserts new rows into those tables through `POST /v1/logs`, `POST
+  /v1/import`, `/v1/write`'s `insert` operations and `INSERT ... VALUES`,
+  and reads nothing, not even them: no query, feed, alerts, schema or
+  export. It never replaces or deletes a row: an `INSERT` of a key a row
+  has fails, its imports are strict, and `UPDATE`, `DELETE`, `INSERT OR
+  REPLACE`, `ON CONFLICT DO UPDATE` and upserts are refused, each refusal
+  naming the grant. The logs guide and the Log explorer's "Send logs here"
+  now give the Collector such a key (`CHLOEDB_SHIP_KEY`) rather than the
+  oncall key, whose `write` grant reads every line it sends, and the docs
+  say that a `write` key reads. The command center's key editor offers
+  `append`. The keys file keeps such a grant as `read` of `append:<tables>`,
+  a name no table can have, so a server from before this release reads
+  the file and reads such a key as one that covers no table.
 - **Fewer pages until you need them, and fixes you can run.** On a single
   server the command center's sidebar shows the twelve pages a newcomer
   uses and folds the others under "More pages" until one is opened (then

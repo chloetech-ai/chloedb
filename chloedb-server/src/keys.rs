@@ -12,8 +12,18 @@
 //! | scope | may |
 //! |---|---|
 //! | `read` | query (SELECT, explain, embed, term statistics), read schemas, health, metrics and the series |
-//! | `write` | that, and write rows (`/v1/write`, `/v1/import`, `/v1/stream`, `INSERT`, `UPDATE`, `DELETE`, logged queries) |
+//! | `write` | that, and write rows (`/v1/write`, `/v1/import`, `/v1/stream`, `INSERT`, `UPDATE`, `DELETE`, logged queries): a `write` key reads what it writes |
 //! | `admin` | that, and change the server: tables and rank profiles, synonyms, checkpoints, vacuum, promotion, keys, alerts, log levels; see the running queries, logs and the audit log, and cancel queries |
+//!
+//! A table grant of a key limited to tables has one scope more, below them
+//! all: `append` ([`Scope::Append`], MARCO-403), for a log shipper's key. It
+//! inserts new rows into the tables it names (`POST /v1/logs`, `POST
+//! /v1/import`, `POST /v1/write` with `insert` operations, `INSERT`) and
+//! reads nothing: no query, no feed, no alerts, no schema. A row whose key
+//! a row already has is refused (an insert fails; it never replaces), as
+//! `UPDATE`, `DELETE`, `INSERT OR REPLACE` and `ON CONFLICT DO UPDATE` are.
+//! Over HTTP only: gRPC refuses it. A key's `scope` is never `append`
+//! alone: only a grant's is.
 //!
 //! No key, admin ones included, may call the internal gRPC methods: only
 //! the root credential ([`Principal::root`]) may.
@@ -65,6 +75,13 @@ use crate::ApiError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
+    /// Inserting new rows into a table and nothing else, not even reading
+    /// it back: a table grant's scope for a shipper's key, never a key's
+    /// own ([`Scope::parse_grant`], [`Principal::may_insert`]). Below the
+    /// feed, so that every check of a read, a write or the server's
+    /// refuses it, and only the routes that append ([`crate::scoped::append_route_ok`])
+    /// look for it.
+    Append,
     /// The feed alone, for another cluster to follow this one
     /// (`/v1/feed`), and whether the server is up (`/v1/health`,
     /// `/v1/whoami`): every row, as it is written, but no query.
@@ -75,6 +92,8 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// A key's scope as it is asked for: not `append`, which is a table
+    /// grant's ([`Scope::parse_grant`]).
     pub fn parse(s: &str) -> Option<Scope> {
         match s.to_ascii_lowercase().as_str() {
             "feed" => Some(Scope::Feed),
@@ -85,8 +104,17 @@ impl Scope {
         }
     }
 
+    /// A table grant's scope: [`Scope::parse`]'s, and `append`.
+    pub fn parse_grant(s: &str) -> Option<Scope> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "append" => Some(Scope::Append),
+            _ => Scope::parse(s),
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
+            Scope::Append => "append",
             Scope::Feed => "feed",
             Scope::Read => "read",
             Scope::Write => "write",
@@ -385,6 +413,33 @@ impl Principal {
         self.tables.is_some()
     }
 
+    /// Whether a grant of `append` covers table `table` (MARCO-403).
+    pub fn appends(&self, table: &str) -> bool {
+        self.tables.as_deref().is_some_and(|g| g.iter().any(|g| g.scope == Scope::Append && g.covers(table)))
+    }
+
+    /// Whether any grant of the key is `append`.
+    pub fn appends_any(&self) -> bool {
+        self.tables.as_deref().is_some_and(|g| g.iter().any(|g| g.scope == Scope::Append))
+    }
+
+    /// A key whose grants give nothing above `append`: it reads no table
+    /// and writes no other way than by inserting.
+    pub fn append_only(&self) -> bool {
+        self.tables.is_some() && self.scope == Scope::Append
+    }
+
+    /// Refuses (403) inserting new rows into table `table` unless this
+    /// credential may: the write scope there, or a grant of `append`. Not
+    /// a replacement of a row, which only the write scope does.
+    pub fn may_insert(&self, table: &str, what: &str) -> Result<(), ApiError> {
+        match self.tables {
+            None => self.may(Scope::Write, what),
+            Some(_) if self.appends(table) => Ok(()),
+            Some(_) => self.may_table(Scope::Write, table, what),
+        }
+    }
+
     /// A connector's push key (`connector:<name>`, limited to its target,
     /// made by [`crate::connectors`]): it writes its table and reads
     /// nothing, not even that table ([`crate::scoped::push_route_ok`]), so
@@ -427,13 +482,60 @@ impl Principal {
 /// What a key limited to tables may do to some of them: `table` is a
 /// table's name (`chloectx_memory`), a prefix and `*` (`crawl_*`, every
 /// table whose name starts with `crawl_`), or `*` (every table), in any
-/// case; `scope` is what it may do there. `admin` on tables is `CREATE`,
+/// case; `scope` is what it may do there: `append` inserts new rows and
+/// reads nothing, `write` reads and writes. `admin` on tables is `CREATE`,
 /// `ALTER` and `DROP` of them and their rank profiles, never the server's
 /// own admin (keys, shards, functions, settings).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "GrantFile", into = "GrantFile")]
 pub struct Grant {
     pub table: String,
     pub scope: Scope,
+}
+
+/// What marks a grant of `append` in the keys file and the `Keys` call:
+/// it is kept as a grant of `read` of a table named after this mark,
+/// which no table's name can be (a table's name is letters, digits and
+/// `_`). A server from before `append` (a downgrade, or one of a cluster
+/// that is not upgraded yet) then reads the keys file, and reads such a
+/// grant as one that covers no table: the key may do less there, never
+/// more, where a scope it does not know would have refused the whole file.
+const APPEND_MARK: &str = "append:";
+
+/// A grant as the keys file keeps it ([`APPEND_MARK`]).
+#[derive(Clone, Serialize, Deserialize)]
+struct GrantFile {
+    table: String,
+    scope: Scope,
+}
+
+impl From<GrantFile> for Grant {
+    fn from(g: GrantFile) -> Grant {
+        match g.table.strip_prefix(APPEND_MARK) {
+            Some(table) => Grant { table: table.to_string(), scope: Scope::Append },
+            None => Grant { table: g.table, scope: g.scope },
+        }
+    }
+}
+
+impl From<Grant> for GrantFile {
+    fn from(g: Grant) -> GrantFile {
+        match g.scope {
+            Scope::Append => GrantFile { table: format!("{APPEND_MARK}{}", g.table), scope: Scope::Read },
+            scope => GrantFile { table: g.table, scope },
+        }
+    }
+}
+
+/// A key's scope as the keys file keeps it: `read` for one whose grants
+/// are all `append` ([`APPEND_MARK`]), so that a server from before
+/// `append` reads it. Its scope is the most its grants give, capped by
+/// this, so it stays `append` ([`KeySet::from_json`] puts it back).
+fn key_scope_out<S: serde::Serializer>(scope: &Scope, s: S) -> Result<S::Ok, S::Error> {
+    match scope {
+        Scope::Append => Scope::Read.serialize(s),
+        other => other.serialize(s),
+    }
 }
 
 impl Grant {
@@ -444,7 +546,7 @@ impl Grant {
             return Err(ApiError::bad(format!("{table:?} is not a table grant: a table's name, a prefix of names and * (crawl_*), or * for every table")));
         }
         if scope == Scope::Feed {
-            return Err(ApiError::bad("a table grant's scope is read, write or admin: the feed is every table's, for another cluster"));
+            return Err(ApiError::bad("a table grant's scope is append, read, write or admin: the feed is every table's, for another cluster"));
         }
         Ok(Grant { table, scope })
     }
@@ -452,7 +554,7 @@ impl Grant {
     /// `crawl_*=admin` (a scope of read when none is given).
     pub fn parse(s: &str) -> Result<Grant, ApiError> {
         let (table, scope) = s.split_once('=').unwrap_or((s, "read"));
-        let scope = Scope::parse(scope.trim()).ok_or_else(|| ApiError::bad(format!("{s:?}: a table grant is table=scope, the scope read, write or admin")))?;
+        let scope = Scope::parse_grant(scope.trim()).ok_or_else(|| ApiError::bad(format!("{s:?}: a table grant is table=scope, the scope append, read, write or admin")))?;
         Grant::new(table, scope)
     }
 
@@ -570,7 +672,7 @@ pub fn grants_text(grants: &[Grant]) -> String {
 /// `table=scope`.
 pub fn grants_of(j: &Json) -> Result<Vec<Grant>, ApiError> {
     let grants = match j {
-        Json::Object(m) => m.iter().map(|(t, s)| Grant::new(t, s.as_str().and_then(Scope::parse).ok_or_else(|| ApiError::bad(format!("the scope of table grant {t} is read, write or admin")))?)).collect::<Result<Vec<_>, _>>()?,
+        Json::Object(m) => m.iter().map(|(t, s)| Grant::new(t, s.as_str().and_then(Scope::parse_grant).ok_or_else(|| ApiError::bad(format!("the scope of table grant {t} is append, read, write or admin")))?)).collect::<Result<Vec<_>, _>>()?,
         Json::Array(a) => a.iter().map(|g| g.as_str().ok_or_else(|| ApiError::bad("a table grant is \"table=scope\"")).and_then(Grant::parse)).collect::<Result<Vec<_>, _>>()?,
         Json::String(s) => s.split(',').filter(|g| !g.trim().is_empty()).map(Grant::parse).collect::<Result<Vec<_>, _>>()?,
         _ => return Err(ApiError::bad("tables is {\"table\": \"scope\"}, as {\"crawl_*\": \"admin\", \"*\": \"read\"}")),
@@ -652,6 +754,7 @@ pub fn within(child: &Grant, parent: &Grant) -> bool {
 pub struct Key {
     pub id: String,
     pub name: String,
+    #[serde(serialize_with = "key_scope_out")]
     pub scope: Scope,
     pub created_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -844,10 +947,18 @@ impl KeySet {
     /// A keys file or a call's JSON: a set, or the list of keys that keys
     /// files held before revocations were kept.
     pub fn from_json(b: &[u8]) -> Result<KeySet, String> {
-        match serde_json::from_slice::<Json>(b).map_err(|e| e.to_string())? {
-            Json::Array(keys) => Ok(KeySet { keys: serde_json::from_value(Json::Array(keys)).map_err(|e| e.to_string())?, revoked: Vec::new() }),
-            j => serde_json::from_value(j).map_err(|e| e.to_string()),
+        let mut set: KeySet = match serde_json::from_slice::<Json>(b).map_err(|e| e.to_string())? {
+            Json::Array(keys) => KeySet { keys: serde_json::from_value(Json::Array(keys)).map_err(|e| e.to_string())?, revoked: Vec::new() },
+            j => serde_json::from_value(j).map_err(|e| e.to_string())?,
+        };
+        // A key whose grants are all `append` is kept as `read`
+        // ([`key_scope_out`]): it is `append`, as it was made.
+        for k in &mut set.keys {
+            if k.tables.as_deref().is_some_and(|t| !t.is_empty() && widest(t) == Scope::Append) {
+                k.scope = Scope::Append;
+            }
         }
+        Ok(set)
     }
 
     fn is_revoked(&self, id: &str) -> bool {
@@ -2208,6 +2319,46 @@ mod tests {
         assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, true));
         let (merged, changed) = ending.merged(&forever);
         assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, false));
+    }
+
+    /// A grant of `append` (MARCO-403): a grant's scope, never a key's
+    /// own; kept in the keys file in a form a server from before it reads
+    /// (a grant of `read` of a table no table can be named, a key scope of
+    /// `read`), and read back as it was made.
+    #[test]
+    fn an_append_grant_is_kept_so_an_older_server_reads_it_as_less() {
+        assert_eq!((Scope::parse("append"), Scope::parse_grant("Append")), (None, Some(Scope::Append)));
+        assert_eq!(Grant::parse("logs_*=append").unwrap(), Grant { table: "logs_*".into(), scope: Scope::Append });
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("keys.json");
+        let keys = Keys::open(file.clone()).unwrap();
+        keys.create("ops", Scope::Admin, None, false, false).unwrap();
+        let grants = vec![Grant::parse("logs_*=append").unwrap()];
+        let (k, secret) = keys.create_limited("collector", Scope::Read, Some(grants.clone()), None, None, None, false, false).unwrap();
+        assert_eq!(k.scope, Scope::Append);
+        let p = keys.resolve(None, None, Some(&format!("Bearer {secret}"))).unwrap();
+        assert!(p.append_only() && p.appends("logs_syslog") && !p.appends("docs"));
+        assert_eq!((p.table_scope("logs_syslog"), p.json()["scope"].as_str(), p.json()["tables"].clone()), (Some(Scope::Append), Some("append"), json!({"logs_*": "append"})));
+        assert!(p.may_insert("logs_syslog", "an INSERT").is_ok());
+        assert!(p.may_table(Scope::Read, "logs_syslog", "a query").unwrap_err().message.contains("append there"));
+        assert!(p.may_insert("docs", "an INSERT").is_err());
+        // In the file: only scopes a server from before append knows.
+        let text = std::fs::read_to_string(&file).unwrap();
+        let on_disk: Json = serde_json::from_str(&text).unwrap();
+        let row = on_disk["keys"].as_array().unwrap().iter().find(|x| x["name"] == "collector").unwrap();
+        assert_eq!((row["scope"].as_str(), &row["tables"]), (Some("read"), &json!([{"table": "append:logs_*", "scope": "read"}])), "{text}");
+        assert!(!text.contains("\"append\""), "{text}");
+        // ...whose grant there covers no table, a table's name being
+        // letters, digits and _.
+        assert!(!Grant { table: "append:logs_*".into(), scope: Scope::Read }.covers("logs_syslog"));
+        // Read back, by this server: as it was made.
+        let again = Keys::open(file).unwrap();
+        let p2 = again.resolve(None, None, Some(&format!("Bearer {secret}"))).unwrap();
+        assert_eq!((p2.scope, p2.tables.as_deref().map(|t| t.to_vec())), (Scope::Append, Some(grants)));
+        assert_eq!(again.set().keys.iter().find(|x| x.name == "collector").map(|x| x.scope), Some(Scope::Append));
+        // Other scopes are kept as they are.
+        let (f, _) = keys.create("follower", Scope::Feed, None, false, false).unwrap();
+        assert_eq!(serde_json::to_value(&f).unwrap()["scope"], "feed");
     }
 
     /// A key limited to tables: its scope is the most its grants give, its
