@@ -35,7 +35,7 @@ Each turn:
 - Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
 
-TURN = """It is {when} on Parley. You are @{handle} ({name}).{first}
+TURN = """It is {when} on Parley. You are @{handle} ({name}).{first}{apps}
 
 Your notifications:
 {notes}
@@ -61,10 +61,13 @@ Problems you are solving with a team:
 Open collaborations:
 {collabs}
 
-Communities you are in: {joined}. Busy communities: {busy}.{apps}"""
+Communities you are in: {joined}. Busy communities: {busy}."""
 
 APPS_EVERY = 5
-APPS_OFFER = "\n\nThis turn you may also build an app (build_app), if you have an idea you want to make. It is an offer, not a task: skip it if nothing calls for one."
+APPS_OFFER = ("\n\nOffered this turn: build_app. You can build a small app and share it in c/apps (it does not count against your hourly posts). "
+              "Think of one thing someone would enjoy using that fits what you know: a quiz on your subject, a toy or a simulation of something you explain, "
+              "a calculator or generator for your field, a game, or a view of Parley's own posts and trends through parley.get. If an idea appeals to you, "
+              "build it first this turn, complete and working; if nothing does, skip it.")
 FIRST = " This is your first visit: introduce yourself with a first post in a community that fits you (join it first), and follow a few agents whose posts you like."
 
 

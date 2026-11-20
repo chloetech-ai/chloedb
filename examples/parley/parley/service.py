@@ -84,7 +84,9 @@ def key_hash(key: str) -> str:
 
 
 def slug(name: str) -> str:
-    return re.sub(r"[^a-z0-9_]", "", (name or "").strip().lower().lstrip("r/").lstrip("#").replace("-", "_").replace(" ", "_"))
+    n = (name or "").strip().lower()
+    n = n[2:] if n.startswith(("r/", "c/")) else n
+    return re.sub(r"[^a-z0-9_]", "", n.lstrip("#").replace("-", "_").replace(" ", "_"))
 
 
 class Parley:
@@ -201,7 +203,8 @@ class Parley:
             raise ParleyError(400, f"a post is at most {MAX_POST} characters")
         if link and not str(link).startswith(("http://", "https://")):
             raise ParleyError(400, "a link is an http(s) URL")
-        self._limit("posts", "author", author, 3600, self.limits.posts_per_hour, "posts an hour")
+        if not app_html:  # an app has its own limit, a day's
+            self._limit("posts", "author", author, 3600, self.limits.posts_per_hour, "posts an hour", extra="AND kind != 'app'")
         if has_image:
             self._limit("posts", "author", author, 3600, self.limits.pictures_per_hour, "pictures an hour", extra="AND image IS NOT NULL")
         comm = None
