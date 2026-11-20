@@ -118,15 +118,18 @@ const kn = (v) => (v == null ? "–" : v >= 1000 ? (v / 1000).toFixed(v >= 1e5 ?
 const nodeLabel = (k) => (k && k.length > 18 ? "…" + k.slice(-14) : k || "–");
 
 /**
- * A copy's name: the cluster's short name, from its address (s1-0 for a pod
- * the operator runs, a0, 127.0.0.1:8004), which it keeps when another copy
- * leaves and which the server's texts, events, alerts and Home say too
- * (NEW-scenarios-7); its server's own name goes beside it as a subtitle,
- * and the URL in a tooltip.
+ * A copy's name: the `--node-name` its server gave (OLU-402), else the
+ * cluster's short name, from its address (s1-0 for a pod the operator runs,
+ * a0, 127.0.0.1:8004), which it keeps when another copy leaves; the
+ * server's texts, events, alerts and Home say the same (NEW-scenarios-7,
+ * core.shownName). The other name goes beside it as a subtitle, and the URL
+ * in a tooltip.
  */
-const cname = (c) => (c.url && core.copyName(c.url, state.cluster)) || c.id || c.name;
-const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== c.id ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
-  c.name && c.name !== c.id ? h("span", { class: "small muted cc2-sname" }, " " + c.name) : null);
+const cname = (c) => (c.url && core.copyName(c.url, state.cluster)) || core.shownName({ short: c.id, name: c.name }) || c.id || c.name;
+/** The other name beside it: its address when it is named by `--node-name` (OLU-402), else its server's name. */
+const calt = (c) => { const n = cname(c); return c.id && c.id !== n ? c.id : c.name && c.name !== n ? c.name : null; };
+const cspan = (c, cls = "") => h("span", { class: "mono " + cls, title: [c.name && c.name !== cname(c) ? "server " + c.name : null, c.url].filter(Boolean).join(" · ") }, cname(c),
+  calt(c) ? h("span", { class: "small muted cc2-sname" }, " " + calt(c)) : null);
 
 /**
  * The names copies had when they last answered, by URL: a copy that is down
@@ -183,7 +186,7 @@ function voteTarget(sh) {
  * (finding chaos-2); one whose primary cannot write is fixed by handing
  * the primary over, not by a restart (finding chaos-4).
  */
-function critAdvice(sh) {
+export function critAdvice(sh) {
   const down = sh.copies.filter((c) => c.down), left = sh.copies.filter((c) => !c.down);
   const wasP = down.find((c) => c.wasPrimary);
   const them = down.length === 1 ? cname(down[0]) : "either " + down.map(cname).join(" or ");
@@ -218,6 +221,17 @@ function critAdvice(sh) {
     };
   }
   const P = sh.primary;
+  if (P && !sh.takes_writes && sh.electing) {
+    // OLU-401: the copy just elected waits for the old primary's lease to
+    // run out. Writes are held, not failing; restarting it now, with the
+    // old primary silent, would leave the shard short of a majority.
+    const win = sh.windowMs ? ` A silent primary is given ${dur(sh.windowMs / 1000)} (--failover-after-ms); writes sent meanwhile are held and then answered.` : "";
+    return {
+      cause: `${cname(P)} was just elected shard ${sh.i}'s primary and takes writes within seconds, once the old primary's lease runs out.${win}`,
+      restore: `Nothing to do yet: wait a few seconds, and do not restart ${cname(P)}. If it still takes no writes after a minute, look at its log.`,
+      next: `Wait: ${cname(P)} was just elected primary and takes writes within seconds. Do not restart it`,
+    };
+  }
   if (P && !sh.takes_writes) {
     // The primary answers but cannot write: a full disk, a write that
     // failed partway. A replica in sync takes over at once; a restart of
@@ -261,7 +275,7 @@ const noReads = (sh) => sh.state === "down" || sh.state === "no_reads" || (sh.st
 
 // ---------------------------------------------------------------- the model
 /** The cluster as the canvas needs it, from `/v1/cluster` (old and new shapes). */
-function model(c) {
+export function model(c) {
   keepNames(c);
   const shards = (c?.shards || []).map((sh, idx) => {
     const i = sh.shard ?? idx;
@@ -340,6 +354,10 @@ function model(c) {
       takes_writes: sh.takes_writes ?? (st === "ok" || st === "degraded"),
       callRate: sh.call_rate ?? null,
       heat: sh.heat || null,
+      // A failover under way, and how long a silent primary is given
+      // (--failover-after-ms), as the server says (OLU-401).
+      electing: sh.electing === true,
+      windowMs: sh.failover_window_ms ?? null,
     };
   });
   const all = shards.flatMap((x) => x.copies);
@@ -469,18 +487,19 @@ function steady(st, cand) {
   Object.assign(st, { shard: cand, hits: cand == null ? 0 : 1, miss: 0 });
   return null;
 }
-function problems(M) {
+export function problems(M) {
   const out = [];
   const crit = M.shards.filter((sh) => CRIT.has(sh.state));
   for (const sh of crit) {
     const down = sh.copies.filter((c) => c.down);
     const left = sh.copies.filter((c) => !c.down);
     out.push({
-      sev: 2, shards: [sh.i], label: `Shard ${sh.i} ${sh.state === "down" ? "is down" : noReads(sh) ? "serves no reads" : "takes no writes"}`,
+      // A failover under way holds writes for seconds: not a repair (OLU-401).
+      sev: 2, shards: [sh.i], label: `Shard ${sh.i} ${sh.state === "down" ? "is down" : noReads(sh) ? "serves no reads" : sh.electing ? "holds writes while it elects a primary" : "takes no writes"}`,
       text: `${sh.up} of ${sh.n} copies answer`, since: Math.min(...down.map((c) => c.downSince || Infinity)),
-      impact: noReads(sh) ? "searches that need it fail, and it takes no writes" : "it takes no writes: searches go on from its other copies",
+      impact: noReads(sh) ? "searches that need it fail, and it takes no writes" : sh.electing ? "writes wait for the new primary (held for seconds, then answered); searches go on from its other copies" : "it takes no writes: searches go on from its other copies",
       next: left.length ? critAdvice(sh).next : `Bring a copy of shard ${sh.i} back`,
-      fix: left.length && down.length ? { kind: "repair", shard: sh.i } : null,
+      fix: left.length && down.length && !sh.electing ? { kind: "repair", shard: sh.i } : null,
     });
   }
   // Searches failing on a copy: Home's first critical problem (NEW-shell-monitor-6).
