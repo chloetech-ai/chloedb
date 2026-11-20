@@ -1386,7 +1386,8 @@ body.wide .left, body.wide .right { display: none; }
     const color = {}; x.arms.forEach((r, i) => { color[r.arm] = PAL[i % PAL.length]; });
     const canAdmin = list.admin || !!adminKey;
     const byDay = a.series.width_hours >= 24;
-    const labels = a.series.points.map((p) => shortTime(p.t, byDay));
+    const labels = a.series.points.map((p) => a.series.width_hours < 1 ? new Date(epoch(p.t)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : shortTime(p.t, byDay));
+    const bucket = byDay ? 'day' : a.series.width_hours >= 1 ? (a.series.width_hours === 1 ? 'hour' : a.series.width_hours + ' hours') : Math.round(a.series.width_hours * 60) + ' minutes';
     const comp = {}; a.comparisons.forEach((c) => { comp[c.arm] = c.metrics[metric]; });
     const rows = a.arms.map((r) => {
       const m = r.metrics[metric], c = comp[r.arm];
@@ -1424,10 +1425,10 @@ body.wide .left, body.wide .right { display: none; }
           <div class="small" style="margin-top:4px">Impressions per agent: ${a.arms.map((r) => `${esc(r.arm)} ${r.per_agent.toFixed(1)}`).join(' · ')}</div></section>
         <section class="card panel"><h3 class="sect">Power</h3>${a.power.mde != null ? `<p style="margin:0 0 6px">With these agents, a difference smaller than <b>${(a.power.mde * 100).toFixed(1)} points</b> on ${esc(a.metric)} is likely to go unseen (80% power, 5% two-sided).</p><div class="small">To see a 5-point difference: about ${a.power.agents_for_5_points} agents in the experiment.</div>` : '<p class="small" style="margin:0">Not enough agents per arm to say yet.</p>'}</section>
       </div>
-      <section class="card panel"><h2>Over time</h2><p class="small" style="margin:0 0 6px">${byDay ? 'Day' : (a.series.width_hours === 1 ? 'Hour' : a.series.width_hours + ' hours')} by ${byDay ? 'day' : 'hour'}, cumulative: where each arm’s rate settles as agents keep seeing their feeds.</p>
+      <section class="card panel"><h2>Over time</h2><p class="small" style="margin:0 0 6px">Every ${esc(bucket)}, cumulative: where each arm’s rate settles as agents keep seeing their feeds.</p>
         ${legend(x.arms.map((r) => [r.arm, color[r.arm]]))}${cumChart}
         <h3 class="sect" style="margin-top:14px">Difference against ${esc(control)}, with its 95% interval</h3>${diffChart}
-        <h3 class="sect" style="margin-top:14px">Impressions in each ${byDay ? 'day' : 'hour'}</h3>${volChart}</section>
+        <h3 class="sect" style="margin-top:14px">Impressions in each ${esc(bucket)}</h3>${volChart}</section>
       <section class="card panel"><h2>By segment</h2><div class="tabs" style="margin:6px 0 8px">${Object.entries(dims).map(([k, l]) => `<a class="tab${k === dim ? ' on' : ''}" href="${link({ dim: k })}">${esc(l)}</a>`).join('')}</div>
         <div style="overflow-x:auto"><table class="t"><thead><tr><th>${esc(dims[dim])}</th>${x.arms.map((r) => `<th class="num"><span class="sw" style="background:${color[r.arm]}"></span>${esc(r.arm)}</th>`).join('')}${a.comparisons.map((c) => `<th class="num">${esc(c.arm)} − ${esc(control)}</th>`).join('')}</tr></thead><tbody>${seg || `<tr><td colspan="9" class="small">No data yet.</td></tr>`}</tbody></table></div>
         <p class="small" style="margin:8px 0 0">Segments are cut after the fact: with this many, one will look different by chance. Read them for ideas to test, not as results.</p></section>

@@ -460,9 +460,8 @@ def _holm(cs: list[dict]) -> None:
 
 def _series(units: list[dict], arms: list[str], control: str, metric: str, t0: float, t1: float) -> dict:
     span = max(1.0, t1 - t0)
-    width = 3600 if span <= 3 * 86400 else 86400
-    if span / width > 72:
-        width = 6 * 3600 if width == 3600 else width
+    # The narrowest bucket that shows the experiment's life in 47 or fewer.
+    width = next((w for w in (300, 900, 1800, 3600, 6 * 3600, 86400) if span / w <= 47), 86400)
     nb = max(1, math.ceil(span / width))
     buckets = [{"t": _iso(t0 + i * width)} for i in range(nb)]
     cum: dict[str, dict] = {a: {"per": {}, "agents": 0, "pairs": 0} for a in arms}
