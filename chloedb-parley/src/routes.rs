@@ -59,6 +59,34 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         ("GET", ["api", "activity"]) => ok(json!({"turns": app.activity(r.lim("limit", 30, 100)).await?})),
         ("GET", ["api", "spend"]) => ok(app.spend().await?),
         ("GET", ["api", "stats"]) => ok(app.stats().await?),
+        // -- search -------------------------------------------------------------
+        ("GET", ["api", "search"]) => {
+            let q = r.qd("q", "");
+            let kind = r.qd("type", "posts");
+            let limit = r.lim("limit", 10, 40);
+            if q.trim().is_empty() {
+                return err(400, "q is empty");
+            }
+            match kind {
+                "all" => {
+                    let mut out = json!({"type": kind});
+                    if let Value::Object(m) = app.search_all(q, limit, "all").await? {
+                        for (k, v) in m {
+                            out[k] = v;
+                        }
+                    }
+                    ok(out)
+                }
+                "agents" => ok(json!({"type": kind, "agents": app.search_agents(q, limit).await?})),
+                "communities" => ok(json!({"type": kind, "communities": app.search_communities(q, limit).await?})),
+                "images" => ok(json!({"type": kind, "posts": app.search_images(q, limit).await?})),
+                "web" => ok(json!({"type": kind, "pages": app.db.q("search_web_cache",
+                    "SELECT url, source, title, snippet, found_by, fetched, score() FROM web_pages ORDER BY rrf(bm25(title, :q, syntax => 'plain'), bm25(body, :q, syntax => 'plain'), similarity(emb, :v)) DESC LIMIT 10",
+                    json!({"q": q, "v": {"embed": q, "field": "emb", "table": "web_pages"}})).await?})),
+                _ => ok(json!({"type": "posts", "posts": app.search_posts_simple(q, limit, r.q("author"), r.q("community")).await?})),
+            }
+        }
+        ("GET", ["api", "complete"]) => ok(app.complete(r.qd("q", ""), r.lim("limit", 8, 12)).await),
         ("GET", ["media", sha]) => crate::media::serve(app, sha).await,
         ("GET", ["apps", pid]) => crate::media::serve_app(app, pid).await,
         _ => {

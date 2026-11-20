@@ -8,4 +8,5 @@ pub mod media;
 pub mod reads;
 pub mod routes;
 pub mod schema;
+pub mod search;
 pub mod util;
