@@ -1874,6 +1874,51 @@ impl Coordinator {
         t.replicas.iter().enumerate().flat_map(|(i, rs)| rs.iter().map(move |r| (i, r.url.clone(), r.client.clone()))).collect()
     }
 
+    /// Where a shard-aware client sends each row (`GET /v1/cluster/route`):
+    /// the slot map it routes by, and each shard's primary, by its gRPC
+    /// URL and the HTTP URL its health gives (`--peer-url`, else its pod's
+    /// address or `--listen`). A client that writes to the primaries
+    /// itself skips this coordinator and, for a batch it splits by shard,
+    /// the round that checks a write spanning shards; each shard still
+    /// refuses a row of a slot it does not hold (400, or 409 while a slot
+    /// moves), and its primary takes writes alone, so a client that reads
+    /// this again after such a refusal, or after a 503 from a copy that
+    /// is no longer the primary, writes where the coordinator would.
+    pub async fn route(&self) -> Result<Json, ApiError> {
+        let t = self.topo();
+        let Some(map) = t.slots.clone() else {
+            return Err(ApiError { code: None, status: 409, message: "this cluster routes writes by the hash before slots, which has no map to give: write through the coordinator".into() });
+        };
+        let asks = (0..t.replicas.len()).map(|i| {
+            let t = &t;
+            async move {
+                let k = self.primary(t, i).await?.unwrap_or(0);
+                let r = &t.replicas[i][k];
+                let http = match tokio::time::timeout(Duration::from_secs(2), r.client.clone().health(tonic::Request::new(pb::Empty {}))).await {
+                    Ok(Ok(h)) => serde_json::from_str::<Json>(&h.into_inner().detail).ok().and_then(|d| d["http_url"].as_str().map(str::to_string)),
+                    _ => None,
+                };
+                Ok::<Json, ApiError>(json!({"shard": i, "primary": r.url, "primary_http": http}))
+            }
+        });
+        let shards = join_all(asks).await.into_iter().collect::<Result<Vec<Json>, ApiError>>()?;
+        Ok(json!({"epoch": map.epoch, "map": map.to_json(), "shards": shards, "moving": map.moving().is_some()}))
+    }
+
+    /// The tables every shard's primary holds alike, or `None` when one
+    /// did not answer within 5 s or they differ: what a write is checked
+    /// against when the catalog ([`Self::catalog`], every replica's) lacks
+    /// a table a primary has created but a replica has not applied yet.
+    async fn primaries_catalog(&self, t: &Topology) -> Option<Vec<Arc<Schema>>> {
+        let asks = (0..t.replicas.len()).map(|i| async move {
+            let k = self.primary(t, i).await.ok()?.unwrap_or(0);
+            let mut c = t.replicas[i].get(k)?.client.clone();
+            Some(tokio::time::timeout(Duration::from_secs(5), c.schema(pb::Empty {})).await.ok()?.ok()?.into_inner())
+        });
+        let answers: Vec<pb::SchemaResponse> = join_all(asks).await.into_iter().collect::<Option<_>>()?;
+        common_tables(&answers).ok()
+    }
+
     /// The cluster map it routes by (`None` while writes go by the hash
     /// before slots).
     pub fn map(&self) -> Option<SlotMap> {
@@ -3975,6 +4020,15 @@ impl Coordinator {
         if ops.iter().any(|op| op_schema(&catalog, op).is_err()) && self.refresh(false).await {
             catalog = self.catalog();
         }
+        // Still missing: with `--write-acks primary` (or `majority`) a
+        // replica may not have applied a CREATE TABLE its primary has, and
+        // the catalog is what every replica holds alike. A write goes to
+        // the primaries, so it is checked against the tables they hold.
+        if ops.iter().any(|op| op_schema(&catalog, op).is_err()) {
+            if let Some(held) = self.primaries_catalog(t).await {
+                catalog = held;
+            }
+        }
         let mut by_shard: BTreeMap<usize, Vec<Json>> = BTreeMap::new();
         // Where each shard's operations are in the request.
         let mut places: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -4059,6 +4113,11 @@ impl Coordinator {
         let mut catalog = self.catalog();
         if ops.iter().any(|op| !is_mark(op) && op_schema(&catalog, op).is_err()) && self.refresh(false).await {
             catalog = self.catalog();
+        }
+        if ops.iter().any(|op| !is_mark(op) && op_schema(&catalog, op).is_err()) {
+            if let Some(held) = self.primaries_catalog(&t).await {
+                catalog = held;
+            }
         }
         // By table: each insert's key, the shard it goes to, and its place.
         let mut by_table: BTreeMap<String, (Arc<Schema>, Vec<(Value, usize, usize)>)> = BTreeMap::new();

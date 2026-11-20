@@ -75,6 +75,24 @@ enum Command {
         #[command(flatten)]
         server: Server,
     },
+    /// Read GOES's clear sky mask and smoke over a region's places into
+    /// ea_sky: the archive from --from, one scan every --every seconds,
+    /// then with --live each new one.
+    Sky {
+        /// california or chile.
+        #[arg(long)]
+        region: String,
+        /// The archive from this time (a date, a time, or hours back such
+        /// as 720h); left out, after the last scan read.
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long, default_value_t = 600)]
+        every: i64,
+        #[arg(long)]
+        live: bool,
+        #[command(flatten)]
+        server: Server,
+    },
     /// Name the fires of California from CAL FIRE's perimeters (the
     /// same year, the alarm days around the start, the centre in the
     /// outline).
@@ -166,6 +184,13 @@ async fn main() -> Result<()> {
             }
             let o = feed::Opts { region, from: from.as_deref().map(when).transpose()?, to: to.as_deref().map(when).transpose()?, live, every, parallel };
             feed::run(db, places, o).await?;
+        }
+        Command::Sky { region, from, every, live, server } => {
+            let Some(region) = feed::region(&region) else { bail!("the regions are california and chile") };
+            let db = server.db();
+            load::create(&db).await?;
+            let places = Arc::new(Places::read(&db).await.map_err(|e| anyhow::anyhow!("{e}"))?);
+            chloedb_earth::sky::run(db, places, chloedb_earth::sky::Opts { region, from: from.as_deref().map(when).transpose()?, live, every }).await?;
         }
         Command::Names { server } => {
             let db = server.db();

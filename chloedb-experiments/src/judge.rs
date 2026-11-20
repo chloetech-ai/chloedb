@@ -62,12 +62,11 @@ impl Judge {
         self.kept.lock().unwrap_or_else(|e| e.into_inner()).get(&need_key(n)).cloned().unwrap_or_default()
     }
 
-    /// The grades of `rows` for `need` (with the text of those opened), and
-    /// what grading the new ones cost.
-    pub async fn grade(&self, need: &Need, rows: &[Hit], opened: &HashMap<String, String>) -> Result<(HashMap<String, u8>, f64)> {
+    /// Reads the kept grades of a need from the table, once, and gives
+    /// every grade of it known so far.
+    pub async fn load(&self, need: &Need) -> HashMap<String, u8> {
         if need.kind == "known" {
-            let t = need.target.clone().unwrap_or_default();
-            return Ok((rows.iter().map(|r| (r.id.clone(), u8::from(r.id == t) * 2)).collect(), 0.0));
+            return self.grades_of(need);
         }
         let key = need_key(need);
         let first = self.read.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone());
@@ -82,6 +81,18 @@ impl Judge {
                 }
             }
         }
+        self.grades_of(need)
+    }
+
+    /// The grades of `rows` for `need` (with the text of those opened), and
+    /// what grading the new ones cost.
+    pub async fn grade(&self, need: &Need, rows: &[Hit], opened: &HashMap<String, String>) -> Result<(HashMap<String, u8>, f64)> {
+        if need.kind == "known" {
+            let t = need.target.clone().unwrap_or_default();
+            return Ok((rows.iter().map(|r| (r.id.clone(), u8::from(r.id == t) * 2)).collect(), 0.0));
+        }
+        let key = need_key(need);
+        self.load(need).await;
         let known = self.kept.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned().unwrap_or_default();
         let mut new: Vec<&Hit> = Vec::new();
         for r in rows {
