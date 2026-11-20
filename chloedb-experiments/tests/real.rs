@@ -67,7 +67,8 @@ async fn site() -> String {
             authed(&h)?;
             Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"protocol": 1, "site": "made-up", "title": "A made-up news site", "about": "Stories of a made-up news site.", "rows": "stories",
                 "knobs": [{"key": "broken", "group": "Ranking", "title": "Worst first", "kind": "bool", "default": false}, {"key": "noise", "group": "Ranking", "title": "Noise", "kind": "number", "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.05}],
-                "presets": [{"name": "As it is", "knobs": {}}, {"name": "Broken", "knobs": {"broken": true}}]})))
+                "presets": [{"name": "As it is", "knobs": {}}, {"name": "Broken", "knobs": {"broken": true}}],
+                "log": {"policy": {"policy": "epsilon", "epsilon": 0.5, "top": 4}, "path": "/v1/experiment/log"}})))
         }))
         .route("/v1/experiment/search", post(|h: HeaderMap, Json(b): Json<Value>| async move {
             authed(&h)?;
@@ -93,6 +94,15 @@ async fn site() -> String {
             authed(&h)?;
             let i: usize = id.trim_start_matches('s').parse::<usize>().unwrap_or(1).saturating_sub(1).min(ROWS.len() - 1);
             Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"id": id, "title": ROWS[i], "url": "", "text": format!("{}\n\nThe whole story.", ROWS[i])})))
+        }))
+        .route("/v1/experiment/log", get(|h: HeaderMap| async move {
+            authed(&h)?;
+            // 40 searches of the page, half exploring, the first story opened each time.
+            let reqs: Vec<Value> = (0..40).map(|i| {
+                let shown = if i % 2 == 0 { json!(["s1", "s2", "s3", "s4"]) } else { json!(["s3", "s1", "s4", "s2"]) };
+                json!({"request": format!("r{i}"), "ts": 1, "q": "rust compiler", "explored": i % 2 == 1, "ranked": ["s1", "s2", "s3", "s4"], "shown": shown, "clicks": ["s1"]})
+            }).collect();
+            Ok::<_, (StatusCode, Json<Value>)>(Json(json!({"policy": {"policy": "epsilon", "epsilon": 0.5, "top": 4}, "requests": reqs, "clicks": 40})))
         }))
         .route("/v1/experiment/sample", get(|h: HeaderMap, Query(_q): Query<Value>| async move {
             authed(&h)?;
@@ -269,6 +279,13 @@ async fn a_study_of_a_real_site_finds_the_broken_arm() {
     assert!(r["held_out"]["verdict"].is_string() && r["held_out"]["sentence"].is_string(), "{r}");
     assert!(v["searches"].as_u64().unwrap() > 0 && v["steps"].as_array().unwrap().len() > 2, "{v}");
     assert_eq!(c.get("/v1/tunes").await["tunes"][0]["id"], json!(tid));
+    // The site logs its page's searches: both rankings valued on them.
+    let op = &r["off_policy"];
+    assert_eq!((op["requests"].clone(), op["explored"].clone(), op["clicks"].clone()), (json!(40), json!(20), json!(40)), "{op}");
+    let t = op["targets"].as_array().unwrap();
+    assert_eq!(t.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(), ["as logged", "as it is", "proposed"]);
+    let naive = t[0]["estimates"].as_array().unwrap().iter().find(|e| e["estimator"] == "naive").unwrap();
+    assert_eq!(naive["value"], 1.0, "one story opened a search: {op}");
 
     // The same, by Claude: the people written, played and judged.
     let w = c.post("/v1/personas", json!({"source": "made-up", "brain": "claude"})).await;

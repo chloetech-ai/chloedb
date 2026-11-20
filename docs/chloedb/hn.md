@@ -120,6 +120,7 @@ The token (`--experiments-token`, or `CHLOEDB_HN_EXPERIMENTS_TOKEN`) opens only 
 | `POST /v1/experiment/search` | `{q, knobs, per}`: the site's own search of stories, with the knobs, and what it understood |
 | `GET /v1/experiment/item/:id` | a story's title, link and text |
 | `GET /v1/experiment/sample?n=&seed=` | stories to write people from: well voted and ordinary, across the years |
+| `GET /v1/experiment/log?since=&limit=` | with `--explore-share`: the page's logged searches since `since` (seconds), each with the stories as ranked, as shown and opened, and the policy |
 
 The knobs, by group (an arm names the ones it changes; the rest stay as the site is):
 
@@ -132,6 +133,10 @@ The knobs, by group (an arm names the ones it changes; the rest stay as the site
 | Index | `index`: `main`, or an index named by `--experiment-index NAME=TABLE`, the stories indexed another way (other analyzers, fields or embeddings) beside the main one |
 
 A knob it does not have, a number out of its range, an index it was not given, or an expression with more than an expression in it (a `;`, a comment, a statement's words) is refused with 400.
+
+### Exploring: the page's searches, logged
+
+With `--explore-share ε` (or `CHLOEDB_HN_EXPLORE_SHARE`; it needs `--experiments-token`), the page's searches are logged so that the Experiments app can value a ranking on what real people opened, off-policy, without serving it. A logged search is the page's own (`log=1`): the first page of stories by the best match, with words. The log holds the stories in the order the site ranked them, the order shown and the stories opened from it (`GET /v1/click?r=&id=`, which the page calls, kept only for a recent request that showed the story). With chance ε the top `--explore-top` (10) stories are shown in a uniform random order instead (the rank log's `epsilon` policy), so every story of the top has a known chance at every place. The draw is seeded by the request's id. A search through the API, the Experiments app's agents' included, is not logged. The tables are `hn_explore_log` and `hn_explore_clicks`, and a tune ([Experiments](../../chloedb-experiments/README.md#tune-the-relevance-autopilot-on-a-sites-knobs)) values the site as it is and its proposal on them.
 
 ## Measured against hn.algolia.com
 

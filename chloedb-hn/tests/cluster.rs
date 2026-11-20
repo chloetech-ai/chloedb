@@ -114,7 +114,7 @@ impl App {
             .arg(bin)
             .arg("--rows")
             .arg(rows)
-            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=hn_stories"])
+            .args(["--listen", &format!("127.0.0.1:{port}"), "--local-listen", &format!("127.0.0.1:{strata}"), "--token", TOKEN, "--experiments-token", EXP_TOKEN, "--experiment-index", "v2=hn_stories", "--explore-share", "1", "--explore-top", "3"])
             .args(["--model", "potion-base-8M", "--comment-model", "none"])
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -337,6 +337,39 @@ async fn searches_questions_and_completions() {
     assert!(it["text"].as_str().unwrap().contains("borrow checker"), "its comments too: {it}");
     let sm: Value = exp("/v1/experiment/sample?n=10&seed=1").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
     assert!(sm["rows"].as_array().unwrap().len() >= 5, "{sm}");
+
+    // Exploring: the page's search is logged with its top shuffled, a
+    // story opened from it is kept, and the log reads them back; an API
+    // search (no log=1) is not logged.
+    let d: Value = exp("/v1/experiment").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+    assert_eq!(d["log"]["policy"]["policy"], "epsilon", "{d}");
+    let plain = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story")]).await;
+    assert!(plain["log"].is_null(), "{plain}");
+    let page = get(&http, &app, "/v1/search", &[("q", "rust"), ("only", "story"), ("log", "1")]).await;
+    let req = page["log"]["request"].as_str().expect("a logged request").to_string();
+    let first = page["stories"][0]["id"].as_i64().unwrap();
+    let c = get(&http, &app, "/v1/click", &[("r", &req), ("id", &first.to_string())]).await;
+    assert_eq!(c["kept"], true, "{c}");
+    let c = get(&http, &app, "/v1/click", &[("r", "made-up"), ("id", "1")]).await;
+    assert_eq!(c["kept"], false, "{c}");
+    let t0 = std::time::Instant::now();
+    loop {
+        let l: Value = exp("/v1/experiment/log?since=0").bearer_auth(EXP_TOKEN).send().await.unwrap().json().await.unwrap();
+        let r = l["requests"].as_array().unwrap_or_else(|| panic!("{l}"));
+        if r.len() == 1 && r[0]["clicks"] == json!([first]) {
+            assert_eq!(r[0]["request"], json!(req));
+            assert_eq!(r[0]["explored"], true, "{l}");
+            let mut ranked: Vec<i64> = r[0]["ranked"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
+            let mut shown: Vec<i64> = r[0]["shown"].as_array().unwrap().iter().map(|x| x.as_i64().unwrap()).collect();
+            assert_eq!(shown[0], first, "{l}");
+            ranked.sort();
+            shown.sort();
+            assert_eq!(ranked, shown, "shown is the ranked top reordered: {l}");
+            break;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10), "the log and its click: {l}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 
     app.stop();
 }

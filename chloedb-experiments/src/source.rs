@@ -220,6 +220,15 @@ impl Source {
         v
     }
 
+    /// The site's logged searches since `since` (seconds), with what people
+    /// opened, when the site logs them (its description has `log`).
+    pub async fn log(&self, since: i64, limit: usize) -> Result<Value> {
+        if self.kind != Kind::App {
+            return Err(format!("{}: a public search keeps no log", self.name));
+        }
+        self.get("/v1/experiment/log", &[("since", since.to_string()), ("limit", limit.to_string())]).await
+    }
+
     /// The first page of `q`, as an arm with these knobs sees it.
     pub async fn search(&self, q: &str, knobs: &Value, per: usize) -> Result<Page> {
         let t0 = Instant::now();

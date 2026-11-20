@@ -28,7 +28,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::estimate::{self, Target};
 use crate::judge::{need_key, Judge};
+use crate::policy::Policy;
+use crate::sim::Impression;
 use crate::live;
 use crate::personas::{Need, PersonaSet};
 use crate::source::{Hit, Source};
@@ -542,7 +545,116 @@ impl Tune {
             "k": self.spec.k,
         });
         self.set(|s| s.report = report);
+        // Off-policy, on what real people opened: when the site logs its
+        // page's searches, exploring, both rankings are valued on them.
+        if described["log"].is_object() && !self.stop.load(Ordering::SeqCst) {
+            self.set(|s| s.phase = "valuing both on the site's logged searches".into());
+            let v = match self.off_policy(&base, &cur).await {
+                Ok(v) => v,
+                Err(e) => json!({"error": e}),
+            };
+            self.set(|s| s.report["off_policy"] = v);
+        }
         Ok(())
+    }
+
+    /// The site as it is and the proposal valued on the site's log.
+    async fn off_policy(&self, base: &Map<String, Value>, cur: &Map<String, Value>) -> Result<Value, String> {
+        let since = crate::app::now_ms() / 1000 - 30 * 86_400;
+        let log = self.source.log(since, MAX_LOGGED).await?;
+        let policy = Policy::from_json(&log["policy"])?;
+        let reqs: Vec<Logged> = log["requests"].as_array().into_iter().flatten().filter_map(Logged::of).collect();
+        let mut imps = Vec::new();
+        let mut keep = Vec::new();
+        for (i, r) in reqs.iter().enumerate() {
+            if let Some(imp) = r.impression(&policy, imps.len() as u32, i as u64) {
+                imps.push(imp);
+                keep.push(r);
+            }
+        }
+        let explored = keep.iter().filter(|r| r.explored).count();
+        let clicks: usize = imps.iter().map(|m| m.click.iter().filter(|c| **c).count()).sum();
+        let depth = policy.top().max(1);
+        let mut targets = vec![Target { name: "as logged".into(), keys: Vec::new(), lists: keep.iter().map(|r| (0..r.ranked.len().min(depth)).map(|i| Some(i as u16)).collect()).collect() }];
+        let mut coverage = vec![1.0];
+        for (name, knobs) in [("as it is", base), ("proposed", cur)] {
+            let mut lists = Vec::new();
+            let (mut slots, mut known) = (0usize, 0usize);
+            for r in &keep {
+                let (rows, _) = self.page(&r.q, knobs).await?;
+                let list: Vec<Option<u16>> = rows.iter().take(r.ranked.len().min(depth)).map(|h| r.index(&h.id)).collect();
+                slots += list.len();
+                known += list.iter().filter(|x| x.is_some()).count();
+                lists.push(list);
+            }
+            coverage.push(if slots == 0 { 0.0 } else { known as f64 / slots as f64 });
+            targets.push(Target { name: name.into(), keys: Vec::new(), lists });
+        }
+        let pick = ["naive", "snips", "sniips", "snrips", "cdr"];
+        let all = if imps.is_empty() { vec![Vec::new(); targets.len()] } else { estimate::value_all(&imps, &targets, depth) };
+        let out: Vec<Value> = targets
+            .iter()
+            .zip(&all)
+            .zip(&coverage)
+            .map(|((t, es), cov)| {
+                let es: Vec<Value> = es.iter().filter(|e| e.reward == "clicks" && pick.contains(&e.estimator)).map(|e| json!({"estimator": e.estimator, "value": e.value, "se": e.se, "ess": e.ess, "trusted": e.trusted()})).collect();
+                json!({"name": t.name, "coverage": cov, "estimates": es})
+            })
+            .collect();
+        let headline = |i: usize| all.get(i).and_then(|es| es.iter().find(|e| e.reward == "clicks" && e.estimator == "snrips")).cloned();
+        let sentence = match (headline(1), headline(2)) {
+            _ if imps.is_empty() => "No logged searches yet: the page's searches are logged as people make them.".to_string(),
+            (Some(a), Some(b)) if a.trusted() && b.trusted() => format!("On {} logged searches ({explored} exploring), people would open {:.3} stories a search as it is and {:.3} with the proposal (SNRIPS, ±{:.3} and ±{:.3}).", imps.len(), a.value, b.value, 1.96 * a.se, 1.96 * b.se),
+            (Some(a), Some(b)) => format!("Not enough yet: {} logged searches, {explored} of them exploring, {clicks} stories opened. The estimates ({:.3} as it is, {:.3} proposed) rest on too few exploring searches to trust (at least 400 effective).", imps.len(), a.value, b.value),
+            _ => "No estimate.".to_string(),
+        };
+        Ok(json!({"requests": imps.len(), "explored": explored, "clicks": clicks, "policy": log["policy"], "targets": out, "sentence": sentence}))
+    }
+}
+
+/// The most logged searches a tune reads.
+const MAX_LOGGED: usize = 600;
+
+/// A search the site logged.
+struct Logged {
+    q: String,
+    explored: bool,
+    ranked: Vec<String>,
+    shown: Vec<String>,
+    clicks: Vec<String>,
+}
+
+impl Logged {
+    fn of(v: &Value) -> Option<Logged> {
+        let ids = |k: &str| -> Vec<String> { v[k].as_array().into_iter().flatten().map(|x| match x { Value::String(s) => s.clone(), x => x.to_string() }).collect() };
+        let q = v["q"].as_str()?.trim().to_string();
+        if q.is_empty() {
+            return None;
+        }
+        Some(Logged { q, explored: v["explored"] == true, ranked: ids("ranked"), shown: ids("shown"), clicks: ids("clicks") })
+    }
+
+    fn index(&self, id: &str) -> Option<u16> {
+        self.ranked.iter().position(|r| r == id).map(|i| i as u16)
+    }
+
+    /// The impression, its chances from the policy: `None` when the shown
+    /// order is not a reordering of the ranked rows.
+    fn impression(&self, policy: &Policy, query: u32, i: u64) -> Option<Impression> {
+        let n = self.ranked.len();
+        if n == 0 || self.shown.len() != n {
+            return None;
+        }
+        let order: Vec<usize> = self.shown.iter().map(|s| self.index(s).map(|x| x as usize)).collect::<Option<_>>()?;
+        let scores = vec![None; n];
+        let m = policy.marginals(&scores).ok()?;
+        let prefix = policy.prefix_chances(&scores, &order).ok()?;
+        let propensity: Vec<f64> = order.iter().enumerate().map(|(k, &r)| m[r][k]).collect();
+        if propensity.iter().chain(&prefix).any(|p| *p <= 0.0) {
+            return None;
+        }
+        let click: Vec<bool> = self.shown.iter().map(|s| self.clicks.contains(s)).collect();
+        Some(Impression { i, user: 0, query, shown: order.iter().map(|&x| x as u16).collect(), propensity, prefix, satisfied: click.clone(), click, dwell: vec![0.0; n], took_ms: 0.0 })
     }
 }
 
@@ -621,6 +733,28 @@ mod tests {
         let held = w.iter().filter(|w| w.held_out).count();
         assert!(held > 0 && held < 12, "{held} held out");
         assert_eq!(w.iter().map(|x| x.held_out).collect::<Vec<_>>(), workload(&set, &sessions, 7).iter().map(|x| x.held_out).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_logged_search_is_an_impression_with_the_policys_chances() {
+        let p = Policy::from_json(&json!({"policy": "epsilon", "epsilon": 0.2, "top": 4})).unwrap();
+        let l = Logged::of(&json!({"q": "rust", "explored": true, "ranked": [11, 12, 13, 14], "shown": [13, 11, 12, 14], "clicks": [11]})).unwrap();
+        let imp = l.impression(&p, 0, 0).unwrap();
+        assert_eq!(imp.shown, vec![2, 0, 1, 3]);
+        assert_eq!(imp.click, vec![false, true, false, false]);
+        // Moved: ε / top; kept at its place: (1 − ε) + ε / top.
+        assert!((imp.propensity[0] - 0.05).abs() < 1e-12 && (imp.propensity[3] - 0.85).abs() < 1e-12, "{:?}", imp.propensity);
+        assert!(imp.prefix.iter().all(|x| *x > 0.0));
+        assert!(Logged::of(&json!({"q": "x", "ranked": [1, 2], "shown": [1, 3], "clicks": []})).unwrap().impression(&p, 0, 0).is_none(), "a row not ranked");
+        // The logging ranking, valued on its own log, is what it earned.
+        let imps: Vec<Impression> = (0..200u64).map(|i| {
+            let o = if i % 5 == 0 { json!([12, 11, 13, 14]) } else { json!([11, 12, 13, 14]) };
+            Logged::of(&json!({"q": "rust", "ranked": [11, 12, 13, 14], "shown": o, "clicks": [11]})).unwrap().impression(&p, i as u32, i).unwrap()
+        }).collect();
+        let t = Target { name: "as logged".into(), keys: Vec::new(), lists: (0..200).map(|_| (0..4).map(|i| Some(i as u16)).collect()).collect() };
+        let es = estimate::value_all(&imps, &[t], 4);
+        let naive = es[0].iter().find(|e| e.estimator == "naive" && e.reward == "clicks").unwrap();
+        assert!((naive.value - 1.0).abs() < 1e-9, "{naive:?}");
     }
 
     #[test]

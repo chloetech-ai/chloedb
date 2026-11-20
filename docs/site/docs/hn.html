@@ -349,6 +349,10 @@ chloedb-experiments serve ... --source hn=app:http://hn-host:7850     # with CHL
 <td><code>GET /v1/experiment/sample?n=&amp;seed=</code></td>
 <td>stories to write people from: well voted and ordinary, across the years</td>
 </tr>
+<tr>
+<td><code>GET /v1/experiment/log?since=&amp;limit=</code></td>
+<td>with <code>--explore-share</code>: the page's logged searches since <code>since</code> (seconds), each with the stories as ranked, as shown and opened, and the policy</td>
+</tr>
 </tbody>
 </table></div>
 <p>The knobs, by group (an arm names the ones it changes; the rest stay as the site is):</p>
@@ -383,6 +387,8 @@ chloedb-experiments serve ... --source hn=app:http://hn-host:7850     # with CHL
 </tbody>
 </table></div>
 <p>A knob it does not have, a number out of its range, an index it was not given, or an expression with more than an expression in it (a <code>;</code>, a comment, a statement's words) is refused with 400.</p>
+<h3 id="exploring-the-pages-searches-logged">Exploring: the page's searches, logged<a class="anchor" href="#exploring-the-pages-searches-logged" aria-label="Link to this section">#</a></h3>
+<p>With <code>--explore-share ε</code> (or <code>CHLOEDB_HN_EXPLORE_SHARE</code>; it needs <code>--experiments-token</code>), the page's searches are logged so that the Experiments app can value a ranking on what real people opened, off-policy, without serving it. A logged search is the page's own (<code>log=1</code>): the first page of stories by the best match, with words. The log holds the stories in the order the site ranked them, the order shown and the stories opened from it (<code>GET /v1/click?r=&amp;id=</code>, which the page calls, kept only for a recent request that showed the story). With chance ε the top <code>--explore-top</code> (10) stories are shown in a uniform random order instead (the rank log's <code>epsilon</code> policy), so every story of the top has a known chance at every place. The draw is seeded by the request's id. A search through the API, the Experiments app's agents' included, is not logged. The tables are <code>hn_explore_log</code> and <code>hn_explore_clicks</code>, and a tune (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-experiments/README.md#tune-the-relevance-autopilot-on-a-sites-knobs">Experiments</a>) values the site as it is and its proposal on them.</p>
 <h2 id="measured-against-hnalgoliacom">Measured against hn.algolia.com<a class="anchor" href="#measured-against-hnalgoliacom" aria-label="Link to this section">#</a></h2>
 <p><code>eval/compare.py</code> asks both the same queries, made from stories both hold: a story found again from three words of its title, the same with a typo, the story described in other words, and topics whose top ten a model grades blind to which engine found what. The results are in <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloedb-hn/eval/results"><code>chloedb-hn/eval/results</code></a>, with the machine and the date they were measured on.</p>
 <p><code>eval/instant.py</code> types six searches a character at a time and asks both at each keystroke, as their pages do. On 2026-11-16, while <code>crawl</code> was writing pages into the same cluster, the app's instant search took 10 ms at the median on the server (22 ms at the 90th percentile) against Algolia's 13.5 ms (34 ms), and its round trip from the same cloud machine 48 ms against Algolia's 199 ms (<a href="https://github.com/chloetech-ai/chloedb/blob/main/chloedb-hn/eval/results/instant-2026-11-16.json">the numbers</a>).</p>

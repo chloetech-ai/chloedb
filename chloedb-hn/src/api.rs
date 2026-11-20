@@ -56,6 +56,9 @@ pub struct Service {
     pub experiments_token: Option<String>,
     /// Indexes an arm may read besides hn_stories: (name, table).
     pub indexes: Vec<(String, String)>,
+    /// The page's searches logged, a share of them exploring
+    /// (`--explore-share`, [`crate::explore`]).
+    pub explore: Option<Arc<crate::explore::Explore>>,
 }
 
 pub type Shared = Arc<Service>;
@@ -112,6 +115,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/canon", get(canon_route))
         .route("/v1/canon/work", get(canon_work_route))
         .route("/v1/minds/arc", get(arc_route))
+        .route("/v1/click", get(click_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         // Experiments by the command center's Experiments app: their own
         // token, in public too.
@@ -121,6 +125,7 @@ pub fn router(svc: Shared) -> Router {
                 .route("/v1/experiment/search", axum::routing::post(exp_search))
                 .route("/v1/experiment/item/:id", get(exp_item))
                 .route("/v1/experiment/sample", get(exp_sample))
+                .route("/v1/experiment/log", get(exp_log))
                 .layer(axum::middleware::from_fn_with_state(svc.clone(), exp_guard)),
         )
         // Up, for a probe: no token, nothing read.
@@ -191,6 +196,11 @@ async fn exp_guard(State(svc): State<Shared>, req: Request, next: Next) -> Respo
 async fn exp_describe(State(svc): State<Shared>) -> Json<Value> {
     let mut d = crate::experiment::describe(&svc.indexes);
     d["allowed"] = json!(true);
+    // The page's searches are logged, exploring: rankings can be valued on them.
+    d["log"] = match &svc.explore {
+        Some(e) => json!({"policy": e.policy(), "path": "/v1/experiment/log"}),
+        None => Value::Null,
+    };
     Json(d)
 }
 
@@ -390,6 +400,9 @@ pub struct SearchParams {
     /// Results a page, when not the default.
     #[serde(default)]
     per: Option<usize>,
+    /// `log=1`: the page's own search, logged when the site explores.
+    #[serde(default)]
+    log: Option<u8>,
 }
 
 /// The query understood, with a word that may be a person checked against
@@ -460,13 +473,31 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
     );
     let (mut stories, total_s) = s?.unwrap_or_default();
     let (mut comments, total_c) = cm?.unwrap_or_default();
+    // The page's first page of stories by the best match, logged and with
+    // a share exploring: its top in a random order, each place's chance known.
+    let mut logged = Value::Null;
+    if let Some(e) = &svc.explore {
+        let plain = matches!(r.mode.as_str(), "" | "hybrid" | "words");
+        if a.log == Some(1) && a.page == 0 && want_s && r.sort == "best" && plain && !words.is_empty() && !stories.is_empty() {
+            let request = e.request();
+            let (s2, row) = e.serve(&request, &a.q, std::mem::take(&mut stories), crate::ingest::now());
+            stories = s2;
+            let db = svc.db.clone();
+            tokio::spawn(async move {
+                if let Err(err) = db.upsert(crate::explore::LOG, vec![row]).await {
+                    eprintln!("chloedb-hn: logging a search: {err}");
+                }
+            });
+            logged = json!({"request": request});
+        }
+    }
     let ans = if a.page == 0 { crate::answer::answer(&c, &p, &stories, &comments, total_s, total_c, f.as_ref()).await } else { None };
     search::mark(&c, &p, &mut stories, &mut comments).await;
     done(&trace, json!({
         "q": a.q, "understood": p, "only": only, "sort": r.sort, "mode": if r.mode.is_empty() { "hybrid" } else { r.mode.as_str() },
         "answer": ans,
         "stories": stories, "comments": comments, "total_stories": total_s, "total_comments": total_c,
-        "facets": f, "did_you_mean": dym, "page": a.page, "per_page": per,
+        "facets": f, "did_you_mean": dym, "page": a.page, "per_page": per, "log": logged,
     }), t0)
 }
 
@@ -879,4 +910,45 @@ async fn front(State(svc): State<Shared>) -> Answer {
     let c = Ctx { db: &svc.db, trace: &trace };
     let rows = c.soft("the newest stories, ranked as HN's front page ranks them", &format!("SELECT {}, (points - 1) / pow((date_part('epoch', now()) - date_part('epoch', created)) / 3600.0 + 2, 1.8) AS rank FROM hn_stories WHERE created > now() - INTERVAL '2 days' ORDER BY rank DESC LIMIT 30", search::STORY_COLS), Value::Null).await;
     done(&trace, json!({"stories": rows, "feed": svc.feed.as_ref().map(|f| f.status())}), t0)
+}
+
+#[derive(serde::Deserialize)]
+struct ClickQ {
+    #[serde(default)]
+    r: String,
+    #[serde(default)]
+    id: i64,
+}
+
+/// A story opened from a logged search (`/v1/click?r=REQUEST&id=STORY`):
+/// kept when the request is a recent one that showed it.
+async fn click_route(State(svc): State<Shared>, Query(c): Query<ClickQ>) -> Json<Value> {
+    let Some(e) = &svc.explore else { return Json(json!({"kept": false})) };
+    let Some(row) = e.click(&c.r, c.id, crate::ingest::now()) else { return Json(json!({"kept": false})) };
+    let db = svc.db.clone();
+    tokio::spawn(async move {
+        if let Err(err) = db.upsert(crate::explore::CLICKS, vec![row]).await {
+            eprintln!("chloedb-hn: keeping a click: {err}");
+        }
+    });
+    Json(json!({"kept": true}))
+}
+
+#[derive(serde::Deserialize)]
+struct ExpLog {
+    /// Seconds since the epoch: requests since then (the last 30 days by default).
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// The page's logged searches and what people opened from them, for the
+/// Experiments app to value rankings on.
+async fn exp_log(State(svc): State<Shared>, Query(a): Query<ExpLog>) -> Answer {
+    let Some(e) = &svc.explore else { return Err(ApiError(StatusCode::NOT_FOUND, "the site logs no searches (start it with --explore-share)".into())) };
+    let since = a.since.unwrap_or_else(|| crate::ingest::now() - 30 * 86_400);
+    let mut v = crate::explore::read(&svc.db, since, a.limit.unwrap_or(2000).clamp(1, 10_000)).await?;
+    v["policy"] = e.policy();
+    Ok(Json(v))
 }

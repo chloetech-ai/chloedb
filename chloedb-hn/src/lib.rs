@@ -10,6 +10,7 @@ pub mod complete;
 pub mod crawl;
 pub mod digest;
 pub mod experiment;
+pub mod explore;
 pub mod ingest;
 pub mod link;
 pub mod load;

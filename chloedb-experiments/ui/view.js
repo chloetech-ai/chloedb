@@ -2176,11 +2176,13 @@ async function realTune(ctx, root, go, id, onStop) {
   const steps = h("div");
   const moved = h("div");
   const needs = h("div");
+  const offBox = h("div");
   root.append(head, clock, top,
     h("div", { class: "ex-g2", style: { marginTop: "14px" } },
       core.card({ title: "The search", sub: "nDCG of the training needs for each value tried; the line is the best kept", body: steps }),
       core.card({ title: "What it moved", sub: "the knobs it kept changed, from the site as it is", body: moved })),
-    h("div", { style: { marginTop: "14px" } }, core.card({ title: "Held-out needs", sub: "needs the search never saw: their nDCG before and after", body: needs })));
+    h("div", { style: { marginTop: "14px" } }, core.card({ title: "Held-out needs", sub: "needs the search never saw: their nDCG before and after", body: needs })),
+    h("div", { style: { marginTop: "14px" } }, offBox));
   const draw = async () => {
     const v = await ctx.api(path);
     const running = v.status === "running";
@@ -2222,6 +2224,14 @@ async function realTune(ctx, root, go, id, onStop) {
     } else steps.replaceChildren(h("div", { class: "small dim" }, "Reading the study's grades…"));
     moved.replaceChildren(rep.changed ? (rep.changed.length ? h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Knob"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"))),
       h("tbody", {}, rep.changed.map((c) => h("tr", {}, h("td", {}, c.title), h("td", { class: "num ex-num" }, fmtKnob(c.from)), h("td", { class: "num ex-num" }, h("b", {}, fmtKnob(c.to))))))) : h("div", { class: "small dim" }, "No value it tried did better than the site as it is on the training needs.")) : h("div", { class: "small dim" }, running ? "…" : ""));
+    const op = rep.off_policy;
+    offBox.replaceChildren(op ? core.card({ title: "On real people's searches", sub: "off-policy: what people opened from the site's logged searches, weighted by each place's chance under the exploring policy", body: op.error ? h("div", { class: "small ex-bad" }, op.error) : h("div", { style: { display: "grid", gap: "10px" } },
+      h("div", { class: "line" }, op.sentence),
+      h("div", { class: "small dim" }, `${op.requests} logged searches · ${op.explored} exploring · ${op.clicks} stories opened · ${op.policy ? `ε ${op.policy.epsilon} over the top ${op.policy.top}` : ""}`),
+      h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
+        h("thead", {}, h("tr", {}, h("th", {}, "Ranking"), h("th", { class: "num", title: "share of its places whose story the log could have shown there" }, "Support"), (op.targets?.[0]?.estimates || []).map((e) => h("th", { class: "num" }, e.estimator.toUpperCase())))),
+        h("tbody", {}, (op.targets || []).map((t) => h("tr", {}, h("td", {}, t.name), h("td", { class: "num ex-num" }, pct0(t.coverage)),
+          t.estimates.map((e) => h("td", { class: "num ex-num" + (e.trusted ? "" : " dim"), title: e.trusted ? `±${(1.96 * e.se).toFixed(3)}` : `not trusted: ${e.ess != null ? `${Math.round(e.ess)} effective searches` : "no weights"}` }, `${e.value.toFixed(3)}${e.trusted ? "" : " ?"}`)))))))) }) : null);
     const pn = rep.per_need || [];
     needs.replaceChildren(pn.length ? h("div", { class: "tbl-wrap" }, h("table", { class: "t" },
       h("thead", {}, h("tr", {}, h("th", {}, "Need"), h("th", {}, "Searched"), h("th", { class: "num" }, "As it is"), h("th", { class: "num" }, "Proposed"), h("th", {}, ""))),

@@ -20,6 +20,14 @@ changes collect under "Unreleased".
   after, the sign test, a bootstrap interval, the site's time per
   search). Prove it with people opens a study of the proposal against
   the site as it is, on people the tune never saw. `GET/POST /v1/tunes`.
+- **chloedb-hn logs its page's searches, a share exploring, and a tune
+  values rankings on them.** With `--explore-share ε` the page's searches
+  are logged with the stories people open from them, and a share ε shows
+  the top `--explore-top` in a random order (the rank log's `epsilon`
+  policy), so the Experiments app can value the site as it is and a
+  tune's proposal on real people's clicks, off-policy (SNIPS, SNIIPS,
+  SNRIPS, cascade DR, with their effective sizes). Off by default.
+  `GET /v1/experiment/log`, `GET /v1/click`.
 
 - **chloedb-hn's experiment sample answers on the whole archive.**
   `GET /v1/experiment/sample`, which the Experiments app reads to write

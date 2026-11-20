@@ -285,6 +285,18 @@ and through a coordinator:
    since proving on the needs it was fitted to would count the fit as a
    gain).
 
+6. **On real people's searches.** When the site logs its page's
+   searches with an exploring policy (its description has `log`;
+   chloedb-hn's [`--explore-share`](../docs/chloedb/hn.md#exploring-the-pages-searches-logged)),
+   the tune reads the last 30 days (`GET /v1/experiment/log`, at most
+   600), turns each search into an impression with the policy's exact
+   chances ([`policy.rs`](src/policy.rs)), and values the logged
+   ranking, the site as it is and the proposal on what people opened:
+   naive, SNIPS, SNIIPS, SNRIPS and cascade doubly robust, each with its
+   effective number of searches, and the share of each ranking's places
+   the log could have shown. An estimate on fewer than 400 effective
+   searches is shown as not trusted.
+
 Nothing is written to the site. A tune is a row of `exp_tunes`, one at a
 time, at most 4,000 searches.
 
