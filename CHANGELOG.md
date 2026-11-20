@@ -11,6 +11,26 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **A Postgres follower one table cannot stop.** A table `follow-postgres`
+  cannot write (a value ChloeDB refuses, a table without a primary key
+  joining the publication, two tables that become one) is held with its
+  error, which names the table, column and row's key, while the others
+  keep following and the process stays up; it is copied again over its
+  rows, which stay readable, at its next try. Data > Connectors and
+  `GET /v1/admin/connectors` show each held table; `/metrics` has
+  `chloedb_follow_table_up`, `chloedb_follow_table_lag_seconds`,
+  `chloedb_follow_table_error_info`, `chloedb_follow_tables_held` and
+  `chloedb_follow_last_error_timestamp_seconds`, and the built-in alert
+  `follow-table-held` fires on a table held for a minute.
+  `--copy-table orders` copies one table again the same way, and a column
+  whose type Postgres changed to one of another ChloeDB type has its table
+  copied again alone with the column made anew. A `jsonb` value with an
+  empty key is followed, the key written as `_empty`. **Changed:**
+  `DROP TABLE` of a followed table, and `ALTER TABLE ... DROP COLUMN` or
+  `RENAME COLUMN` of a column the follower writes, are refused (409,
+  `followed_table`), as writes already were; adding a column stays
+  allowed. The Postgres page has a systemd unit and a container restart
+  policy to run the follower under.
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000
