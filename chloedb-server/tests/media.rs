@@ -327,3 +327,45 @@ async fn a_replica_gets_media_and_vectors_without_fetching() {
     let e = rdb.resolve_media_in("photos", &mut [vec![Value::Null, Value::Null, Value::Str(json!({"uri": "file:/x.png"}).to_string()), Value::Null]]).unwrap_err();
     assert!(e.to_string().contains("--media-fetch"), "{e}");
 }
+
+/// A write through a coordinator whose rows land on two shards, each
+/// with a picture given as its bytes: each shard's part is checked first
+/// (the round a write spanning shards pays), and the check refused every
+/// such write ("unknown field `data`") since it applied the values before
+/// the write would resolve them (found building Parley, PR #701). The
+/// check takes a stand-in of the value's kind; a value no write may give
+/// is still refused, and nothing is written.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_spanning_shards_takes_pictures_as_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut shards = Vec::new();
+    let mut dbs = Vec::new();
+    for name in ["a.strata", "b.strata"] {
+        let db = create(dir.path(), name);
+        let svc = service(db.clone());
+        let store = dir.path().join(format!("{name}.store"));
+        std::fs::create_dir_all(&store).unwrap();
+        svc.set_media(Resolver { store: Some(store), ..Resolver::default() }).unwrap();
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        shards.push(format!("http://{}", l.local_addr().unwrap()));
+        tokio::spawn(server::serve_grpc(Arc::new(svc), l, Access::default()));
+        dbs.push(db);
+    }
+    let c = chloedb_server::coord::Coordinator::connect(shards).await.unwrap();
+    let schema = c.schema.clone();
+    let coord = Arc::new(Service::new(Backend::Cluster(Arc::new(c)), schema, agent(), 16, Duration::from_secs(10)));
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png(4, 3));
+    // A value no write may give fails the whole write, before any shard writes.
+    let mut bad: Vec<Json> = (0..8).map(|i| insert(&format!("p{i}"), json!({"data": b64, "mime": "image/png"}))).collect();
+    bad.push(insert("odd", json!({"data": b64, "colour": "red"})));
+    let e = coord.write_ops(bad, None).await.unwrap_err();
+    assert!(e.message.contains("colour"), "{}", e.message);
+    assert_eq!(dbs.iter().map(|d| rows(d).len()).sum::<usize>(), 0);
+    let ops: Vec<Json> = (0..8).map(|i| insert(&format!("p{i}"), json!({"data": b64, "mime": "image/png"}))).collect();
+    coord.write_ops(ops, None).await.unwrap();
+    let held: Vec<Vec<_>> = dbs.iter().map(|d| rows(d)).collect();
+    assert!(held.iter().all(|r| !r.is_empty()), "the rows landed on both shards: {:?}", held.iter().map(Vec::len).collect::<Vec<_>>());
+    for (_, m, _) in held.iter().flatten() {
+        assert_eq!((m.mime.as_str(), m.width, m.sha256.as_str()), ("image/png", Some(4), sha256_hex(&png(4, 3)).as_str()));
+    }
+}

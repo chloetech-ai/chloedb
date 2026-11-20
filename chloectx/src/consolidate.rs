@@ -60,6 +60,8 @@ pub struct Report {
     pub groups: usize,
     pub replaced: usize,
     pub written: usize,
+    /// Merges the model wrote that the check refused, with why.
+    pub rejected: Vec<String>,
     pub cost_usd: f64,
     pub usage: llm::Usage,
     pub errors: Vec<String>,
@@ -73,7 +75,8 @@ const PROMPT: &str = r#"These notes from a software project's memory are about r
 
 Rewrite them as the smallest set of notes that keeps every detail, number, name, format and reason that still holds:
 - when a later note changes, reverses or replaces an earlier one, keep only the current version, and say briefly what it replaced if that helps (e.g. "30 days, changed from 14");
-- merge notes that say the same thing or parts of one thing; keep notes on different subjects separate;
+- merge notes that say the same thing or parts of one thing; keep notes on different subjects separate: notes about different versions of a thing (the old and the new parser) or about different code are different subjects;
+- never turn around what a note says, and never write a number, name or path no note has;
 - never drop a rule, a requirement for planned work, a constraint or a reason;
 - each note is one or two self-contained sentences that name their subject;
 - a note that merges with nothing stays as it is: keep it rather than rewording it.
@@ -208,6 +211,116 @@ pub fn parse(text: &str, ids: &[String]) -> Vec<(Draft, Vec<String>)> {
     out
 }
 
+/// Why a merged note may not replace its sources, or None when it keeps
+/// what they say (JONAH-401). The model rewrites notes it was shown, and
+/// nothing it writes is taken as true because it wrote it: the merged note
+/// must say the same as the newest source and the newest decision of the
+/// user among them (no flipped word such as accepts/rejects, no negation
+/// added or dropped), keep every number, name and path of the newest
+/// source, make up no new ones, and the sources must be about the same
+/// thing: not "the old parser" with "the new parser", nor notes anchored
+/// to disjoint sets of files. A rejected merge leaves the notes as they
+/// are.
+pub fn contradiction(text: &str, olds: &[&Record]) -> Option<String> {
+    let Some(newest) = olds.iter().max_by_key(|r| r.seq) else { return None };
+    let merged = text.to_lowercase();
+    let all: String = olds.iter().map(|r| r.text.to_lowercase()).collect::<Vec<_>>().join("\n");
+    // Different versions of one thing, or different code.
+    let versions = |t: &str, set: &[&str]| -> HashSet<String> {
+        let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+        words.windows(2).filter(|w| set.contains(&w[0])).map(|w| w[1].to_string()).collect()
+    };
+    const OLD: [&str; 5] = ["old", "legacy", "previous", "former", "v1"];
+    const NEW: [&str; 5] = ["new", "rewritten", "next", "refactored", "v2"];
+    // One note about the old thing, another about the new one (a note that
+    // names both may be merged with what agrees with it).
+    let tagged: Vec<(HashSet<String>, HashSet<String>)> = olds.iter().map(|r| r.text.to_lowercase()).map(|t| (versions(&t, &OLD), versions(&t, &NEW))).collect();
+    for (i, (old_i, _)) in tagged.iter().enumerate() {
+        for (j, (_, new_j)) in tagged.iter().enumerate() {
+            if let Some(w) = old_i.intersection(new_j).find(|w| i != j && !tagged[i].1.contains(*w) && !tagged[j].0.contains(*w)) {
+                return Some(format!("the notes are about the old and the new {w}, which are different things"));
+            }
+        }
+    }
+    let files: Vec<HashSet<String>> = olds.iter().filter_map(|r| Anchor::parse(&r.ctx)).filter(|a| !a.files.is_empty()).map(|a| a.files.into_iter().map(|(p, _)| p).collect()).collect();
+    if files.iter().enumerate().any(|(i, a)| files[i + 1..].iter().any(|b| a.is_disjoint(b))) {
+        return Some("the notes are anchored to different files".into());
+    }
+    // What the merged note says against the newest note and the user's newest.
+    let user_newest = olds.iter().filter(|r| !matches!(r.source(), Some(s) if s != crate::record::Source::User)).max_by_key(|r| r.seq);
+    let any_negated = olds.iter().any(|r| negated(&r.text.to_lowercase()));
+    for src in std::iter::once(newest).chain(user_newest.filter(|u| u.id != newest.id)) {
+        if let Some(why) = flips(&src.text.to_lowercase(), &merged, any_negated) {
+            return Some(format!("it {why} [{}]", src.id));
+        }
+    }
+    let invented: Vec<String> = specifics(&merged).into_iter().filter(|t| !all.contains(t.as_str())).collect();
+    if let Some(t) = invented.first() {
+        return Some(format!("it names {t}, which no source does"));
+    }
+    let merged_specifics = specifics(&merged);
+    if let Some(t) = specifics(&newest.text.to_lowercase()).into_iter().find(|t| !merged_specifics.contains(t)) {
+        return Some(format!("it drops {t} from the newest note [{}]", newest.id));
+    }
+    None
+}
+
+/// Word families that say opposite things.
+const OPPOSITES: [(&[&str], &[&str]); 9] = [
+    (&["accept"], &["reject", "refus"]),
+    (&["allow", "permit"], &["forbid", "disallow", "deny", "denies", "denied", "prohibit", "block"]),
+    (&["enable"], &["disable"]),
+    (&["requir", "mandatory"], &["optional"]),
+    (&["includ"], &["exclud", "omit"]),
+    (&["always"], &["never"]),
+    (&["succe"], &["fail"]),
+    (&["increas", "raise"], &["decreas", "lower", "reduc"]),
+    (&["support"], &["unsupport", "drop"]),
+];
+
+fn words_of(t: &str) -> Vec<&str> {
+    t.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect()
+}
+
+fn negated(t: &str) -> bool {
+    words_of(t).iter().any(|w| matches!(*w, "not" | "never" | "no" | "cannot" | "without") || w.ends_with("n't"))
+}
+
+/// How `merged` reverses `src` (both lowercased), if it does;
+/// `any_negated`: whether some source says "not", which the merge may then
+/// carry over from it.
+fn flips(src: &str, merged: &str, any_negated: bool) -> Option<&'static str> {
+    let has = |words: &[&str], fams: &[&str]| words.iter().any(|w| fams.iter().any(|f| w.starts_with(f)));
+    let (sw, mw) = (words_of(src), words_of(merged));
+    for (pos, neg) in OPPOSITES {
+        let (sp, sn, mp, mn) = (has(&sw, pos), has(&sw, neg), has(&mw, pos), has(&mw, neg));
+        if (sp && !sn && mn && !mp) || (sn && !sp && mp && !mn) {
+            return Some("turns what the note says around");
+        }
+    }
+    // A negation added or dropped from a note about the same thing.
+    let (a, b): (HashSet<&str>, HashSet<&str>) = (sw.iter().copied().collect(), mw.iter().copied().collect());
+    let jaccard = a.intersection(&b).count() as f64 / a.union(&b).count().max(1) as f64;
+    let (ns, nm) = (negated(src), negated(merged));
+    if ((ns && !nm) || (nm && !any_negated)) && jaccard >= 0.5 {
+        return Some("adds or drops a negation");
+    }
+    None
+}
+
+/// The numbers, dates, paths and identifiers of a text (lowercased): what a
+/// rewrite must not lose or make up.
+fn specifics(t: &str) -> HashSet<String> {
+    t.split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || c == '/' || c == '_')).trim_end_matches(['.', ',']))
+        .filter(|w| {
+            let dotted = w.contains('.') && w.chars().any(|c| c.is_alphabetic()) && w.split('.').any(|p| p.len() > 1);
+            w.chars().any(|c| c.is_ascii_digit()) || (w.len() >= 2 && (w.contains(['/', '_']) || dotted))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// Merges groups of related live notes. Writes the new notes and marks the
 /// ones they replace superseded.
 pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64) -> Result<Report> {
@@ -236,6 +349,12 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
                 continue;
             }
             let olds: Vec<&&Record> = members.iter().filter(|r| replaces.contains(&r.id)).collect();
+            // Checked against what it replaces before it replaces it.
+            let sources: Vec<&Record> = olds.iter().map(|r| **r).collect();
+            if let Some(why) = contradiction(&draft.text, &sources) {
+                rep.rejected.push(format!("{}: {why}", replaces.join(", ")));
+                continue;
+            }
             // The newest replaced note's session, turn and time; its context
             // and the anchors of all of them. The merged note is dated by
             // what it says, not by when it was merged: a later merge lists
@@ -254,7 +373,13 @@ pub fn run(store: &Store, cfg: &ConsolidateConfig, cli: &DistillConfig, now: i64
             d.importance = Some(olds.iter().map(|r| r.importance).fold(0.0, f64::max));
             // Who said it, when they all agree.
             let by: Vec<Option<crate::record::Source>> = olds.iter().map(|r| r.source()).collect();
+            // When they differ, the merged note is not the user's: a sentence
+            // that mixes the user's words with an agent's is shown as the
+            // agent's (JONAH-401).
+            let theirs = by.iter().flatten().find(|b| **b != crate::record::Source::User);
             if let Some(Some(b)) = by.first().filter(|b| by.iter().all(|x| x == *b)) {
+                d = d.by(b);
+            } else if let Some(b) = theirs {
                 d = d.by(b);
             }
             for id in &replaces {
@@ -333,5 +458,65 @@ mod tests {
         assert_eq!(g.len(), 1, "{g:?}");
         let texts: Vec<&str> = g[0].iter().map(|&i| live[i].text.as_str()).collect();
         assert!(texts.iter().all(|t| t.starts_with("Refunds")), "{texts:?}");
+    }
+
+    fn scripted(dir: &std::path::Path, merged: serde_json::Value) -> DistillConfig {
+        let out = dir.join("out.json");
+        std::fs::write(&out, serde_json::json!({"is_error": false, "total_cost_usd": 0.0, "result": merged.to_string()}).to_string()).unwrap();
+        let script = dir.join("fake-model.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > /dev/null\ncat '{}'\n", out.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        DistillConfig { command: script.display().to_string(), model: "m".into(), ..Default::default() }
+    }
+
+    /// Two notes, the model's merge of them; the live notes afterwards.
+    fn consolidate(notes: [(&str, &str); 2], merge_text: &str) -> (Report, Vec<Record>) {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.strata"), Arc::new(HashEmbedder { dim: 256 }), StoreOptions { sync: false, ..Default::default() }).unwrap();
+        for (i, (by, t)) in notes.iter().enumerate() {
+            s.append("a", i as i64 + 1, 100 * (i as i64 + 1), vec![Draft::new(Kind::Fact, *t).tag("distilled").entities(vec!["parser".into()]).by(&crate::record::Source::parse(by))]).unwrap();
+        }
+        let ids: Vec<String> = live_notes(&s, 10).unwrap().iter().map(|r| r.id.clone()).collect();
+        let cli = scripted(dir.path(), serde_json::json!({"kind": "fact", "text": merge_text, "replaces": ids}));
+        let rep = run(&s, &ConsolidateConfig { cos: 0.99, entity_cos: 0.2, ..Default::default() }, &cli, 10_000).unwrap();
+        let live = live_notes(&s, 10).unwrap();
+        (rep, live)
+    }
+
+    /// JONAH-401: "the old parser rejects X" merged with "the new parser
+    /// accepts it" came back as "the new parser rejects it".
+    #[test]
+    fn a_merge_that_contradicts_its_sources_is_rejected() {
+        let notes = [("assistant", "The old parser rejects the date 2026-12-1 with an error."), ("assistant", "The new parser accepts it and reads it as December 1.")];
+        let (rep, live) = consolidate(notes, "The new parser rejects the date 2026-12-1 with an error.");
+        assert_eq!((rep.written, rep.replaced), (0, 0), "{:?}", rep.rejected);
+        assert_eq!(rep.rejected.len(), 1);
+        assert_eq!(live.len(), 2, "the true notes stay live");
+        // Even a faithful-looking text is not merged across old and new.
+        let (rep, live) = consolidate(notes, "The old parser rejects the date 2026-12-1 and the new parser accepts it.");
+        assert_eq!(rep.written, 0, "{:?}", rep.rejected);
+        assert_eq!(live.len(), 2);
+    }
+
+    #[test]
+    fn a_merge_never_turns_around_a_decision_of_the_user() {
+        let notes = [("user", "Uploads are allowed for every signed-in member."), ("assistant", "Uploads over 5 MB need a signed URL.")];
+        let (rep, live) = consolidate(notes, "Uploads are forbidden for members; uploads over 5 MB need a signed URL.");
+        assert_eq!(rep.written, 0, "{:?}", rep.rejected);
+        assert_eq!(live.len(), 2);
+        // Dropping a number of the newest note, and making one up, are refused too.
+        let (rep, _) = consolidate(notes, "Uploads are allowed for every signed-in member; large ones need a signed URL.");
+        assert_eq!(rep.written, 0, "{:?}", rep.rejected);
+        let (rep, _) = consolidate(notes, "Uploads are allowed for every signed-in member; uploads over 9 MB need a signed URL (5 MB).");
+        assert_eq!(rep.written, 0, "{:?}", rep.rejected);
+    }
+
+    #[test]
+    fn a_faithful_merge_is_written_and_not_the_users_when_an_agent_is_in_it() {
+        let notes = [("user", "Uploads are allowed for every signed-in member."), ("assistant", "Uploads over 5 MB need a signed URL.")];
+        let (rep, live) = consolidate(notes, "Uploads are allowed for every signed-in member, and uploads over 5 MB need a signed URL.");
+        assert_eq!(rep.written, 1, "{:?}", rep.rejected);
+        assert_eq!(live.len(), 1);
+        assert!(live[0].source().is_some_and(|s| s != crate::record::Source::User), "{:?}", live[0].source());
     }
 }

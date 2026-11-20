@@ -447,6 +447,42 @@ async fn every_page_against_a_real_server() {
     let (st, _) = get(&http, &format!("{base}/v1/chip/..%2Fetc/2025"), Some(TOKEN)).await;
     assert!(st == 400 || st == 404, "{st}");
 
+    // The sky over four places, as `sky` writes it: a clear night and a
+    // cloudy day for two, a cloudy night and smoke for the other two.
+    let night = 1_736_323_200; // 8 Jan 2025 08:00 UTC, midnight in Santa Monica
+    let mut skies = Vec::new();
+    for (i, id) in ["ca0000", "ca0001", "ca0002", "ca0003"].iter().enumerate() {
+        let p = places.all.iter().find(|p| p.id == *id).expect("a test place");
+        let mut s = chloedb_earth::sky::Sky::new(id, "california", p.lat, p.lon, &p.town);
+        let (n, d, smoke) = if i < 2 { (1.0, 0.2, 0.0) } else { (0.1, 0.9, 0.6) };
+        for k in 0..4 {
+            s.see(night + k * 600, Some(n), Some(0.0));
+        }
+        for k in 0..4 {
+            s.see(night + 12 * 3600 + k * 600, Some(d), Some(smoke));
+        }
+        skies.push(s.doc());
+    }
+    db.upsert("ea_sky", skies).await.unwrap();
+
+    // The climate of a row of California's places, each warmer than the
+    // last, a place's 2071-2100 its neighbour's today two along; and of
+    // Chile's, colder, whose 2071-2100 is like California's today.
+    let mut climate = Vec::new();
+    for p in places.all.iter().filter(|p| p.id.starts_with("ca00") || p.id.starts_with("cl00")) {
+        let c: f64 = p.id[4..].parse().unwrap();
+        let (base, shift) = if p.region == "chile" { (-12.0, 13.0) } else { (0.0, 2.0) };
+        let now = vec![(base + c) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let later = vec![(base + c + shift) * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0];
+        climate.push(json!({"id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "town": format!("{}-{}", p.town, c),
+            "t_mean": 15.0 + c, "t_mean_70": 17.0 + c, "t_hot": 30.0 + c, "t_hot_70": 33.5 + c, "t_hot_70_lo": 32.0 + c, "t_hot_70_hi": 35.0 + c,
+            "t_cold": 5.0, "t_cold_70": 7.0, "t_cold_70_lo": 6.0, "t_cold_70_hi": 8.0, "rain": 400.0, "rain_70": 340.0, "rain_70_lo": 300.0, "rain_70_hi": 420.0,
+            "rain_cv": 90.0, "rain_cv_70": 95.0, "rain_summer": 10.0, "rain_summer_70": 8.0, "kg": "Csb", "kg_70": if c >= 6.0 { "Csa" } else { "Csb" }, "kg_70_agree": 4,
+            "analog": "", "analog_region": p.region, "analog_town": "", "analog_km": 6.5, "analog_d": if c >= 10.0 { 2.5 } else { 0.0 }, "novel": c >= 10.0, "moved": 0.2,
+            "clim": now, "clim70": later}));
+    }
+    db.upsert("ea_climate", climate).await.unwrap();
+
     // Public, as at earth.chloetech.ai: the page and its reads for anyone.
     let pub_port = free_port();
     let open = format!("http://127.0.0.1:{pub_port}");
@@ -470,6 +506,97 @@ async fn every_page_against_a_real_server() {
     assert_eq!(s, 200);
     let s = http.post(format!("{open}/v1/mix")).send().await.unwrap().status().as_u16();
     assert!(s == 401 || s == 405, "{s}");
+
+    // Fire watch, as the public page uses it: a browser's key, a watch
+    // 5 km north of the last fire, judged on the scans of its day.
+    let key = "test-watcher-0123456789abcdef";
+    let post = |url: String, body: Value| {
+        let http = http.clone();
+        async move {
+            let r = http.post(url).json(&body).send().await.unwrap();
+            let s = r.status().as_u16();
+            (s, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let (s, made) = post(format!("{open}/v1/watches?w={key}"), json!({"name": "the <house>", "lat": 34.17, "lon": -118.305, "km": 12})).await;
+    assert_eq!(s, 200, "{made}");
+    let wid = made["watch"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["watch"]["km"], 10.0, "snapped to a distance offered: {made}");
+    assert!(made["watch"].get("watcher").is_none(), "the key is not sent back: {made}");
+    let (s, _) = post(format!("{open}/v1/watches?w={key}"), json!({"lat": 48.85, "lon": 2.35})).await;
+    assert_eq!(s, 400, "Paris is not watched");
+    let (s, _) = post(format!("{open}/v1/watches?w=short"), json!({"lat": 34.17, "lon": -118.305})).await;
+    assert_eq!(s, 400, "a key too short to be safe");
+    let n = chloedb_earth::watch::judge(&db, "california", FIRES[6].2 - 3600, FIRES[6].2 + 12 * 3600).await.unwrap();
+    assert!(n >= 1, "the fire within 10 km raises an alert");
+    assert_eq!(chloedb_earth::watch::judge(&db, "california", FIRES[6].2 - 3600, FIRES[6].2 + 12 * 3600).await.unwrap(), 0, "and only once");
+    let (s, mine) = get(&http, &format!("{open}/v1/watches?w={key}"), None).await;
+    assert_eq!(s, 200, "{mine}");
+    assert_eq!(mine["watches"].as_array().unwrap().len(), 1, "{mine}");
+    let kinds: Vec<&str> = mine["alerts"].as_array().unwrap().iter().map(|a| a["kind"].as_str().unwrap()).collect();
+    assert!(kinds.contains(&"in"), "{mine}");
+    let (s, one) = get(&http, &format!("{open}/v1/watch/{wid}?w={key}"), None).await;
+    assert_eq!(s, 200, "{one}");
+    assert!(!one["alerts"].as_array().unwrap().is_empty() && one["track"].is_array(), "{one}");
+    let (s, _) = get(&http, &format!("{open}/v1/watch/{wid}?w=someone-else-0123456789"), None).await;
+    assert_eq!(s, 404, "another browser's watch");
+    let feed = http.get(format!("{open}/v1/watches/feed/{key}")).send().await.unwrap();
+    assert!(feed.headers()["content-type"].to_str().unwrap().starts_with("application/atom+xml"));
+    let feed = feed.text().await.unwrap();
+    assert!(feed.contains("<entry>") && feed.contains("the &lt;house&gt;"), "{feed}");
+    let (s, ch) = post(format!("{open}/v1/watch/{wid}?w={key}"), json!({"km": 25, "closer": false})).await;
+    assert_eq!(s, 200, "{ch}");
+    assert_eq!((ch["watch"]["km"].as_f64(), ch["watch"]["closer"].as_bool()), (Some(25.0), Some(false)));
+    let (s, _) = post(format!("{open}/v1/watch/{wid}?w=someone-else-0123456789"), json!({"remove": true})).await;
+    assert_eq!(s, 404, "another browser cannot remove it");
+    let (s, _) = post(format!("{open}/v1/watch/{wid}?w={key}"), json!({"remove": true})).await;
+    assert_eq!(s, 200);
+    let (_, mine) = get(&http, &format!("{open}/v1/watches?w={key}"), None).await;
+    assert!(mine["watches"].as_array().unwrap().is_empty() && mine["alerts"].as_array().unwrap().is_empty(), "removed with its alerts: {mine}");
+    let ex = ok(&http, &base, "/v1/watches/example").await;
+    assert_eq!(ex["watches"].as_array().unwrap().len(), 3, "{ex}");
+
+    // Clear sky: the map's layer, the finder and a place's sky.
+    let (s, layer) = get(&http, &format!("{open}/v1/sky?region=california"), None).await;
+    assert_eq!(s, 200, "{layer}");
+    let lats = layer["lat"].as_array().unwrap().len();
+    assert_eq!(lats, layer["clear"].as_array().unwrap().len());
+    assert_eq!(layer["clear"].as_array().unwrap().iter().filter(|v| !v.is_null()).count(), 4, "four places seen: {layer}");
+    let (s, near) = get(&http, &format!("{open}/v1/sky/find?lat=33.95&lon=-118.55&km=10&want=nights"), None).await;
+    assert_eq!(s, 200, "{near}");
+    let ids: Vec<&str> = near["places"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 4, "{near}");
+    assert!(ids[..2].contains(&"ca0000") && ids[..2].contains(&"ca0001"), "the clear nights first: {near}");
+    assert!(near["places"][0]["sky"]["nights"].as_array().unwrap().contains(&json!(100)), "{near}");
+    let (_, now) = get(&http, &format!("{open}/v1/sky/find?lat=33.95&lon=-118.55&km=10"), None).await;
+    assert_eq!(now["places"][0]["sky"]["words"], "smoke", "the last scan had smoke over the last two: {now}");
+    assert!(ids.iter().all(|id| now["places"].as_array().unwrap().iter().any(|p| p["id"] == *id)), "{now}");
+    let (s, _) = get(&http, &format!("{open}/v1/sky/find?region=mars"), None).await;
+    assert_eq!(s, 400);
+    let place = ok(&http, &base, "/v1/place/ca0000").await;
+    assert_eq!(place["sky"]["good_nights"], 1, "{place}");
+
+    // The climate in 2071-2100: the map, and a place's future found today.
+    assert_eq!(place["climate"]["t_hot_70"], 33.5, "{place}");
+    assert!(place["climate"].get("clim").is_none(), "no vectors on the page: {place}");
+    let (s, map) = get(&http, &format!("{open}/v1/future?region=california"), None).await;
+    assert_eq!(s, 200, "{map}");
+    assert_eq!(map["n"], 12, "{map}");
+    assert_eq!(map["hot"][0], 35, "{map}");
+    assert_eq!(map["class_changed"], 6, "{map}");
+    assert_eq!(map["novel_n"], 2, "{map}");
+    let (s, f) = get(&http, &format!("{open}/v1/future/place/ca0003"), None).await;
+    assert_eq!(s, 200, "{f}");
+    assert_eq!(f["like_later"][0]["id"], "ca0005", "its 2071-2100 is two along today: {f}");
+    assert_eq!(f["goes_to"][0]["id"], "ca0001", "and its today is two back's later: {f}");
+    assert!(f["like_later"][0]["d"].as_f64().unwrap() < 0.01, "{f}");
+    assert!(f["like_later"].as_array().unwrap().iter().all(|p| p["id"] != "ca0003"), "not itself: {f}");
+    let (_, all) = get(&http, &format!("{open}/v1/future/place/cl0000"), None).await;
+    let (_, mine) = get(&http, &format!("{open}/v1/future/place/cl0000?scope=region"), None).await;
+    assert_eq!(all["like_later"][0]["id"], "ca0001", "Chile's 2071-2100 is California's today: {all}");
+    assert_eq!(mine["like_later"][0]["id"], "cl0003", "or nearest it within Chile: {mine}");
+    let (s, _) = get(&http, &format!("{open}/v1/future/place/nowhere"), None).await;
+    assert_eq!(s, 404);
 
     // The rules and the data.
     let rules = ok(&http, &base, "/v1/rules").await;

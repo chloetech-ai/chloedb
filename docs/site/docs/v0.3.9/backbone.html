@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Backbone Explorer: the internet&#x27;s routing on ChloeDB · ChloeDB docs</title>
+<link rel="icon" href="../../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="chloedb-backbone is an app of a ChloeDB server built on public data about how the internet&#x27;s networks reach each other: every BGP update a RIPE RIS collector hears, checked as it arrives against RPKI and against the…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloedb/backbone.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../../features.html">Features</a>
+    <a href="../../scale.html">Laptop to cloud</a>
+    <a href="../../command-center.html">Command center</a>
+    <a href="../../benchmarks.html">Benchmarks</a>
+    <a href="../../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html" aria-current="page">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">Apps</span>
+      <h1>Backbone Explorer: the internet's routing on ChloeDB</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/chloedb/backbone.md">docs/chloedb/backbone.md</a>.</p>
+      <p class="doc-version">These docs describe release 0.3.9. <a href="../../docs/index.html">The docs of main</a> describe the code as it is now.</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-pages">The pages</a></li><li><a href="#the-rules">The rules</a></li><li><a href="#running-it">Running it</a></li><li><a href="#sizes">Sizes</a></li></ol></details>
+    <div class="doc-body">
+
+<p><code>chloedb-backbone</code> is an app of a ChloeDB server built on public data about how the internet's networks reach each other: every BGP update a <a href="https://ris.ripe.net">RIPE RIS</a> collector hears, checked as it arrives against <a href="https://www.rpki-client.org">RPKI</a> and against the origins <a href="https://www.routeviews.org">RouteViews</a> saw the day before, with <a href="https://www.peeringdb.com">PeeringDB</a>'s exchanges and buildings, <a href="https://www.caida.org/catalog/datasets/as-relationships/">CAIDA</a>'s relationships between networks, <a href="https://atlas.ripe.net">RIPE Atlas</a>'s measurements to the K root server and <a href="https://ioda.inetintel.cc.gatech.edu">IODA</a>'s outages. It says what is wrong now, where, and how the problems connect. It is a client of chloedb-server over HTTP, as the crawler and the spreadsheet app are, and the command center can show it as the app <code>backbone</code> (<code>chloedb-server --app backbone=URL</code>). Every request needs the token the command center's app proxy sends, unless the app runs with <code>--public</code>: then it serves its page at <code>/</code> and the page's reads to anyone, at most <code>--per-minute</code> (600) requests a minute from one address. Readers never send SQL: each page asks its own statements, and shows them under SQL. It runs that way at https://backbone.chloetech.ai.</p>
+<h2 id="the-pages">The pages<a class="anchor" href="#the-pages" aria-label="Link to this section">#</a></h2>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>page</th>
+<th>what it shows</th>
+<th>from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Home</td>
+<td>what it is and where its data comes from, the open incidents, the world coloured by them, the slowest countries and the busiest prefixes, and how to read the console</td>
+<td><code>bb_incidents</code>, <code>bb_alerts</code>, <code>bb_updates</code>, <code>bb_ping</code></td>
+</tr>
+<tr>
+<td>Console</td>
+<td>one screen that stays while you move: every update a minute for the last six hours, with the RPKI-invalid ones and the incidents along it (<code>/v1/timeline</code>); the networks you watch, kept in your browser, with their alerts and their routes' updates in the last hour (<code>/v1/watch</code>); the open incidents on the left; a map whose camera flies from the world to a country to a network; and an inspector on the right with what is wrong, what changed, the numbers and the records of what is on the map</td>
+<td>the pages below</td>
+</tr>
+<tr>
+<td>A country</td>
+<td>its buildings, exchanges and RIPE Atlas probes where they are, its networks placed where their buildings are (else their probes), each probe coloured by its time to K, and where slow traceroutes leave it</td>
+<td><code>bb_fac</code>, <code>bb_netfac</code>, <code>bb_ix</code>, <code>bb_member</code>, <code>bb_probe</code>, <code>bb_ping</code>, <code>bb_trace</code></td>
+</tr>
+<tr>
+<td>A network</td>
+<td>its buildings, exchanges and probes on the map, a line to where it meets each provider, what it hangs from and what depends on it (<code>REACHABLE</code> over the relationships), trouble within three hops, its prefixes and their updates a minute, its alerts</td>
+<td><code>bb_p2c</code>, <code>bb_p2p</code>, <code>bb_updates</code>, <code>bb_roa</code></td>
+</tr>
+<tr>
+<td>A prefix</td>
+<td>every update replayed into who holds a route to it now, its origins and their RPKI state, its paths now beside an hour ago (the ones that are new and the ones that are gone), drawn country to country on the map, the routes covering it and inside it, its ROAs</td>
+<td><code>bb_updates</code>, <code>bb_roa</code></td>
+</tr>
+<tr>
+<td>An incident</td>
+<td>its alerts, who announced, carried and owns the space, its countries on the map, its window on the timeline, and the updates a minute around it</td>
+<td><code>bb_alerts</code>, <code>bb_updates</code></td>
+</tr>
+<tr>
+<td>Diagnose</td>
+<td>for the slowest countries and those with the most probes, the stack from users to the K root server (time to K, paths that jump, peering, routing alerts, outages) and the lowest layer that is red</td>
+<td><code>bb_ping</code>, <code>bb_trace</code>, <code>bb_alerts</code>, <code>bb_outage</code></td>
+</tr>
+<tr>
+<td>Rules</td>
+<td>each alert rule's statement, how long it took and what it found</td>
+<td><code>bb_rules</code></td>
+</tr>
+<tr>
+<td>How it's built</td>
+<td>the tables, their rows, and where each source stands</td>
+<td>every table</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="the-rules">The rules<a class="anchor" href="#the-rules" aria-label="Link to this section">#</a></h2>
+<p>Each rule is one statement over the tables, run every minute (<code>flapping</code>, which counts an hour of every prefix's updates, every five); its rows are the alerts, kept open while it finds them, and alerts that share an owner, an announcer, a carrier or a country are grouped into incidents.</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>rule</th>
+<th>finds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rpki-invalid</code></td>
+<td>a route a ROA gives to another network, or longer than its ROA allows, heard by 3 or more peers (IPv4 /24 and IPv6 /48 or shorter: longer ones are mostly blackholing)</td>
+</tr>
+<tr>
+<td><code>new-origin</code></td>
+<td>a prefix announced by a network that is neither yesterday's origin nor its customer or provider, with no ROA to say which is right</td>
+</tr>
+<tr>
+<td><code>more-specific</code></td>
+<td>a prefix no one announced yesterday, inside space another network announces, from a network that is not its customer and no ROA covers</td>
+</tr>
+<tr>
+<td><code>flapping</code></td>
+<td>a prefix announced and withdrawn 10,000 times an hour or more</td>
+</tr>
+<tr>
+<td><code>withdrawn</code></td>
+<td>twenty or more of a network's prefixes withdrawn by five or more peers at once</td>
+</tr>
+<tr>
+<td><code>blackhole</code></td>
+<td>a prefix tagged for blackholing (<code>65535:666</code>)</td>
+</tr>
+<tr>
+<td><code>ioda</code></td>
+<td>a country or a region whose routes, pings or traffic IODA sees fall</td>
+</tr>
+<tr>
+<td><code>slow-country</code></td>
+<td>a country with five or more probes whose median time to the nearest K root server is over 100 ms</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="running-it">Running it<a class="anchor" href="#running-it" aria-label="Link to this section">#</a></h2>
+<pre data-lang="sh">chloedb-backbone fetch --dir DATA          # RPKI, CAIDA, RIPE&#x27;s names, PeeringDB, Atlas, IODA
+chloedb-backbone load --dir DATA           # the tables, and their records
+chloedb-backbone feed --dir DATA --from 6h --live   # RIS&#x27;s archive from six hours back, then RIS Live
+chloedb-backbone serve --public            # the page and its API at 127.0.0.1:7890</pre>
+<p><code>feed --resume</code> starts the archive after the newest update kept, so a restart fills its gap, and <code>--hours 24</code> stops it after a day so a supervisor starts it again after a new <code>fetch</code> and <code>load</code>. <code>fetch</code> keeps a file fetched less than <code>--fresh-hours</code> ago (20 by default; 0 fetches every one) and keeps the last file of a source that fails, such as PeeringDB's 429 to an address that asked too often, and <code>load</code> loads only the latest Atlas rounds and outages when the other files are those it loaded last: so a restart within the day neither asks the sources again nor writes two million rows again. <code>serve</code> works out the pages everyone sees first (Now, the map, the strip) in the background every 15 seconds, after the rules, and answers them from memory. RIS Live sends every collector's messages whatever filter it is asked for, so the feed keeps those of <code>--collectors</code> itself. On Kubernetes, <code>chloedb-backbone/deploy/k8s.yaml</code> runs the server, the feed and the app on a node of their own, and <code>deploy/backup.yaml</code> checkpoints the database each night and copies it to a volume.</p>
+<h2 id="sizes">Sizes<a class="anchor" href="#sizes" aria-label="Link to this section">#</a></h2>
+<p>Measured with one collector, rrc00 (about 90 peers), on 16 and 17 November 2026: about 5.5 million updates an hour, about 100 bytes an update stored, so about 13 GB a day; the updates are kept three days. The pages answered in 0.1 to 0.6 seconds on a 4-core machine. The feed holds RPKI's 1.04 million ROAs and yesterday's 1.44 million origins as prefix maps, about 4 GB with the allocator's share.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/chloedb-server-v0.3.9/docs/chloedb/backbone.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="sound.html">← Sound Explorer</a><a href="earth.html">Earth explorer →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../../index.html"><img class="on-light" src="../../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/chloedb-server-v0.3.9/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../../assets/site.js?v=699f360f4f"></script>
+<script src="../../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

@@ -645,7 +645,9 @@ struct Args {
     /// The address other coordinators reach this coordinator's HTTP API at
     /// (http://10.0.0.5:7700); it names itself so to its shards, which tell
     /// the others. Default: $CHLOEDB_POD_IP and the --listen port, else the
-    /// --listen address.
+    /// --listen address. A shard's copy gives it in its health too, for
+    /// clients that write straight to each shard's primary
+    /// (`GET /v1/cluster/route` on a coordinator).
     #[arg(long, env = "CHLOEDB_PEER_URL")]
     peer_url: Option<String>,
     /// A coordinator's Contain rules' file, which they are kept in across a
@@ -1026,6 +1028,13 @@ enum Command {
         /// How many tables are copied at once.
         #[arg(long, default_value_t = 4)]
         copy_workers: usize,
+        /// Copy this table again (its Postgres name, `orders` or
+        /// `sales.orders`, or its ChloeDB name; repeat it or separate names
+        /// by commas) once the follower is following, over the rows
+        /// ChloeDB holds, which stay readable until the new copy is in;
+        /// the other tables keep following meanwhile.
+        #[arg(long, value_delimiter = ',')]
+        copy_table: Vec<String>,
         /// Drop the replication slot and exit: stop following for good, so
         /// that Postgres no longer keeps WAL for the follower.
         #[arg(long)]
@@ -1499,7 +1508,7 @@ async fn run() {
             }
             return;
         }
-        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, drop_slot }) => {
+        Some(Command::FollowPostgres { source, source_ca, publication, slot, target, target_token, target_ca, name, batch, copy, copy_workers, copy_table, drop_slot }) => {
             let read = |p: &Option<PathBuf>, what: &str| p.as_ref().map(|p| std::fs::read(p).unwrap_or_else(|e| fail(&format!("{what} {}: {e}", p.display()))));
             let o = chloedb_server::postgres::Options {
                 source: source.clone(),
@@ -1513,6 +1522,7 @@ async fn run() {
                 batch: (*batch).max(1),
                 copy: *copy,
                 copy_workers: *copy_workers,
+                copy_tables: copy_table.clone(),
                 crash_after: None,
             };
             if *drop_slot {
@@ -1874,6 +1884,11 @@ async fn run() {
         per_client: a.max_connections_per_client,
         stop_grace: std::time::Duration::from_millis(a.stop_grace_ms),
     } };
+    // Where clients reach this server, which a shard's health gives a
+    // coordinator for shard-aware clients' routes.
+    if let Ok(at) = http.local_addr() {
+        let _ = svc.http_url.set(chloedb_server::peers::own_url(a.peer_url.as_deref(), at, access.tls.is_some()));
+    }
     // fleet: a coordinator names itself to its shards, which tell the others.
     if coordinator {
         let at = http.local_addr().unwrap_or_else(|e| fail(&format!("listen on {}: {e}", a.listen)));
