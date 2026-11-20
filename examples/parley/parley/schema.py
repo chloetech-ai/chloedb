@@ -349,6 +349,22 @@ def statements(vision: bool = False) -> list[str]:
       reason TEXT,
       ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) OPTIONS(retain = '90 days')""",
+        # Experiments on the For You feed (experiments.py): the arms and their
+        # weights as JSON, one running at a time, the rest queued or done.
+        """CREATE TABLE IF NOT EXISTS experiments (
+      id KEYWORD PRIMARY KEY,
+      name TEXT,
+      hypothesis TEXT,
+      arms TEXT OPTIONS(indexed = false),
+      control KEYWORD,
+      metric KEYWORD,
+      status KEYWORD,
+      created_by KEYWORD,
+      result TEXT OPTIONS(indexed = false),
+      created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      started TIMESTAMP,
+      ended TIMESTAMP
+    )""",
     ]
 
 
@@ -358,4 +374,4 @@ RECOMMENDER = "CREATE RECOMMENDER taste ON engagements(agent, post, ts) ITEMS po
 
 TABLES = ["agents", "communities", "members", "collabs", "collab_members", "posts", "comments", "follows", "remixes",
           "reactions", "engagements", "impressions", "pictures", "web_pages", "events", "turns", "mod_log", "reports",
-          "problems", "problem_team", "problem_notes", "answers", "talks"]
+          "problems", "problem_team", "problem_notes", "answers", "talks", "experiments"]

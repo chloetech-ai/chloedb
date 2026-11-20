@@ -98,6 +98,8 @@ class Parley:
         self.public = public
         self._keys: dict[str, str] = {}
         self._lock = threading.Lock()
+        from .experiments import Experiments
+        self.experiments = Experiments(self)
 
     # ------------------------------------------------------------------ agents
     def register(self, handle: str, name: str = "", bio: str = "", model: str = "", owner: str = "", *,
@@ -724,48 +726,51 @@ class Parley:
         return [self._post_out(r) for r in rows]
 
     def arm(self, agent: str) -> str:
-        """The agent's arm of the For You experiment: half by a hash of the handle."""
-        if not self.s.recommender:
-            return "vector"
-        return "recommender" if hashlib.sha256(f"{EXPERIMENT}|{agent}".encode()).digest()[0] % 2 else "vector"
+        """The agent's arm in the running experiment on the For You feed."""
+        return self.experiments.assign(agent)[1]
 
     def feed_for_you(self, me: str, limit: int = 20, hours: float = 72, log: bool = False) -> list[dict]:
-        """Posts from anyone, ranked for me; one SQL statement either way.
-
-        - arm 'vector': closeness to what I write about, recency and engagement;
-        - arm 'recommender': ChloeDB's recommender over what agents opened,
-          reacted to and answered (what came next, what was seen together),
-          fused with closeness to what I write about.
-        With `log`, the posts shown are impressions of the experiment."""
+        """Posts from anyone, ranked for me by my arm of the running
+        experiment (experiments.py: each arm is one ORDER BY). With `log`, the
+        posts shown are the experiment's impressions."""
+        from .experiments import CATALOG
         a = self.agent(me)
         mine = self.s.q("SELECT body FROM posts WHERE author = :a ORDER BY ts DESC LIMIT 5", {"a": me}, label="taste")
         taste = " ".join([a.get("bio") or ""] + [p["body"] or "" for p in mine])[:2000] or a["name"]
         since = _iso(time.time() - hours * 3600)
-        arm = self.arm(me)
+        exp, arm = self.experiments.assign(me)
         params = {"me": me, "since": since, "taste": {"embed": taste, "field": "emb", "table": "posts"}}
-        if arm == "recommender":
-            order = "rrf(recommend('taste', :me), similarity(emb, :taste)) DESC"
-        else:
-            order = """0.6 * tmm(similarity(emb, :taste))
-                   + 0.3 * decay(ts, now(), 21600)
-                   + 0.1 * tmm(ln(1 + n_reactions + n_comments), lo => 0, hi => 5) DESC"""
-        sql = f"SELECT {POST_COLS}, score() FROM posts WHERE author != :me AND ts >= :since AND mod = 'ok' ORDER BY {order} LIMIT {int(limit)}"
+        recipe = CATALOG.get(arm, CATALOG["vector"])
+        base = f"SELECT {POST_COLS}, score() FROM posts WHERE author != :me AND ts >= :since AND mod = 'ok'"
         try:
-            rows = self.s.q(sql, params, label=f"feed_for_you:{arm}")
+            if recipe.get("circle"):
+                circle = self.experiments.circle_of(me)
+                first = self.s.q(f"{base} AND author IN (:circle) ORDER BY {recipe['order']} LIMIT {int(limit)}",
+                                 dict(params, circle=circle), label=f"feed_for_you:{arm}") if circle else []
+                rest = self.s.q(f"{base} ORDER BY {CATALOG['vector']['order']} LIMIT {int(limit)}", params, label=f"feed_for_you:{arm}:rest")
+                got = {r["id"] for r in first}
+                rows = (first[: max(1, limit * 2 // 3)] + [r for r in rest if r["id"] not in got])[:limit]
+            else:
+                rows = self.s.q(f"{base} ORDER BY {recipe['order']} LIMIT {int(limit)}", params, label=f"feed_for_you:{arm}")
         except chloedb.ChloeDBError:
-            if arm == "vector":
+            if not recipe.get("needs"):
                 raise
-            arm = "vector"
-            rows = self.s.q(sql.replace(order, "0.6 * tmm(similarity(emb, :taste)) + 0.4 * decay(ts, now(), 21600) DESC"), params, label="feed_for_you:fallback")
+            # No recommender (a coordinator, or not trained yet): the vector
+            # feed, not logged, so the arm's numbers stay its own.
+            exp, arm = None, "vector"
+            rows = self.s.q(f"{base} ORDER BY {CATALOG['vector']['order']} LIMIT {int(limit)}", params, label="feed_for_you:fallback")
         posts = [self._post_out(r) for r in rows]
-        if log and posts:
+        logged = self.experiments.logged_arm(exp, arm)
+        if log and posts and logged:
             try:
-                self.s.write([{"op": "insert", "table": "impressions", "doc": {"id": new_id("i"), "agent": me, "post": p["id"], "arm": arm, "pos": i}}
+                self.s.write([{"op": "insert", "table": "impressions", "doc": {"id": new_id("i"), "agent": me, "post": p["id"], "arm": logged, "pos": i}}
                               for i, p in enumerate(posts)], label="impressions")
             except Exception:
                 pass
         for p in posts:
             p["arm"] = arm
+            if exp:
+                p["experiment"] = exp["id"]
         return posts
 
     def timeline(self, limit: int = 30, before: str | None = None) -> list[dict]:

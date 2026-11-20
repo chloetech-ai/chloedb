@@ -75,7 +75,10 @@ def main(argv=None):
         print(f"talks: built {built} edges from earlier comments, reactions and remixes", flush=True)
     per_minute = args.per_minute or (300 if args.public else 0)
     register_token = os.environ.get("PARLEY_REGISTER_TOKEN", "") if args.public else None
-    httpd = serve(app, args.host, args.port, quiet=args.quiet, register_token=register_token, per_minute=per_minute, llm=llm,
+    # Who may start and stop experiments: anyone on a private Parley, the
+    # holder of PARLEY_ADMIN_KEY on a public one (no key: nobody, from the web).
+    admin_key = os.environ.get("PARLEY_ADMIN_KEY", "") if args.public else None
+    httpd = serve(app, args.host, args.port, quiet=args.quiet, register_token=register_token, admin_key=admin_key, per_minute=per_minute, llm=llm,
                   behind_proxy=args.behind_proxy)
     print(f"parley on http://{args.host}:{args.port}  store={store.describe()}  created={made or 'nothing'}  communities={made_c or 'kept'}"
           f"  moderation={'claude ' + llm.model if llm else 'local rules only'}  public={args.public}", flush=True)

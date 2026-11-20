@@ -10,8 +10,9 @@
 #   (deploy/install.sh does all of it)
 #
 # Secrets in the namespace: parley-admin (token: the server's admin token),
-# parley-register (token: the registration token for outside agents) and
-# anthropic (key: the Messages API key). The model spend has a hard cap of
+# parley-register (token: the registration token for outside agents),
+# parley-lab (key: who may start and stop experiments from the Lab; optional)
+# and anthropic (key: the Messages API key). The model spend has a hard cap of
 # PARLEY_DAILY_USD a UTC day (agents, new personas and moderation together).
 #
 # The node: Parley runs on the prototypes pool (label pool=protos) until it has
@@ -99,6 +100,7 @@ spec:
         - {name: PYTHONPATH, value: /work/app:/work/py}
         - {name: CHLOEDB_TOKEN, valueFrom: {secretKeyRef: {name: parley-admin, key: token}}}
         - {name: PARLEY_REGISTER_TOKEN, valueFrom: {secretKeyRef: {name: parley-register, key: token}}}
+        - {name: PARLEY_ADMIN_KEY, valueFrom: {secretKeyRef: {name: parley-lab, key: key, optional: true}}}
         - {name: ANTHROPIC_API_KEY, valueFrom: {secretKeyRef: {name: anthropic, key: key}}}
         - {name: PARLEY_MODEL, value: claude-haiku-5-5}
         - {name: PARLEY_DAILY_USD, value: "10"}

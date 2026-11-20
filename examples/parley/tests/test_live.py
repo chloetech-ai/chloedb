@@ -476,3 +476,62 @@ def test_the_graph_of_who_talks_to_whom(live):
         a.s.write([{"op": "delete", "table": "talks", "key": row["id"], "routing": row["src"]}])
     assert graph.backfill(a) > 0
     assert {r["id"]: r["w"] for r in a.s.q("SELECT id, w FROM talks")} == w
+
+
+def test_experiments_with_many_arms_and_their_analysis(live):
+    """Experiments are rows: one runs, the rest wait; agents are split by a
+    hash over any number of arms, and the analysis compares each arm with the
+    control with agents as the unit."""
+    kind, a = live
+    authors = ["mira", "rex", "ada"]
+    readers = [f"r{i}" for i in range(12)]
+    agents(a, *authors, *readers)
+    for i in range(3):
+        for h in authors:
+            a.post(h, f"{h} on octopuses, databases and telescopes, part {i}.")
+    ex = a.experiments
+    names = {x["id"]: x for x in ex.list()}
+    assert names["feed-1"]["status"] == "running" and {"feed-2", "feed-3", "feed-4"} <= set(names)
+    with pytest.raises(ParleyError):
+        ex.create({"name": "one arm", "arms": ["vector"]})
+    with pytest.raises(ParleyError):
+        ex.create({"name": "no such arm", "arms": ["vector", "magic"]})
+    x = ex.create({"name": "three ways", "arms": [{"arm": "vector", "weight": 1}, {"arm": "fresh", "weight": 1}, {"arm": "popular", "weight": 1}],
+                   "control": "vector", "metric": "engaged", "start": True})
+    assert x["status"] == "running" and ex.get("feed-1")["status"] == "done" and ex.running()["id"] == x["id"]
+    arms = {h: a.arm(h) for h in readers}
+    assert set(arms.values()) <= {"vector", "fresh", "popular"} and len(set(arms.values())) >= 2
+    for h in readers:
+        shown = a.feed_for_you(h, 5, log=True)
+        assert shown and all(p["arm"] == arms[h] and p["experiment"] == x["id"] for p in shown)
+        if arms[h] != "vector":
+            a.react(h, shown[0]["id"], "insight")
+    logged = {r["arm"] for r in a.s.q("SELECT arm FROM impressions WHERE agent IN (:r) LIMIT 1000", {"r": readers})}
+    assert logged <= {f"{x['id']}:{arm}" for arm in ("vector", "fresh", "popular")}
+    an = ex.analyze(x["id"])
+    by = {r["arm"]: r for r in an["arms"]}
+    assert sum(r["agents"] for r in an["arms"]) == len(readers) and an["units"] == sum(r["pairs"] for r in an["arms"])
+    assert by["vector"]["metrics"]["engaged"]["rate"] == 0
+    for c in an["comparisons"]:
+        m = c["metrics"]["engaged"]
+        assert c["against"] == "vector" and m["diff"] > 0 and m["ci95"][0] <= m["diff"] <= m["ci95"][1]
+        if m["p"] is not None:
+            assert 0 <= m["p"] <= m.get("p_holm", 1) <= 1
+    assert an["srm"]["p"] is not None and an["series"]["points"] and set(an["segments"]) == {"role", "born", "kind", "position"}
+    assert len(an["per_agent"]) == len(readers)
+    done = ex.stop(x["id"])
+    assert done["status"] == "done" and done["result"]["verdict"] and ex.running() is None
+
+
+def test_trends(live):
+    from parley import trends
+    kind, a = live
+    agents(a, "mira", "cleo")
+    for i in range(3):
+        a.post("mira", f"Octopus arms can taste, note {i}.")
+    a.post("cleo", "Batteries at the evening peak.")
+    t = trends.trends(a, ["octopus", "batteries", "saturn"], "hour")
+    by = {x["term"]: x for x in t["terms"]}
+    assert sum(by["octopus"]["counts"]) == 3 and sum(by["batteries"]["counts"]) == 1 and sum(by["saturn"]["counts"]) == 0
+    assert sum(t["totals"]) == 4 and len(t["buckets"]) == 48 and by["octopus"]["share"][-1] == 0.75
+    assert sum(sum(v) for v in t["kinds"].values()) == 4
