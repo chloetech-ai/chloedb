@@ -2321,10 +2321,6 @@ mod tests {
         assert_eq!((merged.keys[0].expires_ms, changed), (late.expires_ms, false));
     }
 
-    /// A key limited to tables: its scope is the most its grants give, its
-    /// digest is marked so that a server from before limits never takes
-    /// it, and a copy that lost its tables (written back by such a server)
-    /// opens nothing, and gets them back when merged.
     /// A grant of `append` (MARCO-403): a grant's scope, never a key's
     /// own; kept in the keys file in a form a server from before it reads
     /// (a grant of `read` of a table no table can be named, a key scope of
@@ -2365,6 +2361,10 @@ mod tests {
         assert_eq!(serde_json::to_value(&f).unwrap()["scope"], "feed");
     }
 
+    /// A key limited to tables: its scope is the most its grants give, its
+    /// digest is marked so that a server from before limits never takes
+    /// it, and a copy that lost its tables (written back by such a server)
+    /// opens nothing, and gets them back when merged.
     #[test]
     fn a_key_limited_to_tables_keeps_its_limits() {
         let dir = tempfile::tempdir().unwrap();
