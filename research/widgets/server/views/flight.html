@@ -75,7 +75,7 @@ function draw(next) {
       <div><span class="faint">Vertical</span><b>${climb}</b></div>
     </div>
     <div class="row between foot wrap">
-      <span class="faint"><span class="live ${data.source === 'simulated' ? 'off' : ''}"></span> ${esc(data.source)} · ${ago(data.asOf)} · registered in ${esc(data.registeredIn)}</span>
+      <span class="faint"><span class="live ${data.source === 'simulated' ? 'off' : ''}"></span> ${esc(data.source)} · ${ago(data.asOf)} ${data.registeredIn ? ` · registered in ${esc(data.registeredIn)}` : data.registration ? ` · ${esc(data.registration)}` : ''}</span>
       <button class="btn" id="eta">When does it land?</button>
     </div>`
   root.querySelector('#eta').onclick = () => ask(app, `When does ${data.callsign} land, and is it on time?`)

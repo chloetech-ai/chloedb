@@ -130,7 +130,7 @@
   .clash-note button { border: 1px solid var(--warn-line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 3px 9px; font-size: 13px; cursor: pointer; }
   .wbtn.undo { margin-left: 10px; }
   .chip.nothing { background: var(--warn-bg); color: var(--warn); }
-  .wbtn.sure { background: var(--warn-bg); color: var(--warn); }
+  .wbtn.sure, .btn.sure { background: var(--warn-bg); color: var(--warn); }
   .connect-note { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0; padding: 10px 12px; }
   .connect-go { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: var(--bg, #fff); text-decoration: none; font-weight: 600; }
   .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
@@ -198,6 +198,14 @@
     .log, .composer, .top { padding-left: 16px; padding-right: 16px; }
     .top .faint { display: none; }
     .user { max-width: 88%; }
+  }
+  /* A phone: an app takes the whole width, under the mark, not beside it (INES-8, MARCUS-9). */
+  @media (max-width: 560px) {
+    .log { padding-left: 10px; padding-right: 10px; }
+    .bot .body > .widget { margin-left: -38px; max-width: none; }
+    .sharebox > *, .sharebox .sharerow > *, .sharebox .hides > * { min-width: 0; max-width: 100%; }
+    .sharebox .sharerow span { flex-basis: 100%; }
+    .sharebox label { overflow-wrap: anywhere; }
   }
   /* A guest (a page opened only by a helper, view or copy link) gets its apps and nothing else. */
   .guest .rail, .guest .composer, .guest .chats, .guest #newchat, .guest .toolline { display: none !important; }
@@ -675,16 +683,38 @@ function frozen(w, ms) {
 }
 // Prints one app, all of it, as it is on screen (TOM-5): a frame can't
 // print itself.
-function printing(w) {
+// The app's own copy of itself, without anything that runs: no script, no
+// frame, no on… attribute, no javascript: link.
+function inert(html) {
+  const doc = new DOMParser().parseFromString(String(html), 'text/html')
+  doc.querySelectorAll('script, iframe, object, embed, base, meta[http-equiv]').forEach(n => n.remove())
+  for (const el of doc.querySelectorAll('*')) for (const a of [...el.attributes]) if (/^on/i.test(a.name) || /^\s*javascript:/i.test(a.value)) el.removeAttribute(a.name)
+  return `${[...doc.head.querySelectorAll('style')].map(x => x.outerHTML).join('')}${doc.body.innerHTML}`
+}
+function printing(w, html) {
   const iframe = w.node.querySelector('iframe')
   const was = iframe?.style.height
   if (iframe && w.height) iframe.style.height = `${w.height}px`
+  // Printed from its copy, all of it over as many sheets as it takes (round 9 TOM-5).
+  let sheet = null
+  if (html && iframe) {
+    sheet = document.createElement('div')
+    sheet.className = 'print-copy'
+    const root = sheet.attachShadow({ mode: 'open' })
+    root.innerHTML = `<style>:host{display:block} *{max-height:none !important; overflow:visible !important} .wrap, body, html{height:auto !important}</style>${inert(html)}`
+    iframe.after(sheet)
+    iframe.style.display = 'none'
+  }
   w.node.classList.add('printing')
   document.documentElement.classList.add('print-one')
   const done = () => {
     w.node.classList.remove('printing')
     document.documentElement.classList.remove('print-one')
     if (iframe) iframe.style.height = was
+    if (sheet) {
+      sheet.remove()
+      iframe.style.display = ''
+    }
     removeEventListener('afterprint', done)
   }
   addEventListener('afterprint', done)
@@ -1090,11 +1120,14 @@ async function draw(w) {
     { serverTools: {}, openLinks: {}, message: { text: {} }, updateModelContext: { text: {} } },
     { hostContext: { theme, displayMode: 'inline', availableDisplayModes: ['inline'], platform: 'web', locale: 'en-US' } },
   )
+  w.bridge = bridge
   bridge.oncalltool = async params => {
     if (params.name === 'app_regex') return regexApart(params.arguments)
     if (params.name === 'app_download') return download(params.arguments ?? {})
     if (params.name === 'app_print') {
-      printing(w)
+      clearTimeout(w.printWait)
+      w.printWait = null
+      printing(w, params.arguments?.html)
       return { content: [{ type: 'text', text: 'printed' }], structuredContent: {} }
     }
     if (isPrivate(w.app.id) && (params.name === 'app_keep' || params.name === 'app_kept')) {
@@ -1363,6 +1396,8 @@ function bar(w) {
   const [cls, label] = w.how === 'saved' ? ['saved', 'Saved'] : changed ? ['updated', `Version ${app.version}`] : CHIP[w.how] ?? (app.saved ? ['saved', 'Saved'] : [])
   const role = roleOf(app.id)
   const mark = role === 'helper' ? 'Shared · you add and tick' : role === 'viewer' ? 'Shared · you look' : isPrivate(app.id) ? 'Private' : ''
+  // The note that says it is private goes when privacy goes (DEV-7).
+  if (!isPrivate(app.id)) w.node.querySelectorAll('.private-note').forEach(n => n.remove())
   w.node.querySelector('.slot').innerHTML = `${label ? `<span class="chip ${cls}">${label}</span>` : ''}${mark ? `<span class="chip mark" title="${isPrivate(app.id) ? 'Claude reads nothing of this app, and what it keeps stays in this browser' : 'The person who shared it can change everything'}">${mark}</span>` : ''}`
   // An answer of what was found is kept as its own app, as it is now; any
   // other app is saved, and changes with it.
@@ -1526,7 +1561,11 @@ function bar(w) {
     box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canEarlier ? `<button class="btn earlier" type="button">Earlier versions of what it kept</button>` : ''}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
     box.querySelector('.print').onclick = () => {
       box.remove()
-      printing(w)
+      // The app sends a copy of itself, all of it, to print over as many
+      // sheets as it takes; one that doesn't is printed as it shows (TOM-5).
+      clearTimeout(w.printWait)
+      w.printWait = setTimeout(() => { w.printWait = null; printing(w) }, 1500)
+      try { w.bridge?.sendHostContextChange({ printing: Date.now() }) } catch {}
     }
     // What it held before, a moment at a time, and bringing one back (LENA-1, INES-1).
     box.querySelector('.earlier')?.addEventListener('click', async () => {
@@ -1561,7 +1600,15 @@ function bar(w) {
     })
     box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: app.tool === 'findings' && w.payload?.args?.items?.length ? foundCsv(w.payload.args, await keptOf(app)) : csvOf(await keptOf(app)), type: 'text/csv' })
     box.querySelector('.json').onclick = async () => download({ name: `${slug(app.name)}.json`, text: JSON.stringify(await keptOf(app), null, 2), type: 'application/json' })
-    box.querySelector('.private')?.addEventListener('click', async () => {
+    box.querySelector('.private')?.addEventListener('click', async ev => {
+      const button = ev.currentTarget
+      if (isPrivate(app.id) && !button.classList.contains('sure')) {
+        // Said before it happens: what leaves this browser from now on (DEV-7).
+        button.classList.add('sure')
+        button.textContent = 'Yes, let Claude read it'
+        box.querySelector('.faint').textContent = 'What it keeps goes back to the chat, and Claude reads what it shows from now on.'
+        return
+      }
       if (isPrivate(app.id)) {
         // Back to the chat: what it kept goes back with it.
         for (const [key, value] of Object.entries(privately[app.id] ?? {})) await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me, name: 'app_keep', arguments: { key, value } }) })
@@ -1577,6 +1624,7 @@ function bar(w) {
       }
       saveLocal()
       box.remove()
+      for (const other of widgets) if (other.app?.id === app.id && other !== w && !other.removed) bar(other)
       bar(w)
       draw(w)
     })

@@ -28,7 +28,8 @@ async function connect(name, draw) {
     }
     deliver(result.structuredContent ?? {})
   }
-  app.onhostcontextchanged = theme
+  // The page's Print asks for the copy the kit sends (TOM-5).
+  app.onhostcontextchanged = context => { theme(context); if (context?.printing) print(app) }
   if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
   connected = app.connect().then(() => app)
   await connected
@@ -319,7 +320,53 @@ for (const type of ['pointerdown', 'keydown', 'input', 'change']) addEventListen
   touchedAt = Date.now()
   if (type === 'pointerdown' || type === 'keydown') touchedEl = e.target instanceof Element ? e.target.closest('button, [role=button], input[type=submit], a') ?? touchedEl : touchedEl
 }, true)
+// What was typed in a form, checked against what the app kept from it: a
+// word typed in a box that is in none of the keeps right after is said, so
+// an Item box that keeps nothing is caught the first time (round 9 LENA-2).
+let typedIn = null
+const labelOf = el => el.getAttribute('aria-label') || el.placeholder || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent) || el.closest('label')?.textContent || el.name || 'a box'
+function typedNear(el) {
+  const box = el.closest('form') ?? el.parentElement?.parentElement ?? el.parentElement
+  if (!box) return
+  const typed = [...box.querySelectorAll('input:not([type]), input[type=text], input[type=search], textarea')]
+    .filter(i => i.type !== 'search' && !i.closest('[role=search]'))
+    .map(i => ({ label: String(labelOf(i)).trim().slice(0, 30), value: i.value.trim() }))
+    .filter(x => x.value.length >= 2 && /\p{L}/u.test(x.value) && !/^\d{4}-\d\d-\d\d/.test(x.value))
+  if (!typed.length) return
+  typedIn = { at: Date.now(), typed, kept: [] }
+  const mine = typedIn
+  setTimeout(() => {
+    if (typedIn !== mine || !mine.kept.length) return
+    const all = mine.kept.join(' ').toLowerCase()
+    const lost = mine.typed.filter(t => !all.includes(t.value.toLowerCase()))
+    typedIn = null
+    if (lost.length) dropped(lost[0])
+  }, 2500)
+}
+addEventListener('submit', e => typedNear(e.target), true)
+addEventListener('click', e => {
+  const b = e.target instanceof Element ? e.target.closest('button, input[type=submit]') : null
+  if (b && !b.closest('form') && /\b(add|save|keep|put|record|log|submit)\b|^\s*\+/i.test(b.textContent || b.value || '')) typedNear(b)
+}, true)
+function dropped({ label, value }) {
+  let bar = document.getElementById('kit-broke')
+  if (!bar) {
+    bar = document.createElement('div')
+    bar.id = 'kit-broke'
+    bar.className = 'kit-broke'
+    document.body.append(bar)
+  }
+  const mayFix = !role
+  bar.innerHTML = `<span>What was typed in ${esc(label)} (“${esc(value.slice(0, 40))}”) was not kept with the entry.${mayFix ? '' : ' Whoever shared it can fix the app.'}</span>${mayFix ? '<button class="btn" type="button">Fix it</button>' : ''}`
+  bar.querySelector('button')?.addEventListener('click', async () => {
+    bar.querySelector('button').disabled = true
+    bar.querySelector('button').textContent = 'Asked'
+    const app = await (connected ?? connect('app', () => {}))
+    ask(app, `Fix this app: what is typed in "${label}" ("${value.slice(0, 40)}") is not kept with the entry it adds. Keep it with each entry, and keep everything else as it is.`)
+  })
+}
 async function keep(app, key, value) {
+  if (typedIn && Date.now() - typedIn.at < 2500 && !String(key).startsWith('view:')) typedIn.kept.push(JSON.stringify(value ?? null))
   const auto = Date.now() - touchedAt > 4000
   try {
     await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null, ...(auto ? { auto: true } : {}), ...(Date.now() - askedAt < 15000 ? { asked: true } : {}) })
@@ -404,8 +451,28 @@ function banner(text) {
 }
 
 // Prints the app, all of it (the page does it: a frame can't print).
+// It sends a copy of itself as it is now, with no scripts and nothing
+// scrolled away: the page prints that copy over as many sheets as it
+// takes, since a frame prints only as much as fits on one (round 9 TOM-5).
 function print(app) {
-  return globalThis.Kit.call(app, 'app_print', {}).catch(() => {})
+  let html = ''
+  try {
+    const copy = document.documentElement.cloneNode(true)
+    const live = [...document.querySelectorAll('input, textarea, select')]
+    const cloned = [...copy.querySelectorAll('input, textarea, select')]
+    live.forEach((el, i) => {
+      const c = cloned[i]
+      if (!c) return
+      if (el.type === 'checkbox' || el.type === 'radio') el.checked ? c.setAttribute('checked', '') : c.removeAttribute('checked')
+      else if (el.tagName === 'TEXTAREA') c.textContent = el.value
+      else if (el.tagName === 'SELECT') [...c.options].forEach((o, j) => (j === el.selectedIndex ? o.setAttribute('selected', '') : o.removeAttribute('selected')))
+      else c.setAttribute('value', el.value)
+    })
+    copy.querySelectorAll('script, #kit-banner, #kit-broke').forEach(n => n.remove())
+    html = copy.outerHTML
+    if (html.length > 3_000_000) html = ''
+  } catch {}
+  return globalThis.Kit.call(app, 'app_print', html ? { html } : {}).catch(() => {})
 }
 
 // A file for the person to take elsewhere (a CSV for a spreadsheet, a file

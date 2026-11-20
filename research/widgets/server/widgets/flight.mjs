@@ -185,6 +185,39 @@ function simulated(query) {
   }
 }
 
+// A second radar, adsb.lol (anonymous, no key, open data), asked when
+// OpenSky fails or doesn't see the flight (round 9 TOM-1).
+export async function second(query) {
+  const callsign = callsignOf(query)
+  const body = await fetchJson(`https://api.adsb.lol/v2/callsign/${encodeURIComponent(callsign)}`, { timeoutMs: 12_000 })
+  const a = (body.ac ?? []).find(a => a.lat != null && a.lon != null)
+  if (!a) return { found: false, query, callsign, airline: BY_ICAO[callsign.slice(0, 3)] ?? null, airborne: [], asOf: body.now ?? Date.now(), source: 'adsb.lol' }
+  const lat = round(a.lat, 4)
+  const lon = round(a.lon, 4)
+  const ground = a.alt_baro === 'ground'
+  const feet = Number.isFinite(a.alt_geom) ? a.alt_geom : Number.isFinite(a.alt_baro) ? a.alt_baro : 0
+  return {
+    found: true,
+    query,
+    callsign: (a.flight ?? callsign).trim(),
+    icao24: a.hex,
+    airline: BY_ICAO[callsign.slice(0, 3)] ?? null,
+    registeredIn: null,
+    registration: a.r ?? null,
+    lat,
+    lon,
+    over: countryAt(lat, lon) ?? 'open water',
+    altitudeFt: Math.round(feet / 10) * 10,
+    speedKts: Math.round(a.gs ?? 0),
+    heading: Math.round(a.track ?? a.true_heading ?? 0),
+    climbFpm: Math.round(a.geom_rate ?? a.baro_rate ?? 0),
+    onGround: ground,
+    asOf: (body.now ?? Date.now()) - (a.seen_pos ?? 0) * 1000,
+    trail: remember(a.hex, lat, lon),
+    source: 'adsb.lol',
+  }
+}
+
 export default {
   name: 'flight_track',
   title: 'Flight tracker',
@@ -200,10 +233,20 @@ export default {
   async run({ flight }) {
     let data
     if (!SIMULATE) {
+      let failed = null
       try {
         data = await live(flight)
       } catch (error) {
-        data = { found: false, unavailable: true, query: flight, callsign: callsignOf(flight), airborne: [], asOf: Date.now(), source: 'OpenSky Network', note: `The flight radar (OpenSky) isn't answering right now (${error.message}), after two tries.` }
+        failed = error
+      }
+      // OpenSky down, or not seeing it: the second radar (TOM-1).
+      if (!data?.found) {
+        try {
+          const other = await second(flight)
+          if (other.found || failed) data = other.found ? other : { ...other, airborne: data?.airborne ?? [], source: 'OpenSky Network and adsb.lol' }
+        } catch (error) {
+          if (failed) data = { found: false, unavailable: true, query: flight, callsign: callsignOf(flight), airborne: [], asOf: Date.now(), source: 'OpenSky Network and adsb.lol', note: 'Both flight radars we ask (OpenSky and adsb.lol) are busy or down right now, so nothing can say where it is.' }
+        }
       }
     }
     data ??= simulated(flight)

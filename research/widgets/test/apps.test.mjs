@@ -389,3 +389,32 @@ test('a made app that uses what the frame forbids is refused with what to use in
   assert.match(await checkFragment(`<script src="https://unpkg.com/x"></script>${app('1')}`), /loads nothing from the network/)
   assert.equal(await checkFragment(app("const { connect, keep, kept } = globalThis.Kit; connect('t', async () => keep(1, 'k', await kept(1, 'k')))")), null)
 })
+
+test('a second flight radar answers when OpenSky does not, and made tools keep numbers and show all of a result (AD: TOM-1, DEV-5, DEV-6, MARCUS-9)', async () => {
+  const { second } = await import('../server/widgets/flight.mjs')
+  const real = globalThis.fetch
+  let asked = ''
+  globalThis.fetch = async url => {
+    asked = String(url)
+    return new Response(JSON.stringify({ now: 1_795_000_000_000, ac: [{ hex: '4951c2', flight: 'TAP201  ', r: 'CS-TUB', lat: 41.2, lon: -8.6, alt_baro: 35000, alt_geom: 36210, gs: 455.3, track: 12.4, geom_rate: -64, seen_pos: 2.5 }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const found = await second('TP 201')
+    assert.equal(asked, 'https://api.adsb.lol/v2/callsign/TAP201', "TAP's flight number is asked by its callsign")
+    assert.equal(found.found, true)
+    assert.equal(found.source, 'adsb.lol')
+    assert.equal(found.over, 'Portugal')
+    assert.equal(found.altitudeFt, 36210)
+    assert.equal(found.speedKts, 455)
+    assert.equal(found.registration, 'CS-TUB')
+    assert.equal(found.asOf, 1_795_000_000_000 - 2500, 'the time of the position, not of the answer')
+    globalThis.fetch = async () => new Response(JSON.stringify({ now: 1, ac: [] }), { status: 200 })
+    assert.equal((await second('TP 201')).found, false, 'no aircraft is not found, not an error')
+  } finally {
+    globalThis.fetch = real
+  }
+  const guide = (await import('node:fs')).readFileSync(new URL('../server/guide.mjs', import.meta.url), 'utf8')
+  assert.match(guide, /past 9007199254740991/, 'pasted numbers are never rounded')
+  assert.match(guide, /run the tool in your head on the sample/, 'a made tool is tried on its sample')
+  assert.match(guide, /repeat\(7, minmax\(0, 1fr\)\)/, 'a week fits its seven days')
+})
