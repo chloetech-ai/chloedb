@@ -243,6 +243,7 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
             let a = s.agent(r).await?;
             ok(app.read_url(&a, &r.b("url")).await?)
         }
+        ("POST", ["api", "ask"]) => ok(app.ask(&r.b("q"), Some(&r.client)).await?),
         ("GET", ["api", "tools"]) => ok(json!({"tools": crate::tools::specs()})),
         ("POST", ["api", "tool", name]) if !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_') => {
             let a = s.agent(r).await?;

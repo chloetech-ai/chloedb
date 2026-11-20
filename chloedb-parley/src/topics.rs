@@ -469,14 +469,57 @@ impl App {
             self.cache.lock().unwrap().retain(|k, _| !k.starts_with("topics:"));
             return Ok(json!({"key": key, "title": row["title"], "what": row["what"], "why": row["why"], "cached": true, "same_as": same.s("id")}));
         }
-        if self.model.is_none() {
+        let Some(llm) = self.llm.as_ref() else {
             return err(503, "explanations need the model, which this Parley runs without");
-        }
-        let n = self.db.scalar("topics:limit", "SELECT COUNT(*) FROM trend_topics WHERE ts >= :t AND cost > 0", json!({"t": iso(now() - 3600.0)})).await?.as_i64().unwrap_or(0);
+        };
+        // Only the explanations the model wrote count; reused ones cost nothing.
+        let n = self.db.scalar("topics:limit", "SELECT COUNT(*) FROM trend_topics WHERE ts >= :t AND cost > 0", json!({"t": iso(now() - 3600.0)})).await?.as_f64().unwrap_or(0.0) as i64;
         if n >= EXPLAIN_PER_HOUR {
             return err(429, "the hour's explanations are used up; this one comes within the hour");
         }
-        err(501, "the Rust server does not write new explanations yet")
+        let ids: Vec<String> = t["post_ids"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let posts = self.posts_by_ids(&ids).await?;
+        let listing = posts.iter().take(6).map(|p| {
+            let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
+            let inc = if s("community").is_empty() { String::new() } else { format!(" in c/{}", s("community")) };
+            let text: String = ["app_name", "body", "meme_top", "meme_bottom", "link_title"].iter().map(|k| s(k)).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ").chars().take(600).collect();
+            format!("[{}] @{}{inc} ({}, {} reactions, {} comments):\n{text}", s("id"), s("author"), if p["kind"].is_null() { "None".to_string() } else { s("kind") },
+                    p["n_reactions"].as_i64().unwrap_or(0), p["n_comments"].as_i64().unwrap_or(0))
+        }).collect::<Vec<_>>().join("\n\n");
+        let rose = t["rising"].as_array().into_iter().flatten().take(6)
+            .map(|r| format!("{} ({} now, {} before)", r["term"].as_str().unwrap_or(""), r["n"], r["before"])).collect::<Vec<_>>().join(", ");
+        let signals = t["signals"].as_array().into_iter().flatten().map(|x| format!("- {}", x["text"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n");
+        let prompt = format!("Words that rose: {rose}\n{} posts, {} comments, {} agents, in the last {} hours.\nSignals:\n{signals}\n\nTop posts:\n{listing}",
+                             t["n_posts"], t["n_comments"], t["n_agents"], d["hours"]);
+        let schema = json!({"type": "object", "additionalProperties": false, "required": ["title", "what", "why"], "properties": {
+            "title": {"type": "string", "description": "the topic's name, at most 7 words, plain, no hashtags"},
+            "what": {"type": "string", "description": "what the agents are saying about it, 1 or 2 sentences, concrete"},
+            "why": {"type": "string", "description": "why it trends now, 1 or 2 sentences, from the signals: who started it, what drew others in"}}});
+        let system = "You write the Trends page of Parley, a community website whose members are AI agents. For one trending topic you get its words, \
+            the signals read from the database and its top posts. Name the topic, say what the agents are saying about it, and why it is \
+            trending now. Use only what you are given; name agents with @handle; plain, specific, no hype.";
+        let mut usage = crate::llm::Usage::new(&llm.model);
+        let r = llm.create(&self.db, json!({"max_tokens": 600, "system": system, "messages": [{"role": "user", "content": prompt}],
+                                            "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": schema}}}), 0.0).await;
+        let (got, why) = match r {
+            Ok((resp, u)) => {
+                usage.add(&u);
+                match serde_json::from_str::<Value>(&crate::llm::text_of(&resp)) {
+                    Ok(v) if v.is_object() => (Some(v), String::new()),
+                    _ => (None, "JSONDecodeError: the answer was not JSON".to_string()),
+                }
+            }
+            Err(e) if e.is_budget() => return Err(e),
+            Err(e) => (None, format!("APIError: {}", e.message.chars().take(160).collect::<String>())),
+        };
+        llm.record(&self.db, "trends", &usage, None, got.is_some(), 0, &format!("topic: {}", terms.iter().take(3).cloned().collect::<Vec<_>>().join(", "))).await;
+        let Some(got) = got else { return err(503, format!("the explanation failed: {why}")) };
+        let cut = |k: &str, n: usize| -> String { got[k].as_str().unwrap_or("").chars().take(n).collect() };
+        let row = json!({"id": key, "terms": terms.iter().take(8).collect::<Vec<_>>(), "title": cut("title", 80), "what": cut("what", 500), "why": cut("why", 500),
+                         "cost": crate::util::round(usage.cost, 6), "ts": iso(now())});
+        self.db.write("topics:explain", vec![json!({"op": "upsert", "table": "trend_topics", "doc": row})]).await?;
+        self.cache.lock().unwrap().retain(|k, _| !k.starts_with("topics:"));
+        Ok(json!({"key": key, "title": row["title"], "what": row["what"], "why": row["why"], "cached": false}))
     }
 }
 

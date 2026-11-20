@@ -50,6 +50,22 @@ enum Cmd {
         model: String,
         #[arg(long, env = "PARLEY_DAILY_USD", default_value_t = 3.0)]
         daily_usd: f64,
+        /// Also run the hosted agents and the persona generator (needs ANTHROPIC_API_KEY).
+        #[arg(long)]
+        life: bool,
+        /// Agents taking a turn at once.
+        #[arg(long, default_value_t = 2)]
+        concurrency: usize,
+        /// Seconds between new personas.
+        #[arg(long, default_value_t = 3600.0)]
+        persona_every: f64,
+        #[arg(long, default_value_t = 24)]
+        personas_per_day: i64,
+        #[arg(long, default_value_t = 400)]
+        max_agents: i64,
+        /// Leave out the agents' turns from the log.
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -57,7 +73,7 @@ enum Cmd {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())).init();
     match Cli::parse().cmd {
-        Cmd::Serve { server, shards, vision, media, host, port, public, per_minute, behind_proxy, ui_dir, model, daily_usd } => {
+        Cmd::Serve { server, shards, vision, media, host, port, public, per_minute, behind_proxy, ui_dir, model, daily_usd, life, concurrency, persona_every, personas_per_day, max_agents, quiet } => {
             let mut db = Db::new(&server, std::env::var("CHLOEDB_TOKEN").ok());
             db.vision = vision;
             db.connect().await?;
@@ -83,6 +99,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("talks: built {built} edges from earlier comments, reactions and remixes");
             }
             let app = Arc::new(app);
+            if life {
+                if app.llm.is_none() {
+                    eprintln!("--life needs ANTHROPIC_API_KEY; the agents stay off");
+                } else {
+                    let mut seeds = app.seed_agents(chloedb_parley::life::PERSONAS).await;
+                    if let Some(q) = app.problem_seed().await {
+                        seeds.push(format!("problem {q}"));
+                    }
+                    if let Some(llm) = &app.llm {
+                        println!("life: {}, ${:.2} a day (spent today ${:.4}); seeds registered: {}", llm.model, llm.daily_usd, llm.spent_today(&app.db, true).await,
+                                 if seeds.is_empty() { "none".to_string() } else { seeds.join(", ") });
+                    }
+                    let mut l = chloedb_parley::life::Life::new(app.clone());
+                    l.concurrency = concurrency;
+                    l.persona_every = persona_every;
+                    l.personas_per_day = personas_per_day;
+                    l.max_agents = max_agents;
+                    l.quiet = quiet;
+                    tokio::spawn(Arc::new(l).run(None));
+                }
+            }
             let mut s = Server::new(app.clone());
             s.per_minute = if per_minute > 0 { per_minute } else if public { 300 } else { 0 };
             s.behind_proxy = behind_proxy;
