@@ -431,6 +431,16 @@ async fn every_page_against_a_real_server() {
     assert_eq!(cps[0]["to_label"], "suburbs", "{ch}");
     ok(&http, &base, "/v1/path/ca0000").await;
     assert_eq!(ny, nc * YEARS.len());
+    assert_eq!(ch["all"].as_array().unwrap().len(), nc, "every place with years, for the map: {ch}");
+    let ch = ok(&http, &base, "/v1/changed?drift=0.5").await;
+    assert!(!ch["places"].as_array().unwrap().is_empty() && ch["places"].as_array().unwrap().iter().all(|c| c["to_label"] == "suburbs"), "only the places that moved far: {ch}");
+    let ch = ok(&http, &base, "/v1/changed?lat=33.95&lon=-118.55&km=5").await;
+    assert_eq!(ch["places"].as_array().unwrap().len(), 1, "within the circle: {ch}");
+    assert_eq!((ch["places"][0]["id"].as_str(), ch["places"][0]["km"].as_f64()), (Some("ca0000"), Some(0.0)), "{ch}");
+    let ch = ok(&http, &base, "/v1/changed?year=2023").await;
+    assert!(ch["places"].as_array().unwrap().is_empty(), "none moved most by 2023: {ch}");
+    let ch = ok(&http, &base, "/v1/changed?region=chile").await;
+    assert!(ch["places"].as_array().unwrap().iter().all(|c| c["region"] == "chile"), "{ch}");
 
     // Search by words alone (no model), and the place under a point.
     let s = ok(&http, &base, "/v1/search?q=forest&mode=words&region=california").await;
@@ -565,6 +575,23 @@ async fn every_page_against_a_real_server() {
     assert!(mine["watches"].as_array().unwrap().is_empty() && mine["alerts"].as_array().unwrap().is_empty(), "removed with its alerts: {mine}");
     let ex = ok(&http, &base, "/v1/watches/example").await;
     assert_eq!(ex["watches"].as_array().unwrap().len(), 3, "{ex}");
+
+    // Watched for change: a new picture of the place unlike the one a week
+    // before raises one alert; one like it does not, nor one after the
+    // dry season's of 2025 (months apart, so maybe another season).
+    let (s, made) = post(format!("{open}/v1/watches?w={key}"), json!({"name": "the field", "lat": 33.95, "lon": -118.55, "km": 10, "change": true})).await;
+    assert_eq!(s, 200, "{made}");
+    assert_eq!((made["watch"]["change"].as_bool(), made["watch"]["place"].as_str()), (Some(true), Some("ca0000")), "{made}");
+    let now = chrono::Utc::now().timestamp();
+    let pic = |d: i64, v: Vec<f32>, label: &str| json!({"id": format!("ca0000-2026{d:04}"), "place": "ca0000", "region": "california", "year": 2026, "taken": iso(now - d * 86400), "scene": "S2_TEST", "cloud": 1.0, "ndvi": null, "label": label, "look": v});
+    db.upsert("ea_years", vec![pic(10, vector(0, 70, 0.1), "shrubland"), pic(3, vector(3, 70, 0.1), "solar farm")]).await.unwrap();
+    assert_eq!(chloedb_earth::watch::judge(&db, "california", now - 60, now).await.unwrap(), 1, "the new picture unlike the last");
+    db.upsert("ea_years", vec![pic(1, vector(3, 71, 0.1), "solar farm")]).await.unwrap();
+    assert_eq!(chloedb_earth::watch::judge(&db, "california", now - 60, now).await.unwrap(), 0, "a picture like the last, and the change told once");
+    let (_, mine) = get(&http, &format!("{open}/v1/watches?w={key}"), None).await;
+    let look: Vec<&Value> = mine["alerts"].as_array().unwrap().iter().filter(|a| a["kind"] == "look").collect();
+    assert_eq!(look.len(), 1, "{mine}");
+    assert!(look[0]["body"].as_str().unwrap().contains("solar farm"), "{mine}");
 
     // Clear sky: the map's layer, the finder and a place's sky.
     let (s, layer) = get(&http, &format!("{open}/v1/sky?region=california"), None).await;
