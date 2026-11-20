@@ -1652,6 +1652,11 @@ pub(crate) fn plan_read_query(q: &sql::Query, catalog: &[&Schema], params: &Para
 /// [`plan_read_query`]; `may_rank_by_profile` false for a query whose text
 /// names no `rank_profile`.
 fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles: Profiles, functions: &FunctionSet, may_rank_by_profile: bool) -> Result<ir::Plan> {
+    // Before its tables are looked up: a recursive CTE names itself, which
+    // is no table (SAM-403).
+    if q.with.as_ref().is_some_and(|w| w.recursive) {
+        return Err(err("WITH RECURSIVE is not supported: REACHABLE and PATH traverse links"));
+    }
     // Stored functions are written out first: a table function's body may
     // rank by a rank profile.
     if let Some((q, _)) = super::function::expand(q, functions)? {
@@ -1678,6 +1683,13 @@ fn plan_read_with(q: &sql::Query, catalog: &[&Schema], params: &Params, profiles
     };
     if needs(q, schema) {
         return plan_query(q, catalog, params);
+    }
+    if let sql::SetExpr::Select(s) = q.body.as_ref() {
+        if let [sql::TableWithJoins { relation: sql::TableFactor::Table { alias, .. }, joins }] = s.from.as_slice() {
+            if joins.is_empty() {
+                check_qualifiers(q, s, schema, alias.as_ref().map(|a| a.name.value.as_str()))?;
+            }
+        }
     }
     Ok(ir::Plan::of_select(schema, &super::sql::bind_query_in(q, schema, catalog, params)?))
 }
@@ -1839,6 +1851,58 @@ fn from_names(q: &sql::Query) -> Vec<String> {
         }
     }
     out
+}
+
+/// A qualifier (`t.col`) of a query on one table must name that table, its
+/// alias, or a JSON field (`attrs.in_stock`): any other names no table of
+/// the query (SAM-404). Subqueries have their own tables and may name the
+/// outer one, so they are left to their own planning.
+fn check_qualifiers(q: &sql::Query, s: &sql::Select, schema: &Schema, alias: Option<&str>) -> Result<()> {
+    use std::ops::ControlFlow;
+    struct Walk<'a> {
+        schema: &'a Schema,
+        alias: Option<&'a str>,
+        depth: usize,
+    }
+    impl sqlparser::ast::Visitor for Walk<'_> {
+        type Break = String;
+        fn pre_visit_query(&mut self, _: &sql::Query) -> ControlFlow<String> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &sql::Query) -> ControlFlow<String> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<String> {
+            if let (0, Expr::CompoundIdentifier(ids)) = (self.depth, e) {
+                if let [t, _] = ids.as_slice() {
+                    let t = &t.value;
+                    let known = t.eq_ignore_ascii_case(&self.schema.table) || self.alias.is_some_and(|a| t.eq_ignore_ascii_case(a)) || self.schema.field_index(t).is_some();
+                    if !known {
+                        let mut names = vec![self.schema.table.as_str()];
+                        names.extend(self.alias);
+                        let near = super::hint::did_you_mean(t, names.iter().copied());
+                        return ControlFlow::Break(format!("no table {t} in FROM{near}: this query reads {}", names.join(" as ")));
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut w = Walk { schema, alias, depth: 0 };
+    let r = sqlparser::ast::Visit::visit(s, &mut w);
+    if let ControlFlow::Continue(()) = r {
+        if let Some(o) = &q.order_by {
+            if let ControlFlow::Break(m) = sqlparser::ast::Visit::visit(o, &mut w) {
+                return Err(err(m));
+            }
+        }
+    }
+    match r {
+        ControlFlow::Break(m) => Err(err(m)),
+        _ => Ok(()),
+    }
 }
 
 /// One table of a join.
@@ -2243,8 +2307,11 @@ impl<'a> Planner<'a> {
                     _ => self.join(q, s),
                 }
             }
-            TableFactor::Table { name, .. } => match self.table(&super::sql::table_name(name)) {
-                Some(schema) => self.single(q, s, schema),
+            TableFactor::Table { name, alias, .. } => match self.table(&super::sql::table_name(name)) {
+                Some(schema) => {
+                    check_qualifiers(q, s, schema, alias.as_ref().map(|a| a.name.value.as_str()))?;
+                    self.single(q, s, schema)
+                }
                 None => Err(err(self.no_table(&super::sql::table_name(name)))),
             },
             TableFactor::Derived { .. } => self.join(q, s),

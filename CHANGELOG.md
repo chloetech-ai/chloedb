@@ -11,6 +11,23 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **UPDATE follows SELECT's NULL rules, and EXPLAIN runs over HTTP.**
+  (SAM-401, SAM-403, SAM-404, SAM-405.) `UPDATE t SET n = n + 1` keeps a
+  NULL `n` NULL, as `SELECT n + 1`, `1 + n` and `n * 2` already did, and
+  as DuckDB and PostgreSQL do; a counter that starts from NULL is
+  `coalesce(n, 0) + 1`. **Changed:** `field + number` and `field - number`
+  counted a NULL as zero in `SET` only. `EXPLAIN <statement>` over
+  `POST /v1/sql` answers the plan as rows of `plan`, as it does in-process
+  (so `chloedb.dbapi` and `chloedb-server cc` have it), and
+  `POST /v1/explain` takes the text with `EXPLAIN` before it and plans an
+  `INSERT`, `UPDATE` or `DELETE` without running it (`"ran": false`). A
+  table qualifier that names no table of a one-table query
+  (`SELECT t.id FROM trips`) is an error that names it, rather than read
+  as the table. Errors that pointed the wrong way now say what is wrong: a
+  column in `HAVING` that is neither grouped nor aggregated
+  (`HAVING total_amount > 10` said `10: no such column`), an aggregate in
+  `WHERE` (use `HAVING`), and `LIKE ANY` / `ILIKE ANY` (one pattern per
+  `LIKE`, joined with `OR`).
 - **A retried `/v1/logs` request writes each line once.** A request's
   `batch` and an idempotency key for each of its parts (1,000 rows) are
   made from its content, so a Collector that sends a request again after a

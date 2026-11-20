@@ -2654,6 +2654,49 @@ impl Service {
         Ok(r?)
     }
 
+    /// The plan of a query, INSERT, UPDATE or DELETE `sql`, made and not run
+    /// (a write's, with the plan of the query that picks its rows), and the
+    /// line that says how a write picks them.
+    pub async fn explain_plan(self: &Arc<Self>, sql: &str, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<(Plan, Option<String>), ApiError> {
+        let word = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase();
+        if !matches!(word.as_str(), "insert" | "update" | "delete") {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        }
+        let Some(w) = self.bound(|tables| chloedb::query::sql::write_plan(sql, tables, params)).await? else {
+            return Ok((self.plan_for_explain(sql, params, timeout_ms, budget).await?, None));
+        };
+        let note = w.note.clone();
+        match w.pick.clone() {
+            Some((query, p)) => {
+                let picked = self.plan_for_explain(&query, &p, timeout_ms, budget).await?;
+                Ok((w.picking(picked), note))
+            }
+            None => Ok((w.plan(), note)),
+        }
+    }
+
+    /// `EXPLAIN <statement>` over `/v1/sql`: the plan as rows of text (one
+    /// row of JSON with `FORMAT JSON`), as an embedded database answers it.
+    async fn explain_rows(self: &Arc<Self>, sql: &str, json: bool, params: &Params, timeout_ms: u64, budget: chloedb::query::budget::Budget) -> Result<SqlAnswer, ApiError> {
+        let t0 = Instant::now();
+        let (inner, _) = chloedb::query::sql::explained(sql)?.ok_or_else(|| ApiError::bad("query error: EXPLAIN takes a statement"))?;
+        let (plan, note) = self.explain_plan(&inner, params, timeout_ms, budget).await?;
+        let rows = match json {
+            true => vec![vec![Value::Str(plan.to_json_text()?)]],
+            false => {
+                let catalog = self.catalog();
+                let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
+                let mut lines = plan.explain(&tables);
+                if let Some(n) = note {
+                    lines.insert(1.min(lines.len()), n);
+                }
+                lines.into_iter().map(|l| vec![Value::Str(l)]).collect()
+            }
+        };
+        let rs = ResultSet { columns: vec!["plan".into()], rows, keys: Vec::new(), scores: Vec::new(), parts: None, stats: Default::default() };
+        Ok(SqlAnswer::Rows(Answer { rs, took_ms: t0.elapsed().as_secs_f64() * 1e3, kind: "explain", missing: Vec::new(), lease: 0, arrow: Vec::new(), stale: false, cursor: None }))
+    }
+
     /// The plan of read `sql` for `POST /v1/explain`, made as a query's
     /// is ([`Self::plan_read`]): on a blocking thread when it may take
     /// long, stopped at the request's deadline (`timeout_ms`, 0: the
@@ -5076,7 +5119,7 @@ impl Service {
                 let a = self.query(QueryReq { sql: sql.into(), params: params.clone(), timeout_ms, after, who: Some(who.clone()), budget, ..Default::default() }).await?;
                 return Ok(SqlAnswer::Rows(a));
             }
-            Command::Explain { .. } => return Err(ApiError::bad("query error: EXPLAIN runs through POST /v1/explain")),
+            Command::Explain { json } => return self.explain_rows(sql, json, params, timeout_ms, budget).await,
             // ONB-16: the tables' names, as GET /v1/tables lists them for
             // this key (a coordinator's from what its shards hold).
             Command::ShowTables => {

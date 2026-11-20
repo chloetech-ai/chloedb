@@ -56,7 +56,7 @@ fn sql_writes() {
     assert_eq!(rows(&db, "SELECT id FROM items WHERE tags = 'sale' ORDER BY price DESC").len(), 2);
     assert_eq!(rows(&db, "SELECT id FROM items WHERE MATCH(title, 'jacket')")[0][0], Value::Str("b".into()));
 
-    // Counters in place, NULL counting as zero.
+    // Counters in place; a NULL stays NULL, as in SELECT.
     assert_eq!(written(db.sql("UPDATE items SET clicks = clicks + 2 WHERE tags = 'sale'", &p).unwrap()), 2);
     assert_eq!(written(db.sql("UPDATE items SET price = price - 0.5, clicks = 10 WHERE id = 'b'", &p).unwrap()), 1);
     let r = rows(&db, "SELECT id, clicks, price FROM items ORDER BY clicks DESC, id");
@@ -65,7 +65,7 @@ fn sql_writes() {
         vec![
             vec![Value::Str("b".into()), Value::Int(10), Value::Float(119.5)],
             vec![Value::Str("a".into()), Value::Int(5), Value::Float(59.5)],
-            vec![Value::Str("c".into()), Value::Int(2), Value::Float(4.25)],
+            vec![Value::Str("c".into()), Value::Null, Value::Float(4.25)],
         ]
     );
 
