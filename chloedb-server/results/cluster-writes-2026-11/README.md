@@ -161,6 +161,34 @@ ChloeDB about 44,760 rows a second on this branch and 45,330 on 0.3.8, flat
 through flushes and merges; SQLite FULL 17,104, falling from about 25k to 15.7k as
 its indexes grew.
 
+## Counter + 1 by SQL, again (19 November, 11:14-11:26 PM PST)
+
+The SQL counter above was still behind SQLite. Since then, an `UPDATE` whose
+`WHERE` is its key alone is bound without the `SELECT *` the general path binds
+for its rows (it never reads them), skips the checks for ChloeDB's own
+statements (none starts with `UPDATE`), and a write alone in the queue takes no
+footprint. The CPU a statement takes, here in the container with no sync, fell
+from 7.3 to 3.3 µs (the `add` operation's is 1.7 µs).
+
+Measured again on one DOKS `g-8vcpu-32gb` node in ams3 (Intel Xeon Platinum
+8358 @ 2.60GHz, the machine type of A1's runs of 17 November; an `fdatasync`
+takes 41 µs; sfo3 had no capacity, and sfo2's node, whose syncs took 1.4 ms,
+was destroyed unused). The same `a1_updates.py`, 4 s a cell, the systems in
+turns, two runs of three rounds (raw lines in `counter-2026-11-20.txt`):
+
+| | price and stock update a second | counter + 1 a second |
+|---|---|---|
+| SQLite FULL (6 rounds) | 9,796-10,341 | 16,842-17,197 |
+| ChloeDB, this change (3 rounds) | 15,855-16,350 | 17,654-17,951 |
+| ChloeDB, the change without the binder's last two cuts (6 rounds) | 15,518-16,083 | 17,027-17,568 |
+| ChloeDB, PR #708 as first pushed (3 rounds) | 13,063-13,515 | 14,190-14,687 |
+| ChloeDB 0.3.8 (1 round) | 5,159 | 5,775 |
+| ChloeDB, `db.write` `add` op | | 20,298-20,636 |
+
+The counter by SQL is now ahead of SQLite FULL in each of its rounds, by 4-5%: each
+commit waits about 41 µs for its sync, so what is left between them is a few
+microseconds of work a statement. Price updates are 56-65% ahead.
+
 ## Bugs found on the way, fixed on this branch
 
 - A table created and then written at once, under `--write-acks primary`, failed

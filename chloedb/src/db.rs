@@ -2059,6 +2059,20 @@ impl Db {
 
     /// [`Db::sql_with`] on this thread.
     fn sql_with_here(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
+        // An UPDATE is none of the statements below, each of which starts
+        // with CREATE, DROP, REFRESH or INSERT: a keyed update by the
+        // thousand a second skips asking each.
+        let update = sql.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("UPDATE"));
+        if !update {
+            return self.sql_with_probed(sql, params, opts);
+        }
+        self.sql_with_bound(sql, params, opts)
+    }
+
+    /// [`Db::sql_with_here`] of a statement that may be one of the
+    /// statements ChloeDB reads itself (classifiers, recommenders, blends,
+    /// rollups, synonyms, chunk inserts) before SQL's.
+    fn sql_with_probed(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         if let Some(st) = crate::query::classify::parse_statement(sql)? {
             return self.classifier_statement(&st, opts);
         }
@@ -2093,6 +2107,11 @@ impl Db {
             }
             return Ok(SqlResult::Written(n));
         }
+        self.sql_with_bound(sql, params, opts)
+    }
+
+    /// [`Db::sql_with_here`] of a statement SQL's binder takes.
+    fn sql_with_bound(&self, sql: &str, params: &Params, opts: &ExecOptions) -> Result<SqlResult> {
         let catalog = self.catalog();
         let tables: Vec<&Schema> = catalog.iter().map(|t| &**t).collect();
         // A write is held to its budget's shape as written (a query, once
@@ -2562,7 +2581,7 @@ impl Db {
     fn write_prepared_in(&self, t: &mut WriteTxn<'_>, p: &PreparedWrite) -> Result<u64> {
         let schema = &*p.schema;
         let mut tt = t.table(&schema.table)?;
-        if tt.schema() != schema {
+        if !std::ptr::eq(tt.schema(), schema) && tt.schema() != schema {
             return Err(Error::Query(format!("table {} was altered, or dropped and created again, {ALTERED}", schema.table)));
         }
         let models = self.write_models_of(schema);

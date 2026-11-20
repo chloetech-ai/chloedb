@@ -350,7 +350,52 @@ pub fn bind_command_cached(sql_text: &str, tables: &[&Schema], params: &Params) 
             s
         }
     };
+    if let Some(c) = keyed_update_bound(&stmt, tables, params) {
+        return Ok(c);
+    }
     bind_statement(&stmt, tables, params)
+}
+
+/// An `UPDATE t SET <numbers> WHERE <key> = <value>` bound without the
+/// `SELECT *` the general path binds for its rows: the write runs by key
+/// ([`crate::db::Db`]'s keyed update reads its row in the transaction), so
+/// its query is only its filter, the same `Pred` the general path's
+/// binder makes of the WHERE. `None` for any other statement, and for one
+/// whose WHERE or SET the binder refuses, which [`bind_statement`] binds
+/// (and refuses) as before. EXPLAIN binds through [`bind_statement`], so
+/// it shows the general path's plan.
+fn keyed_update_bound(stmt: &sql::Statement, tables: &[&Schema], params: &Params) -> Option<Command> {
+    let sql::Statement::Update { table: t, assignments, from: None, selection: Some(selection), returning: None, or: None, limit: None } = stmt else { return None };
+    if !t.joins.is_empty() || matches!(&t.relation, sql::TableFactor::Table { alias: Some(_), .. }) {
+        return None;
+    }
+    // `key = value`, a column against a value or a parameter.
+    let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = selection else { return None };
+    let plain = |e: &Expr| matches!(e, Expr::Value(_));
+    if !(matches!(**left, Expr::Identifier(_)) && plain(right) || matches!(**right, Expr::Identifier(_)) && plain(left)) {
+        return None;
+    }
+    let n = table_name(plain_table(&t.relation, "UPDATE").ok()?);
+    let schema = tables.iter().copied().find(|s| s.table.eq_ignore_ascii_case(&n))?;
+    let pk = schema.primary_key?;
+    let binder = Binder::new(schema, params);
+    let sets = binder.assignments(assignments, None, false).ok()?;
+    let in_place = sets.iter().all(|(f, a)| matches!(schema.fields[*f].ty, FieldType::Int | FieldType::Float) && !schema.fields[*f].multi && matches!(a, Assign::Value(_) | Assign::Add(_)));
+    if sets.is_empty() || !in_place {
+        return None;
+    }
+    let filter = binder.pred(selection).ok()?;
+    let keyed = match (&filter, &schema.fields[pk].ty) {
+        (Pred::In { field, values }, FieldType::Keyword) => *field == pk && matches!(values.as_slice(), [Value::Str(_)]),
+        (Pred::In { field, values }, FieldType::Int) => *field == pk && matches!(values.as_slice(), [Value::Int(_)]),
+        (Pred::IntRange { field, lo, hi }, FieldType::Int) => *field == pk && lo == hi,
+        _ => false,
+    };
+    if !keyed {
+        return None;
+    }
+    let select = Select { projection: Vec::new(), filter, order: None, group_by: Vec::new(), paths: Vec::new(), times: Vec::new(), exprs: Vec::new(), having: None, tiebreak: None, phases: Vec::new(), limit: None, offset: 0, graphs: Vec::new(), types: Vec::new(), guard: None, per: None };
+    Some(Command::Write { table: schema.table.clone(), write: Write::Update { select, sets, pick: None } })
 }
 
 /// Parses and binds one statement of a database whose tables are `tables`:
@@ -2877,7 +2922,7 @@ impl<'a> Binder<'a> {
         use BinaryOperator::*;
         let written = op.clone();
         // Normalise to `field op literal`.
-        let (field_e, lit_e, op) = if self.field_of(left).is_ok() {
+        let (field_e, lit_e, op) = if self.is_column(left) {
             (left, right, op.clone())
         } else {
             let flipped = match op {
@@ -2889,13 +2934,13 @@ impl<'a> Binder<'a> {
             };
             (right, left, flipped)
         };
-        if self.field_of(field_e).is_err() {
+        if !self.is_column(field_e) {
             return Err(self.not_comparable(left, &written, right));
         }
         let f = self.field_of(field_e)?;
         let ty = &self.schema.fields[f].ty;
         let name = &self.schema.fields[f].name;
-        if self.field_of(lit_e).is_ok() {
+        if self.is_column(lit_e) {
             return Err(self.not_comparable(left, &written, right));
         }
         if matches!(self.literal(lit_e), Ok(Value::Null)) {
@@ -2976,6 +3021,12 @@ impl<'a> Binder<'a> {
             }
         }
         Ok((pos, named))
+    }
+
+    /// Whether `e` names a column ([`Binder::field_of`] takes it): only a
+    /// name can, so anything else is answered without the error's words.
+    fn is_column(&self, e: &Expr) -> bool {
+        matches!(e, Expr::Identifier(_) | Expr::CompoundIdentifier(_)) && self.field_of(e).is_ok()
     }
 
     fn field_of(&self, e: &Expr) -> Result<usize> {
@@ -3360,7 +3411,7 @@ impl<'a> Binder<'a> {
 
     /// A finite numeric literal or parameter, an integer kept exact.
     fn num_literal(&self, e: &Expr) -> Result<Value> {
-        if self.field_of(e).is_err() {
+        if !self.is_column(e) {
             match self.literal(e) {
                 Ok(v @ Value::Int(_)) => return Ok(v),
                 Ok(Value::Float(x)) if x.is_finite() => return Ok(Value::Float(x)),
@@ -4239,6 +4290,46 @@ mod tests {
         // A negated comparison also needs the value (NULL != 'c00' is not true).
         assert!(matches!(&ps[1], Pred::And(qs) if matches!(qs[..], [Pred::Present { field: 5 }, Pred::Not(_)])), "{:?}", ps[1]);
     }
+
+    /// A keyed UPDATE bound by its WHERE alone binds as the general path
+    /// does, but for the `SELECT *` it does not need; anything else is
+    /// left to the general path.
+    #[test]
+    fn a_keyed_update_binds_as_the_general_path_does() {
+        let s = Schema::from_json(r#"{"table": "t", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "n", "type": "int"}, {"name": "price", "type": "float"}, {"name": "name", "type": "keyword"}]}"#).unwrap();
+        let si = Schema::from_json(r#"{"table": "u", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "n", "type": "int"}]}"#).unwrap();
+        let tables = [&s, &si];
+        let p = Params::new().set("k", Value::Str("a".into())).set("p", Value::Float(2.5)).set("i", Value::Int(7)).set("d", Value::Int(3));
+        for text in [
+            "UPDATE t SET n = n + 1 WHERE id = :k",
+            "UPDATE t SET n = n - :d, price = :p WHERE id = :k",
+            "UPDATE t SET price = :i WHERE 'a' = id",
+            "UPDATE t SET n = :d WHERE id = 'b'",
+            "UPDATE T SET N = N + 1 WHERE ID = :k",
+            "UPDATE u SET n = n + 1 WHERE id = :i",
+            "UPDATE u SET n = 2 WHERE id = 9",
+        ] {
+            let stmt = parse_one(text).unwrap();
+            let Some(Command::Write { table, write: Write::Update { select, sets, pick: None } }) = keyed_update_bound(&stmt, &tables, &p) else { panic!("{text} is keyed") };
+            let Command::Write { table: t2, write: Write::Update { select: s2, sets: sets2, pick: None } } = bind_statement(&stmt, &tables, &p).unwrap() else { panic!("{text}") };
+            assert_eq!((table, &select.filter, &sets), (t2, &s2.filter, &sets2), "{text}");
+            let general = Select { projection: Vec::new(), types: Vec::new(), ..s2 };
+            assert_eq!(select, general, "{text}");
+        }
+        for text in [
+            "UPDATE t SET name = 'x' WHERE id = :k",
+            "UPDATE t SET n = n + 1 WHERE id = :k AND n > 2",
+            "UPDATE t SET n = n + 1 WHERE n = 3",
+            "UPDATE t SET n = n + 1 WHERE id IN ('a', 'b')",
+            "UPDATE t AS x SET n = n + 1 WHERE id = :k",
+            "UPDATE t SET n = n * 2 WHERE id = :k",
+            "UPDATE t SET n = n + 1 WHERE id = 7",
+            "UPDATE t SET id = 'b' WHERE id = :k",
+            "UPDATE u SET n = n + 1 WHERE id = '9'",
+        ] {
+            assert!(keyed_update_bound(&parse_one(text).unwrap(), &tables, &p).is_none(), "{text}");
+        }
+    }
 }
 
 /// The type a `CAST(x AS type)` makes: what the row evaluator can turn a
@@ -4328,4 +4419,5 @@ pub(crate) fn cast_value(v: Value, to: CastTo) -> Result<Value> {
         },
         (v, _) => return Err(refused(&v, &format!("{} has no {} value", hint::kind_of(&v), to.name()))),
     })
+
 }

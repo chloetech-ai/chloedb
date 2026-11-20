@@ -335,18 +335,27 @@ impl Db {
 fn take(waiting: &mut VecDeque<Arc<Slot<Job>>>) -> Vec<Arc<Slot<Job>>> {
     let first = waiting.pop_front().expect("the leader's own write waits");
     let mut n = first.job.weight();
-    let mut prints = Footprints::default();
-    let sql = match &first.job {
-        Job::Sql(p) => prints.admit(p),
-        Job::Ops(_) => false,
-    };
+    // The first write's footprint is taken when a second may join it: a
+    // write alone (one thread writing) needs none.
+    let mut prints: Option<Footprints> = None;
+    let sql = matches!(first.job, Job::Sql(_));
     let mut group = vec![first];
     while let Some(next) = waiting.front() {
         let w = next.job.weight();
         let fits = n + w <= GROUP_OPS
             && match &next.job {
                 Job::Ops(_) => !sql,
-                Job::Sql(p) => sql && prints.admit(p),
+                Job::Sql(p) => {
+                    sql && prints
+                        .get_or_insert_with(|| {
+                            let mut f = Footprints::default();
+                            if let Job::Sql(first) = &group[0].job {
+                                f.admit(first);
+                            }
+                            f
+                        })
+                        .admit(p)
+                }
             };
         if !fits {
             break;
