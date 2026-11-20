@@ -25,12 +25,14 @@ import { z } from 'zod'
 
 import { RUNNER, SHELF, registerApps } from './apps.mjs'
 import { tableBook, tableCancel, tableSearch } from './widgets/booking.mjs'
+import { connector, connectorCall } from './widgets/connector.mjs'
 import { findings } from './widgets/findings.mjs'
 import { inputs } from './widgets/inputs.mjs'
 import { exchangeRate } from './widgets/rates.mjs'
 import flight from './widgets/flight.mjs'
 import { recipeGet, recipesBrowse, recipesShop } from './widgets/recipes.mjs'
 import { cartAdd, cartShow, shopSearch } from './widgets/shop.mjs'
+import { SPOTIFY_TOOLS } from './widgets/spotify.mjs'
 import stock from './widgets/stock.mjs'
 
 // The tools with a view of their own, which any MCP Apps host draws.
@@ -40,7 +42,9 @@ export const WIDGETS = [stock, flight, shopSearch, cartAdd, cartShow]
 // Claude of the conversation found itself (findings), which it hands to an
 // app rather than calls, and the starting values of an app that works
 // everything out itself (inputs).
-export const TOOLS = [...WIDGETS, tableSearch, tableBook, tableCancel, recipesBrowse, recipeGet, recipesShop, exchangeRate, findings, inputs]
+// The person's own accounts (Spotify) and any service with an MCP server
+// (connector), called as the person: `ctx` carries whose they are.
+export const TOOLS = [...WIDGETS, tableSearch, tableBook, tableCancel, recipesBrowse, recipeGet, recipesShop, exchangeRate, findings, inputs, ...SPOTIFY_TOOLS, connector, connectorCall]
 
 export const VIEWS = {
   stock: { title: 'Stock widget', domains: [] },
@@ -177,7 +181,8 @@ export function build() {
 
   // The sources without a view of their own answer as plain tools; what
   // Claude found is only ever handed to an app.
-  for (const tool of TOOLS.filter(t => !t.view && !t.given)) {
+  // A person's own accounts need the chat, which knows whose they are.
+  for (const tool of TOOLS.filter(t => !t.view && !t.given && !t.service)) {
     server.registerTool(
       tool.name,
       { title: tool.title, description: tool.description, inputSchema: tool.input, annotations: { readOnlyHint: tool.name !== 'table_book', openWorldHint: true } },
@@ -218,7 +223,7 @@ export function domainsOf(names) {
 
 // Runs a tool as the MCP server would answer it: the data, with the
 // sentence for the model first in it.
-export async function callTool(name, args) {
+export async function callTool(name, args, ctx) {
   const tool = TOOLS.find(t => t.name === name)
   if (!tool) throw new Error(`no tool ${name}`)
   // What the model hands an app comes through app_open and app_make's
@@ -228,7 +233,7 @@ export async function callTool(name, args) {
     if (!checked.success) throw new Error(`${name}'s args: ${checked.error.issues.map(i => `${i.path.join('.') || 'args'} ${i.message}`).join('; ')}`)
     args = checked.data
   }
-  const data = await tool.run(args ?? {})
+  const data = await tool.run(args ?? {}, ctx)
   return { summary: tool.summary(data), ...data }
 }
 

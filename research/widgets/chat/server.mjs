@@ -14,6 +14,7 @@
 //
 // CHLOEDB_URL uses a running chloedb-server instead of starting one.
 import { mkdirSync, readFileSync } from 'node:fs'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
@@ -26,6 +27,9 @@ import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.
 import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep, signed } from '../server/apps.mjs'
 import { claude } from './model.mjs'
 import { Apps, valueNames } from '../server/store.mjs'
+import { Connections, selfOf } from '../server/connections.mjs'
+import { NeedsConnect, SPOTIFY, spotifyFinish, spotifyStart } from '../server/widgets/spotify.mjs'
+import { callOn, clientFor, closeClients, finishSignIn, registrySearch, toolsOf } from '../server/widgets/connector.mjs'
 
 const require = createRequire(new URL('../server/', import.meta.url))
 
@@ -70,6 +74,29 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   const page = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
   const worker = readFileSync(new URL('./sw.js', import.meta.url), 'utf8')
   const bridgeJs = await bridge()
+  // What each browser connected (its Spotify, MCP servers it signed in to),
+  // and the sign-ins started and not finished yet, by their state.
+  const connections = apps.db ? await Connections.open(apps.db, data ?? path.join(os.tmpdir(), 'instant-apps')).catch(error => (log(`no connections: ${error.message}`), null)) : null
+  const signIns = new Map()
+  const signingIn = (state, value) => {
+    signIns.set(state, { ...value, at: Date.now() })
+    for (const [k, v] of signIns) if (Date.now() - v.at > 900_000) signIns.delete(k)
+  }
+  // Who a request is for: the browser's own id (the page sends it as
+  // x-self), and where this chat is reached from, for a sign-in's way back.
+  const caller = new AsyncLocalStorage()
+  const originOf = req => process.env.WIDGETS_ORIGIN || `${String(req.headers['x-forwarded-proto'] ?? 'http').split(',')[0]}://${req.headers['x-forwarded-host'] ?? req.headers.host}`
+  const ctxOf = (self, origin) => {
+    const me = selfOf(self)
+    return {
+      self: me,
+      origin,
+      account: service => (connections && me ? connections.account(me, service) : null),
+      redirect: `${origin}/api/connect/mcp/done`,
+      pending: (state, info) => signingIn(state, { self: me, kind: 'mcp', ...info }),
+    }
+  }
+  const connectUrl = (c, ctx) => (c.service === 'spotify' ? `/api/connect/spotify?self=${ctx.self}` : c.url)
   // What each app shown in this process last drew, so a change redraws it
   // with the same data.
   const shown = new Map()
@@ -171,10 +198,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   const htmlOf = app => render(app.source, domainsOf(app.tools))
 
   async function run(tool, args) {
+    const ctx = caller.getStore()
     try {
-      const data = await callTool(tool, args)
+      const data = await callTool(tool, args, ctx)
       return { result: { content: [{ type: 'text', text: data.summary }], structuredContent: data }, data }
     } catch (error) {
+      // The person's own account, not connected yet: the page offers the sign-in.
+      if (error instanceof NeedsConnect) {
+        const connect = { ...error.connect, url: connectUrl(error.connect, ctx ?? {}) }
+        return { result: { content: [{ type: 'text', text: error.message }], isError: true, connect }, data: { summary: `${tool}: ${error.message}` }, connect }
+      }
       return { result: { content: [{ type: 'text', text: error.message }], isError: true }, data: { summary: `${tool} failed: ${error.message}` } }
     }
   }
@@ -226,6 +259,13 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     return { ...args, values: rest }
   }
 
+  // Not connected yet: the person gets the sign-in, and the page asks again
+  // once it is done.
+  function needsConnect(connect, text, send) {
+    send({ type: 'connect', service: connect.service, name: connect.name, url: connect.url, request: text })
+    send({ type: 'reply', text: `This needs your ${connect.name}. Connect it with the button above, and I'll pick up from there.` })
+  }
+
   async function turn({ text, history = [], lastApp, screen, talk, links, guest }, send) {
     // A page opened only by helper or view links has no chat: what was
     // shared is all it gets (INES-1, LENA-5).
@@ -246,6 +286,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       // the chat can say so (MAYA-4, MARCUS-2).
       screen: onScreen(screen).map(w => (links?.[w.id] ? { ...w, shared: true } : w)),
       tools: described(TOOLS),
+      connected: await connectedOf(caller.getStore()?.self),
     })
     send({ type: 'route', mode: plan.mode, kind: plan.kind, why: plan.why })
     // A change asked in words is the same change as the app's Change box,
@@ -310,10 +351,19 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         return
       }
     }
+    // A service outside the chat: an MCP server found for it and
+    // connected, and what its tool answered is the app's data.
+    if (plan.tool === 'connector' && !keptAnswer) {
+      const step = await connecting({ text, service: String(args.service || text), server: args.server, history }, send)
+      if (step.connect) return needsConnect(step.connect, text, send)
+      if (step.reply) return send({ type: 'reply', text: step.reply })
+      args = step.args
+    }
     if (app) {
       send({ type: 'status', text: `Opening ${app.name}` })
       const tool = app.tools.includes(plan.tool) && !keptAnswer ? plan.tool : app.tool
-      const { result, data } = await run(tool, args)
+      const { result, data, connect } = await run(tool, args)
+      if (connect) return needsConnect(connect, text, send)
       // The app just shown, filled again for a follow-up, is an update.
       const how = lastApp?.id === app.id ? 'updated' : app.saved ? 'recalled' : 'again'
       send({ type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how, why: plan.why })
@@ -329,8 +379,12 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     // is written meanwhile.
     const make = plan.make ?? { name: 'New app', about: text, look: '', tools: [plan.tool] }
     const tools = [...new Set([plan.tool, ...(make.tools ?? [])])].filter(t => KNOWN.has(t))
+    // A tool of the person's own account runs before the app is made, so a
+    // sign-in comes first.
+    const first = await run(plan.tool, args)
+    if (first.connect) return needsConnect(first.connect, text, send)
+    const { result, data } = first
     send({ type: 'making', name: make.name, kind: plan.kind, why: plan.why })
-    const { result, data } = await run(plan.tool, args)
     const source = await model.make({
       request: text,
       plan: make,
@@ -344,6 +398,90 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     shown.set(app.id, { args, result, data, tool: plan.tool })
     send({ type: 'app', app: view(app), html: htmlOf(app), tool: plan.tool, args, result, how: 'made', why: plan.why })
     send({ type: 'say', token: sayToken(text, data.summary) })
+  }
+
+  // What a browser connected, as the router reads it: names and addresses, no tokens.
+  async function connectedOf(self) {
+    if (!connections || !self) return []
+    return (await connections.list(self).catch(() => [])).map(c => ({ service: c.service.startsWith('mcp:') ? 'mcp' : c.service, name: c.label, url: c.service.startsWith('mcp:') ? c.service.slice(4) : undefined }))
+  }
+
+  // The connector's step: servers for the service (the person's own first,
+  // then the registry's), the ones that fit put in order by the model, the
+  // first that connects asked with one tool that only reads.
+  async function connecting({ text, service, server, history }, send) {
+    const ctx = caller.getStore() ?? {}
+    send({ type: 'status', text: `Looking for a connector for ${service}` })
+    const mine = (await connectedOf(ctx.self)).filter(c => c.service === 'mcp' && c.url)
+    const found = await registrySearch(service).catch(() => [])
+    const all = [...(server?.url ? [{ name: server.name ?? server.url, title: server.title ?? server.name ?? null, url: server.url }] : []), ...mine.map(c => ({ name: c.name, title: c.name, url: c.url, about: 'connected by this person before' })), ...found]
+    const servers = [...new Map(all.map(s => [s.url, s])).values()].slice(0, 15)
+    if (!servers.length) return { reply: `I couldn't find a connector for ${service} in the public MCP registry.` }
+    const picked = await model.connector({ request: text, service, history: history.slice(-4), servers: servers.map(({ name, title, about, url }) => ({ name, title, about, url })) })
+    const order = (picked.servers ?? []).map(i => servers[i]).filter(Boolean)
+    if (!order.length) return { reply: picked.reply || `None of the connectors I found for ${service} fits this.` }
+    let last = ''
+    // One that wants a sign-in waits while the next ones that fit are
+    // tried: a forecast needs no account, a person's own notes do.
+    let signIn = null
+    for (const s of order.slice(0, 3)) {
+      send({ type: 'status', text: `Connecting to ${s.title ?? s.name}` })
+      let client
+      try {
+        client = await clientFor(ctx, s)
+      } catch (error) {
+        if (error instanceof NeedsConnect) {
+          signIn ??= error.connect
+          continue
+        }
+        last = `${s.title ?? s.name}: ${error.message}`
+        log(`connector ${s.url}: ${error.message}`)
+        continue
+      }
+      const tools = await toolsOf(client).catch(error => ((last = error.message), []))
+      if (!tools.length) continue
+      // Kept, so the next request about it goes straight there.
+      if (ctx.account && !(await ctx.account(`mcp:${s.url}`)?.get())) await ctx.account(`mcp:${s.url}`)?.set({ url: s.url, title: s.title ?? s.name, open: true }, s.title ?? s.name).catch(() => {})
+      // Up to three calls that only read, each seeing what the ones before
+      // answered: a city's coordinates, then its forecast.
+      const steps = []
+      let result = null
+      let tool = null
+      let note = null
+      for (let n = 0; n < 3; n++) {
+        const done = steps.map(x => ({ tool: x.tool, arguments: x.arguments, result: JSON.stringify(x.result).slice(0, 4000) }))
+        const use = await model.connectorTool({ request: text, history: history.slice(-4), server: s, tools, done })
+        const next = tools.find(t => t.name === use.tool)
+        if (!next) {
+          note = steps.length ? note : (use.note ?? null)
+          break
+        }
+        if (!next.reads) {
+          note = `${next.name} changes something, so it waits for a tap in the app.`
+          break
+        }
+        if (steps.some(x => x.tool === next.name && JSON.stringify(x.arguments) === JSON.stringify(use.arguments ?? {}))) break
+        send({ type: 'status', text: `Asking ${s.title ?? s.name}` })
+        try {
+          result = await callOn(ctx, s, next.name, use.arguments ?? {})
+          tool = next
+          steps.push({ tool: next.name, arguments: use.arguments ?? {}, result })
+        } catch (error) {
+          if (error instanceof NeedsConnect) return { connect: error.connect }
+          note = `${next.name} failed: ${error.message}`
+          break
+        }
+      }
+      // A server none of whose tools answers this (another city's weather
+      // only) gives way to the next one that fits.
+      if (!steps.length && !/waits for a tap/.test(note ?? '') && s !== order.slice(0, 3).at(-1)) {
+        last = `${s.title ?? s.name}: ${note ?? 'no tool fits'}`
+        continue
+      }
+      return { args: { request: text, service, server: { name: s.name, title: s.title ?? null, url: s.url, about: s.about ?? null, type: s.type ?? null, website: s.website ?? null }, tool: tool?.name ?? null, arguments: steps.at(-1)?.arguments ?? null, result, ...(steps.length > 1 ? { steps: steps.slice(0, -1).map(x => ({ tool: x.tool, arguments: x.arguments, result: x.result })) } : {}), tools: tools.map(({ name, about, takes, reads }) => ({ name, about, takes, reads })), note } }
+    }
+    if (signIn) return { connect: signIn }
+    return { reply: `I couldn't connect to a server for ${service}${last ? ` (${last})` : ''}.` }
   }
 
   // What an app was filled with where the page shows it (its shown row),
@@ -452,7 +590,60 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
 
   const json = (res, value, code = 200) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(value))
 
-  const server = createServer(async (req, res) => {
+  // A page the sign-in ends on: it tells the chat's tab, which asks again.
+  const signedIn = (res, ok, text) =>
+    res.writeHead(ok ? 200 : 400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>${ok ? 'Connected' : 'Not connected'}</title>
+<body style="font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#222"><h1 style="font-size:1.3rem">${ok ? 'Connected' : 'Not connected'}</h1><p>${text.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)}</p><p><a href="/">Back to the chat</a></p>
+<script>try{new BroadcastChannel('instant-apps-connect').postMessage({ok:${ok ? 'true' : 'false'}})}catch{};try{localStorage.setItem('instant-apps-connected',String(Date.now()))}catch{};${ok ? 'setTimeout(()=>{try{window.close()}catch{}},1200)' : ''}</script>`)
+
+  async function connectRoutes(req, res, url) {
+    const ctx = caller.getStore()
+    if (!connections) return json(res, { error: 'connections are not kept here' }, 503)
+    if (req.method === 'GET' && url.pathname === '/api/connections') return json(res, { connected: await connectedOf(ctx.self), spotify: Boolean(SPOTIFY.client()) })
+    if (req.method === 'POST' && url.pathname === '/api/disconnect') {
+      const { service } = await body(req)
+      if (!ctx.self || typeof service !== 'string') return json(res, { error: 'nothing to disconnect' }, 400)
+      await connections.remove(ctx.self, service.slice(0, 2100))
+      return json(res, { ok: true })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/connect/spotify') {
+      if (!SPOTIFY.client()) return signedIn(res, false, 'Spotify is not set up on this chat yet: it needs a Spotify app’s client id (SPOTIFY_CLIENT_ID).')
+      if (!ctx.self) return signedIn(res, false, 'Open this from the chat.')
+      const start = spotifyStart(`${ctx.origin}/api/connect/spotify/done`)
+      signingIn(start.state, { kind: 'spotify', self: ctx.self, verifier: start.verifier })
+      return res.writeHead(302, { location: start.url, 'cache-control': 'no-store' }).end()
+    }
+    if (req.method === 'GET' && url.pathname === '/api/connect/spotify/done') {
+      const state = url.searchParams.get('state') ?? ''
+      const pending = signIns.get(state)
+      signIns.delete(state)
+      if (!pending || pending.kind !== 'spotify') return signedIn(res, false, 'This sign-in ran out. Try again from the chat.')
+      if (url.searchParams.get('error')) return signedIn(res, false, `Spotify said: ${url.searchParams.get('error')}.`)
+      try {
+        const token = await spotifyFinish(url.searchParams.get('code') ?? '', pending.verifier, `${ctx.origin}/api/connect/spotify/done`)
+        await connections.set(pending.self, 'spotify', token, `Spotify (${token.label})`)
+        return signedIn(res, true, `Your Spotify (${token.label}) is connected to the chat. You can close this tab.`)
+      } catch (error) {
+        return signedIn(res, false, error.message)
+      }
+    }
+    if (req.method === 'GET' && url.pathname === '/api/connect/mcp/done') {
+      const state = url.searchParams.get('state') ?? ''
+      const pending = signIns.get(state)
+      signIns.delete(state)
+      if (!pending || pending.kind !== 'mcp') return signedIn(res, false, 'This sign-in ran out. Try again from the chat.')
+      if (url.searchParams.get('error')) return signedIn(res, false, `${pending.title ?? 'The service'} said: ${url.searchParams.get('error_description') ?? url.searchParams.get('error')}.`)
+      try {
+        await finishSignIn({ ...ctxOf(pending.self, ctx.origin) }, pending.url, url.searchParams.get('code') ?? '')
+        return signedIn(res, true, `${pending.title ?? new URL(pending.url).hostname} is connected to the chat. You can close this tab.`)
+      } catch (error) {
+        return signedIn(res, false, error.message)
+      }
+    }
+    return json(res, { error: 'not found' }, 404)
+  }
+
+  const handle = async (req, res) => {
     const url = new URL(req.url, 'http://localhost')
     const parts = url.pathname.split('/').filter(Boolean)
     try {
@@ -461,6 +652,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       if (req.method === 'GET' && url.pathname === '/healthz') return json(res, { ok: true, spend: model.budget?.status() })
       if (req.method === 'GET' && url.pathname === '/bridge.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(bridgeJs)
       if (req.method === 'GET' && url.pathname === '/api/apps') return json(res, { apps: (await apps.saved()).map(view) })
+      // The person's own accounts: what this browser connected, its sign-ins, and taking one away.
+      if (url.pathname.startsWith('/api/connect') || url.pathname === '/api/connections' || url.pathname === '/api/disconnect') return connectRoutes(req, res, url)
       if (req.method === 'POST' && url.pathname === '/api/turn') {
         const input = await body(req)
         if (limited(req)) return stream(res, () => Promise.reject(new Error(tooMany)))
@@ -578,7 +771,10 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const who = acting ? await owning(app.id, me) : null
         if (who?.role === 'gone') return json(res, { content: [{ type: 'text', text: STOPPED }], isError: true })
         if (who?.role === 'viewer') return json(res, { content: [{ type: 'text', text: 'Not done: this link can only look. Whoever shared it can.' }], isError: true })
-        const { result, data } = await run(name, args)
+        // An app on a connected service calls only the server it was made with.
+        if (name === 'connector_call' && String(args?.server ?? '') !== String(app.args?.server?.url ?? '')) return json(res, { content: [{ type: 'text', text: 'This app reaches only the service it was made with.' }], isError: true })
+        const { result, data, connect } = await run(name, args)
+        if (connect) return json(res, result)
         // What is done in an app stays with it (TOM-5): each booking, and
         // its cancelling, kept as bookings, which the app gets in data.kept.
         if (who && !result.isError && data?.code && (name === 'table_book' || name === 'table_cancel')) {
@@ -818,13 +1014,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       log(error)
       json(res, { error: error.message }, 500)
     }
-  })
+  }
+  const server = createServer((req, res) => caller.run(ctxOf(req.headers['x-self'] ?? new URL(req.url, 'http://localhost').searchParams.get('self'), originOf(req)), () => handle(req, res)))
   await new Promise(resolve => server.listen(port, host, resolve))
   return {
     url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${server.address().port}/`,
     apps,
     close() {
       server.close()
+      server.closeAllConnections?.()
+      closeClients()
       apps.close()
     },
   }

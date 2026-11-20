@@ -124,6 +124,8 @@
   .sharebox .people { display: contents; }
   .sharebox .hides { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; font-size: 13px; }
   .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
+  .connect-note { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0; padding: 10px 12px; }
+  .connect-go { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: var(--bg, #fff); text-decoration: none; font-weight: 600; }
   .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
   .sharebox select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); max-width: 100%; }
   .composer-note { max-width: 760px; margin: 6px auto 0; font-size: 12px; color: var(--ink-3); text-align: center; }
@@ -374,6 +376,47 @@ const me = local.get('instant-apps-me') || newId()
 local.set('instant-apps-me', me)
 let talk = local.get('instant-apps-talk') || newId()
 local.set('instant-apps-talk', talk)
+// Every request to the chat says which browser it is (x-self), so a tool of
+// the person's own account (their Spotify, a service they signed in to)
+// acts as them. A link's guest is themselves too.
+{
+  const plain = window.fetch.bind(window)
+  window.fetch = (input, init = {}) => {
+    const at = typeof input === 'string' ? input : input?.url ?? ''
+    if (!at.startsWith('/api/')) return plain(input, init)
+    return plain(input, { ...init, headers: { ...(init.headers ?? {}), 'x-self': me } })
+  }
+}
+// A sign-in to the person's own account, in a tab of its own: the card
+// says when it is done (the sign-in page tells this tab), and what waited
+// for it runs again.
+const connectedAt = () => Number(local.get('instant-apps-connected') || 0)
+function connectCard(parent, connect, again, before = null) {
+  const card = document.createElement('div')
+  card.className = 'offline-note connect-note'
+  card.innerHTML = `<span>${esc(`This needs your ${connect.name}. Sign in once, and it is used only when you ask.`)}</span> <a class="connect-go" href="${esc(connect.url)}" target="_blank" rel="noopener">Connect ${esc(connect.name)}</a>`
+  if (before) parent.insertBefore(card, before)
+  else parent.append(card)
+  const since = connectedAt()
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    card.innerHTML = `<span>${esc(`${connect.name} is connected.`)}</span>`
+    try { channel?.close() } catch {}
+    window.removeEventListener('focus', check)
+    again?.()
+  }
+  let channel = null
+  try {
+    channel = new BroadcastChannel('instant-apps-connect')
+    channel.onmessage = e => { if (e.data?.ok) finish() }
+  } catch {}
+  const check = () => { if (connectedAt() > since) finish() }
+  window.addEventListener('focus', check)
+  window.addEventListener('storage', e => { if (e.key === 'instant-apps-connected') check() })
+  return card
+}
 // Every request about an app or a turn says which apps this browser has by
 // a link, so the server holds to what a helper or view link can't do.
 {
@@ -973,6 +1016,7 @@ async function draw(w) {
       if (reads[readKey]) return reads[readKey].result
       throw error
     }
+    if (answer.connect && !w.node.querySelector('.connect-note')) connectCard(w.node, answer.connect, null, w.node.querySelector('.wbar')?.nextSibling)
     if (!answer.acted && !answer.isError) keepRead(readKey, answer)
     const { acted, ...result } = answer
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
@@ -1471,6 +1515,12 @@ async function ask(question) {
     const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-10), lastApp, screen: screen(), talk }) })
     await events(res, async ev => {
       if (ev.type === 'status') status.lastChild.textContent = ev.text
+      // The person's own account first: once signed in, the same request again.
+      if (ev.type === 'connect') {
+        status.remove()
+        connectCard(body, ev, () => ask(ev.request || question))
+        scroll()
+      }
       if (ev.type === 'making') {
         status.remove()
         started = Date.now()
