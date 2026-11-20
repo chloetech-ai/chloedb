@@ -709,6 +709,22 @@ const saveOffline = () => {
   local.set(OUTBOX, JSON.stringify(outbox))
   local.set(CACHE, JSON.stringify(cache))
 }
+// What each app read last (not what it did), so it opens with no signal:
+// the newest 80, at most 1.5 MB in all, each at most 200 KB.
+const READS = 'instant-apps-reads'
+const reads = stored(READS)
+function keepRead(key, result) {
+  const text = JSON.stringify(result)
+  if (text.length > 200_000) return
+  reads[key] = { at: Date.now(), result }
+  const keys = Object.keys(reads).sort((a, b) => reads[b].at - reads[a].at)
+  let size = 0
+  for (const [i, k] of keys.entries()) {
+    size += JSON.stringify(reads[k]).length
+    if (i >= 80 || size > 1_500_000) delete reads[k]
+  }
+  local.set(READS, JSON.stringify(reads))
+}
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 function merged(base, mine, theirs, said) {
   if (same(mine, base)) return theirs
@@ -913,7 +929,18 @@ async function draw(w) {
       return { content: [{ type: 'text', text: 'nothing kept' }], structuredContent: params.arguments?.all ? { values: {} } : { value: null } }
     }
     if (params.name === 'app_keep' || params.name === 'app_kept') return keptCall(w, params)
-    const { acted, ...result } = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }) })).json()
+    const readKey = `${w.app.id}|${params.name}|${JSON.stringify(params.arguments ?? {})}`
+    let answer
+    try {
+      answer = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: w.app.id, me: ownerOf(w.app.id), self: me, ...params }) })).json()
+    } catch (error) {
+      // With no signal, what the app read last time (a recipe, a page) is
+      // read again from here, so it opens as it was (MAYA-1, round 7).
+      if (reads[readKey]) return reads[readKey].result
+      throw error
+    }
+    if (!answer.acted && !answer.isError) keepRead(readKey, answer)
+    const { acted, ...result } = answer
     const said = result.content?.find(c => c.type === 'text')?.text ?? ''
     if (!result.isError && params.name === w.app.tool) {
       lastApp = { id: w.app.id, args: params.arguments }
