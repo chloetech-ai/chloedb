@@ -3846,7 +3846,7 @@ fn lacking(schema: &Schema, backfill: Option<usize>, mut rows: Vec<Vec<Value>>) 
 }
 
 /// The row an UPDATE by key ([`keyed_update`]) changes, as [`plan_sets`]
-/// reads it: its key, and the fields it adds to, as transaction `tt`
+/// reads it: its key, and the fields its expressions read, as transaction `tt`
 /// finds them, its own writes included, without running a query; none
 /// when no live row has the key. Reading the transaction's own writes is
 /// what lets two keyed updates of one row share a transaction
@@ -3855,7 +3855,9 @@ fn lacking(schema: &Schema, backfill: Option<usize>, mut rows: Vec<Vec<Value>>) 
 fn keyed_rows(tt: &mut TableTxn, schema: &Schema, key: Value, sets: &[(usize, Assign)]) -> Result<Vec<Vec<Value>>> {
     let pk = schema.primary_key.expect("a keyed update has a key");
     let mut row = vec![Value::Null; schema.fields.len()];
-    let read: Vec<usize> = sets.iter().filter(|(_, a)| matches!(a, Assign::Add(_))).map(|(f, _)| *f).collect();
+    let mut read: Vec<usize> = sets.iter().flat_map(|(_, a)| a.reads_in_place(schema).unwrap_or_default()).collect();
+    read.sort_unstable();
+    read.dedup();
     if read.is_empty() && !tt.has(&key)? {
         return Ok(Vec::new());
     }
@@ -3875,12 +3877,13 @@ fn keyed_rows(tt: &mut TableTxn, schema: &Schema, key: Value, sets: &[(usize, As
 /// and its statement runs as bound, without a plan. `None` for any other
 /// write, which runs as before: a WHERE over other columns, a key of
 /// another type than the column's (`'7'` for 7), a LIMIT, a SET of an
-/// expression or of a field that is not a number.
+/// expression other than arithmetic on numbers ([`Assign::reads_in_place`])
+/// or of a field that is not a number.
 fn keyed_update(schema: &Schema, write: &Write) -> Option<Value> {
     use crate::query::logical::Pred;
     let Write::Update { select, sets, pick: None } = write else { return None };
     let pk = schema.primary_key?;
-    if sets.is_empty() || !in_place(schema, sets) || !sets.iter().all(|(_, a)| matches!(a, Assign::Value(_) | Assign::Add(_))) {
+    if sets.is_empty() || !in_place(schema, sets) || !sets.iter().all(|(_, a)| a.reads_in_place(schema).is_some()) {
         return None;
     }
     if select.limit.is_some() || select.offset != 0 || select.order.is_some() || !select.phases.is_empty() || !select.group_by.is_empty() || !select.graphs.is_empty() || select.guard.is_some() || select.per.is_some() {

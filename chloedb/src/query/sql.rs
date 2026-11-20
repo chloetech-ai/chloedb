@@ -194,6 +194,33 @@ pub enum Assign {
     Expr(crate::query::ir::Expr),
 }
 
+impl Assign {
+    /// The fields this assignment reads when a keyed update sets numbers in
+    /// place (`price = :p`, `n = n + 1`, `n = n * 2 - m`): none for a value,
+    /// and those of an expression made only of single-valued stored
+    /// numbers, number literals and arithmetic. `None` for any other
+    /// assignment, which the general path runs.
+    pub(crate) fn reads_in_place(&self, schema: &Schema) -> Option<Vec<usize>> {
+        use crate::query::ir::Expr as E;
+        match self {
+            Assign::Value(_) => Some(Vec::new()),
+            Assign::Excluded(_) => None,
+            Assign::Expr(e) => {
+                let (mut ok, mut fields) = (true, Vec::new());
+                e.visit(&mut |x| match x {
+                    E::Field(f) => match schema.fields.get(*f as usize) {
+                        Some(field) if matches!(field.ty, FieldType::Int | FieldType::Float) && !field.multi && field.generated_from.is_empty() => fields.push(*f as usize),
+                        _ => ok = false,
+                    },
+                    E::Lit(Value::Int(_) | Value::Float(_)) | E::Arith { .. } | E::Neg(_) => {}
+                    _ => ok = false,
+                });
+                ok.then_some(fields)
+            }
+        }
+    }
+}
+
 /// A bound statement ([`bind_command`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
@@ -378,7 +405,7 @@ fn keyed_update_bound(stmt: &sql::Statement, tables: &[&Schema], params: &Params
     let pk = schema.primary_key?;
     let binder = Binder::new(schema, params);
     let sets = binder.assignments(assignments, None, false).ok()?;
-    let in_place = sets.iter().all(|(f, a)| matches!(schema.fields[*f].ty, FieldType::Int | FieldType::Float) && !schema.fields[*f].multi && matches!(a, Assign::Value(_) | Assign::Add(_)));
+    let in_place = sets.iter().all(|(f, a)| matches!(schema.fields[*f].ty, FieldType::Int | FieldType::Float) && !schema.fields[*f].multi && a.reads_in_place(schema).is_some());
     if sets.is_empty() || !in_place {
         return None;
     }
@@ -4405,6 +4432,7 @@ mod tests {
             "UPDATE T SET N = N + 1 WHERE ID = :k",
             "UPDATE u SET n = n + 1 WHERE id = :i",
             "UPDATE u SET n = 2 WHERE id = 9",
+            "UPDATE t SET n = n * 2, price = price - n WHERE id = :k",
         ] {
             let stmt = parse_one(text).unwrap();
             let Some(Command::Write { table, write: Write::Update { select, sets, pick: None } }) = keyed_update_bound(&stmt, &tables, &p) else { panic!("{text} is keyed") };
@@ -4419,7 +4447,7 @@ mod tests {
             "UPDATE t SET n = n + 1 WHERE n = 3",
             "UPDATE t SET n = n + 1 WHERE id IN ('a', 'b')",
             "UPDATE t AS x SET n = n + 1 WHERE id = :k",
-            "UPDATE t SET n = n * 2 WHERE id = :k",
+            "UPDATE t SET n = abs(n) WHERE id = :k",
             "UPDATE t SET n = n + 1 WHERE id = 7",
             "UPDATE t SET id = 'b' WHERE id = :k",
             "UPDATE u SET n = n + 1 WHERE id = '9'",
