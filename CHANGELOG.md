@@ -36,6 +36,22 @@ changes collect under "Unreleased".
   the database file beside the tables' live data, and `GET
   /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
   its `totals`.
+- **Search by meaning without asking for it.** A table an import makes
+  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
+  MCP tool `import` with `create`, and the command center's Import) gets
+  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
+  `TEXT` columns: the server downloads the model once and fills the
+  vectors in, and the table's search runs by words meanwhile and by words
+  and meaning once the model is open, saying so as it comes
+  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
+  leave it out). Python's `db.search` reads a word in no row as a typo of
+  the words near it (`typos=False` turns it off), and `db.ask(question)`
+  answers from the rows it finds, citing them as `[1]`, `[2]` with the
+  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
+  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
+  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
+  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
+  without it sent requests to `.../messages`).
 - **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
   `recommend(...)` no longer slows down as events arrive: a range on a
   value written in place (a counts row's `next > 0`) is checked per

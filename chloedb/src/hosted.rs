@@ -573,7 +573,7 @@ impl Conf<'_> {
     /// provider's service. Without a provider, `url` or `base_url` is
     /// needed.
     fn url(&self, p: Option<&Provider>, path: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<(String, bool)> {
-        let env_base = p.and_then(|p| env(p.base_env)).filter(|b| !b.trim().is_empty()).map(|b| base_url(&b));
+        let env_base = p.and_then(|p| env(p.base_env).filter(|b| !b.trim().is_empty()).map(|b| env_base_url(p, &b)));
         let (url, own) = match (self.text("url")?, self.text("base_url")?) {
             (Some(u), _) => (u, true),
             (None, Some(b)) => (format!("{}{path}", base_url(&b)), true),
@@ -613,6 +613,18 @@ impl Conf<'_> {
 
 /// A base URL as SDKs take it (`OLLAMA_HOST` may leave out the scheme, and
 /// name the address it listens on), without a trailing slash.
+/// A provider's base URL variable as requests take it. Anthropic's own
+/// SDKs read `ANTHROPIC_BASE_URL` without the API's version
+/// (`https://api.anthropic.com`, to which they add `/v1/messages`), so a
+/// value without `/v1` gets it, as the SDKs would send it.
+fn env_base_url(p: &Provider, b: &str) -> String {
+    let b = base_url(b);
+    if p.prefix == "anthropic" && !b.ends_with("/v1") {
+        return format!("{b}/v1");
+    }
+    b
+}
+
 fn base_url(b: &str) -> String {
     let b = b.trim().trim_end_matches('/');
     let b = if b.contains("://") { b.to_string() } else { format!("http://{b}") };
@@ -695,6 +707,11 @@ mod tests {
         let e = RerankEndpoint::from_config("anthropic/claude-haiku-5-5", None, &env(&[("ANTHROPIC_API_KEY", "a")])).unwrap();
         assert_eq!((e.api, e.url.as_str(), e.key_header.as_str(), e.batch), (RerankApi::Anthropic, "https://api.anthropic.com/v1/messages", "x-api-key", 1));
         assert!(e.headers.contains(&("anthropic-version".to_string(), "2023-06-01".to_string())));
+        // ANTHROPIC_BASE_URL as Anthropic's SDKs read it: without /v1, or with.
+        for base in ["https://gw.example/anthropic", "https://gw.example/anthropic/v1/"] {
+            let e = RerankEndpoint::from_config("anthropic/claude-haiku-5-5", None, &env(&[("ANTHROPIC_BASE_URL", base)])).unwrap();
+            assert_eq!(e.url, "https://gw.example/anthropic/v1/messages", "{base}");
+        }
         let e = RerankEndpoint::from_config("openai/gpt-5-mini", None, &env(&[("OPENAI_API_KEY", "o")])).unwrap();
         assert_eq!((e.api, e.url.as_str(), e.batch), (RerankApi::Chat, "https://api.openai.com/v1/chat/completions", 1));
         let e = RerankEndpoint::from_config("voyage/rerank-2.5", None, &env(&[])).unwrap_err().to_string();
