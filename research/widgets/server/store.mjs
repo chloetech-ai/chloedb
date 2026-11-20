@@ -38,6 +38,8 @@ const HISTORY = `CREATE TABLE ia_history (id KEYWORD PRIMARY KEY, owner KEYWORD,
 // Who made each change through a link made for a person, so Earlier
 // versions says who did what (LENA-4, MARCUS-8).
 const SIGNED = `CREATE TABLE ia_by (id KEYWORD PRIMARY KEY, owner KEYWORD, app KEYWORD, by KEYWORD, at INT)`
+// The answer of a turn still being worked on.
+export const RUNNING = '\u2026still working'
 const TALK = `CREATE TABLE ia_talk (id KEYWORD PRIMARY KEY, talk KEYWORD, at INT, request TEXT OPTIONS(indexed = false), reply TEXT OPTIONS(indexed = false), shown TEXT OPTIONS(indexed = false))`
 
 // The apps "made before", so the rail is not empty on the first start: the
@@ -368,13 +370,33 @@ export class Apps {
   }
 
   // A turn of a conversation, and the conversation read back in order.
+  // A turn still being worked on is kept as one at once, with RUNNING for
+  // its answer, so a page opened meanwhile shows the request (round 10
+  // INES-6, LENA-4, MARCUS-7); the same row takes its answer when done.
   async talked({ talk, request, reply, shown }) {
-    await this.db.write([{ op: 'upsert', table: 'ia_talk', doc: { id: `${talk}:${now()}-${randomBytes(2).toString('hex')}`, talk, at: now(), request: request ?? '', reply: reply ?? '', shown: JSON.stringify(shown ?? []) } }])
+    const id = `${talk}:${now()}-${randomBytes(2).toString('hex')}`
+    await this.db.write([{ op: 'upsert', table: 'ia_talk', doc: { id, talk, at: now(), request: request ?? '', reply: reply ?? '', shown: JSON.stringify(shown ?? []) } }])
+    return id
+  }
+
+  // A turn kept before, filled in: an answer already written is not
+  // emptied, and what was shown is replaced only by something.
+  async retalk(id, { talk, request, reply, shown }) {
+    const [row] = await this.db.get('ia_talk', [id])
+    if (!row || (talk && row.talk !== talk)) return false
+    const was = row.reply === RUNNING ? '' : row.reply
+    const list = Array.isArray(shown) && shown.length ? shown : JSON.parse(row.shown || '[]')
+    await this.db.write([{ op: 'upsert', table: 'ia_talk', doc: { ...row, request: request || row.request, reply: reply || was, shown: JSON.stringify(list) } }])
+    return true
   }
 
   async talk(talk, limit = 200) {
     const rows = await this.db.query(`SELECT id, at, request, reply, shown FROM ia_talk WHERE talk = :talk ORDER BY at DESC LIMIT ${limit}`, { talk })
-    return rows.reverse().map(r => ({ at: r.at, request: r.request, reply: r.reply, shown: JSON.parse(r.shown || '[]') }))
+    // One still running after ten minutes was cut off (the server stopped).
+    return rows.reverse().map(r => ({
+      id: r.id, at: r.at, request: r.request, reply: r.reply === RUNNING ? '' : r.reply, shown: JSON.parse(r.shown || '[]'),
+      ...(r.reply === RUNNING ? (now() - r.at < 600_000 ? { running: true } : { cut: true }) : {}),
+    }))
   }
 
   // An app served a request: counted, its arguments kept for the rail, and

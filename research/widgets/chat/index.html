@@ -1797,12 +1797,14 @@ async function ask(question) {
   let timer = null
   let reply = ''
   let shownNow = null
+  let turnId = null
   const here = []
   scroll()
   try {
     turning = Date.now()
     const res = await fetch('/api/turn', { method: 'POST', body: JSON.stringify({ text: question, history: history.slice(-10), lastApp, screen: screen(), talk }) })
     await events(res, async ev => {
+      if (ev.type === 'turn') turnId = ev.id
       if (ev.type === 'status') status.lastChild.textContent = ev.text
       // The person's own account first: once signed in, the same request again.
       if (ev.type === 'connect') {
@@ -1894,7 +1896,7 @@ async function ask(question) {
     clearInterval(timer)
     status.remove()
     history.push({ role: 'user', text: question }, { role: 'assistant', text: reply })
-    record({ request: question, reply, shown: here })
+    record({ turn: turnId, request: question, reply, shown: here })
     busy = false
     send.disabled = false
     await rail()
@@ -1970,10 +1972,28 @@ async function restore() {
       el('reply', esc(t.reply), body)
       history.push({ role: 'assistant', text: t.reply })
     }
+    // A request sent before this page was closed: still being worked on, and
+    // here when done; or cut off, said so (round 10 INES-6, LENA-4, MARCUS-7).
+    if (t.running) el('status', '<span class="spin"></span><span>Still working on this, from before the page was closed. Its answer comes here when it is done.</span>', body)
+    else if (t.cut && !t.reply && !(t.shown ?? []).length) el('reply offline', 'This request was cut off before it finished. If it is not done, send it again.', body)
     if (!body.children.length) body.parentElement.remove()
   }
   await last?.()
   scroll()
+  if (turns.some(t => t.running)) waitRunning()
+}
+// Asked again every few seconds while a request from before is running; once
+// it is done, the conversation is read back with its answer.
+let runningWait = null
+function waitRunning() {
+  clearTimeout(runningWait)
+  const was = talk
+  runningWait = setTimeout(async () => {
+    if (was !== talk) return
+    const { turns } = await fetch(`/api/talk?talk=${talk}`).then(r => r.json()).catch(() => ({}))
+    if (!turns || turns.some(t => t.running) || busy || was !== talk) return waitRunning()
+    if (switchTo(talk)) restore()
+  }, 4000)
 }
 
 // Another conversation of this browser in place of this one: a new one,

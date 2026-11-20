@@ -27,7 +27,7 @@ import { addFound, takeOut } from '../server/widgets/findings.mjs'
 import { TOOLS, callTool, domainsOf, fragmentOf, render } from '../server/index.mjs'
 import { KEEPING, keeping, changesWhatIsThere, isView, partOf, withPart, madeBy, withoutMade, hideIn, withHidden, mergeKeep, signed } from '../server/apps.mjs'
 import { claude } from './model.mjs'
-import { Apps, valueNames } from '../server/store.mjs'
+import { Apps, RUNNING, valueNames } from '../server/store.mjs'
 import { Connections, selfOf } from '../server/connections.mjs'
 import { NeedsConnect, SPOTIFY, spotifyFinish, spotifyStart } from '../server/widgets/spotify.mjs'
 import { callOn, clientFor, closeClients, finishSignIn, registrySearch, toolsOf } from '../server/widgets/connector.mjs'
@@ -105,11 +105,55 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // app shows (/api/say): by a one-time token the turn hands the page, so
   // the answer is part of the turn and not a request of its own.
   const sayable = new Map()
-  const sayToken = (request, summary, before = '') => {
+  const sayToken = (request, summary, before = '', kept = null) => {
     const token = randomBytes(12).toString('hex')
-    sayable.set(token, { request, summary, before, at: Date.now() })
+    sayable.set(token, { request, summary, before, kept, at: Date.now() })
     for (const [t, v] of sayable) if (Date.now() - v.at > 600_000) sayable.delete(t)
     return token
+  }
+  // What an app keeps for the person asking, all of it, not only what fits
+  // on screen: the chat answers from it (round 10 TOM-4, LENA-2).
+  const ownKeys = values => Object.fromEntries(Object.entries(values ?? {}).filter(([k]) => !/^(-|view:|made:|link:|args@|gone:)/.test(k)))
+  async function keptFor(appId, links) {
+    const token = links?.[appId]
+    const owner = typeof token === 'string' && /^[0-9a-f]{32}$/.test(token) ? (await owning(appId, `s-${token}`).catch(() => null))?.owner : caller.getStore()?.self
+    if (!owner) return null
+    return { owner, values: ownKeys(await apps.keptAll(appId, owner).catch(() => ({}))) }
+  }
+  // What a turn changed in what an app keeps, in words: entries added,
+  // taken out and changed, by name, or "nothing".
+  function keptChange(before = {}, after = {}) {
+    const label = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at)$/i.test(k) && (typeof v === 'string' ? v.trim() : typeof v === 'number'))?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 40)
+    const out = []
+    for (const k of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const a = before[k], b = after[k]
+      if (JSON.stringify(a) === JSON.stringify(b)) continue
+      if (Array.isArray(a) || Array.isArray(b)) {
+        const key = e => (e && typeof e === 'object' && e.id != null ? `#${e.id}` : JSON.stringify(e))
+        const was = new Map((a ?? []).map(e => [key(e), e])), now = new Map((b ?? []).map(e => [key(e), e]))
+        const added = [...now.keys()].filter(x => !was.has(x)).map(x => label(now.get(x)))
+        const gone = [...was.keys()].filter(x => !now.has(x)).map(x => label(was.get(x)))
+        const edited = [...now.keys()].filter(x => was.has(x) && JSON.stringify(was.get(x)) !== JSON.stringify(now.get(x))).map(x => label(now.get(x)))
+        if (added.length) out.push(`${k}: added ${added.slice(0, 8).join(', ')}`)
+        if (gone.length) out.push(`${k}: took out ${gone.slice(0, 8).join(', ')}`)
+        if (edited.length) out.push(`${k}: changed ${edited.slice(0, 8).join(', ')}`)
+      } else out.push(`${k}: ${JSON.stringify(a ?? null).slice(0, 60)} to ${JSON.stringify(b ?? null).slice(0, 60)}`)
+    }
+    return out.join('; ').slice(0, 1500) || 'nothing'
+  }
+  // A turn's answer, written once from its token: from what the app shows
+  // (the page says), what it was filled with and what the request changed
+  // in what it keeps; kept with the turn too, so it is there on reopening.
+  async function say(token, shows) {
+    const turned = sayable.get(token)
+    if (!turned) return null
+    sayable.delete(token)
+    const { request, summary, before, kept, turn: turnId } = turned
+    const changed = kept ? keptChange(kept.before, ownKeys(await apps.keptAll(kept.app, kept.owner).catch(() => ({})))) : ''
+    const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 6000), before: String(before ?? '').slice(0, 6000), changed }).catch(() => '')
+    const text = said || String(summary ?? '')
+    if (turnId && text) await apps.retalk(turnId, { reply: text.slice(0, 4000) }).catch(log)
+    return { text }
   }
   // A browser's own ids (its conversation, its kept values): random, from the page.
   const own = value => (typeof value === 'string' && /^[A-Za-z0-9-]{16,64}$/.test(value) ? value : '')
@@ -367,7 +411,13 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       last: last && { ...last, args: lastApp.args ?? last.args, reads: last.tool === 'inputs' ? valueNames(last.source, lastApp.args ?? last.args) : undefined },
       // An app this browser shared is kept for everyone with its link, so
       // the chat can say so (MAYA-4, MARCUS-2).
-      screen: await Promise.all(onScreen(screen).map(async w => ({ ...w, ...(links?.[w.id] ? { shared: true } : {}), ...(w.id.startsWith('answer-') || (await apps.get(w.id).catch(() => null))?.saved ? { kept: true } : {}) }))),
+      screen: await Promise.all(onScreen(screen).map(async (w, i) => {
+        // The three newest apps carry all they keep, also what is scrolled
+        // out of sight; a private one carries nothing (round 10 TOM-4).
+        const holds = i < 3 && !/^\(private/.test(w.shows) ? await keptFor(w.id, links) : null
+        const all = holds && Object.keys(holds.values).length ? JSON.stringify(holds.values).slice(0, i === 0 ? 12000 : 4000) : ''
+        return { ...w, ...(links?.[w.id] ? { shared: true } : {}), ...(w.id.startsWith('answer-') || (await apps.get(w.id).catch(() => null))?.saved ? { kept: true } : {}), ...(all ? { holds: all } : {}) }
+      })),
       tools: described(TOOLS),
       connected: await connectedOf(caller.getStore()?.self),
     })
@@ -478,6 +528,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     }
     if (app) {
       send({ type: 'status', text: `Opening ${app.name}` })
+      // What it keeps before this request, to say afterwards what it changed.
+      const asked = args?.values && ['add', 'edit', 'remove'].some(k => args.values[k] != null)
+      const keptNow = asked && !keptAnswer ? await keptFor(app.id, links) : null
       const tool = app.tools.includes(plan.tool) && !keptAnswer ? plan.tool : app.tool
       const { result, data, connect } = await run(tool, args)
       if (connect) return needsConnect(connect, text, send)
@@ -488,8 +541,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       // Filled by a helper's or a viewer's link: on their screen only, never
       // what the app opens with for everyone (MAYA-2).
       if (!(await mayChange(app.id, { links }))) await apps.used(app.id, text, lasting(args), how)
-      // The answer is written once the page tells what the app shows (/api/say).
-      send({ type: 'say', token: sayToken(text, data.summary) })
+      // The answer is written once the page tells what the app shows (/api/say),
+      // with what the request changed in what it keeps (round 10 LENA-2, INES-4).
+      send({ type: 'say', token: sayToken(text, data.summary, '', keptNow ? { app: app.id, owner: keptNow.owner, before: keptNow.values } : null) })
       return
     }
     // A new app: its data first, then the model writes it, and the answer
@@ -806,15 +860,35 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         res.on('close', () => { if (!res.writableEnded) left = true })
         return stream(res, async send => {
           let reply = ''
+          let saying = null
           const shownHere = []
-          const out = recording(own(input.talk), event => {
+          // The request is in the conversation from the start, as still
+          // running, so a page opened meanwhile shows it (round 10 INES-6,
+          // LENA-4, MARCUS-7); the page's own record fills the same row.
+          const talk = own(input.talk)
+          const turnId = talk ? await apps.talked({ talk, request: String(input.text ?? '').slice(0, 2000), reply: RUNNING, shown: [] }).catch(log) : null
+          if (turnId) send({ type: 'turn', id: turnId })
+          const out = recording(talk, event => {
             if (event.type === 'reply') reply = String(event.text ?? '')
             if (event.type === 'app') shownHere.push({ id: event.shown ?? '', app: event.app?.id ?? '', name: event.app?.name ?? '', kind: event.app?.kind ?? '', how: event.how ?? '', shows: '', in: false })
+            if (event.type === 'say') {
+              saying = event.token
+              const v = sayable.get(event.token)
+              if (v) v.turn = turnId
+            }
             if (!left) send(event)
           })
-          await turn(input, out)
-          await out.written()
-          if (left && own(input.talk)) await apps.talked({ talk: own(input.talk), request: String(input.text ?? '').slice(0, 2000), reply: reply.slice(0, 4000), shown: shownHere.slice(0, 8) }).catch(log)
+          try {
+            await turn(input, out)
+            await out.written()
+          } finally {
+            // A page closed before the answer was written: it is written here,
+            // from what the app was filled with and what the request changed.
+            if (left && saying && !reply) reply = (await say(saying, '').catch(() => null))?.text ?? ''
+            // Closed just after (the answer not asked for yet): written here a little later.
+            else if (saying) setTimeout(() => sayable.has(saying) && say(saying, '').catch(log), 20_000).unref?.()
+            if (turnId) await apps.retalk(turnId, { reply: reply.slice(0, 4000), shown: shownHere.slice(0, 8) }).catch(log)
+          }
         })
       }
       // A conversation of this browser, read back after a reload or the next day.
@@ -823,13 +897,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         return json(res, { turns: talk ? await apps.talk(talk) : [] })
       }
       if (req.method === 'POST' && url.pathname === '/api/talk') {
-        const { talk, request, reply, shown: was = [] } = await body(req)
+        const { talk, turn: turnId, request, reply, shown: was = [] } = await body(req)
         if (!own(talk)) return json(res, { error: 'no conversation' }, 400)
         const tidyShown = (Array.isArray(was) ? was : []).slice(0, 8).map(w => ({
           id: String(w?.id ?? '').slice(0, 64), app: String(w?.app ?? '').slice(0, 64), name: String(w?.name ?? '').slice(0, 80),
           kind: String(w?.kind ?? '').slice(0, 12), how: String(w?.how ?? '').slice(0, 12), shows: String(w?.shows ?? '').slice(0, 400), in: Boolean(w?.in),
         }))
-        await apps.talked({ talk: own(talk), request: String(request ?? '').slice(0, 2000), reply: String(reply ?? '').slice(0, 4000), shown: tidyShown })
+        const turned = { talk: own(talk), request: String(request ?? '').slice(0, 2000), reply: String(reply ?? '').slice(0, 4000), shown: tidyShown }
+        // The turn the server kept as it began is filled, not kept twice.
+        const filled = typeof turnId === 'string' && turnId.startsWith(`${own(talk)}:`) && (await apps.retalk(turnId, turned).catch(() => false))
+        if (!filled) await apps.talked(turned)
         return json(res, { ok: true })
       }
       if (req.method === 'GET' && parts[0] === 'api' && parts[1] === 'shown' && parts[2]) {
@@ -1017,12 +1094,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       // What the chat says under an app, from what the app shows on screen.
       if (req.method === 'POST' && url.pathname === '/api/say') {
         const { token, shows } = await body(req)
-        const turned = sayable.get(String(token ?? ''))
-        if (!turned) return json(res, { error: 'nothing to say' }, 404)
-        sayable.delete(String(token))
-        const { request, summary, before } = turned
-        const said = await model.reply({ request: String(request ?? '').slice(0, 500), summary: String(summary ?? '').slice(0, 4000), shows: String(shows ?? '').slice(0, 6000), before: String(before ?? '').slice(0, 6000) }).catch(() => '')
-        return json(res, { text: said || String(summary ?? '') })
+        const out = await say(String(token ?? ''), shows)
+        if (!out) return json(res, { error: 'nothing to say' }, 404)
+        return json(res, out)
       }
       // What the chat says after something was done in an app.
       // A link that opens one app, with what it keeps, on another phone or

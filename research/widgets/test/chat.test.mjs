@@ -84,10 +84,11 @@ function scripted() {
       calls.editSource = source
       return FRAGMENT(`v2: ${change}`)
     },
-    async reply({ summary, shows, before }) {
+    async reply({ summary, shows, before, changed }) {
       calls.reply++
       calls.shows = shows
       calls.before = before
+      calls.changed = changed
       return shows ? `On screen: ${shows.slice(0, 30)}` : summary.slice(0, 40)
     },
   }
@@ -269,10 +270,12 @@ test('a conversation is kept for its browser, and each app in it opens again as 
   const first = await events('/api/turn', { text: 'find reviews of quiet headphones', talk })
   const answer = first.find(e => e.type === 'app')
   assert.ok(answer.shown, 'an app shown in a conversation is recorded')
-  await post('/api/talk', { talk, request: 'find reviews of quiet headphones', reply: 'Sony first.', shown: [{ id: answer.shown, app: answer.app.id, name: answer.app.name, kind: 'info', how: answer.how, shows: 'x' }] })
-  const second = (await events('/api/turn', { text: 'find good cameras', talk })).find(e => e.type === 'app')
+  await post('/api/talk', { talk, turn: first.find(e => e.type === 'turn').id, request: 'find reviews of quiet headphones', reply: 'Sony first.', shown: [{ id: answer.shown, app: answer.app.id, name: answer.app.name, kind: 'info', how: answer.how, shows: 'x' }] })
+  const secondTurn = await events('/api/turn', { text: 'find good cameras', talk })
+  const second = secondTurn.find(e => e.type === 'app')
   assert.notEqual(second.shown, answer.shown)
-  await post('/api/talk', { talk, request: 'find good cameras', reply: '', shown: [] })
+  // The page's record fills the turn the server kept as it began: one turn, not two.
+  await post('/api/talk', { talk, turn: secondTurn.find(e => e.type === 'turn').id, request: 'find good cameras', reply: '', shown: [] })
 
   const { turns } = await (await fetch(`${chat.url}api/talk?talk=${talk}`)).json()
   assert.deepEqual(turns.map(t => t.request), ['find reviews of quiet headphones', 'find good cameras'])
@@ -1043,4 +1046,53 @@ test('a request writes only what it means: numbers as typed, a lookup for kept o
   assert.equal(priced.items[0].facts.price, '$429', 'the plain QuietComfort’s price is not the Ultra’s')
   assert.equal(priced.items[1].facts.price, '$329', 'WH-1000XM5 and WH1000XM5 are one')
   assert.equal(addFound(kept, { items: [{ name: 'Apple AirPods Max' }] }).items.length, 3, 'asked for more, an option is added')
+})
+
+test('the answer says only what the request changed, the chat sees all an app keeps, and a request from before a page closed is there on reopening (AF: round 10 TOM-4, LENA-2, LENA-4, INES-6, MARCUS-7)', { skip }, async () => {
+  const me = 'a'.repeat(32)
+  const talk = 'b'.repeat(32)
+  const budget = await chat.apps.put({ name: 'Budget', about: 'Spending.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('budget'), args: { request: 'budget' }, saved: true }, 'made by hand')
+  const call = (name, args) => fetch(chat.url + 'api/call', { method: 'POST', headers: { 'x-self': me }, body: JSON.stringify({ app: budget.id, me, name, arguments: args }) }).then(r => r.json())
+  await call('app_keep', { key: 'items', value: [{ id: 'i1', item: 'rent', amount: 900 }, { id: 'i9', item: 'gym', amount: 30 }] })
+  const turn = async text => (await (await fetch(chat.url + 'api/turn', { method: 'POST', headers: { 'x-self': me }, body: JSON.stringify({ text, talk, screen: [{ id: budget.id, version: 1, name: 'Budget', shows: 'rent 900', did: [] }] }) })).text()).trim().split('\n').map(l => JSON.parse(l))
+  // The chat is given all the app keeps, also what is out of sight (gym).
+  const said = await turn('add coffee 3.5')
+  assert.match(model.calls.route.at(-1).screen[0].holds, /gym/)
+  // The page drew it and kept the coffee; the answer is told what changed.
+  await call('app_keep', { key: 'items', value: [{ id: 'i1', item: 'rent', amount: 900 }, { id: 'i9', item: 'gym', amount: 30 }, { id: 'c1', item: 'coffee', amount: 3.5 }] })
+  const turnId = said.find(e => e.type === 'turn')?.id
+  assert.ok(turnId?.startsWith(`${talk}:`), 'the turn is kept from its start')
+  await post('/api/say', { token: said.find(e => e.type === 'say').token, shows: '' })
+  assert.equal(model.calls.changed, 'items: added coffee')
+  // An app that took none of it: the answer is told nothing changed.
+  const none = await turn('add tea 2')
+  await post('/api/say', { token: none.find(e => e.type === 'say').token, shows: '' })
+  assert.equal(model.calls.changed, 'nothing')
+  // The answer is kept with its turn even when the page never records it.
+  let turns = (await (await fetch(`${chat.url}api/talk?talk=${talk}`)).json()).turns
+  assert.equal(turns.find(t => t.id === turnId)?.request, 'add coffee 3.5')
+  assert.ok(turns.find(t => t.id === turnId)?.reply, 'the answer is with the turn')
+  // The page's own record fills the same turn, not a second one.
+  await post('/api/talk', { talk, turn: turnId, request: 'add coffee 3.5', reply: 'Coffee went in.', shown: [] })
+  turns = (await (await fetch(`${chat.url}api/talk?talk=${talk}`)).json()).turns
+  assert.equal(turns.filter(t => t.request === 'add coffee 3.5').length, 1)
+  assert.equal(turns.find(t => t.id === turnId).reply, 'Coffee went in.')
+  // A request still running when the page opens again is there, as running.
+  const other = 'af'.repeat(16)
+  const gone = new AbortController()
+  const sent = fetch(`${chat.url}api/turn`, { method: 'POST', body: JSON.stringify({ text: 'slowly, what is left?', talk: other }), signal: gone.signal }).catch(() => null)
+  await new Promise(r => setTimeout(r, 120))
+  gone.abort()
+  await sent
+  const running = (await (await fetch(`${chat.url}api/talk?talk=${other}`)).json()).turns
+  assert.equal(running.at(-1)?.request, 'slowly, what is left?')
+  assert.equal(running.at(-1)?.running, true)
+  let done = []
+  for (let i = 0; i < 30 && !done.some(t => t.reply); i++) {
+    await new Promise(r => setTimeout(r, 100))
+    done = (await (await fetch(`${chat.url}api/talk?talk=${other}`)).json()).turns
+  }
+  assert.equal(done.length, 1, JSON.stringify(done))
+  assert.equal(done[0].reply, 'Took a while.')
+  assert.equal(done[0].running, undefined)
 })
