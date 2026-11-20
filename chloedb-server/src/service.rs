@@ -588,6 +588,11 @@ pub struct Service {
     pub identity: Identity,
     pub slo: Slo,
     pub place: Place,
+    /// The address clients reach this server's HTTP API at (`--peer-url`,
+    /// else its pod's address or `--listen`), which its health gives so
+    /// that a coordinator can tell shard-aware clients where each shard's
+    /// primary is (`GET /v1/cluster/route`).
+    pub http_url: std::sync::OnceLock<String>,
     /// Proxies whose `X-Forwarded-For` names the client (`--trust-proxy`):
     /// addresses and prefix lengths.
     pub trusted_proxies: Vec<(std::net::IpAddr, u8)>,
@@ -903,6 +908,7 @@ impl Service {
             identity: Identity::default(),
             slo: Slo::default(),
             place: Place::from_env(None),
+            http_url: std::sync::OnceLock::new(),
             trusted_proxies: Vec::new(),
             apps: Default::default(),
             tenants: None,
@@ -5332,6 +5338,12 @@ impl Service {
             // Waiting as a write does (5 s) held the part out of the queue;
             // answering 503 would send a coordinator looking for another
             // primary.
+            // A MEDIA value is resolved (its file fetched or decoded, and
+            // kept) as the write runs, not to check it: the check takes a
+            // stand-in of the value's kind, so that the rest of the
+            // operation is checked as the write will find it.
+            let mut ops = ops;
+            media_stand_ins(&db, &mut ops);
             match validate_into(&db, &ops, epoch) {
                 Err(e) if e.status == 503 => Ok(()),
                 r => r,
@@ -6644,6 +6656,7 @@ impl Service {
             // cluster2: the flags it runs with, for Settings (NEW-cluster-admin-5).
             "limits": {"slow_ms": self.slow_after().map(|d| d.as_millis() as u64), "max_concurrent": self.max_concurrent, "max_rows": self.max_rows, "timeout_ms": self.timeout.as_millis() as u64},
             "place": {"name": self.place.name, "node": self.place.node, "zone": self.place.zone},
+            "http_url": self.http_url.get(),
             "version": self.place.version(),
             "backup_dir": self.backup_dir.as_ref().map(|p| p.display().to_string()),
             "cluster": self.identity.json(),
@@ -7802,6 +7815,54 @@ fn apply_keyed_in(db: &Db, requests: &[(&[Json], u64)], keys: &[Option<(&str, u6
     }
     let seq_no = t.commit_seq()?;
     Ok((applied, seq_no))
+}
+
+/// Each MEDIA value that `ops` give as a write may (a `uri` to fetch, a
+/// file's bytes as base64 `data`) replaced by a stored value of its kind
+/// that names no file, for [`Service::validate_ops`]: applied as given, a
+/// value the write would resolve first was refused ("unknown field
+/// `data`"), and every write through a coordinator that spans shards,
+/// which checks each shard's part first, failed when it carried a
+/// picture. A value that is not one a write may give is left as it is,
+/// and refused by the check as by the write.
+fn media_stand_ins(db: &Db, ops: &mut [Json]) {
+    let catalog = db.catalog();
+    if !catalog.iter().any(|t| t.fields.iter().any(|f| f.media.is_some())) {
+        return;
+    }
+    let first = default_of(&catalog).map_or_else(|| db.schema().table.clone(), |t| t.table.clone());
+    for op in ops.iter_mut() {
+        if !matches!(op.get("op").and_then(Json::as_str), Some("insert" | "insert_if_absent" | "upsert" | "upsert_if_newer" | "add")) {
+            continue;
+        }
+        let Ok(table) = op_table(op, &first).map(str::to_string) else { continue };
+        let Some(schema) = catalog.iter().find(|t| t.table.eq_ignore_ascii_case(&table)) else { continue };
+        let Some(doc) = op.get_mut("doc").and_then(Json::as_object_mut) else { continue };
+        for f in schema.fields.iter() {
+            let Some(kind) = f.media else { continue };
+            let Some(v) = doc.get_mut(&f.name) else { continue };
+            if v.is_null() {
+                continue;
+            }
+            let Ok(text) = chloedb::media::input_text(v) else { continue };
+            if chloedb::media::Media::parse(&text).is_ok() {
+                continue;
+            }
+            let given: Json = serde_json::from_str(&text).unwrap_or(Json::Null);
+            let mime = given["mime"].as_str().filter(|m| m.contains('/') && kind.accepts(m)).map(str::to_string).unwrap_or_else(|| {
+                match kind {
+                    chloedb::media::MediaKind::Image => "image/png",
+                    chloedb::media::MediaKind::Audio => "audio/mpeg",
+                    chloedb::media::MediaKind::Video => "video/mp4",
+                    chloedb::media::MediaKind::Pdf => "application/pdf",
+                    chloedb::media::MediaKind::Any => "application/octet-stream",
+                }
+                .to_string()
+            });
+            let uri = given["uri"].as_str().unwrap_or("data:").to_string();
+            *v = json!({"uri": uri, "sha256": "0".repeat(64), "mime": mime, "bytes": 0});
+        }
+    }
 }
 
 /// [`Service::validate_ops`]: each of `ops` applied in turn in one

@@ -218,6 +218,19 @@ fn params(db: &Db, j: &[(String, Json)], sql: &str) -> chloedb::Result<Params> {
     if j.is_empty() {
         return Ok(Params::new());
     }
+    // Only an object (`{"embed": ...}` and the like) needs the tables the
+    // statement reads, which takes parsing it: numbers, text and lists of
+    // them do not, so `UPDATE ... WHERE id = :id` is not parsed here.
+    fn has_object(v: &Json) -> bool {
+        match v {
+            Json::Object(_) => true,
+            Json::Array(xs) => xs.iter().any(has_object),
+            _ => false,
+        }
+    }
+    if !j.iter().any(|(_, v)| has_object(v)) {
+        return params_in(db, j, None);
+    }
     let read = chloedb::query::tables::read_by_sql(sql);
     let from = read.iter().find(|t| db.storage().table(t).is_some()).cloned();
     // A `{"embed"}` or `{"vector_of"}` that names no field is the field the

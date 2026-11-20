@@ -257,6 +257,20 @@ pub(crate) fn parse_query(sql_text: &str) -> Result<Box<sql::Query>> {
     }
 }
 
+/// [`parse_query`] of one of the constant texts the binder fills in
+/// (`SELECT * FROM t`, `SELECT 1 FROM t`): parsed once, then cloned, so
+/// that an UPDATE or DELETE does not tokenize them each time it binds.
+fn template(sql_text: &'static str) -> Result<Box<sql::Query>> {
+    static PARSED: std::sync::OnceLock<std::sync::Mutex<HashMap<&'static str, Box<sql::Query>>>> = std::sync::OnceLock::new();
+    let held = PARSED.get_or_init(Default::default);
+    if let Some(q) = held.lock().unwrap_or_else(|e| e.into_inner()).get(sql_text) {
+        return Ok(q.clone());
+    }
+    let q = parse_query(sql_text)?;
+    held.lock().unwrap_or_else(|e| e.into_inner()).insert(sql_text, q.clone());
+    Ok(q)
+}
+
 /// A SELECT as [`parse_query_cached`] keeps it.
 pub(crate) struct Parsed {
     pub query: sql::Query,
@@ -303,6 +317,40 @@ pub fn bind_write(sql_text: &str, schema: &Schema, params: &Params) -> Result<Op
         Command::Write { write, .. } => Ok(Some(write)),
         _ => Err(err("only SELECT, INSERT, UPDATE and DELETE are supported")),
     }
+}
+
+/// The most UPDATE texts [`bind_command_cached`] keeps parsed; past it
+/// the cache starts again empty.
+const PARSED_UPDATES: usize = 512;
+
+/// [`bind_command`], with an `UPDATE`'s text parsed once and kept: an
+/// application sends the same statement with other parameters each time
+/// (`UPDATE t SET price = :p WHERE id = :k`), and parsing is most of what
+/// binding one costs. The parsed statement is bound to `tables` and
+/// `params` anew each call, so a table altered since binds as it is now.
+/// Any other statement is [`bind_command`]'s, whose other statements
+/// (functions, rank profiles, `PACK`) never start with `UPDATE`.
+pub fn bind_command_cached(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Command> {
+    let update = sql_text.trim_start().get(..6).is_some_and(|w| w.eq_ignore_ascii_case("UPDATE"));
+    if !update || super::pack::may_pack(sql_text) {
+        return bind_command(sql_text, tables, params);
+    }
+    static PARSED: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Arc<sql::Statement>>>> = std::sync::OnceLock::new();
+    let cache = PARSED.get_or_init(Default::default);
+    let kept = cache.lock().unwrap_or_else(|e| e.into_inner()).get(sql_text).cloned();
+    let stmt = match kept {
+        Some(s) => s,
+        None => {
+            let s = Arc::new(parse_one(sql_text)?);
+            let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+            if c.len() >= PARSED_UPDATES {
+                c.clear();
+            }
+            c.insert(sql_text.to_string(), s.clone());
+            s
+        }
+    };
+    bind_statement(&stmt, tables, params)
 }
 
 /// Parses and binds one statement of a database whose tables are `tables`:
@@ -665,7 +713,7 @@ pub(crate) fn unsupported_query_clause(
 /// are bound, never printed and parsed again: printed, `- -1` is `--1`, a
 /// comment, and a column named `order` is a keyword.
 fn selecting(schema: &Schema, params: &Params, table: &sql::TableFactor, selection: &Option<Expr>, order_by: &[sql::OrderByExpr], limit: &Option<Expr>) -> Result<Select> {
-    let mut q = parse_query("SELECT * FROM t")?;
+    let mut q = template("SELECT * FROM t")?;
     let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("a SELECT of every field")) };
     s.from[0].relation = table.clone();
     s.selection = selection.clone();
@@ -696,7 +744,7 @@ fn selecting_or_picking(schema: &Schema, params: &Params, table: &sql::TableFact
         sql::TableFactor::Table { alias: Some(a), .. } => Expr::CompoundIdentifier(vec![a.name.clone(), sql::Ident::with_quote('"', schema.fields[pk].name.clone())]),
         _ => Expr::Identifier(sql::Ident::with_quote('"', schema.fields[pk].name.clone())),
     };
-    let mut q = parse_query("SELECT 1 FROM t")?;
+    let mut q = template("SELECT 1 FROM t")?;
     let sql::SetExpr::Select(s) = q.body.as_mut() else { return Err(err("a SELECT of the keys")) };
     s.projection = vec![sql::SelectItem::UnnamedExpr(key)];
     s.from[0].relation = table.clone();
