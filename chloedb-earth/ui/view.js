@@ -61,7 +61,6 @@ async function skyTime(region) {
 const HALF = 3.84 / 2 / 111.32;
 // Half a GOES fire pixel, in degrees of latitude (about 2.5 km a side over
 // California from GOES-West and over central Chile from GOES-East).
-const PX_HALF = 0.0115;
 
 const REGION = {
   california: { title: "California", tz: "America/Los_Angeles", center: [-119.4, 37.2], zoom: 5.2, bounds: [[-124.6, 32.4], [-114.0, 42.1]], sat: "GOES-18", other: "chile" },
@@ -327,17 +326,6 @@ function squares(lat, lon, half) {
 }
 const square = (la, lo, hl, dl) => [[[lo - dl, la - hl], [lo + dl, la - hl], [lo + dl, la + hl], [lo - dl, la + hl], [lo - dl, la - hl]]];
 
-/// Fire pixels as small squares (GOES's pixels are about 2 km over
-/// California and 3 km over central Chile), coloured by power.
-function pixelFeatures(rows, half = 0.009) {
-  return {
-    type: "FeatureCollection",
-    features: rows.map((p) => {
-      const dl = half / Math.cos((p.lat * Math.PI) / 180);
-      return { type: "Feature", properties: { mw: p.mw || 0, fire: p.fire || "", age: p.age ?? 0 }, geometry: { type: "Polygon", coordinates: square(p.lat, p.lon, half, dl) } };
-    }),
-  };
-}
 /// Fire pixels as heat: one field summed over the pixels near each other
 /// (a MapLibre heatmap), so a fire reads as one burning area, hottest where
 /// its pixels are freshest and most powerful, and fading with their age.
@@ -382,11 +370,6 @@ function pixelButton(map) {
   map.ea.tr.prepend(b);
 }
 const glowLayers = (map) => GLOW_LAYERS.map((l) => ({ ...l, layout: { visibility: map.ea?.pxOn === false ? "none" : "visible" } }));
-const PIXEL_PAINT = {
-  "fill-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffd54f", 20, "#ffa000", 80, "#f4511e", 250, "#d50000", 1000, "#7f0000"],
-  "fill-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.92, 1, 0.25],
-  "fill-outline-color": "rgba(255,255,255,.55)",
-};
 
 function ramp(name) {
   return RAMP[name] || RAMP.default;
@@ -806,15 +789,18 @@ async function fire(app, page, id, at) {
     app.stops.push(() => clearInterval(again));
   }
   const t0 = Date.parse(f.start), t1 = Date.parse(f.last) || t0 + 1;
-  const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (Date.parse(p.ts) - t0) / Math.max(3600e3, t1 - t0)) * 0.7 }));
-  setData(map, "px", pixelFeatures(rows, PX_HALF), [{ id: "px", type: "fill", paint: { ...PIXEL_PAINT, "fill-color": ["interpolate", ["linear"], ["get", "age"], 0, "#ffeb3b", 0.35, "#ff6d00", 0.7, "#8e0000"], "fill-opacity": 0.8 } }]);
+  // Its heat over its life: the newest pixels hottest, the first ones still
+  // there, fainter.
+  const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (t1 - Date.parse(p.ts)) / Math.max(3 * 3600e3, t1 - t0)) * 0.75 }));
+  pixelButton(map);
+  setData(map, "px", glowFeatures(rows), glowLayers(map));
   if (rows.length) {
     const b = new window.maplibregl.LngLatBounds();
     rows.forEach((p) => b.extend([p.lon, p.lat]));
     map.fitBounds(b, { padding: 60, maxZoom: burning ? 10 : 12, duration: 0 });
   }
   const fresh = Date.now() - Date.parse(f.last) < 3 * 3600e3;
-  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its pixels, yellow first"),
+  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its heat as GOES saw it, the newest brightest"),
     burning ? onAir(fresh, fresh ? "burning now" : `not seen since ${ago((Date.now() - Date.parse(f.last)) / 1000)}`) : null, skyNote));
   const o = j.outlook;
   put(side, 
