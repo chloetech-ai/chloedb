@@ -101,6 +101,34 @@ pub fn push_route_ok(method: &Method, route: &str) -> bool {
     }
 }
 
+/// Whether a key with a grant of `append` ([`Principal::appends_any`]) may
+/// call `route` with `method` though its scope is below what the route
+/// needs (MARCO-403): the routes that insert rows, each of which checks the
+/// tables and the kind of write itself, and whether the server is up. A
+/// key that only appends reaches no other.
+pub fn append_route_ok(method: &Method, route: &str) -> bool {
+    let get = method == Method::GET || method == Method::HEAD;
+    match route {
+        "/v1/logs" | "/v1/write" | "/v1/import" | "/v1/sql" => method == Method::POST,
+        "/v1/health" | "/v1/whoami" => get,
+        _ => false,
+    }
+}
+
+/// Whether `write`, an INSERT, only adds rows: it fails on a key a row has
+/// (`INSERT`), or skips it (`OR IGNORE`, `ON CONFLICT DO NOTHING`), and
+/// never replaces or updates a row.
+fn appends_only(write: &chloedb::query::sql::Write) -> bool {
+    use chloedb::query::sql::{Conflict, Write};
+    matches!(write, Write::Insert { conflict: Conflict::Fail | Conflict::Skip, .. })
+}
+
+/// Whether `command` is an INSERT of new rows into a table `who` appends
+/// to: what a key with only an `append` grant may run ([`check_statement`]).
+pub fn is_append(who: &Principal, command: &Command) -> bool {
+    matches!(command, Command::Write { table, write } if appends_only(write) && who.appends(table))
+}
+
 /// Whether `who` sees table `table` by its name: one it may read (a
 /// write or admin grant reads too), and none for a connector's push key,
 /// which reads nothing.
@@ -218,8 +246,12 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
         Command::Query | Command::Explain { .. } => check_reads(who, text, tables, functions),
         // It lists only the tables the key reads ([`crate::service::Service::sql_in`]).
         Command::ShowTables => Ok(()),
-        Command::Write { table, .. } => {
-            who.may_table(Scope::Write, table, "a write")?;
+        Command::Write { table, write } => {
+            // A grant of `append` inserts rows, which never replace one.
+            match appends_only(write) {
+                true => who.may_insert(table, "an INSERT")?,
+                false => who.may_table(Scope::Write, table, "a write")?,
+            }
             check_reads(who, text, tables, functions)
         }
         Command::CreateTable { schema, .. } => {
