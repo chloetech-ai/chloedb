@@ -301,7 +301,7 @@ exporters:
     logs_endpoint: ${base}/v1/logs?table=${table}
     encoding: json
     headers:
-      Authorization: Bearer \${env:CHLOEDB_LOGS_KEY}
+      Authorization: Bearer \${env:CHLOEDB_SHIP_KEY}
 
 service:
   pipelines:
@@ -315,11 +315,13 @@ export const importCurl = (base, table = "logs_syslog") => `printf '%s\\n' \\
   '{"ts":"2026-11-13T03:00:01Z","severity":"error","host":"core-rtr-02","body":"%LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down"}' \\
   '{"ts":"2026-11-13T03:00:04Z","severity":"warn","host":"core-rtr-02","body":"%BGP-5-ADJCHANGE: neighbor 10.0.12.2 Down BGP Notification sent"}' \\
 | curl -s -X POST "${base}/v1/import?table=${table}&format=jsonl" \\
-    -H "Authorization: Bearer $CHLOEDB_LOGS_KEY" -H 'content-type: application/x-ndjson' --data-binary @-`;
+    -H "Authorization: Bearer $CHLOEDB_SHIP_KEY" -H 'content-type: application/x-ndjson' --data-binary @-`;
 
-const keyCurl = (base) => `curl -s -X POST ${base}/v1/admin/keys -H "Authorization: Bearer $ADMIN_KEY" \\
+/** The body that makes the shipper's key: a grant of append (MARCO-403), which inserts new lines and reads nothing. */
+export const shipperKey = (table = "logs_syslog") => ({ name: `${table.replace(/_/g, "-")}-collector`, tables: { [table]: "append" } });
+const keyCurl = (base, table) => `curl -s -X POST ${base}/v1/admin/keys -H "Authorization: Bearer $ADMIN_KEY" \\
   -H 'content-type: application/json' \\
-  -d '{"name": "logs-oncall", "preset": "oncall", "prefix": "logs_*"}'`;
+  -d '${JSON.stringify(shipperKey(table))}'`;
 
 function serverBase() { const b = at("/v1/sql").replace(/\/v1\/sql$/, ""); return /^https?:/.test(b) ? b : location.origin + b; }
 /** Whether the signed-in key, limited to tables, is admin of table `name` (a grant of it, or of a prefix* of it). */
@@ -336,7 +338,7 @@ function sendLogsCard({ onMade } = {}) {
   let secret = null;
   const draw = () => clear(blocks,
     step("1", "A table for the lines", "Columns named as OTLP names them, so the Collector and JSON lines both fill it. The substring indexes answer LIKE and ILIKE '%Gi0/1%' anywhere in a line, an IP or a host name; retain drops lines after 30 days.", tableSql(name()), makeBtn()),
-    step("2", "A key that writes them", `An oncall key writes the logs_* tables (OTLP too) and reads them, the fleet's health, events, alerts and metrics, and nothing else. ${secret ? "Here it is, once: keep it in the Collector's environment as CHLOEDB_LOGS_KEY." : "An admin makes it (Access and audit, or this call), and sees its secret once."}`, secret ? `export CHLOEDB_LOGS_KEY=${secret}` : keyCurl(base), keyBtn(), secret ? "secret" : null),
+    step("2", "A key that only appends them", `The shipper's key has a grant of append on ${name()}: it inserts new lines (OTLP, imports, INSERT) and reads nothing, not even these lines, nor alerts, so the copy in every host's config cannot read user ids or tokens out of the logs, or quiet the pages. A key that writes a table reads it too: give the people on call an oncall key (Access and audit) to search. ${secret ? "Here it is, once: keep it in the Collector's environment as CHLOEDB_SHIP_KEY." : "An admin makes it (Access and audit, or this call), and sees its secret once."}`, secret ? `export CHLOEDB_SHIP_KEY=${secret}` : keyCurl(base, name()), keyBtn(), secret ? "secret" : null),
     step("3", "Send them: an OpenTelemetry Collector", "Syslog on UDP 5514 and anything that speaks OTLP, batched and sent to this server's /v1/logs (OTLP/HTTP, JSON). Run it with otelcol-contrib --config collector.yaml.", collectorYaml(base, name()), null, "yaml"),
     step("…", "or a JSON lines import", "From a file, a script or a cron job: one object a line, the same columns.", importCurl(base, name())));
   function makeBtn() {
@@ -352,9 +354,9 @@ function sendLogsCard({ onMade } = {}) {
     if (secret) return null;
     const b = h("button", { class: "btn sm", onclick: async () => {
       b.disabled = true;
-      try { const j = await api("/v1/admin/keys", { body: { name: "logs-oncall", preset: "oncall", prefix: "logs_*" }, reason: "a key to send logs, from the Log explorer" }); secret = j.secret || null; draw(); toast("Key made: its secret is shown once", "ok"); }
+      try { const j = await api("/v1/admin/keys", { body: shipperKey(name()), reason: "a log shipper's key, from the Log explorer" }); secret = j.secret || null; draw(); toast("Key made: its secret is shown once", "ok"); }
       catch (e) { toast(e.message, "bad"); b.disabled = false; }
-    } }, icon("key"), "Make an oncall key");
+    } }, icon("key"), "Make the shipper's key");
     if (!can("admin")) { b.disabled = true; b.title = needs("admin"); }
     return b;
   }

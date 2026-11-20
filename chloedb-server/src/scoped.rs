@@ -101,6 +101,34 @@ pub fn push_route_ok(method: &Method, route: &str) -> bool {
     }
 }
 
+/// Whether a key with a grant of `append` ([`Principal::appends_any`]) may
+/// call `route` with `method` though its scope is below what the route
+/// needs (MARCO-403): the routes that insert rows, each of which checks the
+/// tables and the kind of write itself, and whether the server is up. A
+/// key that only appends reaches no other.
+pub fn append_route_ok(method: &Method, route: &str) -> bool {
+    let get = method == Method::GET || method == Method::HEAD;
+    match route {
+        "/v1/logs" | "/v1/write" | "/v1/import" | "/v1/sql" => method == Method::POST,
+        "/v1/health" | "/v1/whoami" => get,
+        _ => false,
+    }
+}
+
+/// Whether `write`, an INSERT, only adds rows: it fails on a key a row has
+/// (`INSERT`), or skips it (`OR IGNORE`, `ON CONFLICT DO NOTHING`), and
+/// never replaces or updates a row.
+fn appends_only(write: &chloedb::query::sql::Write) -> bool {
+    use chloedb::query::sql::{Conflict, Write};
+    matches!(write, Write::Insert { conflict: Conflict::Fail | Conflict::Skip, .. })
+}
+
+/// Whether `command` is an INSERT of new rows into a table `who` appends
+/// to: what a key with only an `append` grant may run ([`check_statement`]).
+pub fn is_append(who: &Principal, command: &Command) -> bool {
+    matches!(command, Command::Write { table, write } if appends_only(write) && who.appends(table))
+}
+
 /// Whether `who` sees table `table` by its name: one it may read (a
 /// write or admin grant reads too), and none for a connector's push key,
 /// which reads nothing.
@@ -218,9 +246,19 @@ pub fn check_statement(who: &Principal, text: &str, command: &Command, tables: &
         Command::Query | Command::Explain { .. } => check_reads(who, text, tables, functions),
         // It lists only the tables the key reads ([`crate::service::Service::sql_in`]).
         Command::ShowTables => Ok(()),
-        Command::Write { table, .. } => {
-            who.may_table(Scope::Write, table, "a write")?;
-            check_reads(who, text, tables, functions)
+        Command::Write { table, write } => {
+            // A grant of `append` inserts rows, which never replace one.
+            match appends_only(write) {
+                true => who.may_insert(table, "an INSERT")?,
+                false => who.may_table(Scope::Write, table, "a write")?,
+            }
+            // An INSERT by a grant of `append` does not read its own table
+            // (the key may not), so only what its rows and RETURNING name
+            // are reads: a subquery of its own table is still refused.
+            match appends_only(write) && who.appends(table) {
+                true => walked_reads(who, text, tables, functions, &[], true),
+                false => check_reads(who, text, tables, functions),
+            }
         }
         Command::CreateTable { schema, .. } => {
             who.may_table(Scope::Admin, &schema.table, "CREATE TABLE")?;
@@ -285,6 +323,13 @@ pub fn check_reads(who: &Principal, text: &str, tables: &[String], functions: &F
 /// [`check_reads`], but for the tables `made` a statement creates or
 /// drops, checked by their statement's kind.
 fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet, made: &[String]) -> Result<(), ApiError> {
+    walked_reads(who, text, tables, functions, made, false)
+}
+
+/// [`reads`]; with `appending`, an INSERT's target is not walked, only
+/// its rows' query, its conflict clause and RETURNING (an INSERT by a
+/// grant of `append`, whose target [`check_statement`] checked).
+fn walked_reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet, made: &[String], appending: bool) -> Result<(), ApiError> {
     if !who.limited() {
         return Ok(());
     }
@@ -303,7 +348,16 @@ fn reads(who: &Principal, text: &str, tables: &[String], functions: &FunctionSet
     let statements = chloedb::query::parse::parse(text).map_err(|e| ApiError::bad(e.to_string()))?;
     let mut walk = Walk::default();
     for s in &statements {
-        walk_statement(s, functions, &mut walk)?;
+        match s {
+            sql::Statement::Insert(ins) if appending => {
+                if let Some(q) = &ins.source {
+                    walk_statement(&sql::Statement::Query(q.clone()), functions, &mut walk)?;
+                }
+                let _ = ins.on.visit(&mut walk);
+                let _ = ins.returning.visit(&mut walk);
+            }
+            _ => walk_statement(s, functions, &mut walk)?,
+        }
     }
     if let Some(m) = walk.refused {
         return Err(refuse(m));
@@ -568,6 +622,26 @@ mod tests {
 
     fn reads(who: &Principal, sql: &str) -> Result<(), ApiError> {
         check_reads(who, sql, &tables(), &FunctionSet::default())
+    }
+
+    /// MARCO-403: an INSERT by a grant of `append` reads nothing of its own
+    /// table, so only what its rows name is checked, and a subquery of its
+    /// own table, which the key may not read, is still refused.
+    #[test]
+    fn an_append_insert_reads_only_what_its_rows_name() {
+        let k = key(&["logs_*=append"]);
+        let (t, f) = (vec!["logs_kv".to_string(), "secrets".to_string()], FunctionSet::default());
+        let run = |sql: &str, appending: bool| walked_reads(&k, sql, &t, &f, &[], appending);
+        assert!(run("INSERT INTO logs_kv (id, body) VALUES ('d', 'new')", true).is_ok());
+        assert!(run("INSERT INTO logs_kv (id, body) VALUES ('a', 'x') ON CONFLICT DO NOTHING", true).is_ok());
+        assert_eq!(run("INSERT INTO logs_kv (id, body) VALUES ('d', 'new')", false).unwrap_err().status, 403);
+        for bad in [
+            "INSERT INTO logs_kv (id, body) VALUES ('d', (SELECT body FROM logs_kv LIMIT 1))",
+            "INSERT INTO logs_kv (id, body) VALUES ('d', (SELECT max(id) FROM secrets))",
+            "INSERT INTO logs_kv (id, body) VALUES ('d', 'new') RETURNING (SELECT body FROM logs_kv LIMIT 1)",
+        ] {
+            assert_eq!(run(bad, true).unwrap_err().status, 403, "{bad}");
+        }
     }
 
     #[test]
