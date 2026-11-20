@@ -1596,6 +1596,11 @@ curl -s &#x27;localhost:7700/v1/export&#x27; -o copy.sqlite</pre>
 <td>reads every segment against its checksum while writes go on (<a href="#replication-a-primary-and-its-replicas">scrubbing</a>): <code>{scrub: {txn, segments, bytes, damaged, seconds}}</code>; 409 while one runs</td>
 </tr>
 <tr>
+<td><code>POST /v1/admin/optimize</code></td>
+<td></td>
+<td>writes the rows the memtables hold and merges each table's segments into as few as the merge policy allows, without their deleted rows (reads and writes go on meanwhile): <code>{merges, segments_merged, docs_merged, docs_dropped, bytes_written, took_ms}</code>. It restores the latency of <code>recommend(...)</code> and of searches after many small writes (<a href="sql.html#recommenders-create-recommender-and-recommend">recommenders</a>); a database's own <code>optimize</code> in Python, JavaScript and Java also vacuums, which is <code>POST /v1/admin/vacuum</code> here; not on a coordinator: ask each shard server</td>
+</tr>
+<tr>
 <td><code>POST /v1/admin/vacuum</code></td>
 <td></td>
 <td>returns free pages to the file system: <code>{bytes_freed}</code>. The file grows while it runs, by what lies above its first free gap (<a href="runbooks.html#the-disk-is-filling">the disk is filling</a>)</td>

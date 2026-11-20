@@ -569,7 +569,7 @@ fn spill_place<'a>(path: &'a Path, dir: Option<&'a Path>) -> (&'a Path, String) 
 /// (`examples/merge_memory.rs`, the `probe` shape), counted against the
 /// process's memory limit while queries and other merges allocate
 /// elsewhere.
-fn release_freed_memory() {
+pub(crate) fn release_freed_memory() {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     // SAFETY: malloc_trim only returns free memory to the system.
     unsafe {
@@ -5017,6 +5017,9 @@ impl Database {
         let logged = wal.append(txn, seq, &ops, sync).map_err(|e| self.poison(e))?;
         let full = {
             let mut st = lock(&self.state);
+            // The record is kept only to be shipped: a big transaction's
+            // would otherwise be held through the flush that follows.
+            let logged = (seq.is_some() && st.ship.keeps()).then_some(logged);
             let now = super::state::now_ms();
             // Rows changed per table, for its activity.
             let mut changed: Vec<(usize, u64)> = Vec::new();
@@ -5037,7 +5040,7 @@ impl Database {
             st.txn = txn;
             if let Some(n) = seq {
                 st.seq = n.seq;
-                if st.ship.keeps() {
+                if let Some(logged) = logged.filter(|_| st.ship.keeps()) {
                     st.ship.push(Shipped { seq: n, bytes: logged.into() });
                 }
             }
@@ -5600,7 +5603,11 @@ impl<'a> WriteTxn<'a> {
                 crate::query::recommend::feed(&mut self, d)?;
             }
         }
-        let WriteTxn { db, mut wal, ops, .. } = self;
+        let WriteTxn { db, mut wal, ops, keys, ties, .. } = self;
+        // What the transaction kept of its rows goes before they are
+        // applied, so that the memtable takes each row rather than a copy
+        // of it (`State::apply`).
+        drop((keys, ties));
         db.commit_ops(&mut wal, ops)
     }
 
