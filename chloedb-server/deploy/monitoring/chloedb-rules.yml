@@ -238,6 +238,16 @@ groups:
           summary: 'A follower writing to {{ $labels.instance }} is behind'
           description: 'A follow process (a cluster following another, or follow-postgres) has been over a minute behind its source for a minute.'
           runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-replica-is-behind
+      - alert: ChloeDBFollowerHoldsATable
+        expr: 'chloedb_follow_tables_held > 0'
+        for: 1m
+        labels:
+          severity: warning
+          chloedb_rule: follow-table-held
+        annotations:
+          summary: 'A Postgres follower writing to {{ $labels.instance }} holds a table'
+          description: 'follow-postgres could not write a table for a minute (a value ChloeDB refuses, a table without a primary key): it holds that table, whose rows stay as they were, follows the others and tries it again. chloedb_follow_table_error_info says which and why.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-postgres-follower-holds-a-table
   - name: chloedb-disk
     rules:
       - alert: ChloeDBDiskAlmostFull
