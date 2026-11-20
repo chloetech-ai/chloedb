@@ -22,6 +22,11 @@ changes collect under "Unreleased".
   embeds pictures and words into the space of Major TOM's Sentinel-2
   vectors, as the Earth explorer (`chloedb-earth`, a new demo app:
   California and Chile from orbit, [earth.md](docs/chloedb/earth.md)) does.
+- **Earth explorer: What happened here.** A place's page is now a story: a
+  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
+  since 1878, named GOES fires, FIRMS years, places nearby that changed)
+  over a map of their outlines, a town search with "use my location", and
+  a fire year that needs three detections (one was often a hot roof).
 - **A search box's typo search keeps every row it matched, and takes the
   text as words.** `WHERE MATCH(f, :q, fuzzy => 'auto') ORDER BY bm25(f,
   :q)`, the search the docs teach, now ranks every row its `WHERE` keeps:

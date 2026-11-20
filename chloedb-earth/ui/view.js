@@ -379,7 +379,7 @@ function render(root, ctx) {
   const TABS = [["", "Home"], ["live", "Live"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
   const drawTabs = (p) => {
     tabs.replaceChildren(...TABS.map(([k, t]) => {
-      const on = (p[0] || "") === k || (k === "explore" && p[0] === "place") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
+      const on = (p[0] || "") === k || (k === "explore" && p[0] === "map") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
       return h("a", { href: app.href(k), class: on ? "on" : null }, t);
     }));
   };
@@ -400,7 +400,8 @@ function render(root, ctx) {
         fire: () => fire(app, page, a),
         fires: () => pastFires(app, page, a || "california"),
         explore: () => explore(app, page, a || "california", null),
-        place: () => explore(app, page, null, a),
+        place: () => report(app, page, a),
+        map: () => explore(app, page, null, a),
         search: () => search(app, page, a || ""),
         picture: () => picture(app, page),
         twins: () => twins(app, page, a || "california", b || ""),
@@ -474,6 +475,20 @@ async function home(app, page) {
     h("input", { type: "search", name: "q", placeholder: "Search places by how they look: vineyards on hills, a lithium mine, a burn scar…" }),
     h("button", { class: "btn primary" }, "Search"),
     h("a", { class: "btn", href: app.href("picture") }, "By a picture"));
+  const found = h("div", { class: "ea-list" });
+  let t = 0;
+  const finder = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); const f = found.querySelector("a"); if (f) f.click(); } },
+    h("input", { type: "search", name: "q", placeholder: "Find a place: a town, a county, or 34.05, -118.2", oninput: async (e) => {
+      const q = e.target.value.trim(), mine = ++t;
+      if (q.length < 2) return swap(found);
+      const r = await app.api(`/v1/find?q=${encodeURIComponent(q)}`, { keep: 60000 });
+      if (mine === t) swap(found, r.found.map((x) => h("a", { href: app.href("place", x.id), class: "warn" }, `${x.label} · ${REGION[x.region]?.title || x.region}`)));
+    } }),
+    h("button", { type: "button", class: "btn", onclick: () => navigator.geolocation?.getCurrentPosition(async (pos) => { const at = await app.api(`/v1/at?lat=${pos.coords.latitude.toFixed(5)}&lon=${pos.coords.longitude.toFixed(5)}`, { fresh: true }); if (at.id) app.go("place", at.id); else swap(found, h("p", { class: "ea-note" }, "Your location is outside California and Chile.")); }) }, "Use my location"));
+  put(page, h("div", { class: "ea-hero" },
+    h("h2", {}, "What happened ", h("em", {}, "where you live?")),
+    h("p", {}, "Find a place to see the fires that burned near it, the years satellites saw heat there, and how its surroundings changed."),
+    finder, found));
   put(page, h("div", { class: "ea-hero" },
     h("h2", {}, "California and Chile, ", h("em", {}, "from space")),
     h("p", {}, "Every fire GOES sees, every few minutes, grouped into fires as they grow and matched to the fires that began like them. Every 3.84 km square of both, searchable by what it looks like, with what lies on it, its climate and its twin on the other side of the equator."),
@@ -818,7 +833,7 @@ async function explore(app, page, region, placeId) {
     try {
       const at = await app.api(`/v1/at?lat=${lat.toFixed(5)}&lon=${lng.toFixed(5)}`);
       if (!at.id) return;
-      history.replaceState(null, "", app.href("place", at.id));
+      history.replaceState(null, "", app.href("map", at.id));
       const j = await app.api(`/v1/place/${encodeURIComponent(at.id)}`);
       drawPlace(j);
     } catch (err) { swap(side, h("div", { class: "ea-err" }, String(err.message || err))); }
@@ -826,6 +841,38 @@ async function explore(app, page, region, placeId) {
   if (place) drawPlace(place);
   else put(side, card("Click a place", "every 3.84 km square of the region", h("p", { class: "ea-note" }, "Each square is one of Major TOM's Sentinel-2 pictures, with what lies on it: its land cover, terrain, people, climate, crops, mines and the years it burned. Pick a layer above to paint the map with one of them.")));
   await drawLayer();
+}
+
+const eventLine = (app, e) => {
+  const where = e.km > 0 ? `${fmt(e.km, 1)} km ${e.dir}` : "on this square";
+  if (e.kind === "perimeter") {
+    const days = e.date && e.contained ? Math.max(1, Math.round((Date.parse(e.contained) - Date.parse(e.date)) / 864e5)) : null;
+    return [`${e.name || "Unnamed fire"}, ${e.acres ? `${fmt(e.acres)} acres` : "size unknown"}`,
+      `${e.date ? e.date.slice(0, 10) : e.year} · ${where}${e.cause && e.cause.toLowerCase() !== "unknown" ? ` · cause: ${e.cause.toLowerCase()}` : ""}${days ? ` · out in ${days} day${days === 1 ? "" : "s"}` : ""}${e.burned ? ` · ${fmt(e.burned * 100)}% of this square` : ""}`, "CAL FIRE"];
+  }
+  if (e.kind === "goes") return [e.name || "Fire seen by GOES", `${e.date.slice(0, 10)} · ${where} · ${km2(e.km2)} seen`, "GOES"];
+  if (e.kind === "change") return [`${e.town || "A place nearby"} went from ${e.from} to ${e.to}`, `${e.year} · ${where}`, "Sentinel-2"];
+  return ["Satellites saw fire heat here", `${e.year}`, "FIRMS"];
+};
+
+async function report(app, page, id) {
+  const j = await app.api(`/v1/place/${encodeURIComponent(id)}`);
+  const p = j.place, st = j.story;
+  const box = h("div", { class: "ea-map", style: { minHeight: "280px" } });
+  put(page, h("div", { class: "ea-hero" }, h("h2", {}, placeName(p)), h("p", {}, st.headline),
+    h("div", { class: "ea-search" }, h("a", { class: "btn", href: app.href("map", p.id) }, "Open on the map"))));
+  put(page, h("div", { class: "ea-split wide" }, box,
+    card("What happened here", "within 10 km, newest first (fires seen from space within 25 km)",
+      st.events.length ? h("div", { class: "ea-list" }, st.events.map((e) => { const [t, m, src] = eventLine(app, e); return h("div", { onclick: e.kind === "goes" ? () => app.go("fire", e.id) : null }, h("span", { class: "t" }, t), h("span", { class: "v" }, src), h("span", { class: "m" }, m)); })) : h("p", { class: "ea-empty" }, "Nothing on record."))));
+  const map = await makeMap(box, { center: [p.lon, p.lat], zoom: 10.5 });
+  app.stops.push(() => map.remove());
+  const dl = HALF / Math.cos((p.lat * Math.PI) / 180);
+  const feats = [{ type: "Feature", properties: { me: 1 }, geometry: { type: "Polygon", coordinates: square(p.lat, p.lon, HALF, dl) } }];
+  for (const o of st.outlines) { try { feats.push({ type: "Feature", properties: { burned: o.burned ? 1 : 0, name: `${o.name} ${o.year}` }, geometry: JSON.parse(o.shape) }); } catch { /* skip */ } }
+  setData(map, "story", { type: "FeatureCollection", features: feats }, [
+    { id: "story-fill", type: "fill", paint: { "fill-color": ["case", ["==", ["get", "me"], 1], "rgba(0,0,0,0)", ["==", ["get", "burned"], 1], "#e5484d", "#f5a524"], "fill-opacity": 0.35 } },
+    { id: "story-line", type: "line", paint: { "line-color": ["case", ["==", ["get", "me"], 1], "#fff", "#ff8a3d"], "line-width": 2 } }]);
+  put(page, h("div", { style: { marginTop: "14px" } }, placePanel(app, j)));
 }
 
 function coverBar(p) {

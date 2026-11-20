@@ -295,14 +295,104 @@ pub async fn place(c: &Ctx<'_>, id: &str) -> R<Value> {
     let box_ = |d: f64| (lat - d, lat + d, lon - d, lon + d);
     let (s, n, w, e) = box_(0.08);
     let (fs, fnn, fw, fe) = box_(0.06);
-    let (like, twins, near, years, change) = tokio::join!(
+    let dlon = |d: f64| d / lat.to_radians().cos().max(0.2);
+    let (ps, pn, pw, pe) = (lat - 0.1, lat + 0.1, lon - dlon(0.1), lon + dlon(0.1));
+    let (gs, gn, gw, ge) = (lat - 0.23, lat + 0.23, lon - dlon(0.23), lon + dlon(0.23));
+    let (like, twins, near, years, change, perimeters, burns, goes, nearby) = tokio::join!(
         c.soft("places here that look like it", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r AND {away} ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": region, "v": me, "s": s, "n": n, "w": w, "e": e})),
         c.soft("its twins in the other region", format!("SELECT {PLACE_SMALL}, score() AS score FROM ea_places WHERE region = :r ORDER BY similarity(look, :v) DESC LIMIT 12"), json!({"r": other(&region), "v": me})),
         c.soft("fires near it", format!("SELECT {FIRE_CARD} FROM ea_fires WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e ORDER BY start DESC LIMIT 30"), json!({"s": fs, "n": fnn, "w": fw, "e": fe})),
         c.soft("its years", "SELECT id, year, taken, scene, cloud, ndvi, label FROM ea_years WHERE place = :p ORDER BY year LIMIT 20", json!({"p": id})),
         c.soft("how it changed", "SELECT id, first, last, drift, step_year, step, from_label, to_label, arc FROM ea_changes WHERE id = :p", json!({"p": id})),
+        c.soft("CAL FIRE's perimeters around it", "SELECT id, name, year, alarm, contained, acres, cause, lat, lon, shape FROM ea_perimeters WHERE s <= :n AND n >= :s AND w <= :e AND e >= :w ORDER BY year DESC LIMIT 40", json!({"s": ps, "n": pn, "w": pw, "e": pe})),
+        c.soft("the fires that burned this square", "SELECT perimeter, share FROM ea_burns WHERE place = :p LIMIT 100", json!({"p": id})),
+        c.soft("the fires GOES saw within 25 km", format!("SELECT {FIRE_CARD} FROM ea_fires WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e ORDER BY start DESC LIMIT 40"), json!({"s": gs, "n": gn, "w": gw, "e": ge})),
+        c.soft("places nearby that changed", "SELECT id, town, lat, lon, from_label, to_label, step_year, drift FROM ea_changes WHERE lat >= :s AND lat <= :n AND lon >= :w AND lon <= :e AND drift > 0 ORDER BY drift DESC LIMIT 6", json!({"s": ps, "n": pn, "w": pw, "e": pe})),
     );
-    Ok(json!({"place": p, "like": like, "twins": twins, "fires": near, "years": years, "change": change.first()}))
+    let story = story(&p, &perimeters, &burns, &goes, &nearby);
+    Ok(json!({"place": p, "like": like, "twins": twins, "fires": near, "years": years, "change": change.first(), "story": story}))
+}
+
+/// What happened around a place, newest first: the headline, the events,
+/// and the outlines to draw (the nearest ones, with their shapes).
+fn story(p: &Row, perimeters: &[Row], burns: &[Row], goes: &[Row], changes: &[Row]) -> Value {
+    use crate::geo;
+    let (lat, lon) = (p.f("lat"), p.f("lon"));
+    let share: std::collections::HashMap<String, f64> = burns.iter().map(|b| (b.s("perimeter"), b.f("share"))).collect();
+    let mut events: Vec<(String, Value)> = Vec::new();
+    let mut outlines = Vec::new();
+    for f in perimeters {
+        let polys = geo::parse(&f.s("shape"));
+        let burned = share.get(&f.s("id")).copied().unwrap_or(0.0);
+        let (km, dir) = if burned > 0.0 || geo::contains(&polys, lat, lon) {
+            (0.0, "")
+        } else {
+            match geo::nearest_vertex(&polys, lat, lon) {
+                Some((d, vy, vx)) => (d, geo::compass(lat, lon, vy, vx)),
+                None => (crate::fires::km(lat, lon, f.f("lat"), f.f("lon")), geo::compass(lat, lon, f.f("lat"), f.f("lon"))),
+            }
+        };
+        if km > 10.0 {
+            continue;
+        }
+        let date = f.s("alarm");
+        let year = f.i("year");
+        events.push((
+            if date.is_empty() { format!("{year}-00") } else { date.clone() },
+            json!({"kind": "perimeter", "id": f.s("id"), "name": f.s("name"), "year": year, "date": date, "contained": f.s("contained"),
+                   "acres": f.f("acres"), "cause": f.s("cause"), "km": (km * 10.0).round() / 10.0, "dir": dir, "burned": burned}),
+        ));
+        outlines.push(json!({"id": f.s("id"), "name": f.s("name"), "year": year, "burned": burned > 0.0, "shape": f.s("shape")}));
+    }
+    for g in goes {
+        let km = crate::fires::km(lat, lon, g.f("lat"), g.f("lon"));
+        if km > 25.0 {
+            continue;
+        }
+        let date = g.s("start");
+        // A fire CAL FIRE already outlined is told once, by its outline.
+        let name = g.s("name");
+        if perimeters.iter().any(|f| !name.is_empty() && f.s("name") == name && f.s("year") == date.get(..4).unwrap_or("")) {
+            continue;
+        }
+        events.push((date.clone(), json!({"kind": "goes", "id": g.s("id"), "name": name, "date": date, "km": (km * 10.0).round() / 10.0,
+            "dir": geo::compass(lat, lon, g.f("lat"), g.f("lon")), "km2": g.f("area_km2"), "state": g.s("state"), "region": g.s("region")})));
+    }
+    let outlined: std::collections::HashSet<i64> = events.iter().filter(|e| e.1["kind"] == "perimeter").filter_map(|e| e.1["year"].as_i64()).collect();
+    for y in p.list("fire_years").iter().filter_map(|y| y.parse::<i64>().ok()).filter(|y| !outlined.contains(y)).rev().take(6) {
+        events.push((format!("{y}-06"), json!({"kind": "firms", "year": y, "date": format!("{y}")})));
+    }
+    for c in changes {
+        events.push((format!("{}-01", c.i("step_year")), json!({"kind": "change", "id": c.s("id"), "town": c.s("town"), "from": c.s("from_label"), "to": c.s("to_label"),
+            "year": c.i("step_year"), "km": (crate::fires::km(lat, lon, c.f("lat"), c.f("lon")) * 10.0).round() / 10.0, "dir": geo::compass(lat, lon, c.f("lat"), c.f("lon"))})));
+    }
+    events.sort_by(|a, b| b.0.cmp(&a.0));
+    let burned_here: Vec<&Value> = events.iter().map(|e| &e.1).filter(|e| e["kind"] == "perimeter" && e["burned"].as_f64().unwrap_or(0.0) > 0.0).collect();
+    let near_perims = events.iter().filter(|e| e.1["kind"] == "perimeter").count();
+    let place = if p.s("town").is_empty() { p.s("adm2") } else { p.s("town") };
+    let place = if place.is_empty() { "This place".to_string() } else { place };
+    let mut head = if near_perims == 0 && p.list("fire_years").is_empty() {
+        format!("{place}: no fire on record within 10 km.")
+    } else if let Some(big) = burned_here.iter().max_by(|a, b| a["acres"].as_f64().unwrap_or(0.0).total_cmp(&b["acres"].as_f64().unwrap_or(0.0))) {
+        format!(
+            "{place}: {} fire{} burned this square. The largest, {} in {}, covered {:.0} acres{}.",
+            burned_here.len(),
+            if burned_here.len() == 1 { "" } else { "s" },
+            if big["name"].as_str().unwrap_or("").is_empty() { "unnamed" } else { big["name"].as_str().unwrap_or("") },
+            big["year"],
+            big["acres"].as_f64().unwrap_or(0.0),
+            match big["cause"].as_str() { Some(c) if !c.is_empty() && !c.eq_ignore_ascii_case("unknown") => format!(" (cause: {})", c.to_lowercase()), _ => String::new() }
+        )
+    } else if near_perims > 0 {
+        format!("{place}: no fire burned this square, but {near_perims} on record came within 10 km.")
+    } else {
+        format!("{place}: satellites saw fire heat here in {} year{}.", p.list("fire_years").len(), if p.list("fire_years").len() == 1 { "" } else { "s" })
+    };
+    if p.s("region") != "california" {
+        head.push_str(" (Outlines of past fires are CAL FIRE's, California only.)");
+    }
+    outlines.truncate(12);
+    json!({"headline": head, "events": events.into_iter().take(40).map(|e| e.1).collect::<Vec<_>>(), "outlines": outlines})
 }
 
 pub struct Filters {

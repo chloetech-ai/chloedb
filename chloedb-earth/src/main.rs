@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use chloedb_earth::{analogs, api, feed, load, places::Places, rules, strata::Strata};
+use chloedb_earth::{analogs, api, feed, load, names, places::Places, rules, strata::Strata};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -72,6 +72,13 @@ enum Command {
         /// Scans downloaded at once.
         #[arg(long, default_value_t = 12)]
         parallel: usize,
+        #[command(flatten)]
+        server: Server,
+    },
+    /// Name the fires of California from CAL FIRE's perimeters (the
+    /// same year, the alarm days around the start, the centre in the
+    /// outline).
+    Names {
         #[command(flatten)]
         server: Server,
     },
@@ -156,6 +163,12 @@ async fn main() -> Result<()> {
             }
             let o = feed::Opts { region, from: from.as_deref().map(when).transpose()?, to: to.as_deref().map(when).transpose()?, live, every, parallel };
             feed::run(db, places, o).await?;
+        }
+        Command::Names { server } => {
+            let db = server.db();
+            load::create(&db).await?;
+            let n = names::run(&db).await?;
+            tracing::info!(fires = n, "named");
         }
         Command::Rules { server } => {
             let db = server.db();

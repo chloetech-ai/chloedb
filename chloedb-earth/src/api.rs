@@ -117,6 +117,7 @@ pub async fn serve(o: Opts) -> Result<()> {
         tokio::spawn(async move {
             let mut read_at: Option<Instant> = None;
             let mut rules_at: Option<Instant> = None;
+            let mut names_at: Option<Instant> = None;
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || svc.places.read().await.is_empty() {
                     match Places::read(&svc.db).await {
@@ -136,6 +137,13 @@ pub async fn serve(o: Opts) -> Result<()> {
                     match crate::rules::run_once(&svc.db).await {
                         Ok(v) => tracing::info!(open = %v["open"], secs = t0.elapsed().as_secs_f32(), "rules"),
                         Err(e) => tracing::warn!(error = %e, "rules"),
+                    }
+                }
+                if run_rules && names_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    names_at = Some(Instant::now());
+                    match crate::names::run(&svc.db).await {
+                        Ok(n) => tracing::info!(fires = n, "fires named"),
+                        Err(e) => tracing::warn!(error = %e, "names"),
                     }
                 }
                 for r in REGIONS {
@@ -176,6 +184,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/path/:id", get(path))
         .route("/v1/layer/:name", get(layer))
         .route("/v1/at", get(at))
+        .route("/v1/find", get(find))
         .route("/v1/chip/:place/:year", get(chip))
         .route("/v1/rules", get(rules_page))
         .route("/v1/data", get(data))
@@ -574,6 +583,24 @@ async fn at(State(svc): State<Shared>, Query(a): Query<AtParams>) -> Json<Value>
         Some(p) => Json(json!({"id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon})),
         None => Json(json!({"id": null})),
     }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct FindParams {
+    #[serde(default)]
+    q: String,
+}
+
+/// Towns and counties by their first letters, or the place under
+/// "lat, lon": what the front page's search box asks.
+async fn find(State(svc): State<Shared>, Query(a): Query<FindParams>) -> Json<Value> {
+    let places = svc.places.read().await.clone();
+    let found: Vec<Value> = places
+        .find(&a.q, 8)
+        .into_iter()
+        .map(|(label, p)| json!({"label": label, "id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "adm1": p.adm1, "people": p.people.round()}))
+        .collect();
+    Json(json!({"found": found}))
 }
 
 #[derive(serde::Deserialize, Default)]

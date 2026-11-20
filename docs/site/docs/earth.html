@@ -140,7 +140,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <tbody>
 <tr>
 <td>Home</td>
-<td>each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read</td>
+<td>a search box for a town, a county or "lat, lon" (and "use my location") that opens a place's report, then each region's fires burning and alerts open, the replays, the largest fires GOES saw, the closest twins, the backtest and how much was read</td>
 <td><code>ea_fires</code>, <code>ea_alerts</code>, <code>ea_places</code>, <code>ea_backtest</code>, <code>ea_scans</code></td>
 </tr>
 <tr>
@@ -170,8 +170,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tr>
 <tr>
 <td>A place</td>
-<td>its picture, what covers it, its terrain and people, the years it burned, the places that look like it, its twins in the other region, places like it with words added or taken away (<code>/v1/mix</code>), the fires near it and its pictures year by year</td>
-<td><code>ea_places</code>, <code>ea_years</code>, <code>ea_changes</code>, <code>ea_fires</code></td>
+<td><strong>what happened here</strong>: a headline and a timeline within 10 km, newest first (CAL FIRE's perimeters with distance, direction, acres, cause and dates; years satellites saw fire heat; fires GOES saw within 25 km; nearby places that changed), over a map that draws the perimeters; then its picture, what covers it, its terrain and people, the years it burned, the places that look like it, its twins in the other region, places like it with words added or taken away (<code>/v1/mix</code>), the fires near it and its pictures year by year</td>
+<td><code>ea_places</code>, <code>ea_years</code>, <code>ea_changes</code>, <code>ea_fires</code>, <code>ea_perimeters</code>, <code>ea_burns</code></td>
 </tr>
 <tr>
 <td>Search</td>
@@ -241,7 +241,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </tbody>
 </table></div>
 <h2 id="running-it">Running it<a class="anchor" href="#running-it" aria-label="Link to this section">#</a></h2>
-<p>The places are made once, by <code>tools/places.py</code> (Major TOM's fragments and vectors, and the layers read at each place from WorldCover, the Copernicus DEM, GHSL, Köppen-Geiger, the mining polygons, the Cropland Data Layer and FIRMS), and their years by <code>tools/years.py</code> (a clear Sentinel-2 scene of each dry season from Element 84's Earth Search, embedded by the server). Both need a server built with <code>--features vision</code> and the model <code>siglip-so400m-patch14-384</code> (<code>chloedb-server fetch-model siglip-so400m-patch14-384</code>, a 3.5 GB download), which also turns a search's words and a dropped picture into vectors.</p>
+<p>The places are made once, by <code>tools/places.py</code> (Major TOM's fragments and vectors, and the layers read at each place from WorldCover, the Copernicus DEM, GHSL, Köppen-Geiger, the mining polygons, the Cropland Data Layer and FIRMS, a fire year needing three detections), California's fire perimeters by <code>tools/perimeters.py</code> (CAL FIRE FRAP's "California Fire Perimeters (all)", public, no warranty from the State: 23,320 fires since 1878 into <code>ea_perimeters</code>, and which fire burned how much of which place into <code>ea_burns</code>) and <code>chloedb-earth names</code>, which gives each GOES fire in California the name of the perimeter it matches (same year, alarm date three days before to two after its start, its centre inside the outline or within 3 km); <code>serve</code> does it hourly, and their years by <code>tools/years.py</code> (a clear Sentinel-2 scene of each dry season from Element 84's Earth Search, embedded by the server). Both need a server built with <code>--features vision</code> and the model <code>siglip-so400m-patch14-384</code> (<code>chloedb-server fetch-model siglip-so400m-patch14-384</code>, a 3.5 GB download), which also turns a search's words and a dropped picture into vectors.</p>
 <pre data-lang="sh">for r in california chile; do for s in pull layers fires; do python3 tools/places.py $s --region $r --out DATA; done; done
 python3 tools/places.py twins --out DATA                   # both regions&#x27; twins
 for r in california chile; do python3 tools/places.py rows --region $r --out DATA; done   # ea_places_&lt;region&gt;.jsonl
