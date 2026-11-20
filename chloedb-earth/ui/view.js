@@ -444,7 +444,7 @@ function render(root, ctx) {
   const body = h("div");
   root.append(head, tabs, body);
 
-  const TABS = [["", "Home"], ["live", "Live"], ["watch", "Fire watch"], ["sky", "Clear sky"], ["future", "Future climate"], ["land", "Land finder"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
+  const TABS = [["", "Home"], ["live", "Live"], ["watch", "Fire watch"], ["sky", "Clear sky"], ["future", "Future climate"], ["land", "Land finder"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Find change"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
   const drawTabs = (p) => {
     tabs.replaceChildren(...TABS.map(([k, t]) => {
       const on = (p[0] || "") === k || (k === "explore" && p[0] === "map") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
@@ -1077,7 +1077,7 @@ function placePanel(app, j) {
       h("form", { onsubmit: runMix }, h("div", { class: "ea-mix" }, plus, minus), h("div", { class: "ea-search" }, where, h("button", { class: "btn sm primary" }, "Find"))), mixOut),
     card(`Places in ${R.title} that look like it`, "away from it", h("div", { class: "ea-grid small" }, j.like.slice(0, 9).map((x) => tile(app, x)))),
     j.fires?.length ? card("Fires GOES saw near it", "", h("div", { class: "ea-list" }, j.fires.slice(0, 10).map((f) => fireRow(app, f)))) : null,
-    j.years?.length ? card("Its years", j.change ? `${j.change.arc || ""}, moved most in ${j.change.step_year}` : "a clear scene of each dry season", h("div", { class: "ea-grid small" }, j.years.map((y) => chip(app, p.id, y.year, y.label)))) : null,
+    j.years?.length ? card("Its years", j.change ? `${j.change.arc || ""}, moved most in ${j.change.step_year}` : "a clear scene of each dry season", h("div", { class: "ea-grid small" }, j.years.map((y) => chip(app, p.id, picKey(y), y.label)))) : null,
   ];
 }
 
@@ -1372,6 +1372,7 @@ function settingsCard(app, w, kms, reload) {
     sw("It comes 2 km closer in an hour", "closer"),
     sw("It passes 1,000 MW (large and intense)", "power"),
     sw("The night over it is clear (for the stars)", "sky"),
+    sw("A new satellite picture shows it changed", "change"),
     h("div", { class: "ea-row" }, h("span", {}, "Within 5 km, and over the place"), h("span", { class: "ea-note" }, "always")),
     h("form", { class: "ea-search", style: { marginTop: "10px" }, onsubmit: (e) => { e.preventDefault(); save({ name: name.value }); } }, name, h("button", { class: "btn sm" }, "Rename")),
     h("div", { style: { marginTop: "10px" } }, remove),
@@ -1950,28 +1951,100 @@ async function mediaSrc(app, path) {
 function chip(app, place, year, label, big) {
   const img = h("img", { alt: `${year}`, loading: "lazy" });
   chipSrc(app, place, year).then((u) => { img.src = u; }).catch(() => { img.alt = "no picture"; });
-  return h("div", { class: "ea-tile", style: { cursor: "default" } }, img, h("div", { class: "c" }, h("b", {}, String(year)), label ? h("span", {}, label) : null));
+  return h("div", { class: "ea-tile", style: { cursor: "default" } }, img, h("div", { class: "c" }, h("b", {}, dayOf(year)), label ? h("span", {}, label) : null));
 }
 
+/// The picture's key: its year, or the day it was taken (YYYYMMDD) for the
+/// pictures of a watched place.
+const picKey = (y) => String(y.id).split("-").pop();
+const dayOf = (k) => (String(k).length === 8 ? `${+String(k).slice(6)} ${MONTHS[+String(k).slice(4, 6) - 1]} ${String(k).slice(0, 4)}` : String(k));
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+const CHANGE_EXAMPLES = ["a lake became a dry lake bed", "a forest became a burn scar", "green fields became a solar farm", "shrubland became suburbs", "a desert became evaporation ponds", "a forest became a clear cut forest"];
+
 async function changed(app, page, q) {
-  const form = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); app.go("changed", e.target.q.value.trim()); } },
-    h("input", { type: "search", name: "q", value: q, placeholder: "a lake became a dry lake bed, forest became a burn scar…" }), h("button", { class: "btn primary" }, "Find"));
-  put(page, h("p", { class: "ea-sentence", style: { maxWidth: "820px", margin: "0 0 10px" } }, "Each place's look in the clearest Sentinel-2 scene of every other dry season since 2017, embedded by the same SigLIP model as the search. Ask for what a place was and what it became: ChloeDB ranks by the first year's look against the first words plus the last year's against the last."), form);
-  const j = await app.api(`/v1/changed${q ? `?q=${encodeURIComponent(q)}` : ""}`);
-  put(page, h("div", { class: "ea-chips" }, ["a lake became a dry lake bed", "a forest became a burn scar", "green fields became a solar farm", "shrubland became suburbs", "a desert became evaporation ponds", "a forest became a clear cut forest"].map((x) => h("a", { class: `ea-chip${x === q ? " on" : ""}`, href: app.href("changed", x) }, x))));
-  if (!j.places.length) {
-    put(page, card("Changed places", "", h("p", { class: "ea-note" }, "No years loaded yet.")));
-    return;
-  }
-  put(page, h("h3", { style: { margin: "6px 0 10px", fontSize: "15px" } }, cap(j.what), h("span", { class: "ea-note" }, `  ${fmt(j.places.length)} places`)));
-  const list = h("div", { class: "ea-pairs" });
-  for (const c of j.places.slice(0, 24)) {
-    list.append(h("div", { class: "ea-pair" },
-      h("div", { class: "two" }, chip(app, c.id, c.first, c.from_label), chip(app, c.id, c.last, c.to_label)),
-      h("div", { class: "lbl", style: { gridTemplateColumns: "1fr" } }, h("div", {}, h("b", {}, `${c.town || c.adm1 || c.id}${c.adm1 && c.town ? `, ${c.adm1}` : ""}`), h("span", {}, `${REGION[c.region]?.title || ""} · ${c.arc || `${c.from_label} → ${c.to_label}`}`))),
-      h("div", { class: "sim" }, `moved most in ${c.step_year}`, h("a", { href: app.href("place", c.id), style: { marginLeft: "auto" } }, "Every year →"))));
-  }
-  put(page, list);
+  const s = { q, region: "", at: null, label: "", km: 50, year: null, drift: null, from: "", to: "" };
+  const box = h("div", { class: "ea-map" });
+  const side = h("div");
+  const out = h("div");
+  const form = h("div");
+  put(page, h("div", { class: "ea-hero", style: { paddingTop: "8px" } },
+    h("h2", {}, "Find ", h("em", {}, "change")),
+    h("p", {}, "Places of California and Chile whose look changed since 2017: a clear Sentinel-2 picture of every other dry season, each embedded by the same SigLIP model as the search. Ask for what a place was and what it became, near a town or anywhere, and keep watch: a place watched for change gets a new picture every few days, and you are told when one looks unlike the one before.")),
+    h("div", { class: "ea-split wide" }, box, side));
+  const map = await makeMap(box, { center: [-95, 5], zoom: 1.6 });
+  app.stops.push(() => map.remove());
+  box.append(h("div", { class: "ea-legend" }, h("div", {}, h("span", { class: "sw" }, h("i", { style: { background: "#9b85ff" } }), "places with years"), " ", h("span", { class: "sw" }, h("i", { style: { background: "#ffcc33" } }), "found"))));
+  map.on("click", "chg", (e) => { const id = e.features?.[0]?.properties?.id; if (id) app.go("place", id); });
+  const chips = (key, list) => h("div", { class: "ea-chips", style: { margin: "2px 0 6px" } }, list.map(([v, t]) => h("button", { class: `ea-chip${s[key] === v ? " on" : ""}`, onclick: () => { s[key] = v; run(); } }, t)));
+  const row = (label, el) => h("div", {}, h("div", { class: "ea-note", style: { marginTop: "6px" } }, label), el);
+  const words = h("input", { type: "search", value: q, placeholder: "a lake became a dry lake bed, fields became a solar farm…", "aria-label": "What changed" });
+  const found = h("div", { class: "ea-list" });
+  let t = 0;
+  const nearIn = h("input", { type: "search", autocomplete: "off", placeholder: "Near a town (optional)", "aria-label": "Near where", oninput: async (e) => {
+    const v = e.target.value.trim(), mine = ++t;
+    if (v.length < 2) return swap(found);
+    const r = await app.api(`/v1/find?q=${encodeURIComponent(v)}`, { keep: 60000 });
+    if (mine === t) swap(found, r.found.slice(0, 6).map((x) => h("div", { class: "info", "data-i": "1", onclick: () => { s.at = [x.lat, x.lon]; s.label = x.label; s.region = x.region || s.region; nearIn.value = ""; swap(found); run(); } }, h("span", { class: "t" }, x.label))));
+  } });
+  let labels = [];
+  const drawForm = () => swap(form,
+    h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); s.q = words.value.trim(); run(); } }, words, h("button", { class: "btn primary" }, "Find")),
+    h("div", { class: "ea-chips", style: { margin: "6px 0" } }, CHANGE_EXAMPLES.map((x) => h("button", { class: `ea-chip${x === s.q ? " on" : ""}`, onclick: () => { s.q = x; words.value = x; run(); } }, x))),
+    row("Where", chips("region", [["", "California and Chile"], ["california", "California"], ["chile", "Chile"]])),
+    h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); found.querySelector("[data-i]")?.click(); } }, nearIn,
+      s.at ? h("button", { type: "button", class: "btn sm", onclick: () => { s.at = null; s.label = ""; run(); } }, `Not only near ${s.label}`) : null),
+    found,
+    s.at ? row(`Within, of ${s.label}`, chips("km", [[10, "10 km"], [25, "25 km"], [50, "50 km"], [100, "100 km"], [200, "200 km"]])) : null,
+    row("Changed most between", chips("year", [[null, "any years"], [2019, "2017 and 2019"], [2021, "2019 and 2021"], [2023, "2021 and 2023"], [2025, "2023 and 2025"]])),
+    row("How much", chips("drift", [[null, "any"], [0.05, "clearly"], [0.1, "a lot"]])),
+    labels.length ? row("What it was and became, by the nearest words", h("div", { class: "ea-chips", style: { margin: "2px 0 6px" } },
+      (s.from || s.to ? [h("button", { class: "ea-chip on", onclick: () => { s.from = ""; s.to = ""; run(); } }, `${s.from} → ${s.to} ✕`)] : []),
+      labels.filter((l) => l.from_label !== s.from || l.to_label !== s.to).slice(0, 10).map((l) => h("button", { class: "ea-chip", onclick: () => { s.from = l.from_label; s.to = l.to_label; run(); } }, `${l.from_label} → ${l.to_label} (${fmt(l.places)})`)))) : null);
+  const watch = async (c, btn) => {
+    try {
+      btn.disabled = true;
+      const r = await app.api(`/v1/watches?${wq()}`, { body: { name: c.town || c.adm1 || "A changed place", lat: c.lat, lon: c.lon, km: 10, change: true } });
+      app.go("watch", r.watch.id);
+    } catch (e) { btn.disabled = false; btn.textContent = String(e.message || e); }
+  };
+  const run = async () => {
+    drawForm();
+    swap(out, h("p", { class: "ea-note" }, "Looking…"));
+    const qs = new URLSearchParams();
+    for (const k of ["q", "region", "from", "to"]) if (s[k]) qs.set(k, s[k]);
+    if (s.year) qs.set("year", s.year);
+    if (s.drift) qs.set("drift", s.drift);
+    if (s.at) { qs.set("lat", s.at[0].toFixed(4)); qs.set("lon", s.at[1].toFixed(4)); qs.set("km", s.km); }
+    try {
+      const j = await app.api(`/v1/changed?${qs}`, { keep: 60000 });
+      if (!labels.length && j.labels?.length) { labels = j.labels; drawForm(); }
+      const hit = new Set(j.places.map((c) => c.id));
+      const top = Math.max(0.05, ...j.all.map((c) => c.drift || 0).sort((a, b) => a - b).slice(-Math.ceil(j.all.length / 50)));
+      const pt = (c, color, op, r) => ({ type: "Feature", properties: { id: c.id, c: color, o: op, r }, geometry: { type: "Point", coordinates: [c.lon, c.lat] } });
+      setData(map, "chg", { type: "FeatureCollection", features: [...j.all.filter((c) => !hit.has(c.id)).map((c) => pt(c, "#9b85ff", 0.35 + 0.6 * Math.min(1, (c.drift || 0) / top), 0)), ...j.places.map((c) => pt(c, "#ffcc33", 1, 1))] },
+        [{ id: "chg", type: "circle", before: "labels", paint: { "circle-color": ["get", "c"], "circle-opacity": ["get", "o"], "circle-stroke-color": "#111", "circle-stroke-width": ["get", "r"],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 2, ["+", 2.5, ["*", 1.5, ["get", "r"]]], 7, ["+", 5, ["*", 2, ["get", "r"]]], 11, ["+", 14, ["*", 4, ["get", "r"]]]] } }]);
+      const pts = j.places.length ? j.places : j.all;
+      if (pts.length) {
+        const la = pts.map((p) => p.lat), lo = pts.map((p) => p.lon);
+        map.fitBounds([[Math.min(...lo) - 0.3, Math.min(...la) - 0.3], [Math.max(...lo) + 0.3, Math.max(...la) + 0.3]], { padding: 40, duration: 600, maxZoom: 9 });
+      }
+      if (!j.all.length) return swap(out, h("p", { class: "ea-note" }, "No years loaded yet."));
+      swap(out,
+        h("p", { class: "ea-note" }, `${cap(j.what)}${s.at ? ` near ${s.label}` : ""}: ${fmt(j.places.length)} of the ${fmt(j.all.length)} places with years.`),
+        j.places.length ? h("div", { class: "ea-pairs" }, j.places.slice(0, 24).map((c) => h("div", { class: "ea-pair" },
+          h("div", { class: "two" }, chip(app, c.id, c.first, c.from_label), chip(app, c.id, c.last, c.to_label)),
+          h("div", { class: "lbl", style: { gridTemplateColumns: "1fr" } }, h("div", {}, h("b", {}, `${c.town || c.adm1 || c.id}${c.adm1 && c.town ? `, ${c.adm1}` : ""}`), h("span", {}, `${c.km != null ? `${fmt(c.km)} km ${c.dir} · ` : ""}${REGION[c.region]?.title || ""} · ${c.arc || `${c.from_label} → ${c.to_label}`}`))),
+          h("div", { class: "sim" }, `moved most by ${c.step_year}`,
+            h("button", { class: "btn sm", style: { marginLeft: "auto" }, title: "A new picture every few days; told when one looks unlike the one before", onclick: (e) => watch(c, e.target) }, "Watch for change"),
+            h("a", { href: app.href("place", c.id), style: { marginLeft: "8px" } }, "Every year →"))))) : h("p", { class: "ea-empty" }, "None: loosen a limit."));
+    } catch (e) { swap(out, h("div", { class: "ea-err" }, String(e.message || e))); }
+  };
+  put(page, h("div", { style: { marginTop: "14px" } }, out));
+  put(side, card("Find", "", form),
+    card("Your own place", "", h("p", { class: "ea-note" }, "A place of your own, watched for change: add it on ", h("a", { href: app.href("watch") }, "Fire watch"), ` and switch on “A new satellite picture shows it changed”. Its pictures since 2017 are fetched first; then each new clear one is compared with the last, and a move of more than the usual (1 minus the cosine of the two looks over 0.09, as one in ten two-year steps here) is an alert.`)));
+  run();
 }
 
 // -------------------------------------------------------------- rules, data

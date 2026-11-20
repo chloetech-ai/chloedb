@@ -201,6 +201,12 @@ changes collect under "Unreleased".
   the solar farms already built there (or by the grid, or by words), with
   a shortlist and what is around each place on its page (OpenStreetMap's
   grid, roads and solar farms; PAD-US in California).
+- **Earth explorer: Find change.** Changed places is now a finder: the
+  places whose look changed since 2017 on a map, searched by a change in
+  words, near a town, by when and how much they changed and by what they
+  were and became, from many more places. A place can be watched for
+  change: it gets a new satellite picture every few days, and a fire
+  watch tells its browser when one looks unlike the one before.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,
