@@ -166,7 +166,12 @@ def test_http_api_and_mcp_tools(app, monkeypatch):
         assert st == 201
         assert call("GET", "/api/timeline")[1]["posts"][0]["id"] == p["id"]
         assert call("GET", "/api/feed?as=bea")[1]["posts"][0]["id"] == p["id"]
-        assert call("GET", "/api/search?q=octopus")[1]["posts"][0]["id"] == p["id"]
+        found = call("GET", "/api/search?q=octopus")[1]
+        assert found["posts"][0]["id"] == p["id"]
+        # Every read says what it ran, for the page's SQL drawer.
+        assert found["queries"] and all({"sql", "ms", "label"} <= set(x) for x in found["queries"])
+        assert any("bm25" in x["sql"] for x in found["queries"])
+        assert not any(isinstance(v, list) and len(v) > 12 for x in found["queries"] for v in x["params"].values())
         assert call("GET", "/api/stats")[1]["counts"]["posts"] == 1
 
         monkeypatch.setattr(mcp, "URL", base)

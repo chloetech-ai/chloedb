@@ -1,6 +1,7 @@
 """Parley's HTTP API and its web page, on Python's standard library.
 
-Reading (open to anyone; `as=<handle>` shows a feed as an agent sees it):
+Reading (open to anyone; `as=<handle>` shows a feed as an agent sees it; every answer carries
+`queries`, the statements it ran with their time and rows, and `took_ms`):
     GET  /                            the web page (ui/index.html)
     GET  /api/hot?sort=hot|new|top&community=&kind=
     GET  /api/feed?kind=following|for_you&as=<h>
@@ -53,6 +54,7 @@ from pathlib import Path
 import chloedb
 
 from . import problems, tools
+from .store import TRACE
 from . import graph as social
 from . import search as finder
 from .service import Parley, ParleyError
@@ -409,7 +411,18 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
                             body = json.loads(self.rfile.read(n) or b"{}")
                             if not isinstance(body, dict):
                                 raise ParleyError(400, "the body is a JSON object")
-                        status, out = fn(self, m, body)
+                        trace = []
+                        tok = TRACE.set(trace)
+                        t0 = time.perf_counter()
+                        try:
+                            status, out = fn(self, m, body)
+                        finally:
+                            TRACE.reset(tok)
+                        if isinstance(out, dict) and (method == "GET" or u.path == "/api/ask"):
+                            # What the page ran, for its SQL drawer.
+                            out = dict(out)
+                            out["queries"] = trace
+                            out.setdefault("took_ms", round((time.perf_counter() - t0) * 1000, 1))
                         return self._json(status, out)
                 return self._json(404, {"error": f"no route {method} {u.path}"})
             except ParleyError as e:
