@@ -170,7 +170,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     if (!id) return null
     if (!id.startsWith('s-')) return { owner: id, role: 'own' }
     const link = await apps.kept(appId, `link:${id.slice(2)}`, LINKS).catch(() => null)
-    return link ? { owner: link.owner, role: link.role, token: id.slice(2), ...(link.name ? { name: link.name } : {}), ...(link.only?.field ? { only: link.only } : {}), ...(link.hide?.length ? { hide: link.hide } : {}) } : { owner: id, role: 'full' }
+    return link ? { owner: link.owner, role: link.role, token: id.slice(2), ...(link.name ? { name: link.name } : {}), ...(link.marks ? { marks: true } : {}), ...(link.only?.field ? { only: link.only } : {}), ...(link.hide?.length ? { hide: link.hide } : {}) } : { owner: id, role: 'full' }
   }
   const STOPPED = 'This link was stopped by whoever shared it: it opens nothing any more.'
   // What a request's links let it do to an app itself (change it, undo,
@@ -197,8 +197,24 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const key = String(args?.key ?? '')
     const before = hideIn(partOf(await apps.kept(appId, key, who.owner).catch(() => null), who.only), who.hide)
     // What the link added or filled itself it may go on changing (PRIYA-1, TOM-1).
+    if (who.marks && marksMore(before, args?.value)) return 'Not kept: this link can only mark what is there done, not add or change it. Whoever shared it can.'
     const made = new Set((await madeOf(appId, who))[key] ?? [])
     return changesWhatIsThere(withoutMade(before, made), args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
+  }
+  // What a "mark done only" link may not do beyond a helper's: add an entry,
+  // or fill in anything but a mark (done, a status, a note on why) (round 10 MARCUS-6).
+  const MARK = /(done|check|tick|status|mark|complete|finish|state|reason|why|note|comment|rain|late|by$|_at$|At$|^at$|^when$)/i
+  function marksMore(before, after, depth = 0, key = '') {
+    if (depth > 6 || after == null) return false
+    if (Array.isArray(after)) {
+      const was = Array.isArray(before) ? before : []
+      const ids = new Map(was.filter(e => e && typeof e === 'object' && e.id != null).map(e => [String(e.id), e]))
+      if (after.length > was.length && !(ids.size && after.every(e => e && typeof e === 'object' && ids.has(String(e.id))))) return true
+      return after.some((e, i) => (e && typeof e === 'object' && e.id != null ? !ids.has(String(e.id)) || marksMore(ids.get(String(e.id)), e, depth + 1) : marksMore(was[i], e, depth + 1, key)))
+    }
+    if (typeof after === 'object') return Object.entries(after).some(([k, v]) => marksMore(before && typeof before === 'object' ? before[k] : undefined, v, depth + 1, k))
+    const empty = before == null || before === '' || before === false
+    return empty && after !== '' && after !== false && !MARK.test(key)
   }
   const made_ = async (appId, token) => (token ? ((await apps.kept(appId, `made:${token}`, LINKS).catch(() => null)) ?? {}) : {})
   // What a person's links made, whichever link it was (MARCUS-3).
@@ -606,7 +622,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           // is never offered as if it were the service's own (round 9 DEV-4).
           if (!signIn) {
             const host = (() => { try { return new URL(s.url).hostname } catch { return '' } })()
-            const own_ = host && String(service).toLowerCase().split(/\s+/).some(w => w.length > 2 && host.toLowerCase().includes(w))
+            // By the site's own name, not a part before it: github.robinsonaisystems.com is Robinson's, not GitHub's (round 10 DEV-2).
+            const site = host.toLowerCase().split('.').slice(-2)[0] ?? ''
+            const own_ = site && String(service).toLowerCase().split(/[^a-z0-9]+/).some(w => w.length > 2 && site.includes(w))
             signIn = { ...error.connect, host, asked: service, ...(own_ ? {} : { thirdParty: true, title: s.title ?? s.name }) }
           }
           continue
@@ -1048,7 +1066,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             // The app knows who this link is, so it never asks for a name (P).
             // Its owner, and a link that changes everything, get no who: they
             // may change and take out anything, whoever added it (DEV-2).
-            if (who && who.role !== 'own' && who.role !== 'full' && name === 'app_kept' && args?.all && out.structuredContent) out.structuredContent.who = { role: who.role, ...(who.name ? { name: who.name } : {}), ...(who.only ? { only: who.only } : {}), ...(who.hide ? { hidden: who.hide } : {}) }
+            if (who && who.role !== 'own' && who.role !== 'full' && name === 'app_kept' && args?.all && out.structuredContent) out.structuredContent.who = { role: who.role, ...(who.name ? { name: who.name } : {}), ...(who.marks ? { marks: true } : {}), ...(who.only ? { only: who.only } : {}), ...(who.hide ? { hidden: who.hide } : {}) }
             // Two entries with the same number from two phones are said to
             // every phone that opens it, until one is fixed (LENA-2).
             if (who && name === 'app_kept' && args?.all && out.structuredContent?.values) {
@@ -1130,14 +1148,20 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         if (person && typeof person === 'object') {
           const name = String(person.name ?? '').replace(/\s+/g, ' ').trim().slice(0, 30)
           const role = person.role === 'viewer' ? 'viewer' : 'helper'
+          // A link that only marks what is there done: no adding (round 10 MARCUS-6).
+          const marks = person.role === 'marker'
           const field = String(person.only?.field ?? '').trim().slice(0, 40)
           const only = field && person.only?.value != null && String(person.only.value).trim() ? { field, value: String(person.only.value).trim().slice(0, 60) } : null
           // Fields their link never gets, such as prices (MARCUS-1).
           const hide = (Array.isArray(person.hide) ? person.hide : []).map(h => String(h ?? '').trim().slice(0, 40)).filter(h => h && !/^(id|by)$/.test(h)).slice(0, 12)
           if (!name) return json(res, { error: 'Give the person a name.' }, 400)
+          const link = { role, name, ...(marks ? { marks } : {}), ...(only ? { only } : {}), ...(hide.length ? { hide } : {}) }
+          // The same person with the same link again: theirs, not a second one (round 10 INES-10).
+          const alike = (links.people ?? []).find(p => p.name.toLowerCase() === name.toLowerCase() && JSON.stringify({ ...p, token: undefined, name: undefined }) === JSON.stringify({ ...link, name: undefined }))
+          if (alike) return json(res, { token, helper: links.helper, viewer: links.viewer, people: links.people ?? [], same: alike.token })
           const tok = randomBytes(16).toString('hex')
-          await apps.keep(app.id, `link:${tok}`, { owner: `s-${token}`, role, name, ...(only ? { only } : {}), ...(hide.length ? { hide } : {}) }, LINKS)
-          links = { ...links, people: [...(links.people ?? []), { token: tok, name, role, ...(only ? { only } : {}), ...(hide.length ? { hide } : {}) }] }
+          await apps.keep(app.id, `link:${tok}`, { owner: `s-${token}`, ...link }, LINKS)
+          links = { ...links, people: [...(links.people ?? []), { token: tok, ...link }] }
           await apps.keep(app.id, '-links', links, `s-${token}`)
         }
         return json(res, { token, helper: links.helper, viewer: links.viewer, people: links.people ?? [] })

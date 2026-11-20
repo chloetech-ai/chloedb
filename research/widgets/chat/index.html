@@ -328,6 +328,16 @@ const stored = name => { try { return JSON.parse(local.get(name) || '{}') ?? {} 
 const roles = stored('instant-apps-roles')
 const roleOf = id => (shared[id] ? roles[id] ?? 'full' : 'own')
 const limited = id => ['helper', 'viewer'].includes(roleOf(id))
+// Apps whose link this browser gave out (copied, or made for a person):
+// only those say Shared; opening the Share box alone shares nothing yet
+// (round 10 INES-10). Apps shared before this was kept count as given out.
+const givenOut = local.get('instant-apps-given') ? stored('instant-apps-given') : Object.fromEntries(Object.keys(stored('instant-apps-shared')).map(k => [k, true]))
+const giveOut = (w, id) => {
+  if (givenOut[id]) return
+  givenOut[id] = true
+  local.set('instant-apps-given', JSON.stringify(givenOut))
+  bar(w)
+}
 // The helper and view links of an app this browser shared.
 const links = stored('instant-apps-links')
 const shareUrl = (id, as = 'full') =>
@@ -341,7 +351,7 @@ const privately = stored('instant-apps-local')
 const isPrivate = id => Boolean(privateApps[id])
 const PRIVATE = /\b(private(ly)?|confidential|secret|sensitive)\b|\b(don'?t|do not|never|without) (send|share|read|show)(ing)? (it |this |anything )?(to )?(the )?(chat|claude|you|server)|\bnot (be )?(sent|read|shared)\b|\bstays? (local|offline|in (the|my) browser|on my (machine|laptop|computer|phone|device))|\bonly (in|on) (my|this) (browser|machine|laptop|computer|phone|device)\b|\b(runs?|works?|stays?|kept|lives?) (locally|client[- ]side)\b|\bnever leaves? (my|this) (browser|machine|laptop|computer|phone|device)\b|\bout of (the )?(chat|claude|model)\b|\b(claude|the chat|the model|ai|you) (must|should|can|may)( ?not|n'?t) (see|read|get)\b/i
 // What a tool for pasted data is asked as: private unless asked otherwise (DEV-2).
-const PASTED = /\b(paste[ds]?|pasting|decod(e|er|ing)|jwt|bearer|tokens?|api keys?|secrets?|log (lines?|files?)|stack ?traces?|json (formatter|viewer|validator)|format(ter)? (my |this |the )?json|regex (tester|checker)|base64|hash(es|ing)?)\b/i
+const PASTED = /\b(paste[ds]?|pasting|curl|localhost|127\.0\.0\.1|my (own )?(api|endpoint|server|backend)|api (responses?|output)|(responses?|output) (of|from) (my|the|an?) (api|endpoint|server|command|script)|terminal output|command output|decod(e|er|ing)|jwt|bearer|tokens?|api keys?|secrets?|log (lines?|files?)|stack ?traces?|json (formatter|viewer|validator)|format(ter)? (my |this |the )?json|regex (tester|checker)|base64|hash(es|ing)?)\b/i
 const saveLocal = () => { local.set('instant-apps-private', JSON.stringify(privateApps)); local.set('instant-apps-local', JSON.stringify(privately)) }
 // Apps this browser was given by a link without what they keep (a copy:
 // it keeps its own, here).
@@ -410,8 +420,10 @@ function connectCard(parent, connect, again, before = null) {
   const card = document.createElement('div')
   card.className = 'offline-note connect-note'
   // A connector someone else made says so, and where it runs (round 9 DEV-4).
+  // What the sign-in asks for, as its address says (round 10 DEV-2).
+  const scope = (() => { try { return new URL(connect.url).searchParams.get('scope') ?? '' } catch { return '' } })().trim()
   const theirs = connect.thirdParty
-    ? `This would use “${connect.title ?? connect.name}”, a connector made by someone else${connect.host ? ` (${connect.host})` : ''}, not by ${connect.asked ?? 'the service'} itself. Sign in only if you trust it: it sees what that sign-in allows.`
+    ? `This would use “${connect.title ?? connect.name}”, a connector made by someone else${connect.host ? ` (${connect.host})` : ''}, not by ${connect.asked ?? 'the service'} itself. Sign in only if you trust it: it sees what that sign-in allows${scope ? ` (it asks for: ${scope.split(/[\s,]+/).slice(0, 6).join(', ')})` : ''}.`
     : `This needs your ${connect.name}. Sign in once, and it is used only when you ask.`
   card.innerHTML = `<span>${esc(theirs)}</span> <a class="connect-go" href="${esc(connect.url)}" target="_blank" rel="noopener">${connect.thirdParty ? 'Sign in anyway' : `Connect ${esc(connect.name)}`}</a>`
   if (before) parent.insertBefore(card, before)
@@ -1445,7 +1457,7 @@ function bar(w) {
       ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
       : app.saved || guest || limited(app.id) ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
   // What was found is shared as an answer kept as it is, with its notes (PRIYA-1).
-  const share = guest || limited(app.id) || isPrivate(app.id) ? '' : answer && !w.keptAs ? `<button class="wbtn share" type="button" title="Keep this answer as it is, with your notes, and get links to it">${ICON.share}Keep and share</button>` : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] ? 'Shared' : 'Share'}</button>`
+  const share = guest || limited(app.id) || isPrivate(app.id) ? '' : answer && !w.keptAs ? `<button class="wbtn share" type="button" title="Keep this answer as it is, with your notes, and get links to it">${ICON.share}Keep and share</button>` : `<button class="wbtn share" type="button" title="Links that open this app, with what it keeps, on another phone or computer">${ICON.share}${shared[app.id] && givenOut[app.id] ? 'Shared' : 'Share'}</button>`
   const more = `<button class="wbtn more" type="button" title="Download what it keeps, or make it private" aria-label="More">${ICON.more}</button>`
   const changes = guest || limited(app.id) ? '' : `<button class="wbtn change" type="button" title="Change how it looks or works, by asking">${ICON.change}Change</button>${app.saved || app.version > 1 ? `<button class="wbtn undo" type="button" title="Undo the last change">${ICON.undo}Undo</button>` : ''}${w.newer ? `<button class="wbtn redo" type="button" title="Forward to version ${app.version + 1}">${ICON.redo}Redo</button>` : ''}`
   acts.innerHTML = `${keep}${share}${changes}${more}`
@@ -1506,13 +1518,16 @@ function bar(w) {
       ['full', 'Your own other phone', 'opens your whole chat and every app, as you: never send it to anyone else'],
       ['helper', 'Can add and tick', 'they add, tick and fill in what is empty; what anyone else put there they can’t change, untick or take out'],
       ['viewer', 'Can only look', 'they see it as it is, and change nothing'],
-      ['copy', 'A copy, empty', 'the app without anything it keeps: what they type stays on their phone, and nobody else sees it'],
+      ['copy', 'A copy, empty', 'the app without anything it keeps: what they type stays on their phone, and nobody else sees it; it carries nothing of yours, so it goes on working after Stop sharing'],
     ]
     // The parts a person's link can be for: a field of a kept list with a
     // few values (crew A or B, a month) (MARCUS-4).
     const kept = (await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), self: me, name: 'app_kept', arguments: { all: true } }) })).json().catch(() => ({}))).structuredContent?.values ?? {}
+    // Lists inside an object too (a month with its expenses) (round 10 INES-1).
+    const listsIn = (v, depth = 0) => (Array.isArray(v) ? [v] : v && typeof v === 'object' && depth < 2 ? Object.values(v).flatMap(x => listsIn(x, depth + 1)) : [])
+    const lists = Object.entries(kept).filter(([k]) => !/^(view:|-|seed:|made:|link:)/.test(k)).flatMap(([, v]) => listsIn(v)).filter(l => l.some(e => e && typeof e === 'object' && !Array.isArray(e)))
     const parts = []
-    for (const list of Object.values(kept)) {
+    for (const list of lists) {
       if (!Array.isArray(list) || !list.some(e => e && typeof e === 'object')) continue
       const fields = new Map()
       // A part is a group of people's entries (a crew, a person, a team),
@@ -1525,16 +1540,17 @@ function bar(w) {
     // Fields of the kept lists a person's link could be kept from, such as prices (MARCUS-1).
     // Only what one would keep from someone: money and private words, not every field (round 9 TOM-10).
     const PRIVATE = /price|cost|amount|total|fee|rate|pay|salary|budget|margin|profit|note|phone|email|address|token|secret|code/i
-    const hideable = [...new Set(Object.values(kept).flatMap(list => (Array.isArray(list) ? list : []).flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k) && PRIVATE.test(k)).slice(0, 12)
+    const hideable = [...new Set(lists.flatMap(list => list.flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k) && PRIVATE.test(k)).slice(0, 12)
     const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
-    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? (p.only.field === '*' ? ' · only what is shared with them' : ` · only ${esc(p.only.field)} ${esc(p.only.value)}`) : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
-    box.innerHTML = `<span class="sharehead">Links to <b>${esc(app.name)}</b>. Apart from the first, each opens only this app, never your other apps or the chat. Anyone with a link can do what it says, and sees what the app holds now, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add or tick carries their name, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${Object.values(kept).some(Array.isArray) ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (marked shared, or with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : p.marks ? 'can only mark done' : 'can add and tick'}${p.only ? (p.only.field === '*' ? ' · only what is shared with them' : ` · only ${esc(p.only.field)} ${esc(p.only.value)}`) : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
+    box.innerHTML = `<span class="sharehead">Links to <b>${esc(app.name)}</b>. Apart from the first, each opens only this app, never your other apps or the chat. Anyone with a link can do what it says, and sees what the app holds now, so send each only to people you trust.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: what they add or tick carries their name, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="marker">Can only mark done</option><option value="viewer">Can only look</option></select>${lists.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (marked shared, or with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
     const wirePeople = () => {
       for (const button of box.querySelectorAll('button[data-person]')) {
         button.onclick = async () => {
           button.previousElementSibling.select()
           await navigator.clipboard?.writeText(button.previousElementSibling.value).catch(() => {})
           button.textContent = 'Copied'
+          giveOut(w, app.id)
         }
       }
       for (const button of box.querySelectorAll('button[data-stop]')) {
@@ -1559,6 +1575,9 @@ function bar(w) {
       if (!made.people) return (form.querySelector('button').textContent = made.error ?? 'Could not make it')
       people = made.people
       form.reset()
+      giveOut(w, app.id)
+      // The same person asked for again: their link is the one above (round 10 INES-10).
+      if (made.same) form.querySelector('button[type=submit]').textContent = `${name} has this link already, above`
       box.querySelector('.people').innerHTML = peopleRows()
       wirePeople()
     }
@@ -1581,6 +1600,7 @@ function bar(w) {
         button.previousElementSibling.select()
         await navigator.clipboard?.writeText(shareUrl(app.id, button.dataset.as)).catch(() => {})
         button.textContent = 'Copied'
+        if (button.dataset.as !== 'copy') giveOut(w, app.id)
       }
     }
     w.node.querySelector('.wbar').after(box)
@@ -1593,7 +1613,14 @@ function bar(w) {
     const canPrivate = (!guest || given[app.id]) && !shared[app.id] && app.tool !== 'findings'
     const print = `<button class="btn print" type="button">Print</button>`
     const canEarlier = !limited(app.id) && !isPrivate(app.id) && app.tool !== 'findings'
-    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canEarlier ? `<button class="btn earlier" type="button">Earlier versions of what it kept</button>` : ''}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    box.innerHTML = `<button class="btn csv" type="button">Download as CSV</button><button class="btn json" type="button">Download all (JSON)</button>${print}${canEarlier ? `<button class="btn earlier" type="button">Earlier versions of what it kept</button>` : ''}${canPrivate ? `<button class="btn private" type="button">${isPrivate(app.id) ? 'Stop keeping it private' : 'Make it private'}</button>` : ''}${isPrivate(app.id) && !guest ? `<button class="btn emptycopy" type="button" title="A link to this app with nothing it keeps: nothing of yours leaves this browser">Copy a link to an empty copy</button>` : ''}<span class="faint">${guest ? '' : isPrivate(app.id) ? 'Private: Claude reads nothing of this app, and what it keeps stays in this browser.' : shared[app.id] ? 'A shared app can be private once you stop sharing it (Share, then Stop sharing).' : 'Private: Claude reads nothing of it, and what it keeps stays in this browser only.'}</span>`
+    // A private tool's empty copy for someone else (QA, a colleague): the
+    // app alone, so it needs no un-privating first (round 10 DEV-8).
+    const emptyCopy = box.querySelector('.emptycopy')
+    if (emptyCopy) emptyCopy.onclick = async () => {
+      await navigator.clipboard?.writeText(shareUrl(app.id, 'copy')).catch(() => {})
+      emptyCopy.textContent = 'Copied: it opens this app empty, with nothing of yours'
+    }
     box.querySelector('.print').onclick = () => {
       box.remove()
       // The app sends a copy of itself, all of it, to print over as many
@@ -1641,7 +1668,7 @@ function bar(w) {
         // Said before it happens: what leaves this browser from now on (DEV-7).
         button.classList.add('sure')
         button.textContent = 'Yes, let Claude read it'
-        box.querySelector('.faint').textContent = 'What it keeps goes back to the chat, and Claude reads what it shows from now on.'
+        box.querySelector('.faint').textContent = 'What it keeps is stored on the server with the app again, and Claude reads what it shows from now on.'
         return
       }
       if (isPrivate(app.id)) {
@@ -1833,7 +1860,10 @@ async function ask(question) {
         // A tool for what is pasted into it (a token, log lines, JSON) is
         // private from the start: Claude reads nothing of it until the
         // person says otherwise (DEV-2).
-        const pasted = ev.how === 'made' && PASTED.test(question) && !PRIVATE.test(question)
+        // A made app that asks to have something pasted into it (a command's
+        // output, an API's answer) is a paste tool too, whatever was asked (round 10 DEV-1).
+        const pasteIn = /\bpaste (everything|all|what|the (output|response|json|result)|it|your|them|here|below)\b/i.test(String(ev.html ?? '').replace(/<[^>]+>/g, ' '))
+        const pasted = ev.how === 'made' && (PASTED.test(question) || pasteIn) && !PRIVATE.test(question)
         if ((ev.how === 'made' || ev.how === 'changed') && (PRIVATE.test(question) || pasted) && !shared[ev.app.id] && !isPrivate(ev.app.id)) {
           privateApps[ev.app.id] = true
           saveLocal()

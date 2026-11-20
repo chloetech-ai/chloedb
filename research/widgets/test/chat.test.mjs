@@ -1096,3 +1096,41 @@ test('the answer says only what the request changed, the chat sees all an app ke
   assert.equal(done[0].reply, 'Took a while.')
   assert.equal(done[0].running, undefined)
 })
+
+test('a month of a budget is shared by part too, a link can be for marking done only, and the same person gets one link (AI: round 10 INES-1, MARCUS-6, INES-10)', { skip }, async () => {
+  const me = 'ab'.repeat(16)
+  const app = await chat.apps.put({ name: 'Monthly budget', about: 'Spending by month.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('budget'), args: { request: 'budget' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  const call = (who, name, args) => post('/api/call', { app: app.id, me: who, name, arguments: args })
+  const month = { budget: 650, expenses: [{ id: 'c', item: 'coffee', amount: 1.2 }, { id: 'g', item: 'groceries', amount: 23.4, split: 2, with: 'Joana' }] }
+  await call(owner, 'app_keep', { key: 'month:2026-11', value: month })
+  const joana = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Joana', role: 'helper', only: { field: '*', value: 'Joana' } } })).people.at(-1)
+  const seen = (await call(`s-${joana.token}`, 'app_kept', { all: true })).structuredContent.values['month:2026-11']
+  assert.deepEqual(seen.expenses.map(e => e.item), ['groceries'], 'only what is shared with her, inside the month')
+  assert.equal(seen.budget, undefined, 'and not the owner’s budget for it')
+  // What she adds goes into the month with everything she never saw kept.
+  const added = await call(`s-${joana.token}`, 'app_keep', { key: 'month:2026-11', value: { ...seen, expenses: [...seen.expenses, { id: 'e', item: 'electricity', amount: 38.6, split: 2 }] } })
+  assert.ok(!added.isError, JSON.stringify(added))
+  const whole = (await call(owner, 'app_kept', { key: 'month:2026-11' })).structuredContent.value
+  assert.equal(whole.budget, 650)
+  assert.deepEqual(whole.expenses.map(e => e.item), ['coffee', 'groceries', 'electricity'])
+  // The same person asked for again: the link she has, not a second one.
+  const again = await post('/api/share', { app: app.id, me: owner, person: { name: 'joana', role: 'helper', only: { field: '*', value: 'Joana' } } })
+  assert.equal(again.same, joana.token)
+  assert.equal(again.people.filter(p => p.name === 'Joana').length, 1)
+  // A crew lead's link that only marks jobs done: a mark is kept, a new job or a price is not.
+  const jobs = [{ id: 'j1', job: 'Johnson', crew: 'Crew A' }, { id: 'j2', job: 'Patel', crew: 'Crew A' }]
+  await call(owner, 'app_keep', { key: 'jobs', value: jobs })
+  const dave = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Dave', role: 'marker' } })).people.at(-1)
+  assert.equal(dave.marks, true)
+  const lead = `s-${dave.token}`
+  assert.equal((await call(lead, 'app_kept', { all: true })).structuredContent.who?.marks, true, 'the app is told the link only marks')
+  const marked = await call(lead, 'app_keep', { key: 'jobs', value: [{ ...jobs[0], done: true, status: 'rained out' }, jobs[1]] })
+  assert.ok(!marked.isError, JSON.stringify(marked))
+  const more = await call(lead, 'app_keep', { key: 'jobs', value: [{ ...jobs[0], done: true, status: 'rained out' }, jobs[1], { id: 'j3', job: 'Reyes' }] })
+  assert.match(more.content[0].text, /only mark/)
+  const priced = await call(lead, 'app_keep', { key: 'jobs', value: [{ ...jobs[0], done: true, status: 'rained out' }, { ...jobs[1], price: 90 }] })
+  assert.match(priced.content[0].text, /only mark/)
+  assert.equal((await call(owner, 'app_kept', { key: 'jobs' })).structuredContent.value.length, 2)
+})

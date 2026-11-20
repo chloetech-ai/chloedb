@@ -99,14 +99,29 @@ const named = (entry, value) => Object.values(entry).some(v => (v && typeof v ==
 const marked = entry => Object.entries(entry).some(([k, v]) => /^(shared|joint|split|is_?shared|shared_?with)$/i.test(k) && v != null && v !== false && v !== '' && !/^(no|none|false|personal|mine)$/i.test(String(v)))
 const inPart = (entry, only) => entry && typeof entry === 'object' && (only.field === '*' ? named(entry, String(only.value).trim().toLowerCase()) || marked(entry) : String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase())
 const parted = (value, only) => Array.isArray(value) && value.some(e => e && typeof e === 'object' && (only.field === '*' || only.field in e))
-export function partOf(value, only) {
-  if (!only?.field || !parted(value, only)) return value
-  return value.filter(e => inPart(e, only))
+// A list inside an object (a month with its budget and expenses) is a part
+// too; and a "what is shared with them" link gets none of the owner's own
+// figures beside it (its budget) (round 10 INES-1).
+const plain = v => v && typeof v === 'object' && !Array.isArray(v)
+const holdsPart = (value, only) => plain(value) && Object.values(value).some(v => parted(v, only))
+export function partOf(value, only, depth = 0) {
+  if (!only?.field) return value
+  if (parted(value, only)) return value.filter(e => inPart(e, only))
+  if (!plain(value) || depth > 2 || !Object.values(value).some(v => parted(v, only) || plain(v))) return value
+  const container = holdsPart(value, only)
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => !(container && only.field === '*' && typeof v === 'number')).map(([k, v]) => [k, partOf(v, only, depth + 1)]))
 }
 // What a person's link keeps, put back into the whole: entries it added
 // say who added them (by) and belong to its part, and the entries it never
 // saw (the other crews') stay as they were, where they were (INES-5, MARCUS-4).
-export function withPart(before, after, { by, only } = {}) {
+export function withPart(before, after, { by, only } = {}, depth = 0) {
+  // An object of lists (a month): each list as below, and what the link
+  // never saw beside them (the owner's budget) stays (round 10 INES-1).
+  if (plain(after) && (before == null || plain(before)) && depth < 3 && Object.values(after).some(v => Array.isArray(v) || plain(v))) {
+    const out = Object.fromEntries(Object.entries(after).map(([k, v]) => [k, Array.isArray(v) || plain(v) ? withPart(before?.[k], v, { by, only }, depth + 1) : v]))
+    if (only?.field === '*' && holdsPart(before, only)) for (const [k, v] of Object.entries(before)) if (typeof v === 'number') out[k] = v
+    return out
+  }
   if (!Array.isArray(after)) return after
   const was = new Set((Array.isArray(before) ? before : []).map(e => e?.id).filter(id => id != null))
   // An entry the link can't see (another crew's) is not its to write: an
