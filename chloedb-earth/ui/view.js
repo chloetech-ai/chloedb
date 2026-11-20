@@ -367,6 +367,9 @@ function render(root, ctx) {
   app.api = api;
   app.href = (...parts) => ctx.href(...parts.filter((x) => x !== "" && x != null));
   app.go = (...parts) => { location.hash = app.href(...parts); };
+  // A page that belongs under another tab than its path says (a burning
+  // fire under Live) marks that one.
+  app.markTab = (k) => { for (const a of tabs.querySelectorAll("a")) a.classList.toggle("on", a.getAttribute("href") === app.href(k)); };
 
   const head = h("div", { class: "ea-head" },
     h("h1", { html: `<svg viewBox="0 0 24 24">${ICON}</svg>Earth` }),
@@ -521,17 +524,12 @@ function backtestCard(rows) {
 
 // -------------------------------------------------------------------- live
 
-async function live(app, page, region) {
-  const R = REGION[region];
-  if (!R) throw new Error(`no region ${region}`);
-  const box = h("div", { class: "ea-map" });
-  const side = h("div");
-  put(page, regionSwitch(app, "live", region), h("div", { class: "ea-split" }, box, side));
-  const map = await makeMap(box, { center: R.center, zoom: R.zoom, bounds: R.bounds });
-  app.stops.push(() => map.remove());
-  const tl = h("div", { class: "ea-maptl" });
-  box.append(tl);
-  // Satellite now: on by default, under the fire pixels and the names.
+/// Satellite now on a map: the newest GOES GeoColor picture from NASA
+/// GIBS, on by default, under the fire pixels and the names, with a button
+/// that hides it; checked again every two minutes. Resolves to the note
+/// that says how old the picture is.
+async function addSky(app, map, region) {
+  const R = REGION[region] || REGION.california;
   const skyNote = h("div", { class: "ea-mapttl" }, "Satellite now: finding the newest picture…");
   const bs = h("button", { class: "ea-mapbtn on", title: "Show or hide the newest GOES picture of the sky" }, "Satellite now");
   map.ea.tr.prepend(bs);
@@ -560,6 +558,21 @@ async function live(app, page, region) {
   await sky();
   const st = setInterval(() => sky().catch(() => {}), 120000);
   app.stops.push(() => clearInterval(st));
+  return skyNote;
+}
+
+
+async function live(app, page, region) {
+  const R = REGION[region];
+  if (!R) throw new Error(`no region ${region}`);
+  const box = h("div", { class: "ea-map" });
+  const side = h("div");
+  put(page, regionSwitch(app, "live", region), h("div", { class: "ea-split" }, box, side));
+  const map = await makeMap(box, { center: R.center, zoom: R.zoom, bounds: R.bounds });
+  app.stops.push(() => map.remove());
+  const tl = h("div", { class: "ea-maptl" });
+  box.append(tl);
+  const skyNote = await addSky(app, map, region);
   let fitted = false;
   const draw = async (fresh) => {
     const j = await app.api(`/v1/live?region=${region}`, { fresh, keep: 15000 });
@@ -686,17 +699,34 @@ async function fire(app, page, id, at) {
   const box = h("div", { class: "ea-map short" });
   const side = h("div");
   put(page, h("div", { class: "ea-split wide" }, h("div", {}, box, h("div", { style: { marginTop: "12px" } }, firstHours(f), similarCard(app, j))), side));
-  const map = await makeMap(box, { center: [f.lon, f.lat], zoom: 10 });
+  const burning = f.state === "burning";
+  const map = await makeMap(box, { center: [f.lon, f.lat], zoom: burning ? 9 : 10 });
   app.stops.push(() => map.remove());
+  // A fire burning now is shown as Live shows it: under Live's tab, over
+  // the newest picture of the sky, its pixels read again every minute.
+  let skyNote = null;
+  if (burning) {
+    app.markTab("live");
+    skyNote = await addSky(app, map, f.region);
+    const again = setInterval(async () => {
+      try {
+        const n = await app.api(`/v1/fire/${encodeURIComponent(id)}`, { fresh: true });
+        if (n.fire.last !== f.last || n.fire.state !== f.state) { page.replaceChildren(); for (const s of app.stops.splice(0)) { try { s(); } catch { /* gone */ } } fire(app, page, id, at); }
+      } catch { /* the next minute */ }
+    }, 60000);
+    app.stops.push(() => clearInterval(again));
+  }
   const t0 = Date.parse(f.start), t1 = Date.parse(f.last) || t0 + 1;
   const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (Date.parse(p.ts) - t0) / Math.max(3600e3, t1 - t0)) * 0.7 }));
   setData(map, "px", pixelFeatures(rows, PX_HALF), [{ id: "px", type: "fill", paint: { ...PIXEL_PAINT, "fill-color": ["interpolate", ["linear"], ["get", "age"], 0, "#ffeb3b", 0.35, "#ff6d00", 0.7, "#8e0000"], "fill-opacity": 0.8 } }]);
   if (rows.length) {
     const b = new window.maplibregl.LngLatBounds();
     rows.forEach((p) => b.extend([p.lon, p.lat]));
-    map.fitBounds(b, { padding: 60, maxZoom: 12, duration: 0 });
+    map.fitBounds(b, { padding: 60, maxZoom: burning ? 10 : 12, duration: 0 });
   }
-  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its pixels, yellow first"), f.state === "burning" && Date.now() - Date.parse(f.last) < 3 * 3600e3 ? onAir(true, "burning now") : null));
+  const fresh = Date.now() - Date.parse(f.last) < 3 * 3600e3;
+  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its pixels, yellow first"),
+    burning ? onAir(fresh, fresh ? "burning now" : `not seen since ${ago((Date.now() - Date.parse(f.last)) / 1000)}`) : null, skyNote));
   const o = j.outlook;
   put(side, 
     card(f.name, `${f.state === "burning" ? "burning" : "out"} · ${f.adm1 || ""}`,
@@ -710,7 +740,9 @@ async function fire(app, page, id, at) {
         h("dt", {}, "People within 5 km"), h("dd", {}, fmt(f.people5)),
         h("dt", {}, "Where it started"), h("dd", {}, `trees ${pct(f.trees)}, shrubs ${pct(f.shrubs)}, grass ${pct(f.grass)}, built ${pct(f.built)}; slope ${fmt(f.slope, 1)}°; ${f.climate ? `${f.climate} (${KOPPEN_WORDS[f.climate] || ""})` : ""}`),
         h("dt", {}, "Burned before"), h("dd", {}, f.burned_before ? `last in ${f.burned_before}` : "not since 2001")),
-      j.place ? h("p", { style: { marginTop: "10px" } }, h("a", { href: app.href("place", j.place.id) }, "The place it started on →")) : null),
+      h("p", { style: { marginTop: "10px", display: "flex", gap: "14px", flexWrap: "wrap" } },
+        burning ? h("a", { href: app.href("live", f.region) }, `← All fires burning in ${R.title}`) : null,
+        j.place ? h("a", { href: app.href("place", j.place.id) }, "The place it started on →") : null)),
     o ? card("Fires like this one", `its first ${o.words}`,
       h("p", { class: "ea-sentence" }, `The ${o.n} fires whose first ${o.words} were most like this one's grew to `, h("b", {}, km2(o.median)), ` (half of them between ${km2(o.lo)} and ${km2(o.hi)}) and burned about ${fmt(o.hours_median, 1)} hours; ${fmt(o.over10 * 100)}% grew past 10 km².`),
       h("p", { class: "ea-note" }, `Only fires out by ${when(o.known, f.region, { year: true })} count${f.state === "out" ? ", what was known when this fire was that old" : ""}. ${f.state === "out" ? `It became ${km2(f.area_km2)}.` : ""}`),
