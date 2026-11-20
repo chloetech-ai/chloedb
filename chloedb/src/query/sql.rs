@@ -4210,11 +4210,12 @@ mod tests {
         // With a constant among its factors, it is an expression.
         let s = bind("SELECT id FROM docs ORDER BY bm25(body, :t) * 2 * similarity(emb, :q) DESC", &schema(), &q()).unwrap();
         assert!(matches!(&s.order, Some(OrderBy::Score { score: Score::Arith { op: ArithOp::Mul, .. }, .. })), "{:?}", s.order);
+        // KENJI-404: a KEYWORD takes a range, in byte order.
+        assert!(bind("SELECT id FROM docs WHERE category > 'c01'", &schema(), &q()).is_ok());
 
         for bad in [
             "SELECT id FROM other",
             "SELECT id FROM docs WHERE MATCH(year, 'x')",
-            "SELECT id FROM docs WHERE category > 'c01'",
             "SELECT id FROM docs ORDER BY similarity(emb, :missing)",
             "SELECT id FROM docs ORDER BY bm25(body, :t) >= 2",
             "SELECT id FROM docs ORDER BY ln(similarity(emb, :q), 2, 3)",
