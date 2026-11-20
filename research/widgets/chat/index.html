@@ -9,14 +9,14 @@
     color-scheme: light;
     --bg: #faf9f5; --panel: #ffffff; --panel-2: #f3f1ea; --ink: #1f1e1d; --ink-2: #57554f; --ink-3: #76736b;
     --line: #e5e2d9; --bubble: #efece3; --accent: #c4623f; --accent-ink: #ffffff;
-    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3; --tool: #b8650f; --tool-bg: #fbeedd;
+    --info: #2f6fde; --info-bg: #e6eefc; --action: #1a8a4a; --action-bg: #e3f4ea; --discover: #b0569c; --discover-bg: #f7e6f3; --tool: #b8650f; --tool-bg: #fbeedd; --warn: #8a5a00; --warn-bg: #fff4d6; --warn-line: #e8c56a;
     --shadow: 0 1px 2px rgba(30, 28, 20, .06), 0 4px 18px rgba(30, 28, 20, .05);
   }
   :root[data-theme='dark'] {
     color-scheme: dark;
     --bg: #1f1f1d; --panel: #262624; --panel-2: #2e2e2b; --ink: #f2f1ee; --ink-2: #c4c2bc; --ink-3: #9d9b95;
     --line: #3b3a37; --bubble: #33322f; --accent: #d97757;
-    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537; --tool: #f0a85a; --tool-bg: #3d2d1c;
+    --info: #6d9ff0; --info-bg: #23314a; --action: #4cc27a; --action-bg: #1e3a29; --discover: #e08ccd; --discover-bg: #3d2537; --tool: #f0a85a; --tool-bg: #3d2d1c; --warn: #f2c66b; --warn-bg: #3a2e12; --warn-line: #7a6024;
     --shadow: none;
   }
   * { box-sizing: border-box; }
@@ -124,6 +124,12 @@
   .sharebox .people { display: contents; }
   .sharebox .hides { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; font-size: 13px; }
   .offline-note { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bubble); font-size: 13px; color: var(--ink); }
+  /* A doubled number is a warning, not news (round 9, Roberto's look at the clash note). */
+  .offline-note.clash-note { background: var(--warn-bg); color: var(--warn); border-bottom-color: var(--warn-line); display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+  .clash-note .clash-text::before { content: '⚠ '; }
+  .clash-note button { border: 1px solid var(--warn-line); background: var(--panel); color: var(--ink); border-radius: 7px; padding: 3px 9px; font-size: 13px; cursor: pointer; }
+  .wbtn.undo { margin-left: 10px; }
+  .wbtn.sure { background: var(--warn-bg); color: var(--warn); }
   .connect-note { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; margin: 8px 0; padding: 10px 12px; }
   .connect-go { display: inline-block; padding: 6px 14px; border-radius: 999px; background: var(--ink); color: var(--bg, #fff); text-decoration: none; font-weight: 600; }
   .sharebox .addperson input[name=name] { font: inherit; flex: 1 1 140px; }
@@ -593,8 +599,10 @@ function screen() {
 
 const withoutEntries = payload => {
   const strip = values => {
-    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null)) return values
-    const { add, edit, ...rest } = values
+    // A take-out too: drawn again on a catch-up, it would take out the
+    // next entry that matches (round 9 INES-1).
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null && values.remove == null)) return values
+    const { add, edit, remove, ...rest } = values
     return rest
   }
   const data = payload.result?.structuredContent
@@ -815,6 +823,8 @@ function conflictNote(id, said) {
   const text = !said.length && toldLater[id] ? toldLater[id] : said.slice(0, 3).map(c =>
     c.twice != null ? `${show(c.twice)} was already added on the other phone, so it is in ${String(c.field)} once`
     : c.gone != null ? `${show(c.gone)} was taken out on the other phone, so what was changed in it here was not kept`
+    : c.stayedOut != null ? `${show(c.stayedOut)} was taken out on another phone, so it stays out`
+    : c.tookOut != null ? `This version took out ${show(c.tookOut)}: Undo change brings it back`
     : c.both != null ? `${show(c.both)} was added on both phones with something different: both are kept, check which is right`
     : `${show(String(c.field))} was changed on both phones: kept ${show(c.theirs)}, saved first; ${show(c.mine)} was not kept`).join('; ')
   const shown = widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))
@@ -951,10 +961,34 @@ function staleNote(w, at) {
   const box = el('offline-note stale-signal', esc(`No signal: this is what this phone last had${when ? `, from ${when}` : ''}. It catches up when there is signal.`), w.node)
   w.node.querySelector('.wbar')?.after(box)
 }
+// A doubled number: said as a warning, with a button to keep each one,
+// which takes the others with that number out (round 9, the clash note).
 function clashNote(id, clashes) {
   for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))) {
     w.node.querySelector('.clash-note')?.remove()
-    const box = el('offline-note clash-note', esc(`${clashes.map(c => c.text).join('; ')}.`), w.node)
+    const box = el('offline-note clash-note', `<span class="clash-text">${esc(`${clashes.map(c => c.text).join('; ')}.`)}</span>`, w.node)
+    const mayChoose = !limited(id)
+    for (const c of mayChoose ? clashes.filter(c => c.choices?.length >= 2).slice(0, 2) : []) {
+      for (const choice of c.choices) {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.textContent = `Keep ${choice.label}`
+        b.onclick = async () => {
+          const call = (name, args, extra = {}) => viaServer({ app: id, me: ownerOf(id), self: me, name, arguments: args, ...extra })
+          const now = (await call('app_kept', { key: c.key }).catch(() => null))?.structuredContent?.value
+          if (!Array.isArray(now)) return
+          const others = new Set(c.choices.filter(x => x.id !== choice.id).map(x => x.id))
+          const out = await call('app_keep', { key: c.key, value: now.filter(e => !others.has(String(e?.id))) }, { base: now }).catch(error => ({ isError: true, content: [{ text: error.message }] }))
+          if (out?.isError) {
+            box.querySelector('.clash-text').textContent = out.content?.[0]?.text ?? 'Not kept.'
+            return
+          }
+          box.remove()
+          draw(w)
+        }
+        box.append(b)
+      }
+    }
     w.node.querySelector('.wbar').after(box)
   }
 }
@@ -1551,7 +1585,20 @@ function bar(w) {
     draw(w)
     bar(w)
   }
-  acts.querySelector('.undo')?.addEventListener('click', () => step('undo'))
+  // Undo asks first and says what it did: it sat next to Change, and a
+  // slip went back a version without a word (round 9 PRIYA-5).
+  acts.querySelector('.undo')?.addEventListener('click', e => {
+    const button = e.currentTarget
+    if (button.dataset.sure) return step('undo').then(() => {
+      const box = el('offline-note undo-note', esc(`Back to version ${w.app.version}. Redo brings the change back.`), w.node)
+      w.node.querySelector('.wbar').after(box)
+      setTimeout(() => box.remove(), 20000)
+    })
+    button.dataset.sure = '1'
+    button.lastChild.textContent = `Undo: back to version ${w.app.version - 1}?`
+    button.classList.add('sure')
+    setTimeout(() => { if (button.isConnected) { delete button.dataset.sure; button.classList.remove('sure'); button.lastChild.textContent = 'Undo change' } }, 5000)
+  })
   acts.querySelector('.redo')?.addEventListener('click', () => step('redo'))
   changer.onsubmit = async e => {
     e.preventDefault()

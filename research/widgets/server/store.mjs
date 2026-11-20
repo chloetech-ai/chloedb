@@ -17,6 +17,8 @@ const REPO = new URL('../../../', import.meta.url).pathname
 const APPS = `CREATE TABLE ia_apps (id KEYWORD PRIMARY KEY, name TEXT, about TEXT, examples TEXT, kind KEYWORD,
   tool KEYWORD, tools KEYWORD[], saved BOOL, version INT, uses INT, made INT, used INT,
   args TEXT OPTIONS(indexed = false), source TEXT OPTIONS(indexed = false)MEANING)`
+// Where each version's arguments are kept (an owner no browser has).
+const VERSION_ARGS = '-versions-'
 const VERSIONS = `CREATE TABLE ia_versions (id KEYWORD PRIMARY KEY, app KEYWORD, version INT, change TEXT, made INT,
   source TEXT OPTIONS(indexed = false))`
 const TURNS = `CREATE TABLE ia_turns (id KEYWORD PRIMARY KEY, request TEXT, app KEYWORD, how KEYWORD, at INT)`
@@ -188,6 +190,9 @@ export class Apps {
       ops.push({ op: 'upsert', table: 'ia_versions', doc: { id: `${row.id}@${row.version}`, app: row.id, version: row.version, change, made: now(), source: row.source } })
     }
     await this.db.write(ops)
+    // What it was filled with at each version too, for an answer whose
+    // versions differ in what was found: an undo brings that back (PRIYA-1).
+    if (change != null) await this.keep(row.id, `args@${row.version}`, app.args ?? {}, VERSION_ARGS).catch(() => {})
     // A new version (or an undo) is told to every phone that has it open (R).
     try { this.onput?.(row.id, row.version, change) } catch {}
     return tidy(row)
@@ -209,7 +214,8 @@ export class Apps {
     if (app.version <= 1) return app
     const [before] = await this.db.get('ia_versions', [`${appId}@${app.version - 1}`])
     if (!before) return app
-    return this.put({ ...app, source: before.source, version: app.version - 1 }, null)
+    const args = await this.kept(appId, `args@${app.version - 1}`, VERSION_ARGS).catch(() => null)
+    return this.put({ ...app, source: before.source, version: app.version - 1, ...(args ? { args } : {}) }, null)
   }
 
   // The changes that made the version it is at now, oldest first ("take
@@ -227,7 +233,8 @@ export class Apps {
     const app = await this.get(appId)
     const [after] = await this.db.get('ia_versions', [`${appId}@${app.version + 1}`])
     if (!after) return app
-    return this.put({ ...app, source: after.source, version: app.version + 1 }, null)
+    const args = await this.kept(appId, `args@${app.version + 1}`, VERSION_ARGS).catch(() => null)
+    return this.put({ ...app, source: after.source, version: app.version + 1, ...(args ? { args } : {}) }, null)
   }
 
   // Whether an undo left a newer version to go forward to.

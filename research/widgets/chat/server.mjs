@@ -119,6 +119,8 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
   // takes nothing out ("helper"), a view link only looks ("viewer"); a
   // link whose sharing was stopped reaches nothing ("gone").
   const LINKS = '-links-'
+  // An entry by its first words ("Thu Apr 15 Évora"), for what a phone is told.
+  const entryName = e => Object.entries(e ?? {}).filter(([k, v]) => !/^(id|by|at|date)$/.test(k) && typeof v === 'string' && v.trim()).slice(0, 2).map(([, v]) => v).join(' ') || String(e?.id ?? '')
   async function owning(appId, me) {
     const id = own(me)
     if (!id) return null
@@ -184,7 +186,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const next = [...was.filter(c => !both.some(b => b.number === c.number && b.value === c.value && key === c.key)), ...both.map(b => ({ key, number: b.number, value: b.value, at: Date.now() }))].slice(-20)
     await apps.keep(appId, `clash:${owner}`, next, LINKS)
   }
-  async function clashesOf(appId, owner, values) {
+  async function clashesOf(appId, owner, values, reader = '') {
     const was = (await apps.kept(appId, `clash:${owner}`, LINKS).catch(() => null)) ?? []
     if (!was.length) return []
     const found = (v, c, out = [], depth = 0) => {
@@ -196,15 +198,32 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const money = n => (typeof n === 'number' ? n.toFixed(2) : String(n))
     const what = e => {
       const amount = Object.entries(e).find(([k, x]) => typeof x === 'number' && /amount|price|total|cost|sum|value/i.test(k))?.[1]
-      return `${amount != null ? money(amount) : nameOfEntry(e)}${e.by ? ` by ${e.by}` : ''}`
+      // Both sides named: an entry with no name is the owner's (round 9, the clash note).
+      return `${amount != null ? money(amount) : nameOfEntry(e)} by ${e.by || reader || 'the owner'}`
     }
     const open = []
     for (const c of was) {
       const twice = found(values[c.key], c)
-      if (twice.length >= 2) open.push({ ...c, text: `${c.value} is in ${c.key} ${twice.length} times (${twice.map(what).join(', ')}): check which is right` })
+      if (twice.length >= 2) open.push({ ...c, text: `${c.value} is in ${c.key} ${twice.length} times (${twice.map(what).join(', ')}): check which is right`, choices: twice.filter(e => e.id != null).map(e => ({ id: String(e.id), label: what(e) })) })
     }
     if (open.length !== was.length) await apps.keep(appId, `clash:${owner}`, was.filter(c => open.some(o => o.number === c.number && o.value === c.value && o.key === c.key)), LINKS).catch(() => {})
     return open
+  }
+  // Names of a person the app wrote itself on entries it put in or
+  // changed (by, ticked_by), taken off.
+  function unsignAuto(before, value, name, depth = 0) {
+    if (depth > 4 || !value || typeof value !== 'object') return value
+    if (Array.isArray(value)) {
+      const was = new Map((Array.isArray(before) ? before : []).filter(e => e && e.id != null).map(e => [String(e.id), e]))
+      return value.map(e => {
+        if (!e || typeof e !== 'object' || Array.isArray(e)) return e
+        const old = e.id != null ? was.get(String(e.id)) : undefined
+        const out = { ...e }
+        for (const k of Object.keys(out)) if ((k === 'by' || /_by$/i.test(k)) && out[k] === name && old?.[k] !== name) delete out[k]
+        return out
+      })
+    }
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, unsignAuto(before && typeof before === 'object' ? before[k] : undefined, v, name, depth + 1)]))
   }
   const nameOfEntry = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at)$/i.test(k) && typeof v === 'string' && v.trim() && !/^\d{4}-\d\d-\d\d/.test(v))?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 40)
   // Keeps of one value go one after another, in the order they came: the
@@ -799,8 +818,10 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         // version putting what it had in its own shape): nobody's doing, so
         // it carries no name and is no link's own (TOM-2).
         const auto = name === 'app_keep' && args?.auto === true
-        if (args && typeof args === 'object' && 'auto' in args) {
-          const { auto: _, ...rest } = args
+        // Kept right after the chat asked for something: what it took out was asked for.
+        const askedFor = name === 'app_keep' && args?.asked === true
+        if (args && typeof args === 'object' && ('auto' in args || 'asked' in args)) {
+          const { auto: _, asked: __, ...rest } = args
           args = rest
         }
         const app = await apps.get(appId)
@@ -823,6 +844,22 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                 args = { ...args, value }
               }
             }
+            // What was taken out stays out (round 9 TOM-2, TOM-3): an entry
+            // taken out comes back only from the browser that took it out
+            // (its own undo), never from a phone still showing the old list.
+            const goneSlot = `gone:${who?.owner ?? ''}:${key}`
+            const listed = name === 'app_keep' && !isView(key) && Array.isArray(args?.value)
+            const stored_ = listed ? await apps.kept(app.id, key, who?.owner ?? '').catch(() => null) : null
+            if (listed) {
+              const gone = (await apps.kept(app.id, goneSlot, LINKS).catch(() => null)) ?? {}
+              const there = new Set((Array.isArray(stored_) ? stored_ : []).map(e => String(e?.id)))
+              const back = args.value.filter(e => e && typeof e === 'object' && e.id != null && !there.has(String(e.id)) && gone[String(e.id)] && gone[String(e.id)] !== `${me ?? ''}|${self ?? ''}`)
+              if (back.length) {
+                args = { ...args, value: args.value.filter(e => !back.includes(e)) }
+                for (const e of back) said.push({ field: key, stayedOut: entryName(e) })
+                mergedIn = true
+              }
+            }
             const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? (await refusal(who, app.id, args)) || (await outOfPart(who, app.id, args)) : ''
             if (refused) return { content: [{ type: 'text', text: refused }], isError: true }
             // A person's link: what it adds says who added it, it sees and
@@ -831,10 +868,30 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             const own_ = name === 'app_keep' && who && !isView(key)
             const before = own_ ? await apps.kept(app.id, key, who.owner).catch(() => null) : null
             const name_ = auto ? '' : who?.name
+            // A keep nobody made (a new version drawing first on a link's
+            // phone, putting in what the owner asked the chat for) can't
+            // sign as that person, whatever the app wrote (round 9 TOM-4).
+            if (auto && who?.name && name === 'app_keep' && !isView(key)) args = { ...args, value: unsignAuto(stored_ ?? (await apps.kept(app.id, key, who.owner).catch(() => null)), args?.value, who.name) }
             if (own_ && (who.name || who.only || who.hide)) asked = { ...args, value: withHidden(before, withPart(before, args?.value, { by: name_, only: who.only }), who.hide) }
             // A link made for a person signs with their name, whatever the app wrote (P).
             if (own_ && name_) asked = { ...asked, value: signed(before, asked?.value, name_) }
             const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine, auto ? '' : who?.name ?? (who && who.role !== 'own' && who.role !== 'full' ? 'someone with a link' : ''))
+            // Who took each entry out, for the rule above.
+            if (listed && !out.isError) {
+              const now = await apps.kept(app.id, key, who?.owner ?? '').catch(() => null)
+              const ids = new Set((Array.isArray(now) ? now : []).map(e => String(e?.id)))
+              const gone = (await apps.kept(app.id, goneSlot, LINKS).catch(() => null)) ?? {}
+              let changed = false
+              for (const e of Array.isArray(stored_) ? stored_ : []) if (e?.id != null && !ids.has(String(e.id))) {
+                gone[String(e.id)] = `${me ?? ''}|${self ?? ''}`
+                changed = true
+                // A new version that took an entry out by itself says so on
+                // the screen, so nobody loses it without a word (TOM-2, TOM-6).
+                if (auto && !askedFor) said.push({ field: key, tookOut: entryName(e) })
+              }
+              for (const id of ids) if (gone[id]) { delete gone[id]; changed = true }
+              if (changed) await apps.keep(app.id, goneSlot, Object.fromEntries(Object.entries(gone).slice(-2000)), LINKS).catch(() => {})
+            }
             if (own_ && !out.isError) {
               if (who.role === 'helper' && who.token && !auto) {
                 const added = madeBy(hideIn(partOf(before, who.only), who.hide), args?.value)
@@ -861,7 +918,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
             // Two entries with the same number from two phones are said to
             // every phone that opens it, until one is fixed (LENA-2).
             if (who && name === 'app_kept' && args?.all && out.structuredContent?.values) {
-              const clashes = await clashesOf(app.id, who.owner, out.structuredContent.values)
+              const clashes = await clashesOf(app.id, who.owner, out.structuredContent.values, who.role === 'own' ? 'you' : '')
               if (clashes.length) out.structuredContent.clashes = clashes
             }
             if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {

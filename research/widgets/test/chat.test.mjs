@@ -837,7 +837,9 @@ test('names stay true: the app’s own keeps are nobody’s, history names each 
   await keep(owner, 'invoices', [{ id: 'i2', number: 'MS-2320', amount: 545.02 }], { base: [] })
   const opened = await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { all: true } })
   assert.equal(opened.structuredContent.clashes?.length, 1, JSON.stringify(opened.structuredContent))
-  assert.match(opened.structuredContent.clashes[0].text, /MS-2320 is in invoices 2 times \(545\.20 by Joana, 545\.02\): check which is right/)
+  assert.match(opened.structuredContent.clashes[0].text, /MS-2320 is in invoices 2 times \(545\.20 by Joana, 545\.02 by the owner\): check which is right/)
+  // Each can be kept with a button: the note says which entry is which.
+  assert.deepEqual(opened.structuredContent.clashes[0].choices.map(c => c.id), ['i1', 'i2'])
   const both = await read('invoices')
   await keep(owner, 'invoices', both.filter(i => i.id !== 'i2'))
   assert.equal((await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { all: true } })).structuredContent.clashes, undefined, 'fixed, it is said no more')
@@ -859,6 +861,35 @@ test('names stay true: the app’s own keeps are nobody’s, history names each 
   assert.equal(added.structuredContent.merged, true)
   assert.equal(added.structuredContent.value.find(j => j.id === 'n').price, undefined)
   assert.equal((await read('jobs')).find(j => j.id === 'n').price, undefined)
+})
+
+test('what was taken out stays out: a phone still showing the old list can’t bring it back (Z: round 9 TOM-2, TOM-3)', { skip }, async () => {
+  const me = '7'.repeat(32)
+  const app = await chat.apps.put({ name: 'Trip', about: 'Nights.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('trip'), args: { request: 'trip' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  const margaret = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Margaret', role: 'helper' } })).people.at(-1)
+  const keep = (who, value, base, self) => post('/api/call', { app: app.id, me: who, self, name: 'app_keep', arguments: { key: 'nights', value }, ...(base !== undefined ? { base } : {}) })
+  const read = async () => (await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { key: 'nights' } })).structuredContent.value
+  const n14 = { id: 'n14', night: 'Wed Apr 14', town: 'Porto' }, n15 = { id: 'n15', night: 'Thu Apr 15', town: 'Évora' }, p15 = { id: 'p15', night: 'Thu Apr 15', town: 'Porto' }
+  await keep(owner, [n14, n15], undefined, 'laptop')
+  // Moving Porto a day later takes Évora's first night out.
+  await keep(owner, [n14, p15], [n14, n15], 'laptop')
+  // Margaret's iPad still had the old list, and keeps it as if it were new.
+  const stale = await keep(`s-${margaret.token}`, [n14, p15, n15], [n14, p15])
+  assert.deepEqual((await read()).map(n => n.id), ['n14', 'p15'], 'Évora’s night stays out')
+  assert.equal(stale.structuredContent.merged, true)
+  assert.match(JSON.stringify(stale.structuredContent.said), /stayedOut.*Thu Apr 15/)
+  // A new version drawn first on Margaret's iPad puts in the dinner Tom
+  // asked for, the app writing her name on it: it goes in with no name
+  // (round 9 TOM-4).
+  const dinner = await post('/api/call', { app: app.id, me: `s-${margaret.token}`, name: 'app_keep', arguments: { key: 'dinners', value: [{ id: 'ramiro', place: 'Cervejaria Ramiro', by: 'Margaret' }], auto: true }, base: null })
+  assert.equal(dinner.isError, undefined)
+  const dinners = (await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { key: 'dinners' } })).structuredContent.value
+  assert.equal(dinners[0].by, undefined, JSON.stringify(dinners))
+  // The one who took it out can put it back (an undo).
+  await keep(owner, [n14, p15, n15], [n14, p15], 'laptop')
+  assert.deepEqual((await read()).map(n => n.id), ['n14', 'p15', 'n15'])
 })
 
 test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { skip }, async () => {

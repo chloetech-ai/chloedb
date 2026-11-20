@@ -71,6 +71,9 @@ let role = null
 let who = null
 // Draws the last data again from what is kept: after a keep the link can't
 // make, so a helper's screen doesn't show an item gone that is still there.
+// When the chat last asked the app for something (an entry to take out):
+// what it keeps then was asked for, not the app's own doing.
+let askedAt = 0
 let redraw = null
 let restored = 0
 let redrawn = []
@@ -125,8 +128,17 @@ function drawing(draw, connection, keeps = true) {
       }
     }).catch(error => broke(error?.message ?? error)))
   redraw = () => last !== undefined && run(last)
+  // What a request asked once (an entry to add, change or take out) is
+  // done once: a redraw gets the rest (round 9 INES-1).
+  const once = data => {
+    const values = data?.values
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null && values.remove == null)) return data
+    const { add, edit, remove, ...rest } = values
+    return { ...data, values: rest }
+  }
   return data => {
-    last = data
+    last = once(data)
+    if (last !== data) askedAt = Date.now()
     return run(data)
   }
 }
@@ -310,7 +322,7 @@ for (const type of ['pointerdown', 'keydown', 'input', 'change']) addEventListen
 async function keep(app, key, value) {
   const auto = Date.now() - touchedAt > 4000
   try {
-    await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null, ...(auto && role ? { auto: true } : {}) })
+    await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null, ...(auto ? { auto: true } : {}), ...(Date.now() - askedAt < 15000 ? { asked: true } : {}) })
     // Kept: a "Not kept" said earlier no longer stands (LENA-6).
     const box = document.getElementById('kit-banner')
     if (box && /^Not kept/.test(box.textContent)) box.remove()
