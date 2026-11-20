@@ -1841,6 +1841,58 @@ fn from_names(q: &sql::Query) -> Vec<String> {
     out
 }
 
+/// A qualifier (`t.col`) of a query on one table must name that table, its
+/// alias, or a JSON field (`attrs.in_stock`): any other names no table of
+/// the query (SAM-404). Subqueries have their own tables and may name the
+/// outer one, so they are left to their own planning.
+fn check_qualifiers(q: &sql::Query, s: &sql::Select, schema: &Schema, alias: Option<&str>) -> Result<()> {
+    use std::ops::ControlFlow;
+    struct Walk<'a> {
+        schema: &'a Schema,
+        alias: Option<&'a str>,
+        depth: usize,
+    }
+    impl sqlparser::ast::Visitor for Walk<'_> {
+        type Break = String;
+        fn pre_visit_query(&mut self, _: &sql::Query) -> ControlFlow<String> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &sql::Query) -> ControlFlow<String> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<String> {
+            if let (0, Expr::CompoundIdentifier(ids)) = (self.depth, e) {
+                if let [t, _] = ids.as_slice() {
+                    let t = &t.value;
+                    let known = t.eq_ignore_ascii_case(&self.schema.table) || self.alias.is_some_and(|a| t.eq_ignore_ascii_case(a)) || self.schema.field_index(t).is_some();
+                    if !known {
+                        let mut names = vec![self.schema.table.as_str()];
+                        names.extend(self.alias);
+                        let near = super::hint::did_you_mean(t, names.iter().copied());
+                        return ControlFlow::Break(format!("no table {t} in FROM{near}: this query reads {}", names.join(" as ")));
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut w = Walk { schema, alias, depth: 0 };
+    let r = sqlparser::ast::Visit::visit(s, &mut w);
+    if let ControlFlow::Continue(()) = r {
+        if let Some(o) = &q.order_by {
+            if let ControlFlow::Break(m) = sqlparser::ast::Visit::visit(o, &mut w) {
+                return Err(err(m));
+            }
+        }
+    }
+    match r {
+        ControlFlow::Break(m) => Err(err(m)),
+        _ => Ok(()),
+    }
+}
+
 /// One table of a join.
 struct Src<'a> {
     alias: String,
@@ -2243,8 +2295,11 @@ impl<'a> Planner<'a> {
                     _ => self.join(q, s),
                 }
             }
-            TableFactor::Table { name, .. } => match self.table(&super::sql::table_name(name)) {
-                Some(schema) => self.single(q, s, schema),
+            TableFactor::Table { name, alias, .. } => match self.table(&super::sql::table_name(name)) {
+                Some(schema) => {
+                    check_qualifiers(q, s, schema, alias.as_ref().map(|a| a.name.value.as_str()))?;
+                    self.single(q, s, schema)
+                }
                 None => Err(err(self.no_table(&super::sql::table_name(name)))),
             },
             TableFactor::Derived { .. } => self.join(q, s),

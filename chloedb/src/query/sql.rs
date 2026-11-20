@@ -182,8 +182,6 @@ pub enum Conflict {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Assign {
     Value(Value),
-    /// `field = field + x` (or `- x`): an INT or a FLOAT, integers exact.
-    Add(Value),
     /// `field = excluded.g`, in `ON CONFLICT DO UPDATE`: field `g` of the
     /// document the INSERT proposed.
     Excluded(usize),
@@ -191,8 +189,8 @@ pub enum Assign {
     /// UPDATE`, of `excluded.g`), computed for each row by the plan IR's
     /// evaluator ([`crate::query::ir::eval`]) and stored as the field's
     /// type: a whole FLOAT fits an INT, and one value a multi-valued field.
-    /// NULL in gives NULL out, as in SQL; only `field + number` counts a
-    /// NULL as zero.
+    /// NULL in gives NULL out, as in SQL, in every expression (`n + 1`,
+    /// `1 + n` and `n * 2` alike).
     Expr(crate::query::ir::Expr),
 }
 
@@ -331,6 +329,59 @@ pub fn bind_command(sql_text: &str, tables: &[&Schema], params: &Params) -> Resu
         });
     }
     bind_statement(&parse_one(sql_text)?, tables, params)
+}
+
+/// The statement an `EXPLAIN` explains, as SQL text, and whether it asked
+/// for `FORMAT JSON`; `None` for any other statement.
+pub fn explained(sql_text: &str) -> Result<Option<(String, bool)>> {
+    if !sql_text.trim_start().get(..7).is_some_and(|w| w.eq_ignore_ascii_case("explain")) {
+        return Ok(None);
+    }
+    let sql::Statement::Explain { statement, .. } = parse_one(sql_text)? else { return Ok(None) };
+    let json = matches!(bind_command(sql_text, &[], &Params::new()), Ok(Command::Explain { json: true }));
+    Ok(Some((statement.to_string(), json)))
+}
+
+/// What `EXPLAIN` shows of an INSERT, UPDATE or DELETE: its plan, and the
+/// query that picks its rows, which a caller plans as a read and puts in
+/// with [`WritePlan::picking`].
+pub struct WritePlan {
+    plan: ir::Plan,
+    /// The query that picks the rows, with its parameters.
+    pub pick: Option<(String, Params)>,
+    /// How the rows are picked, as a line of the plan.
+    pub note: Option<String>,
+}
+
+impl WritePlan {
+    /// The plan, its rows the ones `picked` (the plan of [`Self::pick`]'s query) finds.
+    pub fn picking(mut self, picked: ir::Plan) -> ir::Plan {
+        if let ir::Node::Update { input, .. } | ir::Node::Delete { input, .. } = &mut self.plan.root {
+            *input = Box::new(picked.root);
+        }
+        ir::Plan::new(self.plan.root)
+    }
+
+    /// The plan, when the write picks no rows.
+    pub fn plan(self) -> ir::Plan {
+        self.plan
+    }
+}
+
+/// The plan of `sql_text` when it is an INSERT, UPDATE or DELETE of one of
+/// `tables`, bound and not run; `None` for a query (a read explains
+/// itself), an error for what `EXPLAIN` does not take.
+pub fn write_plan(sql_text: &str, tables: &[&Schema], params: &Params) -> Result<Option<WritePlan>> {
+    match bind_command(sql_text, tables, params)? {
+        Command::Query => Ok(None),
+        Command::Write { table, write } => {
+            let schema = tables.iter().find(|t| t.table == table).expect("bound to a table of the catalog");
+            let pick = write.pick().map(|p| (p.query.to_string(), p.params.clone()));
+            let note = write.pick().map(|p| format!("  picks its rows by key under the writer lock, as the write runs, with {}", p.sql()));
+            Ok(Some(WritePlan { plan: ir::Plan::of_write(schema, &write), pick, note }))
+        }
+        _ => Err(err("EXPLAIN shows the plan of a SELECT, INSERT, UPDATE or DELETE")),
+    }
 }
 
 /// [`bind_command`] of a parsed statement.
@@ -1864,7 +1915,7 @@ impl<'a> Binder<'a> {
                 if group.contains(&f) {
                     Ok(Projection::Field(f))
                 } else {
-                    Err(err(format!("{e}: use a group field or an aggregate")))
+                    Err(err(format!("{e} must be in GROUP BY or inside an aggregate (COUNT, SUM, AVG, MIN, MAX)")))
                 }
             }
         }
@@ -1895,17 +1946,26 @@ impl<'a> Binder<'a> {
                 if *negated { Having::Not(Box::new(h)) } else { h }
             }
             Expr::BinaryOp { left, op, right } => {
-                let (what, lit, op) = match self.group_value(left, proj, group) {
-                    Ok(w) => (w, right, op.clone()),
-                    Err(_) => {
-                        let flipped = match op {
-                            Lt => Gt,
-                            LtEq => GtEq,
-                            Gt => Lt,
-                            GtEq => LtEq,
-                            o => o.clone(),
-                        };
-                        (self.group_value(right, proj, group)?, left, flipped)
+                let flip = |op: &BinaryOperator| match op {
+                    Lt => Gt,
+                    LtEq => GtEq,
+                    Gt => Lt,
+                    GtEq => LtEq,
+                    o => o.clone(),
+                };
+                // The value is on the side that is no column: a number
+                // there is a value, never the position of an output
+                // column (`HAVING n > 5`, `HAVING total > 10`).
+                let (what, lit, op) = if matches!(**left, Expr::Value(_)) {
+                    (self.group_value(right, proj, group)?, left, flip(op))
+                } else {
+                    match self.group_value(left, proj, group) {
+                        Ok(w) => (w, right, op.clone()),
+                        Err(e) if matches!(**right, Expr::Value(_)) => return Err(e),
+                        Err(e) => match self.group_value(right, proj, group) {
+                            Ok(w) => (w, left, flip(op)),
+                            Err(_) => return Err(e),
+                        },
                     }
                 };
                 let v = match self.typed_source(&what) {
@@ -2638,6 +2698,10 @@ impl<'a> Binder<'a> {
                 };
                 if *negated { Pred::Not(Box::new(p)) } else { p }
             }
+            Expr::Like { any: true, .. } | Expr::ILike { any: true, .. } => {
+                let k = if matches!(e, Expr::ILike { .. }) { "ILIKE" } else { "LIKE" };
+                return Err(err(format!("{k} ANY is not supported: write one {k} per pattern, joined with OR ({k} with a single pattern works on this field)")));
+            }
             Expr::ILike { .. } => return Err(err("ILIKE cannot use a KEYWORD field's index: store the value lowercased and use LIKE")),
             Expr::Function(func) if fname(func) == "prefix" => {
                 let (args, opts) = self.args(func)?;
@@ -3279,6 +3343,13 @@ impl<'a> Binder<'a> {
                 }
             });
         }
+        let mut aggregate = false;
+        for side in [left, right] {
+            super::compound::walk(side, &mut |x| aggregate |= matches!(x, Expr::Function(f) if f.over.is_none() && super::compound::AGGREGATES.contains(&fname(f).as_str())));
+        }
+        if aggregate {
+            return err(format!("{cond}: an aggregate is not allowed in WHERE, which filters rows before they are grouped: use HAVING (SELECT k, COUNT(*) FROM t GROUP BY k HAVING COUNT(*) > 1)"));
+        }
         if cols.is_empty() {
             return err(format!("{cond} compares no column of {}: a condition tests a column (price > 10) or an expression of columns (lower(brand) = 'acme')", self.schema.table));
         }
@@ -3448,19 +3519,6 @@ impl<'a> Binder<'a> {
                 return Err(err(format!("{} is set twice", fld.name)));
             }
             let assign = match &a.value {
-                Expr::BinaryOp { left, op: op @ (BinaryOperator::Plus | BinaryOperator::Minus), right } if matches!(self.set_ref(left, alias, excluded), Some(Ok(ir::Expr::Field(g))) if g as usize == f) && self.num_literal(right).is_ok() => {
-                    if !matches!(fld.ty, FieldType::Int | FieldType::Float) || fld.logical.is_some() {
-                        return Err(err(format!("{} is not numeric", fld.name)));
-                    }
-                    if fld.multi {
-                        return Err(err(format!("{} holds a list: SET it to a list", fld.name)));
-                    }
-                    Assign::Add(match (self.num_literal(right)?, op) {
-                        (x, BinaryOperator::Plus) => x,
-                        (Value::Int(x), _) => x.checked_neg().map_or(Value::Float(-(x as f64)), Value::Int),
-                        (x, _) => Value::Float(-x.as_f64().unwrap_or(0.0)),
-                    })
-                }
                 Expr::CompoundIdentifier(ids) if excluded && ids.len() == 2 && ids[0].value.eq_ignore_ascii_case("excluded") => {
                     let g = self.schema.field_index(&ids[1].value).ok_or_else(|| err(hint::no_column(self.schema, &ids[1].value)))?;
                     let src = &self.schema.fields[g];

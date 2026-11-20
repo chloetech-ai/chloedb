@@ -3940,6 +3940,35 @@ async fn explain(State(app): State<App>, w: Option<axum::Extension<Principal>>, 
     let who = who(w);
     reads_ok(&app, &who, sql).await?;
     let params = app.svc.params_for(b.get("params"), Some(sql), &who).await?;
+    // `EXPLAIN SELECT ...` as it is typed in /v1/sql explains the statement.
+    let stripped = chloedb::query::sql::explained(sql)?.map(|(inner, _)| inner);
+    let sql = stripped.as_deref().unwrap_or(sql);
+    // An INSERT, UPDATE or DELETE is explained and not run: its plan, and
+    // how it picks its rows.
+    if matches!(sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("").to_ascii_lowercase().as_str(), "insert" | "update" | "delete") {
+        let t0 = std::time::Instant::now();
+        let (plan, note) = app.svc.explain_plan(sql, &params, body_u64(&b, "timeout_ms")?, app.svc.budget_for(Some(&who), body_budget(&b)?)).await?;
+        let catalog = app.svc.catalog();
+        let tables: Vec<&chloedb::schema::Schema> = catalog.iter().map(|t| &**t).collect();
+        let mut lines = plan.explain(&tables);
+        if let Some(n) = note {
+            lines.insert(1.min(lines.len()), n);
+        }
+        return Ok(AxJson(json!({
+            "kind": "explain",
+            "logical": format!("{:#?}", plan.root),
+            "ir": plan.to_json()?,
+            "tree": json!(lines),
+            // Nothing ran: no executor lines, steps or rows.
+            "ran": false,
+            "plan": [],
+            "steps": [],
+            "filter_docs": 0,
+            "scored": 0,
+            "rows": 0,
+            "took_ms": t0.elapsed().as_secs_f64() * 1e3,
+        })));
+    }
     // A query that asks a language model about its rows: the plan of the
     // rows it asks about, and nothing asked.
     let first = chloedb::query::llm::split_sql(sql, &app.svc.functions(), &params)?.map(|s| s.first_sql()).transpose()?;

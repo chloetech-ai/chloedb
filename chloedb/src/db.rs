@@ -3664,25 +3664,6 @@ fn plan_sets(schema: &Schema, models: &[Option<Arc<dyn Embedder>>], derivers: &[
                 Assign::Value(v) => v.clone(),
                 Assign::Excluded(g) => proposed[*g].clone(),
                 Assign::Expr(e) => qsql::assigned(&schema.fields[f], eval::eval(e, &read)?)?,
-                // NULL counts as zero; a sum that overflows is an
-                // error, as in Postgres.
-                Assign::Add(x) => {
-                    let overflow = || Error::Query(format!("{} + {x:?} overflows", schema.fields[f].name));
-                    match (&schema.fields[f].ty, x) {
-                        (FieldType::Int, Value::Int(x)) => Value::Int(row[f].as_i64().unwrap_or(0).checked_add(*x).ok_or_else(overflow)?),
-                        (FieldType::Int, Value::Float(y)) if y.fract() == 0.0 && y.abs() < 9.2e18 => {
-                            Value::Int(row[f].as_i64().unwrap_or(0).checked_add(*y as i64).ok_or_else(overflow)?)
-                        }
-                        (FieldType::Int, _) => return Err(Error::Query(format!("{} is INT: add an integer", schema.fields[f].name))),
-                        _ => {
-                            let y = row[f].as_f64().unwrap_or(0.0) + x.as_f64().unwrap_or(0.0);
-                            if !y.is_finite() {
-                                return Err(overflow());
-                            }
-                            Value::Float(y)
-                        }
-                    }
-                }
             })
         };
         if !rewrite {

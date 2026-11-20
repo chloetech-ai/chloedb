@@ -3611,6 +3611,80 @@ async fn a_simple_analyzer_over_http() {
     }
 }
 
+/// `EXPLAIN <statement>` works over `/v1/sql` as it does in an embedded
+/// database, and `/v1/explain` takes the same text and explains writes
+/// without running them (SAM-405).
+#[tokio::test(flavor = "multi_thread")]
+async fn explain_works_over_sql_and_for_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), "e2.strata", |i| i < 300);
+    let base = http(service(db, "http://unused"), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let before = post(&c, &format!("{base}/v1/sql"), json!({ "sql": "SELECT COUNT(*) FROM products" })).await.1["rows"][0][0].clone();
+    for sql in [
+        "EXPLAIN SELECT id FROM products WHERE category = 'kitchen' LIMIT 5",
+        "EXPLAIN UPDATE products SET price = 1 WHERE category = 'kitchen'",
+        "EXPLAIN DELETE FROM products WHERE category = 'kitchen'",
+    ] {
+        let (status, r) = post(&c, &format!("{base}/v1/sql"), json!({ "sql": sql })).await;
+        assert_eq!(status, 200, "{sql}: {r}");
+        assert_eq!(r["columns"], json!(["plan"]), "{sql}: {r}");
+        assert!(r["rows"].as_array().is_some_and(|p| !p.is_empty()), "{sql}: {r}");
+        // The explain endpoint takes the same text.
+        let (status, e) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": sql })).await;
+        assert_eq!(status, 200, "{sql}: {e}");
+        assert!(e["tree"].as_array().is_some_and(|p| !p.is_empty()), "{sql}: {e}");
+    }
+    let (_, w) = post(&c, &format!("{base}/v1/explain"), json!({ "sql": "UPDATE products SET price = 1 WHERE category = 'kitchen'" })).await;
+    assert_eq!(w["ran"], json!(false), "{w}");
+    assert!(w["tree"][0].as_str().unwrap().starts_with("Update"), "{w}");
+    // Nothing was written.
+    let after = post(&c, &format!("{base}/v1/sql"), json!({ "sql": "SELECT COUNT(*) FROM products" })).await.1["rows"][0][0].clone();
+    assert_eq!(before, after);
+    let (_, p) = post(&c, &format!("{base}/v1/sql"), json!({ "sql": "SELECT COUNT(*) FROM products WHERE price = 1" })).await;
+    assert_eq!(p["rows"][0][0], json!(0), "{p}");
+}
+
+/// Over `/v1/sql`, an UPDATE follows SELECT's NULL rules in every form
+/// (SAM-401), the five mistakes get messages that point the right way
+/// (SAM-403), and a qualifier that names no table of the query is an error
+/// (SAM-404).
+#[tokio::test(flavor = "multi_thread")]
+async fn sql_null_rules_and_errors_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = create(dir.path(), "n.strata", |i| i < 10);
+    let base = http(service(db, "http://unused"), None).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    let sql = |s: &str| post(&c, &format!("{base}/v1/sql"), json!({ "sql": s }));
+    for s in [
+        "CREATE TABLE trips (trip_id INT PRIMARY KEY, VendorID KEYWORD, payment_type INT, total_amount FLOAT, n INT)",
+        "INSERT INTO trips VALUES (1, 'a', 1, 10.5, NULL), (2, 'a', 2, 20.0, 5)",
+    ] {
+        let (status, r) = sql(s).await;
+        assert_eq!(status, 200, "{s}: {r}");
+    }
+    for e in ["n + 1", "1 + n", "n - 1", "n * 2", "n + 0"] {
+        let (_, r) = sql(&format!("SELECT {e} FROM trips WHERE trip_id = 1")).await;
+        assert_eq!(r["rows"], json!([[null]]), "SELECT {e}: {r}");
+        let (status, r) = sql(&format!("UPDATE trips SET n = {e} WHERE trip_id = 1")).await;
+        assert_eq!(status, 200, "{e}: {r}");
+        let (_, r) = sql("SELECT n FROM trips WHERE trip_id = 1").await;
+        assert_eq!(r["rows"], json!([[null]]), "SET n = {e}: {r}");
+    }
+    for (s, want) in [
+        ("SELECT VendorID, COUNT(*) FROM trips GROUP BY VendorID HAVING total_amount > 10", "total_amount must be in GROUP BY or inside an aggregate"),
+        ("SELECT VendorID, COUNT(*) FROM trips GROUP BY VendorID HAVING payment_type = 1", "payment_type must be in GROUP BY or inside an aggregate"),
+        ("SELECT VendorID FROM trips WHERE COUNT(*) > 1 GROUP BY VendorID", "use HAVING"),
+        ("SELECT COUNT(*) FROM trips WHERE VendorID ILIKE ANY (ARRAY['%a%', '%b%'])", "ILIKE ANY is not supported"),
+        ("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT n FROM r", "WITH RECURSIVE is not supported"),
+        ("SELECT nosuch.trip_id FROM trips WHERE bar.trip_id < 3", "no table nosuch in FROM"),
+    ] {
+        let (status, r) = sql(s).await;
+        assert_eq!(status, 400, "{s}: {r}");
+        assert!(r["error"].as_str().is_some_and(|m| m.contains(want)), "{s}: {r}");
+    }
+}
+
 /// `/v1/explain` gives the plan IR of a query, as JSON that reads back to
 /// the query it was bound from, and as lines of text; a compound query's
 /// plan has operators over single-table queries. `/v1/plan` runs a plan.
