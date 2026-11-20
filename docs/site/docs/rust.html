@@ -115,7 +115,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Clients</span>
       <h1>ChloeDB from Rust</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/rust.md">docs/chloedb/rust.md</a>.</p>
-      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
+      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#add-it">Add it</a></li><li><a href="#open-or-create-a-database">Open or create a database</a></li><li><a href="#write">Write</a></li><li><a href="#search-and-query">Search and query</a></li><li><a href="#errors">Errors</a></li><li><a href="#where-the-examples-come-from">Where the examples come from</a></li></ol></details>
     <div class="doc-body">
@@ -124,7 +124,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <h2 id="add-it">Add it<a class="anchor" href="#add-it" aria-label="Link to this section">#</a></h2>
 <p>The crate is not on crates.io yet. The <code>chloedb</code> there is a placeholder that only holds the name (it still says Strata, ChloeDB's name before November 2026). Depend on the repository instead, at a release's tag:</p>
 <pre data-lang="yaml">[dependencies]
-chloedb = { git = &quot;https://github.com/chloetech-ai/chloedb&quot;, tag = &quot;chloedb-server-v0.3.8&quot; }</pre>
+chloedb = { git = &quot;https://github.com/chloetech-ai/chloedb&quot;, tag = &quot;chloedb-server-v0.3.9&quot; }</pre>
 <p>Cargo finds the crate in the repository's <code>chloedb/</code> folder. Building it needs Rust (stable) and a C compiler (<code>xcode-select --install</code> on macOS, <code>build-essential</code> on Debian and Ubuntu), because the tokenizer's regex library is C. The first build compiles ChloeDB and its dependencies, which takes several minutes. The default features are <code>embed</code> (embedding models run in the process) and <code>hosted</code> (embedding models behind an HTTP API); <code>sqlite</code>, <code>parquet</code>, <code>s3</code>, <code>bert</code> and <code>onnx</code> add SQLite and Parquet import and export, <code>s3://</code> URLs, and more model kinds (<code>chloedb/Cargo.toml</code> describes each one). <code>cargo doc -p chloedb --open</code> shows the API of the version you depend on.</p>
 <p>The examples below use these imports:</p>
 <pre data-lang="rust" data-title="Rust">use std::path::Path;

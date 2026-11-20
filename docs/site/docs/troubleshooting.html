@@ -115,7 +115,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Start</span>
       <h1>Troubleshooting</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/troubleshooting.md">docs/chloedb/troubleshooting.md</a>.</p>
-      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.8 (<a href="v0.3.8/index.html">its docs</a>): a change made after it says so where it is described.</p>
+      <p class="doc-version">These docs follow main (0.3.9, unreleased). The latest release is 0.3.8 (<a href="v0.3.8/index.html">its docs</a>); what is newer is marked "since 0.3.9".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#installing">Installing</a></li><li><a href="#opening-a-database">Opening a database</a></li><li><a href="#models-and-vectors">Models and vectors</a></li><li><a href="#running-a-server">Running a server</a></li><li><a href="#chloectx">ChloeCtx</a></li></ol></details>
     <div class="doc-body">
@@ -123,8 +123,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>The errors people meet first with ChloeDB, each with its message as the program prints it, what it means and what to do. Search this page for a few words of your message. These are the messages of release 0.3.8.</p>
 <p><code>chloedb-server doctor</code> checks this machine for the usual causes at once: its version against the latest release, the Python package, the models folder, port 7700 and glibc. It changes nothing, prints a <code>fix:</code> line under each check that is not <code>ok</code>, and exits 1 when one fails:</p>
 <pre data-lang="text" data-title="Output">$ chloedb-server doctor --offline
-ok   version: chloedb-server 0.3.8 (the latest release was not looked up)
-ok   python package: chloedb 0.3.8
+ok   version: chloedb-server 0.3.9 (the latest release was not looked up)
+ok   python package: chloedb 0.3.9
 warn models: no models in /home/me/.local/share/chloedb/models: a table whose vectors ChloeDB embeds needs its model
        fix: chloedb-server fetch-model potion-retrieval-32M   (into /home/me/.local/share/chloedb/models)
 ok   port: 7700 is free (the guides&#x27; servers listen there)
@@ -136,13 +136,13 @@ ok   glibc: 2.39: the prebuilt programs and wheels run here</pre>
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   https://github.com/chloetech-ai/chloedb/releases/latest: The requested URL returned error: 403
   https://chloetech-ai.github.io/chloedb/site/versions.json: The requested URL returned error: 403
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v&lt;version&gt;; 0.3.8 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v&lt;version&gt;; 0.3.9 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=&lt;version&gt; sh</pre>
 <p>Without <code>CHLOEDB_VERSION</code>, the script asks which release is the newest, in turn: GitHub's API (<code>api.github.com</code>), then the address <code>github.com/chloetech-ai/chloedb/releases/latest</code> leads to, then this website's <code>versions.json</code>, and it says which one answered. It stops as above when none did, with each address and what it said: a proxy or firewall that blocks those addresses, or no network. A proxy that blocks only <code>api.github.com</code>, or an address that has used up GitHub's 60 requests an hour for clients without an account (a shared office or school network, a CI runner), no longer stops it. Copies of the script from before 18 November 2026, when it learned the other two, stop at the API instead, with these lines:</p>
 <pre data-lang="text" data-title="Output">curl: (22) The requested URL returned error: 403
 chloedb install: could not find a chloedb-server release on https://github.com/chloetech-ai/chloedb/releases (set CHLOEDB_VERSION to pick one)</pre>
 <p>In either case, name the version, and the script downloads it without asking. The archives come from <code>github.com</code>'s downloads, which often still work where the other addresses are refused. The variable goes after the pipe, where <code>sh</code> reads it; in front of <code>curl</code> it reaches only <code>curl</code>, and the script fails the same way. The last line the script prints is the command to run, with your <code>--with</code> and <code>CHLOEDB_INSTALL_DIR</code> kept:</p>
-<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.8 sh</pre>
+<pre data-lang="sh">curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh</pre>
 <p>Or install the same server from PyPI, which asks GitHub nothing: <code>pipx install chloedb-server</code>, <code>uv tool install chloedb-server</code>, <code>pip install chloedb-server</code> in a virtualenv, or <code>uvx chloedb-server</code> to run it without installing it (macOS 11+, and Linux with glibc 2.34 or later). The <a href="quickstart.html#1-install-the-server">quickstart</a> has the other ways, by hand included.</p>
 <h3 id="the-install-scripts-other-messages">The install script's other messages<a class="anchor" href="#the-install-scripts-other-messages" aria-label="Link to this section">#</a></h3>
 <div class="doc-table"><table>
