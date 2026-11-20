@@ -621,8 +621,12 @@ window.__sa_numbers = (() => {
         if (el.__opts === key) return;
         const had = el.__opts !== undefined ? el.value : v;
         el.__opts = key;
-        el.replaceChildren(...(f.required ? [] : [h('option', { value: '' }, f.placeholder || '—')]), ...opts.map((o) => h('option', { value: o.value }, o.label)));
-        if (had != null && opts.some((o) => String(o.value) === String(had))) el.value = String(had);
+        // A row's value that is none of the choices (an older word, an
+        // imported row) stays a choice: an edit that leaves it must not
+        // empty the column.
+        const kept = had != null && had !== '' && !opts.some((o) => String(o.value) === String(had)) ? [h('option', { value: String(had) }, String(had))] : [];
+        el.replaceChildren(...(f.required ? [] : [h('option', { value: '' }, f.placeholder || '—')]), ...kept, ...opts.map((o) => h('option', { value: o.value }, o.label)));
+        if (had != null && (kept.length || opts.some((o) => String(o.value) === String(had)))) el.value = String(had);
       };
       entry.refresh = (s2) => { for (const f of fields) if ((f.type || 'text') === 'select' && isExpr(f.options)) fillSelect(controls.get(f.name), f, s2, null); };
       // A form of more than three fields, or with a long one, is laid out

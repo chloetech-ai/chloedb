@@ -155,6 +155,70 @@ function literal(s) {
   return t;
 }
 
+// The value an ACTION ... SET gives a column: {value} for a literal (a bare
+// word stays the word it is, as before), or {js, when} for one worked out
+// from the row: NOT col, col + 1 / col - 1, and CASE col WHEN 'a' THEN 'b'
+// ... [ELSE ...] END (also CASE WHEN col = 'a' THEN 'b' ...), the next state
+// of a status. "when" says where it changes anything: a CASE with no ELSE
+// (or ELSE the column itself) only on a row whose value one of its WHENs
+// names. Anything else is refused: written into the row, an expression
+// would be its text (status = "CASE status WHEN ...").
+const SET_HELP = "ACTION 'Label' SET <col> = a value ('done', 3, TRUE, NULL, TODAY), NOT <col>, <col> + 1, <col> - 1, or CASE <col> WHEN 'a' THEN 'b' ... [ELSE ...] END";
+function setValue(col, expr, line) {
+  const t = expr.trim();
+  const ref = (c) => `row[${JSON.stringify(c)}]`;
+  const lit = (s) => {
+    const x = s.trim();
+    if (/^'.*'$/s.test(x) || /^-?\d+(\.\d+)?$/.test(x) || /^(true|false|null)$/i.test(x)) return { ok: true, value: literal(x) };
+    if (/^(today|current_date)$/i.test(x)) return { ok: true, today: true };
+    return { ok: false };
+  };
+  const js = (l) => (l.today ? 'app.today()' : JSON.stringify(l.value));
+  if (/^(today|current_date)$/i.test(t)) return { value: 'TODAY' };
+  if (!/\s/.test(t) && !/[()+*/<>=]/.test(t.replace(/^-/, '')) || /^'.*'$/s.test(t) || /^".*"$/s.test(t)) return { value: literal(t) };
+  let m = t.match(/^NOT\s+([A-Za-z_][A-Za-z0-9_]*)$/i);
+  if (m) return { js: `!${ref(m[1])}` };
+  m = t.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*([+-])\s*(\d+(?:\.\d+)?)$/);
+  if (m) return { js: `(Number(${ref(m[1])}) || 0) ${m[2]} ${m[3]}` };
+  m = t.match(/^CASE\s+([\s\S]+)\s+END$/i);
+  if (m) {
+    let body = m[1].trim();
+    let on = null;
+    const simple = body.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+(WHEN\b[\s\S]*)$/i);
+    if (simple && !/^WHEN$/i.test(simple[1])) { on = simple[1]; body = simple[2]; }
+    const arms = [];
+    let other = null;
+    const re = /\s*(WHEN\s+([\s\S]+?)\s+THEN\s+('(?:[^']|'')*'|[^\s']+)|ELSE\s+('(?:[^']|'')*'|[^\s']+))\s*/giy;
+    let a;
+    let at = 0;
+    while (at < body.length && (a = re.exec(body))) {
+      at = re.lastIndex;
+      if (a[4] !== undefined) { other = a[4]; continue; }
+      let cond = a[2].trim();
+      if (!on) {
+        const c = cond.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/);
+        if (!c) fail(line, `${SET_HELP}: a CASE's WHEN compares one column with a value (WHEN status = 'new')`);
+        on = c[1]; cond = c[2];
+      } else if (/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(cond) && !cond.startsWith(on)) fail(line, `${SET_HELP}: one CASE reads one column`);
+      cond = cond.replace(new RegExp(`^${on}\\s*=\\s*`), '');
+      const w = lit(cond);
+      const v = lit(a[3]);
+      if (!w.ok || !v.ok) fail(line, `${SET_HELP}: each WHEN and THEN is a value`);
+      arms.push([w, v]);
+    }
+    if (at < body.length || !arms.length || !on) fail(line, SET_HELP);
+    const keys = arms.map(([w]) => (w.today ? 'app.today()' : JSON.stringify(String(w.value))));
+    const map = `({${arms.map(([w, v], i) => `[${keys[i]}]: ${js(v)}`).join(', ')}})`;
+    const elseLit = other === null || other === on || other === col ? null : lit(other);
+    if (elseLit && !elseLit.ok) fail(line, `${SET_HELP}: ELSE is a value or the column itself`);
+    return {
+      js: `((m, k) => Object.prototype.hasOwnProperty.call(m, k) ? m[k] : ${elseLit ? js(elseLit) : ref(col)})(${map}, String(${ref(on)}))`,
+      when: elseLit ? null : `Object.prototype.hasOwnProperty.call(${map}, String(${ref(on)}))`,
+    };
+  }
+  fail(line, `${SET_HELP}; work anything else out in a rule (CREATE RULE) the screen calls`);
+}
+
 // "( ... )" -> the inside; the rest after it.
 function parens(s, line, what) {
   const t = s.trim();
@@ -479,15 +543,25 @@ export function compileStatement(text) {
         if (!m) fail(n, "ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE");
         let doIt;
         let setsOf = null;
+        let when = null;
         if (m[3]) doIt = `=row => app.open(${jsStr(m[3])}, {id: row.id})`;
         else if (m[4]) {
-          const sets = splitTop(m[4]).map((x) => { const mm = x.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/); if (!mm) fail(n, `ACTION SET: ${JSON.stringify(x)} is not col = value`); return [mm[1], literal(mm[2])]; });
-          const vals = Object.fromEntries(sets.map(([k, v]) => [k, v === 'TODAY' || v === 'today' ? '@today' : v]));
-          doIt = `=row => app.update(${jsStr(u.table)}, row.id, ${JSON.stringify(vals).replace(/"@today"/g, 'app.today()')})`;
-          // "sets": the kit leaves the action off a row that has these values already
-          setsOf = vals;
+          const sets = splitTop(m[4]).map((x) => { const mm = x.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/); if (!mm) fail(n, `ACTION SET: ${JSON.stringify(x)} is not col = value`); return [mm[1], setValue(mm[1], mm[2], n)]; });
+          const lits = sets.filter(([, v]) => !v.js);
+          const vals = Object.fromEntries(lits.map(([k, v]) => [k, v.value === 'TODAY' || v.value === 'today' ? '@today' : v.value]));
+          // a value worked out from the row (CASE, NOT, + 1) is written as
+          // the expression that works it out, never as its text
+          const fields = sets.map(([k, v]) => `${jsStr(k)}: ${v.js || JSON.stringify(vals[k]).replace(/"@today"/g, 'app.today()')}`);
+          doIt = lits.length === sets.length
+            ? `=row => app.update(${jsStr(u.table)}, row.id, ${JSON.stringify(vals).replace(/"@today"/g, 'app.today()')})`
+            : `=row => app.update(${jsStr(u.table)}, row.id, {${fields.join(', ')}})`;
+          // "sets": the kit leaves the action off a row that has these values
+          // already; "when": a CASE with no ELSE only where one of its WHENs holds
+          if (lits.length === sets.length) setsOf = vals;
+          const conds = sets.map(([, v]) => v.when).filter(Boolean);
+          if (conds.length) when = `=row => ${conds.join(' && ')}`;
         } else { u.deleteLabel = literal(m[1]); break; } // every list has a delete button: this names it
-        u.actions = [...(u.actions || []), { label: literal(m[1]), class: 'small ghost', do: doIt, ...(setsOf ? { sets: setsOf } : {}) }];
+        u.actions = [...(u.actions || []), { label: literal(m[1]), class: 'small ghost', do: doIt, ...(setsOf ? { sets: setsOf } : {}), ...(when ? { when } : {}) }];
         break;
       }
       case 'BY': case 'STATUS': {
@@ -720,7 +794,7 @@ LIST <table> [AS key]          -- the crud pattern: rows, add/edit form, search,
   COLUMNS (col 'Label' DATE, col 'Label' MONEY BADGE, col 'Label' MONEY = <JavaScript of row>, ...)   after the label, one format word: ${COLUMN_FORMATS.join(' ')} (DAYS reads a day as "in 3 days", DURATION minutes as "1 h 05", CLOCK seconds as "5:30", HOURS a number as "2.5 h", PCT a percent as "12.5%"), and BADGE
   CARDS <title col> [SUB col, col]      (cards instead of a table)
   KPI 'Label' = COUNT(*) | SUM(col) | AVG(col) [WHERE condition] [${KPI_FORMATS.join(' | ')}]   (one line each; SQL over the table)
-  ON ROW OPEN <view slug>   ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE ('Label' names the delete button every list has)
+  ON ROW OPEN <view slug>   ACTION 'Label' OPEN <view slug> | SET col = value, ... | DELETE ('Label' names the delete button every list has; a SET value is a value, TODAY, NOT col, col + 1, or CASE col WHEN 'to do' THEN 'doing' WHEN 'doing' THEN 'done' END for a next step, shown only where a WHEN holds)
   EXPORT ['Download CSV']               (a button that downloads the rows shown, searched and filtered, as a CSV file with the COLUMNS; no function needed)
 BOARD <table> [AS key]         -- the board pattern
   BY <status col> ('new', 'doing', 'done')  NAME <title col>  META col, col  FORM (...)  TITLE  NOUN  WHERE  ORDER BY

@@ -423,6 +423,75 @@ export function figureNotShown(expected, text) {
   return expected.buckets.filter((b) => b.value !== 0 && !shows(b.value)).map((b) => fmt(b.value));
 }
 
+// ---- example rows in the screens' words
+
+// The values a version's screens give each column: a form's choices, a
+// filter's chips, a value an ACTION sets, and the values their queries
+// compare a column with (status = 'to do', status IN ('a', 'b')). By table
+// ("*": a filter or an action, whose table the screen does not say).
+export function screenValues(screens) {
+  const out = new Map();
+  const add = (table, col, v) => {
+    if (typeof v !== 'string' || !v.trim() || !col) return;
+    if (!out.has(table)) out.set(table, new Map());
+    const t = out.get(table);
+    if (!t.has(col)) t.set(col, new Set());
+    t.get(col).add(v);
+  };
+  const optVal = (o) => (o && typeof o === 'object' ? o.value : o);
+  const walk = (x) => {
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    if (!x || typeof x !== 'object') return;
+    if (typeof x.form === 'string' && Array.isArray(x.fields)) for (const f of x.fields) if (f && Array.isArray(f.options)) for (const o of f.options) add(x.form, f.name, optVal(o));
+    if (typeof x.column === 'string' && Array.isArray(x.options)) for (const o of x.options) add('*', x.column, optVal(o));
+    if (x.sets && typeof x.sets === 'object') for (const [k, v] of Object.entries(x.sets)) add('*', k, v);
+    for (const v of Object.values(x)) walk(v);
+  };
+  for (const sc of screens || []) {
+    if (!sc || typeof sc !== 'object') continue;
+    walk(sc.body);
+    for (const q of Object.values(sc.data || {})) {
+      const sql = typeof q === 'string' ? q : q && typeof q === 'object' ? q.sql : null;
+      if (typeof sql !== 'string') continue;
+      const tables = tablesIn(sql);
+      for (const m of sql.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|<>|!=)\s*'((?:[^']|'')*)'/g)) for (const t of tables) add(t, m[1].toLowerCase(), m[2].replace(/''/g, "'"));
+      for (const m of sql.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s+(?:NOT\s+)?IN\s*\(([^()]*)\)/gi)) for (const v of m[2].matchAll(/'((?:[^']|'')*)'/g)) for (const t of tables) add(t, m[1].toLowerCase(), v[1].replace(/''/g, "'"));
+    }
+  }
+  return out;
+}
+
+// Puts example rows in the screens' words: a value its screens never use
+// that is one of theirs but for case, spaces and punctuation ("todo" where
+// the form offers "to do", "In Progress" for "in_progress") becomes theirs,
+// so the counts, filters and next-step buttons that compare with it find
+// the rows. The rows are written by one writer and the screens by another,
+// at once. Returns notes of what it changed.
+export function alignWords(seed, screens) {
+  const notes = [];
+  if (!seed || typeof seed !== 'object') return notes;
+  const words = screenValues(screens);
+  const norm = (v) => String(v).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]/g, '');
+  for (const [table, rows] of Object.entries(seed)) {
+    if (!Array.isArray(rows)) continue;
+    const changed = new Map();
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      for (const [col, v] of Object.entries(row)) {
+        if (typeof v !== 'string' || col === 'id') continue;
+        const vals = new Set([...(words.get(table)?.get(col) || []), ...(words.get('*')?.get(col) || [])]);
+        if (!vals.size || vals.has(v)) continue;
+        const like = [...vals].filter((w) => norm(w) === norm(v) && norm(w));
+        if (like.length !== 1) continue;
+        row[col] = like[0];
+        changed.set(`${col}: "${v}" as "${like[0]}"`, true);
+      }
+    }
+    if (changed.size) notes.push(`in ${table}, ${[...changed.keys()].join(', ')}, as the screens say it`);
+  }
+  return notes;
+}
+
 // ---- a build's data: what the forge imports, seeds and checks
 
 // Readies a plan's data before its tables are stored: each attached sheet

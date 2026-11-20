@@ -2467,7 +2467,7 @@ test('an agent\'s MCP server signs in with the agent token, beside a cluster and
 });
 
 test('the engine\'s own browser opens the app with its cookie', async (t) => {
-  const { openViews, loadPlaywright, useSelfCookie } = await import('../engine/checks.mjs');
+  const { openViews, loadPlaywright, useSelfCookie, fromCheck } = await import('../engine/checks.mjs');
   if (!loadPlaywright()) return t.skip('no Playwright');
   const http = await import('node:http');
   const seen = [];
@@ -2478,7 +2478,12 @@ test('the engine\'s own browser opens the app with its cookie', async (t) => {
     useSelfCookie({ name: 'sa_studio', value: 'own-cookie-of-this-engine-0123456789' });
     const out = await openViews(base, 'a1', { wait: 10 });
     assert.equal(out.ran, true);
-    assert.deepEqual(seen.find(([u]) => u === '/a/a1'), ['/a/a1', 'sa_studio=own-cookie-of-this-engine-0123456789']);
+    const [, cookie] = seen.find(([u]) => u === '/a/a1');
+    assert.match(cookie, /(^|; )sa_studio=own-cookie-of-this-engine-0123456789(;|$)/);
+    // and the cookie that says it is the engine's own check, which Usage leaves out
+    assert.equal(fromCheck({ headers: { cookie } }), true);
+    assert.equal(fromCheck({ headers: { cookie: 'sa_studio=own-cookie-of-this-engine-0123456789' } }), false);
+    assert.equal(fromCheck({ headers: { cookie: 'sa_check=someone-else-made-this-one-up-123' } }), false);
   } finally {
     useSelfCookie(null);
     srv.close();
@@ -3909,4 +3914,36 @@ test('the command center uses an app as the key it signed in with, one of its pe
     engineProc?.kill();
     child.kill();
   }
+});
+
+test('ACTION SET: a value worked out from the row is written as its value, never as its text', async () => {
+  const { compileStatement } = await import('../engine/statement.mjs');
+  const act = (set) => compileStatement(`CREATE SCREEN t TITLE 'T'\nLIST tasks\n  FORM (title)\n  ACTION 'Go' SET ${set}`).screen.body[0].actions[0];
+  // the kit runs "=..." expressions as JavaScript: so does this test
+  const run = (expr, row) => { const writes = []; const app = { update: (t, id, f) => writes.push([t, id, f]), today: () => '2026-11-20' }; new Function('app', `return (${expr.slice(1)})`)(app)(row); return writes[0]; };
+  const when = (expr, row) => new Function(`return (${expr.slice(1)})`)()(row);
+  // the next state of a status: CASE <col> WHEN ... (the form people wrote, with ELSE the column)
+  const next = act("status = CASE status WHEN 'to do' THEN 'doing' WHEN 'doing' THEN 'done' ELSE status END");
+  assert.deepEqual(run(next.do, { id: 'r1', status: 'to do' }), ['tasks', 'r1', { status: 'doing' }]);
+  assert.deepEqual(run(next.do, { id: 'r2', status: 'doing' }), ['tasks', 'r2', { status: 'done' }]);
+  assert.equal(next.sets, undefined, 'no fixed value to hide it by');
+  assert.equal(when(next.when, { status: 'to do' }), true);
+  assert.equal(when(next.when, { status: 'done' }), false, 'no Move on where it changes nothing');
+  // CASE WHEN col = ... and an ELSE value: it always applies
+  const other = act("status = CASE WHEN status = 'new' THEN 'open' ELSE 'new' END");
+  assert.deepEqual(run(other.do, { id: 'x', status: 'open' })[2], { status: 'new' });
+  assert.deepEqual(run(other.do, { id: 'x', status: 'new' })[2], { status: 'open' });
+  assert.equal(other.when, undefined);
+  // a count and a switch
+  assert.deepEqual(run(act('votes = votes + 1').do, { id: 'v', votes: 4 })[2], { votes: 5 });
+  assert.deepEqual(run(act('votes = votes + 1').do, { id: 'v' })[2], { votes: 1 });
+  assert.deepEqual(run(act('done = NOT done').do, { id: 'd', done: true })[2], { done: false });
+  // literals as before, and beside a worked-out value
+  const lit = act("status = 'done', finished = TODAY");
+  assert.equal(lit.do, '=row => app.update("tasks", row.id, {"status":"done","finished":app.today()})');
+  assert.deepEqual(lit.sets, { status: 'done', finished: '@today' });
+  assert.deepEqual(run(act("status = CASE status WHEN 'a' THEN 'b' END, seen = TRUE").do, { id: 'm', status: 'a' })[2], { status: 'b', seen: true });
+  // anything else is refused, with the forms it takes
+  assert.throws(() => act('total = price * qty'), /CASE <col> WHEN/);
+  assert.throws(() => act("status = CASE status WHEN 'a' THEN lower(status) END"), /each WHEN and THEN is a value/);
 });

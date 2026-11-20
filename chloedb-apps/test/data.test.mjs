@@ -2,7 +2,7 @@
 // figures a build checks (engine/data.mjs). No server and no model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn, currencyOf, checkFigure } from '../engine/data.mjs';
+import { parseCsv, parseAttached, inferKind, toValue, planImports, importRows, alignSeed, computeFigure, compareFigure, numbersIn, figureNotShown, prepareData, gateOf, visitorsRead, tablesIn, currencyOf, checkFigure, alignWords, screenValues } from '../engine/data.mjs';
 
 const REQUEST = `Here is my sales workbook.
 
@@ -276,4 +276,35 @@ test('sign-in entry: a screen whose data calls a function kept to signed-in peop
   assert.equal(gateOf(screen, open, { title: 'Certificate' }), null);
   assert.ok(gateOf(screen, open, { title: 'Certificate', callerOf: (s) => (s === 'certificate-status' ? 'members' : null) }));
   assert.equal(gateOf(screen, open, { title: 'Certificate', callerOf: () => 'everyone' }), null);
+});
+
+test('example rows take the words their screens use', () => {
+  // written at once by two writers: the rows said "todo", the screens "to do"
+  const screen = {
+    data: { k0: "SELECT COUNT(*) AS v FROM tasks WHERE (status = 'to do')", k1: "SELECT COUNT(*) AS v FROM tasks WHERE status IN ('doing', 'Waiting on')", rows: { sql: 'SELECT * FROM tasks' } },
+    body: [
+      { form: 'tasks', fields: [{ name: 'title' }, { name: 'status', type: 'select', options: ['to do', 'doing', 'done'] }, { name: 'size', type: 'select', options: [{ value: 'S', label: 'Small' }, { value: 'L', label: 'Large' }] }] },
+      { chips: 'f', column: 'status', options: [{ value: '', label: 'All' }, 'to do', 'doing', 'done'] },
+      { table: '=rows', actions: [{ label: 'Archive', do: '=row => 1', sets: { state: 'archived' } }] },
+    ],
+  };
+  const words = screenValues([screen]);
+  assert.deepEqual([...words.get('tasks').get('status')].sort(), ['Waiting on', 'doing', 'done', 'to do']);
+  const seed = { tasks: [
+    { id: 'todo', title: 'a', status: 'todo', size: 's' },
+    { title: 'b', status: 'Doing', size: 'L' },
+    { title: 'c', status: 'waiting_on', state: 'Archived' },
+    { title: 'd', status: 'blocked' },
+    { title: 'e', status: 'done' },
+  ], people: [{ name: 'To Do' }] };
+  const notes = alignWords(seed, [screen]);
+  assert.deepEqual(seed.tasks.map((r) => r.status), ['to do', 'doing', 'Waiting on', 'blocked', 'done'], 'a word that is none of theirs stays');
+  assert.deepEqual(seed.tasks.map((r) => r.size), ['S', 'L', undefined, undefined, undefined]);
+  assert.equal(seed.tasks[2].state, 'archived', 'a value an ACTION sets');
+  assert.equal(seed.tasks[0].id, 'todo', 'ids are never changed');
+  assert.equal(seed.people[0].name, 'To Do', 'a column the screens say nothing of stays');
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /^in tasks, status: "todo" as "to do"/);
+  assert.deepEqual(alignWords(null, [screen]), []);
+  assert.deepEqual(alignWords({ tasks: [{ status: 'todo' }] }, []), [], 'no screens, nothing to go by');
 });

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { Strata, findServerBinary, startServer } from './strata.mjs';
 import { Login } from './login.mjs';
 import { callerOf, refusal, sees, onPrefix } from './callers.mjs';
-import { useSelfCookie } from './checks.mjs';
+import { useSelfCookie, fromCheck } from './checks.mjs';
 import { Engine } from './engine.mjs';
 import { forge, suggestFromUse, useSharedVersion, editScreen, SCREEN_MODEL, SPLIT, useSqlFunctions, useCluster } from './forge.mjs';
 import { repairRequest, lookSuggestions } from './look.mjs';
@@ -1052,6 +1052,10 @@ const routes = [
     // is a form typed into and closed unsaved; an action is anything else an
     // app records (a search with the words and how many rows they found).
     // A beacon sends no headers: the studio's says it is the owner's in its body.
+    // The engine's own checks (the views it opens after a build, the screens
+    // it draws) are nobody's use: not recorded, or each build would add
+    // "people" and visits that did nothing.
+    if (fromCheck(cx.req)) return { ok: true, check: true };
     const kind = ['open', 'leave', 'abandon'].includes(b.kind) ? b.kind : 'action';
     const detail = kind === 'action' ? `${String(b.action || '').slice(0, 60)}${b.detail ? ` ${String(b.detail).slice(0, 200)}` : ''}` : String(b.detail || '');
     const where = cx.where(b.session);
