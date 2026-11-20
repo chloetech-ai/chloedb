@@ -61,7 +61,6 @@ async function skyTime(region) {
 const HALF = 3.84 / 2 / 111.32;
 // Half a GOES fire pixel, in degrees of latitude (about 2.5 km a side over
 // California from GOES-West and over central Chile from GOES-East).
-const PX_HALF = 0.0115;
 
 const REGION = {
   california: { title: "California", tz: "America/Los_Angeles", center: [-119.4, 37.2], zoom: 5.2, bounds: [[-124.6, 32.4], [-114.0, 42.1]], sat: "GOES-18", other: "chile" },
@@ -327,22 +326,50 @@ function squares(lat, lon, half) {
 }
 const square = (la, lo, hl, dl) => [[[lo - dl, la - hl], [lo + dl, la - hl], [lo + dl, la + hl], [lo - dl, la + hl], [lo - dl, la - hl]]];
 
-/// Fire pixels as small squares (GOES's pixels are about 2 km over
-/// California and 3 km over central Chile), coloured by power.
-function pixelFeatures(rows, half = 0.009) {
+/// Fire pixels as heat: one field summed over the pixels near each other
+/// (a MapLibre heatmap), so a fire reads as one burning area, hottest where
+/// its pixels are freshest and most powerful, and fading with their age.
+function glowFeatures(rows) {
+  // A spot is seen again every scan: keep its freshest, hottest look, so
+  // heat does not pile up where a fire merely lasted.
+  const spots = new Map();
+  for (const p of rows) {
+    const fresh = Math.max(0, 1 - (p.age ?? 0));
+    const w = fresh ** 1.5 * (0.45 + 0.55 * Math.sqrt(Math.min(1, (p.mw || 0) / 250)));
+    const k = `${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+    const o = spots.get(k);
+    if (!o || o.w < w) spots.set(k, { w, lat: p.lat, lon: p.lon });
+  }
   return {
     type: "FeatureCollection",
-    features: rows.map((p) => {
-      const dl = half / Math.cos((p.lat * Math.PI) / 180);
-      return { type: "Feature", properties: { mw: p.mw || 0, fire: p.fire || "", age: p.age ?? 0 }, geometry: { type: "Polygon", coordinates: square(p.lat, p.lon, half, dl) } };
-    }),
+    features: [...spots.values()].map((p) => ({ type: "Feature", properties: { w: p.w }, geometry: { type: "Point", coordinates: [p.lon, p.lat] } })),
   };
 }
-const PIXEL_PAINT = {
-  "fill-color": ["interpolate", ["linear"], ["get", "mw"], 0, "#ffd54f", 20, "#ffa000", 80, "#f4511e", 250, "#d50000", 1000, "#7f0000"],
-  "fill-opacity": ["interpolate", ["linear"], ["get", "age"], 0, 0.92, 1, 0.25],
-  "fill-outline-color": "rgba(255,255,255,.55)",
-};
+const GLOW_LAYERS = [
+  { id: "px-heat", type: "heatmap", paint: {
+    "heatmap-weight": ["get", "w"],
+    // About four GOES pixels (2 to 3 km apart) in screen pixels at each zoom,
+    // so that neighbours run together.
+    "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 4, 7, 8, 15, 10, 56, 13, 450, 16, 3600],
+    "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 1.3, 10, 1.05, 13, 1],
+    "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+      0, "rgba(0,0,0,0)", 0.08, "rgba(110,0,0,0)", 0.2, "rgba(150,12,0,.55)", 0.4, "rgba(215,40,0,.8)",
+      0.6, "rgba(255,110,0,.9)", 0.8, "rgba(255,190,40,.95)", 1, "rgba(255,245,200,1)"],
+    "heatmap-opacity": 0.95 } },
+];
+/// A button over a map that hides GOES's fire pixels, so the fire shows as
+/// the picture under them has it.
+function pixelButton(map) {
+  map.ea.pxOn = true;
+  const b = h("button", { class: "ea-mapbtn on", title: "Show or hide GOES's fire pixels, to see the fire in the satellite's own picture" }, "Fire pixels");
+  b.onclick = () => {
+    map.ea.pxOn = !map.ea.pxOn;
+    b.classList.toggle("on", map.ea.pxOn);
+    for (const l of GLOW_LAYERS) if (map.getLayer(l.id)) map.setLayoutProperty(l.id, "visibility", map.ea.pxOn ? "visible" : "none");
+  };
+  map.ea.tr.prepend(b);
+}
+const glowLayers = (map) => GLOW_LAYERS.map((l) => ({ ...l, layout: { visibility: map.ea?.pxOn === false ? "none" : "visible" } }));
 
 function ramp(name) {
   return RAMP[name] || RAMP.default;
@@ -367,6 +394,9 @@ function render(root, ctx) {
   app.api = api;
   app.href = (...parts) => ctx.href(...parts.filter((x) => x !== "" && x != null));
   app.go = (...parts) => { location.hash = app.href(...parts); };
+  // A page that belongs under another tab than its path says (a burning
+  // fire under Live) marks that one.
+  app.markTab = (k) => { for (const a of tabs.querySelectorAll("a")) a.classList.toggle("on", a.getAttribute("href") === app.href(k)); };
 
   const head = h("div", { class: "ea-head" },
     h("h1", { html: `<svg viewBox="0 0 24 24">${ICON}</svg>Earth` }),
@@ -379,7 +409,7 @@ function render(root, ctx) {
   const TABS = [["", "Home"], ["live", "Live"], ["explore", "Explore"], ["search", "Search"], ["twins", "Climate twins"], ["changed", "Changed places"], ["fires", "Past fires"], ["rules", "Rules"], ["data", "How it's built"]];
   const drawTabs = (p) => {
     tabs.replaceChildren(...TABS.map(([k, t]) => {
-      const on = (p[0] || "") === k || (k === "explore" && p[0] === "place") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
+      const on = (p[0] || "") === k || (k === "explore" && p[0] === "map") || (k === "search" && p[0] === "picture") || (k === "fires" && p[0] === "fire") || (k === "live" && p[0] === "replay");
       return h("a", { href: app.href(k), class: on ? "on" : null }, t);
     }));
   };
@@ -400,7 +430,8 @@ function render(root, ctx) {
         fire: () => fire(app, page, a),
         fires: () => pastFires(app, page, a || "california"),
         explore: () => explore(app, page, a || "california", null),
-        place: () => explore(app, page, null, a),
+        place: () => report(app, page, a),
+        map: () => explore(app, page, null, a),
         search: () => search(app, page, a || ""),
         picture: () => picture(app, page),
         twins: () => twins(app, page, a || "california", b || ""),
@@ -474,6 +505,20 @@ async function home(app, page) {
     h("input", { type: "search", name: "q", placeholder: "Search places by how they look: vineyards on hills, a lithium mine, a burn scar…" }),
     h("button", { class: "btn primary" }, "Search"),
     h("a", { class: "btn", href: app.href("picture") }, "By a picture"));
+  const found = h("div", { class: "ea-list" });
+  let t = 0;
+  const finder = h("form", { class: "ea-search", onsubmit: (e) => { e.preventDefault(); const f = found.querySelector("[data-id]"); if (f) app.go("place", f.dataset.id); } },
+    h("input", { type: "search", name: "q", placeholder: "Find a place: a town, a county, or 34.05, -118.2", oninput: async (e) => {
+      const q = e.target.value.trim(), mine = ++t;
+      if (q.length < 2) return swap(found);
+      const r = await app.api(`/v1/find?q=${encodeURIComponent(q)}`, { keep: 60000 });
+      if (mine === t) swap(found, r.found.length ? r.found.map((x) => h("div", { class: "info", "data-id": x.id, onclick: () => app.go("place", x.id) }, h("span", { class: "t" }, x.label), x.label.endsWith(REGION[x.region]?.title || x.region) ? null : h("span", { class: "v" }, REGION[x.region]?.title || x.region))) : h("p", { class: "ea-note" }, "No town or county of California or Chile starts with that."));
+    } }),
+    h("button", { type: "button", class: "btn", onclick: () => navigator.geolocation?.getCurrentPosition(async (pos) => { const at = await app.api(`/v1/at?lat=${pos.coords.latitude.toFixed(5)}&lon=${pos.coords.longitude.toFixed(5)}`, { fresh: true }); if (at.id) app.go("place", at.id); else swap(found, h("p", { class: "ea-note" }, "Your location is outside California and Chile.")); }) }, "Use my location"));
+  put(page, h("div", { class: "ea-hero" },
+    h("h2", {}, "What happened ", h("em", {}, "where you live?")),
+    h("p", {}, "Find a place to see the fires that burned near it, the years satellites saw heat there, and how its surroundings changed."),
+    finder, found));
   put(page, h("div", { class: "ea-hero" },
     h("h2", {}, "California and Chile, ", h("em", {}, "from space")),
     h("p", {}, "Every fire GOES sees, every few minutes, grouped into fires as they grow and matched to the fires that began like them. Every 3.84 km square of both, searchable by what it looks like, with what lies on it, its climate and its twin on the other side of the equator."),
@@ -506,17 +551,12 @@ function backtestCard(rows) {
 
 // -------------------------------------------------------------------- live
 
-async function live(app, page, region) {
-  const R = REGION[region];
-  if (!R) throw new Error(`no region ${region}`);
-  const box = h("div", { class: "ea-map" });
-  const side = h("div");
-  put(page, regionSwitch(app, "live", region), h("div", { class: "ea-split" }, box, side));
-  const map = await makeMap(box, { center: R.center, zoom: R.zoom, bounds: R.bounds });
-  app.stops.push(() => map.remove());
-  const tl = h("div", { class: "ea-maptl" });
-  box.append(tl);
-  // Satellite now: on by default, under the fire pixels and the names.
+/// Satellite now on a map: the newest GOES GeoColor picture from NASA
+/// GIBS, on by default, under the fire pixels and the names, with a button
+/// that hides it; checked again every two minutes. Resolves to the note
+/// that says how old the picture is.
+async function addSky(app, map, region) {
+  const R = REGION[region] || REGION.california;
   const skyNote = h("div", { class: "ea-mapttl" }, "Satellite now: finding the newest picture…");
   const bs = h("button", { class: "ea-mapbtn on", title: "Show or hide the newest GOES picture of the sky" }, "Satellite now");
   map.ea.tr.prepend(bs);
@@ -545,12 +585,28 @@ async function live(app, page, region) {
   await sky();
   const st = setInterval(() => sky().catch(() => {}), 120000);
   app.stops.push(() => clearInterval(st));
+  return skyNote;
+}
+
+
+async function live(app, page, region) {
+  const R = REGION[region];
+  if (!R) throw new Error(`no region ${region}`);
+  const box = h("div", { class: "ea-map" });
+  const side = h("div");
+  put(page, regionSwitch(app, "live", region), h("div", { class: "ea-split" }, box, side));
+  const map = await makeMap(box, { center: R.center, zoom: R.zoom, bounds: R.bounds });
+  app.stops.push(() => map.remove());
+  const tl = h("div", { class: "ea-maptl" });
+  box.append(tl);
+  const skyNote = await addSky(app, map, region);
+  pixelButton(map);
   let fitted = false;
   const draw = async (fresh) => {
     const j = await app.api(`/v1/live?region=${region}`, { fresh, keep: 15000 });
     const now = Date.parse(j.now) || 0;
     const pixels = j.pixels.map((p) => ({ ...p, age: now ? Math.min(1, (now - Date.parse(p.ts)) / 3600e3) : 0 }));
-    setData(map, "px", pixelFeatures(pixels, PX_HALF), [{ id: "px", type: "fill", paint: PIXEL_PAINT }]);
+    setData(map, "px", glowFeatures(pixels), glowLayers(map));
     const pts = { type: "FeatureCollection", features: j.fires.map((f) => ({ type: "Feature", properties: { id: f.id, mw: f.mw_now }, geometry: { type: "Point", coordinates: [f.lon, f.lat] } })) };
     setData(map, "fires", pts, [{ id: "fires", type: "circle", paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 5, 10, 12], "circle-color": "rgba(0,0,0,0)", "circle-stroke-color": "#fff", "circle-stroke-width": 1.6 } }]);
     if (!fitted && j.fires.length) {
@@ -606,6 +662,8 @@ async function replay(app, page, id) {
   const map = await makeMap(box, { center: [j.center[1], j.center[0]], zoom: j.zoom });
   app.stops.push(() => map.remove());
   const t0 = Date.parse(j.from), span = (Date.parse(j.to) - t0) / 1000;
+  // The satellite of the day, which need not be the region's now.
+  const sat = j.scans?.[0]?.sat ? j.scans[0].sat.replace("G", "GOES-") : R.sat;
   const px = j.pixels; // [t, lat, lon, mw, fire index]
   const speeds = [150, 300, 1200];
   const s = { t: 0, playing: true, speed: 1 };
@@ -621,6 +679,46 @@ async function replay(app, page, id) {
   const firstSeen = new Map();
   for (const p of px) if (!firstSeen.has(p[4])) firstSeen.set(p[4], p[0]);
   const fires = j.fires;
+  // The sky as GOES saw it at each moment (tools/frames.py's pictures):
+  // the newest picture at or before the clock, the next one loaded ahead.
+  const fr = (j.frames?.frames || []).map((f) => ({ ...f, at: Date.parse(f.t) }));
+  const skyNote = fr.length ? h("div", { class: "ea-mapttl" }) : null;
+  let skyOn = true, skyN = -1, skyWant = -1;
+  const frameUrl = (n) => mediaSrc(app, `/v1/frame/${encodeURIComponent(j.id)}/${n}`);
+  const loaded = new Map();
+  const load = (n) => {
+    if (!loaded.has(n)) loaded.set(n, frameUrl(n).then((u) => new Promise((ok, no) => { const im = new Image(); im.onload = () => ok(u); im.onerror = no; im.src = u; })));
+    return loaded.get(n);
+  };
+  if (fr.length) {
+    const [S, N, W, E] = j.frames.box;
+    const bs = h("button", { class: "ea-mapbtn on", title: "Show or hide GOES's pictures of the sky" }, "Satellite");
+    bs.onclick = () => {
+      skyOn = !skyOn;
+      bs.classList.toggle("on", skyOn);
+      skyNote.style.display = skyOn ? "" : "none";
+      if (map.getLayer("sky")) map.setLayoutProperty("sky", "visibility", skyOn ? "visible" : "none");
+    };
+    map.ea.tr.prepend(bs);
+    pixelButton(map);
+    const first = await load(0).catch(() => null);
+    if (first) {
+      map.addSource("sky", { type: "image", url: first, coordinates: [[W, N], [E, N], [E, S], [W, S]] });
+      map.addLayer({ id: "sky", type: "raster", source: "sky", paint: { "raster-opacity": 0.92, "raster-fade-duration": 0 } }, "labels");
+      skyN = 0;
+    }
+  }
+  function showSky(ms) {
+    if (!fr.length || !map.getSource("sky")) return;
+    let k = 0;
+    while (k + 1 < fr.length && fr[k + 1].at <= ms) k++;
+    const f = fr[k];
+    skyNote.replaceChildren(h("b", {}, `${j.frames.sat.replace("G", "GOES-")} picture`), ` of ${when(f.t, j.region)}, ${f.day > 0.5 ? "true colour" : "infrared (night)"}`);
+    if (k === skyWant) return;
+    skyWant = k;
+    load(k).then((u) => { if (skyWant === k && skyN !== k) { map.getSource("sky")?.updateImage({ url: u }); skyN = k; } }).catch(() => {});
+    for (let a = 1; a <= 3 && k + a < fr.length; a++) load(k + a).catch(() => {});
+  }
   let lastI = -1;
   const paint = () => {
     playBtn.textContent = s.playing ? "Pause" : "Play";
@@ -634,10 +732,12 @@ async function replay(app, page, id) {
       lastI = i;
       const rows = [];
       for (let k = 0; k < i; k++) { const p = px[k]; const age = (s.t - p[0]) / 10800; if (age <= 1) rows.push({ lat: p[1], lon: p[2], mw: p[3], age }); }
-      setData(map, "px", pixelFeatures(rows, PX_HALF), [{ id: "px", type: "fill", paint: PIXEL_PAINT }]);
+      setData(map, "px", glowFeatures(rows), glowLayers(map));
     }
-    tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${R.sat} fire pixels`),
-      h("div", { class: `ea-onair${s.playing ? "" : " off"}` }, h("span", { class: "light" }), h("b", {}, s.playing ? "REPLAY" : "PAUSED"), h("span", { class: "t" }, `real scans, ${speeds[s.speed]}× speed`)));
+    showSky(t0 + s.t * 1000);
+    tl.replaceChildren(h("div", { class: "ea-mapttl" }, h("b", {}, j.title), ` · ${sat} fire pixels`),
+      h("div", { class: `ea-onair${s.playing ? "" : " off"}` }, h("span", { class: "light" }), h("b", {}, s.playing ? "REPLAY" : "PAUSED"), h("span", { class: "t" }, `real scans, ${speeds[s.speed]}× speed`)),
+      skyNote);
     // Fires seen in two scans or more: one pixel once is often a field burnt
     // on purpose, or a hot roof.
     const seen = fires.filter((f) => { const k = j.fire_ids.indexOf(f.id); return f.scans >= 2 && k >= 0 && firstSeen.get(k) <= s.t; });
@@ -671,17 +771,37 @@ async function fire(app, page, id, at) {
   const box = h("div", { class: "ea-map short" });
   const side = h("div");
   put(page, h("div", { class: "ea-split wide" }, h("div", {}, box, h("div", { style: { marginTop: "12px" } }, firstHours(f), similarCard(app, j))), side));
-  const map = await makeMap(box, { center: [f.lon, f.lat], zoom: 10 });
+  const burning = f.state === "burning";
+  const map = await makeMap(box, { center: [f.lon, f.lat], zoom: burning ? 9 : 10 });
   app.stops.push(() => map.remove());
+  // A fire burning now is shown as Live shows it: under Live's tab, over
+  // the newest picture of the sky, its pixels read again every minute.
+  let skyNote = null;
+  if (burning) {
+    app.markTab("live");
+    skyNote = await addSky(app, map, f.region);
+    const again = setInterval(async () => {
+      try {
+        const n = await app.api(`/v1/fire/${encodeURIComponent(id)}`, { fresh: true });
+        if (n.fire.last !== f.last || n.fire.state !== f.state) { page.replaceChildren(); for (const s of app.stops.splice(0)) { try { s(); } catch { /* gone */ } } fire(app, page, id, at); }
+      } catch { /* the next minute */ }
+    }, 60000);
+    app.stops.push(() => clearInterval(again));
+  }
   const t0 = Date.parse(f.start), t1 = Date.parse(f.last) || t0 + 1;
-  const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (Date.parse(p.ts) - t0) / Math.max(3600e3, t1 - t0)) * 0.7 }));
-  setData(map, "px", pixelFeatures(rows, PX_HALF), [{ id: "px", type: "fill", paint: { ...PIXEL_PAINT, "fill-color": ["interpolate", ["linear"], ["get", "age"], 0, "#ffeb3b", 0.35, "#ff6d00", 0.7, "#8e0000"], "fill-opacity": 0.8 } }]);
+  // Its heat over its life: the newest pixels hottest, the first ones still
+  // there, fainter.
+  const rows = j.pixels.map((p) => ({ ...p, age: Math.min(1, (t1 - Date.parse(p.ts)) / Math.max(3 * 3600e3, t1 - t0)) * 0.75 }));
+  pixelButton(map);
+  setData(map, "px", glowFeatures(rows), glowLayers(map));
   if (rows.length) {
     const b = new window.maplibregl.LngLatBounds();
     rows.forEach((p) => b.extend([p.lon, p.lat]));
-    map.fitBounds(b, { padding: 60, maxZoom: 12, duration: 0 });
+    map.fitBounds(b, { padding: 60, maxZoom: burning ? 10 : 12, duration: 0 });
   }
-  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its pixels, yellow first"), f.state === "burning" && Date.now() - Date.parse(f.last) < 3 * 3600e3 ? onAir(true, "burning now") : null));
+  const fresh = Date.now() - Date.parse(f.last) < 3 * 3600e3;
+  box.append(h("div", { class: "ea-maptl" }, h("div", { class: "ea-mapttl" }, h("b", {}, f.name), " · its heat as GOES saw it, the newest brightest"),
+    burning ? onAir(fresh, fresh ? "burning now" : `not seen since ${ago((Date.now() - Date.parse(f.last)) / 1000)}`) : null, skyNote));
   const o = j.outlook;
   put(side, 
     card(f.name, `${f.state === "burning" ? "burning" : "out"} · ${f.adm1 || ""}`,
@@ -695,7 +815,9 @@ async function fire(app, page, id, at) {
         h("dt", {}, "People within 5 km"), h("dd", {}, fmt(f.people5)),
         h("dt", {}, "Where it started"), h("dd", {}, `trees ${pct(f.trees)}, shrubs ${pct(f.shrubs)}, grass ${pct(f.grass)}, built ${pct(f.built)}; slope ${fmt(f.slope, 1)}°; ${f.climate ? `${f.climate} (${KOPPEN_WORDS[f.climate] || ""})` : ""}`),
         h("dt", {}, "Burned before"), h("dd", {}, f.burned_before ? `last in ${f.burned_before}` : "not since 2001")),
-      j.place ? h("p", { style: { marginTop: "10px" } }, h("a", { href: app.href("place", j.place.id) }, "The place it started on →")) : null),
+      h("p", { style: { marginTop: "10px", display: "flex", gap: "14px", flexWrap: "wrap" } },
+        burning ? h("a", { href: app.href("live", f.region) }, `← All fires burning in ${R.title}`) : null,
+        j.place ? h("a", { href: app.href("place", j.place.id) }, "The place it started on →") : null)),
     o ? card("Fires like this one", `its first ${o.words}`,
       h("p", { class: "ea-sentence" }, `The ${o.n} fires whose first ${o.words} were most like this one's grew to `, h("b", {}, km2(o.median)), ` (half of them between ${km2(o.lo)} and ${km2(o.hi)}) and burned about ${fmt(o.hours_median, 1)} hours; ${fmt(o.over10 * 100)}% grew past 10 km².`),
       h("p", { class: "ea-note" }, `Only fires out by ${when(o.known, f.region, { year: true })} count${f.state === "out" ? ", what was known when this fire was that old" : ""}. ${f.state === "out" ? `It became ${km2(f.area_km2)}.` : ""}`),
@@ -818,7 +940,7 @@ async function explore(app, page, region, placeId) {
     try {
       const at = await app.api(`/v1/at?lat=${lat.toFixed(5)}&lon=${lng.toFixed(5)}`);
       if (!at.id) return;
-      history.replaceState(null, "", app.href("place", at.id));
+      history.replaceState(null, "", app.href("map", at.id));
       const j = await app.api(`/v1/place/${encodeURIComponent(at.id)}`);
       drawPlace(j);
     } catch (err) { swap(side, h("div", { class: "ea-err" }, String(err.message || err))); }
@@ -826,6 +948,38 @@ async function explore(app, page, region, placeId) {
   if (place) drawPlace(place);
   else put(side, card("Click a place", "every 3.84 km square of the region", h("p", { class: "ea-note" }, "Each square is one of Major TOM's Sentinel-2 pictures, with what lies on it: its land cover, terrain, people, climate, crops, mines and the years it burned. Pick a layer above to paint the map with one of them.")));
   await drawLayer();
+}
+
+const eventLine = (app, e) => {
+  const where = e.km > 0 ? `${fmt(e.km, 1)} km ${e.dir}` : "on this square";
+  if (e.kind === "perimeter") {
+    const days = e.date && e.contained ? Math.max(1, Math.round((Date.parse(e.contained) - Date.parse(e.date)) / 864e5)) : null;
+    return [`${e.name || "Unnamed fire"}, ${e.acres ? `${fmt(e.acres)} acres` : "size unknown"}`,
+      `${e.date ? e.date.slice(0, 10) : e.year} · ${where}${e.cause && e.cause.toLowerCase() !== "unknown" ? ` · cause: ${e.cause.toLowerCase()}` : ""}${days ? ` · out in ${days} day${days === 1 ? "" : "s"}` : ""}${e.burned ? ` · ${fmt(e.burned * 100)}% of this square` : ""}`, "CAL FIRE"];
+  }
+  if (e.kind === "goes") return [e.name || "Fire seen by GOES", `${e.date.slice(0, 10)} · ${where} · ${km2(e.km2)} seen`, "GOES"];
+  if (e.kind === "change") return [`${e.town || "A place nearby"} went from ${e.from} to ${e.to}`, `${e.year} · ${where}`, "Sentinel-2"];
+  return ["Satellites saw fire heat here", `${e.year}`, "FIRMS"];
+};
+
+async function report(app, page, id) {
+  const j = await app.api(`/v1/place/${encodeURIComponent(id)}`);
+  const p = j.place, st = j.story;
+  const box = h("div", { class: "ea-map", style: { minHeight: "280px", height: "min(560px, 70vh)", position: "sticky", top: "12px", alignSelf: "start" } });
+  put(page, h("div", { class: "ea-hero" }, h("h2", {}, placeName(p)), h("p", {}, st.headline),
+    h("div", { class: "ea-search" }, h("a", { class: "btn", href: app.href("map", p.id) }, "Open on the map"))));
+  put(page, h("div", { class: "ea-split wide" }, box,
+    card("What happened here", "within 10 km, newest first (fires seen from space within 25 km)",
+      st.events.length ? h("div", { class: "ea-list" }, st.events.map((e) => { const [t, m, src] = eventLine(app, e); return h("div", { onclick: e.kind === "goes" ? () => app.go("fire", e.id) : null }, h("span", { class: "t" }, t), h("span", { class: "v" }, src), h("span", { class: "m" }, m)); })) : h("p", { class: "ea-empty" }, "Nothing on record."))));
+  const map = await makeMap(box, { center: [p.lon, p.lat], zoom: 10.5 });
+  app.stops.push(() => map.remove());
+  const dl = HALF / Math.cos((p.lat * Math.PI) / 180);
+  const feats = [{ type: "Feature", properties: { me: 1 }, geometry: { type: "Polygon", coordinates: square(p.lat, p.lon, HALF, dl) } }];
+  for (const o of st.outlines) { try { feats.push({ type: "Feature", properties: { burned: o.burned ? 1 : 0, name: `${o.name} ${o.year}` }, geometry: JSON.parse(o.shape) }); } catch { /* skip */ } }
+  setData(map, "story", { type: "FeatureCollection", features: feats }, [
+    { id: "story-fill", type: "fill", paint: { "fill-color": ["case", ["==", ["get", "me"], 1], "rgba(0,0,0,0)", ["==", ["get", "burned"], 1], "#e5484d", "#f5a524"], "fill-opacity": 0.35 } },
+    { id: "story-line", type: "line", paint: { "line-color": ["case", ["==", ["get", "me"], 1], "#fff", "#ff8a3d"], "line-width": 2 } }]);
+  put(page, h("div", { class: "ea-two", style: { marginTop: "14px", alignItems: "start" } }, placePanel(app, j)));
 }
 
 function coverBar(p) {
@@ -984,7 +1138,12 @@ const chipCache = new Map();
 /// A place's picture of a year: a plain URL on the app's own page, a blob
 /// read through the key in the command center.
 async function chipSrc(app, place, year) {
-  const path = `/v1/chip/${encodeURIComponent(place)}/${year}`;
+  return mediaSrc(app, `/v1/chip/${encodeURIComponent(place)}/${year}`);
+}
+/// A picture the app serves: its path where the page can load it as it is,
+/// else (in the command center, whose requests carry the key in a header)
+/// read as base64 and made a blob.
+async function mediaSrc(app, path) {
   if (app.ctx.media) return app.ctx.media(path);
   if (chipCache.has(path)) return chipCache.get(path);
   const p = app.ctx.api(`${path}?b64=1`, { timeout: 30000 }).then((j) => {

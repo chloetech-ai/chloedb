@@ -223,6 +223,11 @@ async fn every_page_against_a_real_server() {
     let (rows, chips) = (tmp.path().join("rows"), tmp.path().join("chips"));
     std::fs::create_dir_all(&rows).unwrap();
     std::fs::create_dir_all(&chips).unwrap();
+    // A picture of the sky under the replay, as tools/frames.py leaves it.
+    let frames = tmp.path().join("frames");
+    std::fs::create_dir_all(frames.join("la-2025")).unwrap();
+    std::fs::write(frames.join("la-2025/0.jpg"), [0xFFu8, 0xD8, 0xFF, 0xE0]).unwrap();
+    std::fs::write(frames.join("la-2025/frames.json"), r#"{"replay":"la-2025","box":[33.55,34.75,-119.15,-117.55],"sat":"G18","product":"MCMIPC","frames":[{"n":0,"t":"2025-01-07T17:01:17Z","day":1.0}]}"#).unwrap();
     let port = free_port();
     let strata = format!("http://127.0.0.1:{port}");
     let _server = Kill(
@@ -252,6 +257,22 @@ async fn every_page_against_a_real_server() {
     }
     drop(f);
     let (ny, nc) = years(&rows, &chips);
+    // One CAL FIRE perimeter around the first fire of the week, and the
+    // place it burned half of.
+    // The first fire (33.985, -118.515) is 0.02 degrees inside the
+    // outline's north edge, which its box must still find. The outline has 4,000 points (about 80 KB, as the largest of CAL
+    // FIRE's do): a long KEYWORD the server must take.
+    let ring: Vec<Value> = (0..=4000).map(|i| {
+        let a = i as f64 / 4000.0 * std::f64::consts::TAU;
+        json!([-118.515 + 0.1 * a.cos(), 33.905 + 0.1 * a.sin()])
+    }).collect();
+    let shape = json!({"type": "Polygon", "coordinates": [ring]}).to_string();
+    assert!(shape.len() > 70_000);
+    std::fs::write(rows.join("ea_perimeters.jsonl"), format!("{}\n", json!({"id": "cf-2025-test", "source": "calfire", "name": "Testwood", "complex": "", "year": 2025,
+        "alarm": "2025-01-01T00:00:00Z", "contained": "2025-01-04T00:00:00Z", "acres": 1000.0, "km2": 4.05, "cause": "Lightning", "agency": "CDF", "unit": "LAC", "inc": "",
+        "lat": 33.905, "lon": -118.515, "s": 33.805, "n": 34.005, "w": -118.615, "e": -118.415, "shape": shape.clone()}))).unwrap();
+    std::fs::write(rows.join("ea_burns.jsonl"), format!("{}\n", json!({"id": "ca0000:cf-2025-test", "place": "ca0000", "perimeter": "cf-2025-test", "region": "california",
+        "name": "Testwood", "year": 2025, "alarm": "2025-01-01T00:00:00Z", "acres": 1000.0, "share": 0.5, "cause": "Lightning"}))).unwrap();
     run(&["load", "--dir", rows.to_str().unwrap()], &strata);
 
     // A week of GOES scans every 15 minutes, through the feed.
@@ -282,6 +303,12 @@ async fn every_page_against_a_real_server() {
     let scans = db.query("SELECT COUNT(*) AS n FROM ea_scans", json!({})).await.unwrap();
     assert_eq!(scans[0]["n"], json!((to - from) / 900 + 1));
 
+    // The first fire takes the perimeter's name.
+    run(&["names"], &strata);
+    let named = db.query("SELECT name, perimeter FROM ea_fires ORDER BY start LIMIT 1", json!({})).await.unwrap();
+    assert_eq!(named[0]["name"], "Testwood", "{named:?}");
+    assert_eq!(named[0]["perimeter"], "cf-2025-test");
+
     // The rules, and the backtest of fires like each one.
     let r: Value = serde_json::from_str(&run(&["rules"], &strata)).unwrap();
     assert!(r.is_object(), "{r}");
@@ -295,6 +322,8 @@ async fn every_page_against_a_real_server() {
         Command::new(env!("CARGO_BIN_EXE_chloedb-earth"))
             .args(["serve", "--listen", &format!("127.0.0.1:{app_port}"), "--token", TOKEN, "--strata", &strata, "--no-rules", "--chips"])
             .arg(&chips)
+            .arg("--frames")
+            .arg(&frames)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -338,6 +367,17 @@ async fn every_page_against_a_real_server() {
     let rp = ok(&http, &base, "/v1/replay/la-2025").await;
     let px = rp["pixels"].as_array().unwrap_or_else(|| panic!("{}", rp["queries"]));
     assert!(!px.is_empty(), "the replay has the 7 January fire: {}", rp["queries"]);
+    assert_eq!(rp["frames"]["sat"], "G18", "{}", rp["frames"]);
+    assert_eq!(rp["frames"]["frames"][0]["t"], "2025-01-07T17:01:17Z");
+    let r = http.get(format!("{base}/v1/frame/la-2025/0")).bearer_auth(TOKEN).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    let (st, _) = get(&http, &format!("{base}/v1/frame/la-2025/1"), Some(TOKEN)).await;
+    assert_eq!(st, 404);
+    for bad in ["/v1/frame/la-2025/..%2F..%2Fx", "/v1/frame/nowhere/0"] {
+        let (st, _) = get(&http, &format!("{base}{bad}"), Some(TOKEN)).await;
+        assert_eq!(st, 400, "{bad}");
+    }
 
     // The last fire: the six before it were out when it was at its age,
     // and began much like it.
@@ -358,6 +398,15 @@ async fn every_page_against_a_real_server() {
     assert!(place["twins"].as_array().unwrap().iter().all(|p| p["region"] == "chile"), "{}", place["twins"]);
     assert_eq!(place["years"].as_array().unwrap().len(), YEARS.len(), "{}", place["years"]);
     assert_eq!(place["change"]["to_label"], "suburbs");
+    let story = &place["story"];
+    assert!(story["headline"].as_str().unwrap().contains("Testwood"), "{story}");
+    assert!(story["events"].as_array().unwrap().iter().any(|e| e["kind"] == "perimeter" && e["burned"].as_f64() == Some(0.5)), "{story}");
+    assert_eq!(story["outlines"].as_array().unwrap().len(), 1, "{story}");
+    assert_eq!(story["outlines"][0]["shape"].as_str().unwrap().len(), shape.len(), "the outline comes back whole");
+    let found = ok(&http, &base, "/v1/find?q=pasa").await;
+    assert!(found["found"].as_array().unwrap().iter().all(|f| f["label"].as_str().unwrap().starts_with("Pasadena")) && !found["found"].as_array().unwrap().is_empty(), "{found}");
+    let found = ok(&http, &base, "/v1/find?q=33.95,-118.55").await;
+    assert_eq!(found["found"][0]["id"], "ca0000", "{found}");
 
     let twins = ok(&http, &base, "/v1/twins?from=california").await;
     let pairs = twins["pairs"].as_array().unwrap();

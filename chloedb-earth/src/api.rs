@@ -50,6 +50,8 @@ pub struct Service {
     pub layers: Mutex<HashMap<(String, String), Arc<String>>>,
     /// Where the places' yearly pictures are (tools/years.py fetch).
     pub chips: Option<std::path::PathBuf>,
+    /// Where the replays' pictures of the sky are (tools/frames.py).
+    pub frames: Option<std::path::PathBuf>,
 }
 
 pub type Shared = Arc<Service>;
@@ -91,6 +93,7 @@ pub struct Opts {
     pub at_once: usize,
     pub rules: bool,
     pub chips: Option<std::path::PathBuf>,
+    pub frames: Option<std::path::PathBuf>,
 }
 
 const REGIONS: [&str; 2] = ["california", "chile"];
@@ -110,6 +113,7 @@ pub async fn serve(o: Opts) -> Result<()> {
         live: REGIONS.into_iter().map(|r| (r, Mutex::new(None))).collect(),
         layers: Mutex::new(HashMap::new()),
         chips: o.chips,
+        frames: o.frames,
     });
     {
         let svc = svc.clone();
@@ -117,6 +121,7 @@ pub async fn serve(o: Opts) -> Result<()> {
         tokio::spawn(async move {
             let mut read_at: Option<Instant> = None;
             let mut rules_at: Option<Instant> = None;
+            let mut names_at: Option<Instant> = None;
             loop {
                 if read_at.is_none_or(|t| t.elapsed() > Duration::from_secs(3600)) || svc.places.read().await.is_empty() {
                     match Places::read(&svc.db).await {
@@ -136,6 +141,13 @@ pub async fn serve(o: Opts) -> Result<()> {
                     match crate::rules::run_once(&svc.db).await {
                         Ok(v) => tracing::info!(open = %v["open"], secs = t0.elapsed().as_secs_f32(), "rules"),
                         Err(e) => tracing::warn!(error = %e, "rules"),
+                    }
+                }
+                if run_rules && names_at.is_none_or(|t| t.elapsed() >= Duration::from_secs(3600)) {
+                    names_at = Some(Instant::now());
+                    match crate::names::run(&svc.db).await {
+                        Ok(n) => tracing::info!(fires = n, "fires named"),
+                        Err(e) => tracing::warn!(error = %e, "names"),
                     }
                 }
                 for r in REGIONS {
@@ -176,7 +188,9 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/path/:id", get(path))
         .route("/v1/layer/:name", get(layer))
         .route("/v1/at", get(at))
+        .route("/v1/find", get(find))
         .route("/v1/chip/:place/:year", get(chip))
+        .route("/v1/frame/:replay/:n", get(frame))
         .route("/v1/rules", get(rules_page))
         .route("/v1/data", get(data))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
@@ -374,7 +388,15 @@ async fn home(State(svc): State<Shared>) -> Answer {
 async fn replay(State(svc): State<Shared>, Path(id): Path<String>) -> Answer {
     let t0 = Instant::now();
     ctx!(svc, trace, c);
-    let v = pages::replay(&c, &id).await?;
+    let mut v = pages::replay(&c, &id).await?;
+    // The pictures of the sky under it, when tools/frames.py drew them.
+    if let Some(dir) = &svc.frames {
+        if let Ok(text) = tokio::fs::read_to_string(dir.join(&id).join("frames.json")).await {
+            if let Ok(m) = serde_json::from_str::<Value>(&text) {
+                v["frames"] = json!({"box": m["box"], "sat": m["sat"], "frames": m["frames"]});
+            }
+        }
+    }
     done(&trace, v, t0)
 }
 
@@ -577,6 +599,24 @@ async fn at(State(svc): State<Shared>, Query(a): Query<AtParams>) -> Json<Value>
 }
 
 #[derive(serde::Deserialize, Default)]
+struct FindParams {
+    #[serde(default)]
+    q: String,
+}
+
+/// Towns and counties by their first letters, or the place under
+/// "lat, lon": what the front page's search box asks.
+async fn find(State(svc): State<Shared>, Query(a): Query<FindParams>) -> Json<Value> {
+    let places = svc.places.read().await.clone();
+    let found: Vec<Value> = places
+        .find(&a.q, 8)
+        .into_iter()
+        .map(|(label, p)| json!({"label": label, "id": p.id, "region": p.region, "lat": p.lat, "lon": p.lon, "adm1": p.adm1, "people": p.people.round()}))
+        .collect();
+    Json(json!({"found": found}))
+}
+
+#[derive(serde::Deserialize, Default)]
 struct ChipParams {
     /// `?b64=1`: as base64 in JSON.
     b64: Option<String>,
@@ -590,13 +630,27 @@ async fn chip(State(svc): State<Shared>, Path((place, year)): Path<(String, u32)
     if !place.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return ApiError(StatusCode::BAD_REQUEST, "no such place".into()).into_response();
     }
-    match tokio::fs::read(dir.join(format!("{place}_{year}.jpg"))).await {
+    jpeg(dir.join(format!("{place}_{year}.jpg")), &a, format!("no picture of {place} in {year}")).await
+}
+
+/// A picture of the sky under a replay (tools/frames.py), as a chip is sent.
+async fn frame(State(svc): State<Shared>, Path((replay, n)): Path<(String, String)>, Query(a): Query<ChipParams>) -> Response {
+    let Some(dir) = &svc.frames else { return ApiError(StatusCode::NOT_FOUND, "this app has no pictures of the replays (serve --frames DIR)".into()).into_response() };
+    let n = n.trim_end_matches(".jpg");
+    if !pages::REPLAYS.iter().any(|r| r.id == replay) || n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return ApiError(StatusCode::BAD_REQUEST, "no such picture".into()).into_response();
+    }
+    jpeg(dir.join(&replay).join(format!("{n}.jpg")), &a, format!("no picture {n} of {replay}")).await
+}
+
+async fn jpeg(path: std::path::PathBuf, a: &ChipParams, missing: String) -> Response {
+    match tokio::fs::read(path).await {
         Ok(b) if a.b64.as_deref().is_some_and(|v| !matches!(v, "0" | "false")) => {
             use base64::Engine;
             Json(json!({"mime": "image/jpeg", "data": base64::engine::general_purpose::STANDARD.encode(&b)})).into_response()
         }
         Ok(b) => ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "max-age=86400")], b).into_response(),
-        Err(_) => ApiError(StatusCode::NOT_FOUND, format!("no picture of {place} in {year}")).into_response(),
+        Err(_) => ApiError(StatusCode::NOT_FOUND, missing).into_response(),
     }
 }
 
