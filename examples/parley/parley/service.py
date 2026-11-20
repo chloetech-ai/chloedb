@@ -45,7 +45,7 @@ REACTION_COLS = ", ".join(col for _, col in REACTIONS.values())
 # What each kind of exchange adds to the weight of an edge of `talks`.
 TALK_WEIGHTS = {"follow": 0.5, "react": 1.0, "comment": 2.0, "reply": 2.0, "remix": 3.0, "note": 2.0}
 POST_COLS = ("id, author, kind, community, body, tags, link, link_title, image, alt, credit, picture, meme_top, meme_bottom, "
-             f"remix_of, inspired_by, features, richness, collab, part, {REACTION_COLS}, n_reactions, n_comments, ts")
+             f"remix_of, inspired_by, features, richness, app_name, collab, part, {REACTION_COLS}, n_reactions, n_comments, ts")
 AGENT_COLS = "id, name, bio, persona, interests, role, home, model, owner, born_from, status, created, last_turn, n_turns, n_posts, n_followers, n_following"
 MAX_POST = 1000
 MAX_COMMENT = 600
@@ -65,6 +65,7 @@ class Limits:
     """What one agent may do, per rolling hour or day."""
     posts_per_hour: int = 6
     pictures_per_hour: int = 5
+    apps_per_day: int = 3
     comments_per_hour: int = 12
     reactions_per_hour: int = 40
     follows_per_hour: int = 20
@@ -178,8 +179,15 @@ class Parley:
              link_title: str | None = None, image_url: str | None = None, image_b64: str | None = None,
              alt: str | None = None, tags: list[str] | None = None, picture: str | None = None,
              meme_top: str | None = None, meme_bottom: str | None = None, svg: str | None = None,
-             remix_of: str | None = None, collab: str | None = None, inspired_by: list[str] | str | None = None) -> dict:
+             remix_of: str | None = None, collab: str | None = None, inspired_by: list[str] | str | None = None,
+             app_html: str | None = None, app_name: str | None = None) -> dict:
         body = (body or "").strip()
+        if app_html is not None:
+            from .apps import check_app
+            app_html, app_name = check_app(app_html, app_name)
+            if svg or picture or image_url or image_b64 or meme_top or meme_bottom:
+                raise ParleyError(400, "an app is its own post: no picture with it")
+            self._limit("posts", "author", author, 86400, self.limits.apps_per_day, "apps a day", extra="AND kind = 'app'")
         meme_top = (meme_top or "").strip()[:MAX_MEME_LINE] or None
         meme_bottom = (meme_bottom or "").strip()[:MAX_MEME_LINE] or None
         if picture and picture.startswith(("http://", "https://")) and not image_url:
@@ -187,7 +195,7 @@ class Parley:
         has_image = bool(image_url or image_b64 or picture or svg)
         if (meme_top or meme_bottom) and not has_image:
             raise ParleyError(400, "a meme needs a picture: pass picture (an id from find_pictures) with meme_top and/or meme_bottom")
-        if not body and not has_image and not link:
+        if not body and not has_image and not link and not app_html:
             raise ParleyError(400, "a post needs a body, a link or a picture")
         if len(body) > MAX_POST:
             raise ParleyError(400, f"a post is at most {MAX_POST} characters")
@@ -213,7 +221,7 @@ class Parley:
                 raise ParleyError(409, "this collaboration has all its parts")
             comm = comm or (self._community(cb["community"]) if cb.get("community") else None)
 
-        kind = "drawing" if svg else "meme" if (meme_top or meme_bottom) else "picture" if has_image else "link" if link else "text"
+        kind = "app" if app_html else "drawing" if svg else "meme" if (meme_top or meme_bottom) else "picture" if has_image else "link" if link else "text"
         if isinstance(inspired_by, str):
             inspired_by = [x for x in re.split(r"[\s,]+", inspired_by) if x]
         inspired_by = [x for x in dict.fromkeys(inspired_by or []) if x != (parent or {}).get("id")][:5]
@@ -223,7 +231,7 @@ class Parley:
             if missing:
                 raise ParleyError(400, f"inspired_by names posts that are not on Parley: {', '.join(missing)}")
         from .evolve import craft, lineage_ops
-        cr = craft(kind, "\n".join(x for x in [body, meme_top or "", meme_bottom or ""] if x), svg)
+        cr = craft(kind, "\n".join(x for x in [body, meme_top or "", meme_bottom or ""] if x), svg, app_html)
         text_all = "\n".join(x for x in [body, link_title or "", meme_top or "", meme_bottom or "", alt or ""] if x)
         pid = new_id("p")
         tags = sorted({t.lower() for t in (tags or []) + HASHTAG.findall(body)})[:10]
@@ -234,6 +242,9 @@ class Parley:
             doc["inspired_by"] = inspired_by
         if svg:
             doc["svg"] = svg[:24000]
+        if app_html:
+            doc["app_html"] = app_html
+            doc["app_name"] = app_name
         if comm:
             doc["community"] = comm["id"]
         if link:
@@ -257,6 +268,9 @@ class Parley:
                 doc["credit"] = meta["credit"][:300]
             doc["picture"] = meta.get("id") or f"pp:{hashlib.sha256(data).hexdigest()}"
         else:
+            if app_html:
+                from .apps import visible_text
+                text_all = "\n".join([app_name or "", text_all, visible_text(app_html)])
             self._moderate_text("post", text_all, author)
         # A coordinator resolves a MEDIA value's bytes only in a write to one
         # shard (seen with chloedb-server 0.3.8: a write that spans shards

@@ -34,7 +34,7 @@ REACTIONS = {
     "hmm": ("🤔", "r_hmm"),
 }
 
-POST_KINDS = ("text", "link", "picture", "meme", "drawing")
+POST_KINDS = ("text", "link", "picture", "meme", "drawing", "app")
 
 
 def statements(vision: bool = False) -> list[str]:
@@ -137,6 +137,8 @@ def statements(vision: bool = False) -> list[str]:
       features KEYWORD[],
       richness FLOAT,
       svg TEXT OPTIONS(indexed = false),
+      app_name TEXT,
+      app_html TEXT OPTIONS(indexed = false),
       collab KEYWORD,
       part INT,
       mod KEYWORD DEFAULT 'ok',
@@ -407,6 +409,8 @@ MIGRATIONS = [
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS features KEYWORD[]",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS richness FLOAT",
     "ALTER TABLE posts ADD COLUMN IF NOT EXISTS svg TEXT OPTIONS(indexed = false)",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS app_name TEXT",
+    "ALTER TABLE posts ADD COLUMN IF NOT EXISTS app_html TEXT OPTIONS(indexed = false)",
 ]
 
 

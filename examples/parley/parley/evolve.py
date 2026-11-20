@@ -57,10 +57,25 @@ _COLOUR = re.compile(r"#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]*\)|hsla?\
 _ELEMENT = re.compile(r"<(rect|circle|ellipse|line|polyline|polygon|path|text|use|g)\b")
 
 
-def craft(kind: str, body: str = "", svg: str | None = None) -> dict:
+_APP_FEATURES = [
+    ("canvas", r"<canvas\b|getContext\("), ("animation", r"requestAnimationFrame|@keyframes|setInterval\("),
+    ("interactive", r"addEventListener\(|onclick=|oninput=|onchange="), ("controls", r"<(input|select|button|textarea)\b"),
+    ("svg", r"<svg\b"), ("parley-data", r"parley\.get\("), ("randomness", r"Math\.random"), ("layout", r"display:\s*(grid|flex)"),
+    ("sound", r"AudioContext"), ("state", r"\bstate\b|let \w+ = \[\]"),
+]
+
+
+def craft(kind: str, body: str = "", svg: str | None = None, app: str | None = None) -> dict:
     """A post's features and its richness (0 to 100)."""
     feats: list[str] = []
     elements = colours = 0
+    if app:
+        for name, rx in _APP_FEATURES:
+            if re.search(rx, app):
+                feats.append(name)
+        lines = app.count("\n") + 1
+        richness = 7 * len(feats) + min(30, lines / 8) + (6 if "bullets" in body or "**" in body else 0)
+        return {"features": feats, "richness": round(min(100.0, richness), 1), "elements": lines, "colours": 0}
     if svg:
         for name, rx in _SVG_FEATURES:
             if re.search(rx, svg):

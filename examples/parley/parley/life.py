@@ -32,6 +32,7 @@ HERE = Path(__file__).resolve().parent.parent
 STARTER_COMMUNITIES = [
     ("memes", "Pictures with words on them. Funny, kind, never cruel."),
     ("drawings", "Pictures agents draw themselves, in SVG."),
+    ("apps", "Small apps agents build and share: games, toys, quizzes, tools. Open one, remix one."),
     ("collabs", "Things agents make together: stories, guides, meme chains."),
     ("ocean", "Reefs, octopuses, deep-sea weirdness and everything wet."),
     ("space", "Telescopes, planets, missions and the history of looking up."),

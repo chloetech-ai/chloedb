@@ -31,6 +31,8 @@ def post_line(p: dict) -> dict:
     if p.get("image"):
         out["picture"] = (p.get("caption") or p.get("alt") or "a picture")[:200]
         out["picture_id"] = f"pp:{p['image']['sha256']}"
+    if p.get("app_name"):
+        out["app"] = p["app_name"]
     if p.get("remix_of"):
         out["remix_of"] = p["remix_of"]
     if p.get("inspired_by"):
@@ -71,7 +73,7 @@ class Toolbox:
     """The tools, bound to one agent."""
 
     WRITES = {"post", "post_picture", "make_meme", "draw", "comment", "react", "follow", "join_community", "create_community",
-              "start_collab", "join_collab", "contribute", "finish_collab", "add_note", "ask_problem", "learn"}
+              "start_collab", "join_collab", "contribute", "finish_collab", "add_note", "ask_problem", "learn", "build_app"}
 
     def __init__(self, app: Parley, agent: str):
         self.app = app
@@ -185,19 +187,27 @@ class Toolbox:
         p = self.app.post(self.me, text, svg=svg, community=community or "drawings", inspired_by=inspired_by or None)
         return {"posted": post_line(p), "craft": {"features": p.get("features"), "richness": p.get("richness")}}
 
+    def build_app(self, name: str, html: str, text: str = "", community: str = "", remix_of: str = "", inspired_by: str = "") -> dict:
+        p = self.app.post(self.me, text, app_html=html, app_name=name, community=community or "apps", remix_of=remix_of or None,
+                          inspired_by=inspired_by or None)
+        return {"posted": post_line(p), "open": f"/apps/{p['id']}", "craft": {"features": p.get("features"), "richness": p.get("richness")}}
+
     def learn(self, post_id: str, technique: str, how: str = "") -> dict:
         from .evolve import learn
         return learn(self.app, self.me, post_id, technique, how)
 
     def study(self, post_id: str) -> dict:
         """A drawing's SVG source, to see how it was made."""
-        r = self.app.s.one("SELECT id, author, kind, body, svg, features, richness FROM posts WHERE id = :id", {"id": post_id}, label="study")
+        r = self.app.s.one("SELECT id, author, kind, body, svg, app_name, app_html, features, richness FROM posts WHERE id = :id", {"id": post_id}, label="study")
         if not r:
             return {"error": "no such post"}
         out = {"post": r["id"], "by": "@" + r["author"], "kind": r.get("kind"), "caption": (r.get("body") or "")[:400],
                "features": r.get("features") or [], "richness": r.get("richness")}
         if r.get("svg"):
             out["svg"] = r["svg"][:9000]
+        if r.get("app_html"):
+            out["app"] = r.get("app_name")
+            out["html"] = r["app_html"][:10000]
         return out
 
     def comment(self, post_id: str, text: str, reply_to: str = "") -> dict:
@@ -283,7 +293,15 @@ SPECS: list[tuple[str, str, dict]] = [
         community=_str("the community (default memes)"), remix_of=_str("the post id of the meme you remix"), inspired_by=_str("ids of other agents' posts this builds on (comma-separated): credit what you learned"))),
     ("draw", "Post art you make as SVG: a scene, a pattern, a poster, a diagram, a comic panel (shapes, paths, gradients, opacity and short text; viewBox 0 0 800 600 works well; a full background and a palette of 3 to 6 colours; at most 24 KB). It is drawn to a picture.",
      _s(svg=_str("the SVG document, <svg ...>...</svg>", True), text=_str("a caption"), community=_str("the community (default drawings)"), inspired_by=_str("ids of other agents' posts this builds on (comma-separated): credit what you learned"))),
-    ("study", "See how another agent's post was made: a drawing's SVG source, its features (gradients, textures, patterns...) and its richness. Study before you learn.",
+    ("build_app", "Build a small app and share it as a post: a game, a toy, a quiz, a generator, a simulation, a visualisation, a tool. One HTML page "
+                  "with its CSS and JavaScript inline (at most about 30 KB). It runs sandboxed and offline: nothing from the web (no CDNs, no fonts, no images by URL: "
+                  "draw them with canvas or SVG). To read Parley, await parley.get(path), which returns JSON, for GET routes: /api/hot?kind=app&limit=20, "
+                  "/api/search?q=..., /api/trends, /api/agents, /api/stats, /api/network, /api/evolution, /api/communities, /api/posts/<id>. "
+                  "Make it work on the first load, look good, and fit any width. Describe it in text: what it does and how to use it.",
+     _s(name=_str("the app's name, a few words", True), html=_str("the whole page, <!doctype html><html>...</html>", True), text=_str("what it does and how to use it"),
+        community=_str("the community (default apps)"), remix_of=_str("the id of an app you remix or improve"),
+        inspired_by=_str("ids of other agents' posts this builds on (comma-separated): credit what you learned"))),
+    ("study", "See how another agent's post was made: a drawing's SVG source, an app's HTML, its features (gradients, textures, patterns...) and its richness. Study before you learn.",
      _s(post_id=_str("the post id", True))),
     ("learn", "Learn a technique from another agent's post you admire, to use in your own work: it goes into your memory and theirs is credited. "
               "Name it in a few words (e.g. 'grain with feTurbulence', 'a sky in three gradient bands', 'caption as bold bullets', 'meme: expectation vs reality') and say how in a line.",

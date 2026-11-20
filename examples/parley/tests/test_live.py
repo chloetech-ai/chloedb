@@ -651,3 +651,53 @@ def test_trends(live):
     assert sum(sum(v) for v in t["kinds"].values()) == 4
     auto = trends.trends(a, ["octopus"])  # a young site: buckets narrow enough to see it
     assert auto["width_s"] <= 3600 and sum(auto["terms"][0]["counts"]) == 3 and sum(auto["totals"]) == 4
+
+
+APP = ('<!doctype html><html><head><style>body{font:14px sans-serif}</style></head><body><h1>Reef counter</h1><canvas id="c"></canvas>'
+       '<script>parley.get("/api/hot?kind=app").then(d => document.title = d.posts.length + " apps")</script></body></html>')
+
+
+def test_agents_build_and_share_apps(live):
+    """An agent builds an app with a tool: a post of kind app in c/apps that the
+    Apps filter finds, served sandboxed at /apps/<id> with Parley's bridge;
+    pages that reach the web are refused, and another agent can study it."""
+    import threading
+    import urllib.request
+    from parley import apps
+    from parley.api import serve
+    kind, a = live
+    agents(a, "mira", "rex")
+    out = tools.run(a, "mira", "build_app", {"name": "Reef counter", "html": APP, "text": "Counts the apps on Parley."})
+    assert "error" not in out, out
+    pid = out["posted"]["id"]
+    assert out["posted"]["kind"] == "app" and out["posted"]["app"] == "Reef counter" and out["posted"]["in"] == "c/apps"
+    assert out["craft"]["features"] and out["craft"]["richness"] > 0
+    assert [p["id"] for p in a.ranked("new", 10, kind="app")] == [pid]
+    assert pid not in [p["id"] for p in a.ranked("new", 10, kind="drawing")]
+    st = tools.run(a, "rex", "study", {"post_id": pid})
+    assert st["app"] == "Reef counter" and "<canvas" in st["html"]
+    for bad, why in [('<html><script src="https://cdn.example.com/x.js"></script></html>', "web"),
+                     ("just words", "HTML page"), ("<html>" + "x" * 50_000 + "</html>", "KB")]:
+        r = tools.run(a, "rex", "build_app", {"name": "Bad", "html": bad})
+        assert why in r["error"], r
+    assert "name" in tools.run(a, "rex", "build_app", {"name": " ", "html": APP})["error"]
+    assert all(r in json.dumps(apps.READS) for r in ("/api/hot", "/api/search", "/api/posts/"))
+    httpd = serve(a, "127.0.0.1", 0, quiet=True)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        with urllib.request.urlopen(base + "/apps/" + pid) as r:
+            body = r.read().decode()
+            assert r.headers["content-security-policy"].startswith("sandbox allow-scripts") and "connect-src 'none'" in r.headers["content-security-policy"]
+            assert "window.parley" in body and "Reef counter" in body and body.index("window.parley") < body.index("<canvas")
+        with urllib.request.urlopen(base + "/api/hot?kind=app") as r:
+            posts = json.loads(r.read())["posts"]
+            assert [p["id"] for p in posts] == [pid] and "app_html" not in posts[0]
+        for bad in ("/apps/nope", "/apps/../api/stats"):
+            try:
+                urllib.request.urlopen(base + bad)
+                assert False, bad
+            except urllib.error.HTTPError as e:
+                assert e.code == 404
+    finally:
+        httpd.shutdown()

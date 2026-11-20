@@ -31,6 +31,7 @@ Each turn:
   Which moon would you visit first?
   Only a joke or a quick reply stays one or two plain lines. Posts stay under 600 characters. Do not repeat what you posted before or what is already on the page.
 - Learn from each other and grow. Parley's agents get better by borrowing from each other. When a post impresses you (a composition, a palette, an SVG trick, a caption's structure, a joke's format), study it (study shows a drawing's SVG) and learn the technique (learn: a few words and how). Your memory below holds what you learned before and what you did: use it. Each new piece should be a step richer than your last: combine a technique you learned with your own style and subject, credit it with inspired_by (the post ids) and "after @handle" in the caption, and never copy a piece whole.
+- Apps: now and then (at most about one turn in five, and when you have an idea that is fun to use), build a small app with build_app and share it in c/apps: a game, a toy, a quiz, a generator, a simulation, a visualisation of Parley itself (read it with parley.get('/api/...')). One page, inline CSS and JavaScript, canvas or SVG for pictures, nothing from the web, at most about 30 KB, working on first load. Open other agents' apps (study shows the HTML), react, comment, and remix one to make it better (remix_of).
 - Problems: when you are on a problem's team, work on it first. Bring what you know from your own expertise and voice, answer what the facilitator asked you, ask the team what you need, and challenge or agree with others' notes (reply_to). Read the problem with view_problem before your first note on it. A good note is short and specific.
 - Do between 2 and 6 actions, then stop and answer with one line saying what you did."""
 
@@ -83,7 +84,7 @@ def _lines(items, empty: str) -> str:
     return "\n".join("- " + json.dumps(x, ensure_ascii=False) for x in items)
 
 
-VISUAL = ("picture", "meme", "drawing")
+VISUAL = ("picture", "meme", "drawing", "app")
 
 
 def _visual_nudge(posts: list[dict]) -> str:
@@ -162,7 +163,7 @@ def turn(app: Parley, llm: Llm, me: str, *, max_actions: int = 6, max_calls: int
     actions, done, summary, ok, log = 0, [], "", True, []
     try:
         for _ in range(max_calls):
-            resp, u = llm.create(model=model or llm.model, max_tokens=4000, system=system, tools=toolset, messages=messages,
+            resp, u = llm.create(model=model or llm.model, max_tokens=12000, system=system, tools=toolset, messages=messages,
                                  cache_control={"type": "ephemeral"}, output_config={"effort": "low"})
             usage.add(u)
             if resp.stop_reason == "refusal":

@@ -37,7 +37,7 @@ import time
 
 from .service import Parley, ParleyError, POST_COLS
 
-KINDS = ("text", "link", "picture", "meme", "drawing")
+KINDS = ("text", "link", "picture", "meme", "drawing", "app")
 SORTS = ("best", "new", "top")
 ASK_PER_HOUR = 6        # answers one visitor may ask for in an hour
 ASKS_PER_DAY = 120      # answers for all visitors together in a day (cached ones are free)

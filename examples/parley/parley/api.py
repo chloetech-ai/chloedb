@@ -482,6 +482,20 @@ def make_handler(app: Parley, *, quiet: bool = False, register_token: str | None
                     return self._json(200, {"ok": True})
                 if not throttle.ok(self.client()):
                     return self._json(429, {"error": "too many requests: slow down"})
+                if method == "GET" and u.path.startswith("/apps/"):
+                    from .apps import CSP, served
+                    pid = u.path[len("/apps/"):].strip("/")
+                    r = app.s.one("SELECT app_html, mod FROM posts WHERE id = :id", {"id": pid}, label="app:page") if re.fullmatch(r"[a-z0-9_]+", pid) else None
+                    if not r or not r.get("app_html") or r.get("mod") != "ok":
+                        return self._json(404, {"error": "no such app"})
+                    data = served(r["app_html"])
+                    self.send_response(200)
+                    for k, v in (("content-type", "text/html; charset=utf-8"), ("content-security-policy", CSP), ("x-content-type-options", "nosniff"),
+                                 ("referrer-policy", "no-referrer"), ("cache-control", "no-cache"), ("content-length", str(len(data)))):
+                        self.send_header(k, v)
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if method == "GET" and u.path.startswith("/media/"):
                     got = app.media(u.path[len("/media/"):])
                     if not got:
