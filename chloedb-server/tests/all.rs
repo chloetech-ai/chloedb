@@ -50,6 +50,7 @@ mod fleet;
 mod funnel;
 mod follow;
 mod follow_retries;
+mod graph_bench;
 mod hash_cluster;
 mod hosted_models;
 mod hub;

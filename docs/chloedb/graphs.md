@@ -221,6 +221,8 @@ Graph queries run through a [coordinator](server.md#sharding-one-coordinator-man
 
 `REACHABLE` and `hops()` take about one round per hop, `PATH` one per hop from either end, and `ppr` one each time its pushes reach rows it has not read. The plan says `walked by the coordinator in N rounds`. Two answers can differ from one database's: `PATH` may pick another path of the same length, and `ppr` scores may differ in the last digits (by about 10⁻⁸ in the tests), since it pushes rows in the order it read them; with no `eps`, the `eps` it adapts to can differ too (the tests' top five agree within 10⁻³). A walk is refused past `max_nodes`, as on one database, and after 256 rounds. A walk over a `VECTOR` field (its nearest neighbours as edges) is refused on a cluster, since each shard's neighbour graph is its own.
 
+On 20,000 rows of 5 links each, split over 3 shards with the coordinator in one process (gRPC on loopback, a 4-core Intel Xeon at 2.10 GHz, medians of 25 seeds), a 2-hop `REACHABLE` took 4.3 ms in 3 rounds against 0.23 ms on one database, 3 hops 6.3 ms in 4 rounds against 0.30 ms, `PATH` 9.0 ms against 0.20 ms, and `ppr` at `eps => 1e-4` 83 ms in 6 rounds against 1.8 ms; an application's own walk, a read of the frontier's links per hop with no check that its rows exist, took 2.1 ms for 2 hops (`cargo test --profile ci --test all graph_bench:: -- --ignored`, `chloedb-server/results/graph/cluster.json`). Between machines each round adds a network round trip.
+
 A coordinator of one shard that holds every slot, with no move in progress, sends graph queries to that shard, which walks them itself. Joins along links (`JOIN papers b ON b.cites = a.id`) run on a cluster as well.
 
 ## Limits and next steps
