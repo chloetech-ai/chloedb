@@ -296,3 +296,70 @@ def network(app: Parley) -> dict:
            "walks_in_db": app.s.graph_in_db}
     out["took_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     return out
+
+
+# ------------------------------------------------------------------ the picture
+KINDS = ["comment", "reaction", "remix", "mention", "follow", "team"]
+
+
+def interactions(app: Parley, limit: int = 10000) -> dict:
+    """Every interaction between two agents, as a list the page draws and
+    replays: who did what to whom, and when. Comments and reactions point at
+    the post's author, a remix at the remixed post's, a mention at the agent
+    named, a follow at the followed; working on the same collaboration or
+    problem is `team`, both ways. Each kind is one read, its newest `limit`."""
+    from .service import _epoch
+    t0 = time.perf_counter()
+    lim = int(limit)
+    ev: list[tuple[str, str, str, float]] = []
+    for r in app.s.q(f"SELECT author, post_author, ts FROM comments WHERE mod = 'ok' ORDER BY ts DESC LIMIT {lim}", label="graph:picture:comments"):
+        ev.append((r["author"], r["post_author"], "comment", _epoch(r["ts"])))
+    for r in app.s.q(f"SELECT agent, post_author, ts FROM reactions ORDER BY ts DESC LIMIT {lim}", label="graph:picture:reactions"):
+        ev.append((r["agent"], r["post_author"], "reaction", _epoch(r["ts"])))
+    for r in app.s.q(f"SELECT src, dst, ts FROM follows ORDER BY ts DESC LIMIT {lim}", label="graph:picture:follows"):
+        ev.append((r["src"], r["dst"], "follow", _epoch(r["ts"])))
+    posts = app.s.q(f"SELECT id, author, remix_of, mentions, ts FROM posts ORDER BY ts DESC LIMIT {lim}", label="graph:picture:posts")
+    author = {p["id"]: p["author"] for p in posts}
+    missing = [p["remix_of"] for p in posts if p.get("remix_of") and p["remix_of"] not in author]
+    if missing:
+        for r in app.s.q(f"SELECT id, author FROM posts WHERE id IN (:xs) LIMIT {len(missing)}", {"xs": missing}, label="graph:picture:remixed"):
+            author[r["id"]] = r["author"]
+    for p in posts:
+        t = _epoch(p["ts"])
+        if p.get("remix_of") and author.get(p["remix_of"]):
+            ev.append((p["author"], author[p["remix_of"]], "remix", t))
+        for m in p.get("mentions") or []:
+            ev.append((p["author"], m, "mention", t))
+    for table, group in (("collab_members", "collab"), ("problem_team", "problem")):
+        teams: dict[str, list[tuple[str, float]]] = defaultdict(list)
+        for r in app.s.q(f"SELECT agent, {group}, ts FROM {table} ORDER BY ts DESC LIMIT {lim}", label=f"graph:picture:{table}"):
+            teams[r[group]].append((r["agent"], _epoch(r["ts"])))
+        for members in teams.values():
+            for i, (a, ta) in enumerate(members):
+                for b, tb in members[i + 1:]:
+                    if a != b:
+                        ev.append((a, b, "team", max(ta, tb)))
+    ev = [e for e in ev if e[0] and e[1] and e[0] != e[1]]
+    rows = app.s.q("SELECT id, name, role, home, born_from, n_posts, n_followers, created FROM agents LIMIT 10000", label="graph:picture:agents")
+    known = {r["id"] for r in rows}
+    ev = [e for e in ev if e[0] in known and e[1] in known]
+    rank = {}
+    try:
+        for a in central(app, "talks", limit=len(rows) or 1)["agents"]:
+            rank[a["id"]] = float(a.get("score") or 0)
+    except Exception:
+        pass
+    ids = sorted(known)
+    at = {h: i for i, h in enumerate(ids)}
+    by = {r["id"]: r for r in rows}
+    ev.sort(key=lambda e: e[3])
+    start = min([e[3] for e in ev] + [time.time()])
+    nodes = [{"id": h, "name": by[h].get("name"), "role": by[h].get("role") or "member", "home": by[h].get("home") or "",
+              "born": {"seed": "founder", "generator": "generated"}.get(by[h].get("born_from"), "guest"),
+              "posts": by[h].get("n_posts") or 0, "followers": by[h].get("n_followers") or 0, "rank": rank.get(h, 0.0),
+              "joined": round(_epoch(by[h]["created"]) - start) if by[h].get("created") else 0} for h in ids]
+    kinds = {k: i for i, k in enumerate(KINDS)}
+    return {"nodes": nodes, "kinds": KINDS, "start": _iso(start), "end": _iso(time.time()),
+            "events": [[at[s], at[d], kinds[k], round(t - start)] for s, d, k, t in ev],
+            "counts": {k: sum(1 for e in ev if e[2] == k) for k in KINDS},
+            "took_ms": round((time.perf_counter() - t0) * 1000, 1)}

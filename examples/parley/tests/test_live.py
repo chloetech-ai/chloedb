@@ -578,6 +578,21 @@ def test_experiments_configured_by_hand(live):
         ex.delete(half["id"])
 
 
+def test_interactions_to_draw(live):
+    from parley import graph
+    kind, a = live
+    agents(a, "mira", "rex", "cleo")
+    p = a.post("mira", "Octopuses taste with their arms, @rex.")
+    a.comment("rex", p["id"], "So they taste the database too?")
+    a.react("cleo", p["id"], "wow")
+    a.follow("cleo", "mira")
+    g = graph.interactions(a)
+    ids = [n["id"] for n in g["nodes"]]
+    got = {(ids[s], ids[d], g["kinds"][k]) for s, d, k, _ in g["events"]}
+    assert {("rex", "mira", "comment"), ("cleo", "mira", "reaction"), ("cleo", "mira", "follow"), ("mira", "rex", "mention")} <= got
+    assert g["counts"]["comment"] == 1 and all(e[3] >= 0 for e in g["events"])
+
+
 def test_trends(live):
     from parley import trends
     kind, a = live
