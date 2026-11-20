@@ -1126,9 +1126,10 @@ enum Command {
         /// The database the server served.
         #[arg(long, default_value = "chloedb.chloedb")]
         db: PathBuf,
-        /// How many shards the cluster has.
-        #[arg(long, default_value_t = 3)]
-        shards: usize,
+        /// How many shards the cluster has (default: 3 the first time,
+        /// then as many as it had).
+        #[arg(long)]
+        shards: Option<usize>,
         /// The address the cluster answers at (the server's).
         #[arg(long, default_value = "127.0.0.1:7700")]
         listen: String,
@@ -1627,14 +1628,16 @@ async fn run() {
             return;
         }
         Some(Command::Grow { db, shards, listen, dir, token }) => {
-            if *shards < 1 {
-                fail("--shards: at least 1");
-            }
             let dir = dir.clone().unwrap_or_else(|| {
                 let mut d = db.clone().into_os_string();
                 d.push(".cluster");
                 PathBuf::from(d)
             });
+            let listed = chloedb_server::grow::listed(&dir).len();
+            let shards = &shards.unwrap_or(if listed == 0 { 3 } else { listed });
+            if *shards < listed.max(1) {
+                fail(&format!("--shards: at least {} (the cluster has {listed} shards, and grow only adds them)", listed.max(1)));
+            }
             let bin = std::env::current_exe().unwrap_or_else(|e| fail(&format!("which chloedb-server this is: {e}")));
             let o = chloedb_server::grow::Options { db: db.clone(), shards: *shards, listen: listen.clone(), dir: dir.clone(), bin, token: token.clone() };
             eprintln!("growing {} into a cluster of {shards} shard{} at {listen} (servers' logs in {})", db.display(), if *shards == 1 { "" } else { "s" }, dir.display());
