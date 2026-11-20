@@ -572,6 +572,17 @@ for (const [, list] of NAV) for (const e of list) assert.ok(VIEWS.some((v) => v.
   assert.match(gx.pprNote({ max_pushes_reached: true, plan: [] }).warn, /stopped at max_pushes/);
 }
 
+// WEI-403: the audit banner called a key that never expires "expired": its
+// `expires_ms` is null, which compares as 0.
+{
+  const { expiredBy } = await import(new URL("views/access.js", app));
+  assert.equal(expiredBy({ expires_ms: null }, 1_700_000_000_000), false);
+  assert.equal(expiredBy({}, 1_700_000_000_000), false);
+  assert.equal(expiredBy(undefined, 1_700_000_000_000), false);
+  assert.equal(expiredBy({ expires_ms: 1_600_000_000_000 }, 1_700_000_000_000), true);
+  assert.equal(expiredBy({ expires_ms: 1_800_000_000_000 }, 1_700_000_000_000), false);
+}
+
 // OLU-403: signed out, every read but /v1/health's status is refused, and
 // Home's readiness list says what it cannot tell as unknown: no "one
 // server", "No alert rules", "Alerts go nowhere" or "No environment named".

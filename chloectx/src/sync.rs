@@ -208,10 +208,13 @@ pub fn pending(r: &Record) -> bool {
     r.links.iter().any(|l| l.label == SYNCED_FROM)
 }
 
-/// Whether `r` is a rule or decision from a machine not accepted yet,
-/// which the briefing and the prompt's context leave out ([`pending`]).
+/// Whether `r` is a rule, decision or to-do from a machine not accepted
+/// yet, which the briefing and the prompt's context leave out
+/// ([`pending`]): they are instructions about future code, and a to-do
+/// ("Agreed requirement: ...") reads as the user's plan (ANA-402). Facts
+/// and notes of such a machine are shown, labelled with the machine.
 pub fn held_back(r: &Record) -> bool {
-    matches!(r.kind, Kind::Preference | Kind::Decision) && pending(r)
+    matches!(r.kind, Kind::Preference | Kind::Decision | Kind::Todo) && pending(r)
 }
 
 /// The machine a pending record came from.
@@ -642,6 +645,23 @@ impl Remote {
         Ok(j)
     }
 
+    /// Whether the key may read `table`, as the server says (`GET
+    /// /v1/whoami` lists the tables a limited key has): a project's key is
+    /// refused the shared table of 0.3.3 and before, and each refusal is
+    /// audited, filling Access and audit (WEI-403). Taken for yes when the
+    /// key is not limited to tables or the server does not say.
+    pub fn may_read(&self, table: &str) -> bool {
+        let Ok(j) = self.call("GET", "/v1/whoami", None) else { return true };
+        let Some(grants) = j.get("tables").and_then(|t| t.as_object()) else { return true };
+        grants.iter().any(|(g, scope)| {
+            let covers = match g.strip_suffix('*') {
+                Some(prefix) => table.starts_with(prefix),
+                None => g.eq_ignore_ascii_case(table),
+            };
+            covers && scope.as_str().is_none_or(|s| s != "feed")
+        })
+    }
+
     /// Creates project `project`'s table (once; needs the `admin` scope).
     pub fn create_table(&self, project: &str) -> Result<()> {
         self.post("/v1/sql", &json!({ "sql": create_for(project) })).map(|_| ())
@@ -656,6 +676,39 @@ impl Remote {
     pub fn count(&self, project: &str) -> Result<i64> {
         let rows = self.rows(&format!("SELECT COUNT(*) FROM {} WHERE project = :p AND kind != '{FORGOTTEN_KIND}'", table_for(project)), json!({ "p": project }))?;
         Ok(rows.first().and_then(|r| r.first()).and_then(|v| v.as_i64()).unwrap_or(0))
+    }
+}
+
+impl Remote {
+    /// Ids of this store's own newest records (up to `limit`) that the
+    /// server holds a row of another machine under (ANA-401: two machines
+    /// that numbered a note alike, so one overwrote the other): the server's
+    /// row is not this machine's record, and a push would not fix it.
+    pub fn clashing(&self, store: &Store, project: &str, limit: usize) -> Result<Vec<String>> {
+        let me = origin(&self.header_dir);
+        let rs = store.query(&format!("SELECT {COLUMNS} FROM memory ORDER BY seq DESC LIMIT {}", limit * 2))?;
+        let own: Vec<String> = rs
+            .rows
+            .iter()
+            .filter_map(|r| crate::store::row_record(r))
+            .filter(|r| !pulled(r) && r.kind != Kind::Entity)
+            .map(|r| r.id)
+            .filter(|id| id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':'))
+            .take(limit)
+            .collect();
+        let mut out = Vec::new();
+        for chunk in own.chunks(100) {
+            let list = chunk.iter().map(|i| format!("'{i}'")).collect::<Vec<_>>().join(", ");
+            let rows = self.rows(&format!("SELECT rid, origin FROM {} WHERE project = :p AND rid IN ({list})", table_for(project)), json!({ "p": project }))?;
+            for r in rows {
+                if let (Some(id), Some(o)) = (r.first().and_then(|v| v.as_str()), r.get(1).and_then(|v| v.as_str())) {
+                    if o != me {
+                        out.push(id.to_string());
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -909,9 +962,11 @@ fn push_once(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, 
             // same request, and another machine's batch of the same
             // project and sequence numbers (each store numbers its own) is
             // not, which a key of the numbers alone said it was, so the
-            // server refused it as a reused key for an hour.
+            // server refused it as a reused key for an hour. The machine is
+            // in it too: two machines' batches are never one request, even
+            // of records numbered alike (ANA-401).
             let ids = recs.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(",");
-            remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-{:016x}-{:016x}-{top}", fnv(project), fnv(&ids)) }))?;
+            remote.post("/v1/write", &json!({ "ops": ops, "idempotency_key": format!("chloectx-{:016x}-{:016x}-{top}", fnv(project), fnv(&format!("{me}\n{ids}"))) }))?;
             sent += recs.len();
         }
         st.pushed_seq = top;
@@ -1043,8 +1098,12 @@ pub fn pull(remote: &Remote, store: &Store, project: &str, st: &mut SyncState, s
         }
     }
     // The shared table may be gone, or not for this key (a project's key
-    // is refused it): neither is an error of this project's sync.
-    let _ = pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg, store_dir, &mut out, &mut Read::default());
+    // is refused it): neither is an error of this project's sync. A key
+    // that does not reach it is not asked, so that its pull makes no
+    // refused request (WEI-403).
+    if remote.may_read(TABLE) {
+        let _ = pull_once(remote, store, project, TABLE, REMOTE_COLUMNS, &me, &cfg, store_dir, &mut out, &mut Read::default());
+    }
     st.pulled += out.stored as u64;
     st.last_pull = crate::now();
     Ok(out)
@@ -1248,6 +1307,11 @@ pub fn accept(home: &Path, store: &Store, project: &str, names: &[String], all: 
     }
     let mut by: std::collections::BTreeMap<String, Pending> = Default::default();
     for r in &recs {
+        // Facts and notes of a machine not accepted are shown already,
+        // labelled: only what is held back waits (ANA-402).
+        if !held_back(r) {
+            continue;
+        }
         let o = pending_origin(r).unwrap_or("unknown").to_string();
         let e = by.entry(o.clone()).or_insert_with(|| Pending { origin: o, key: None, records: 0, some: Vec::new() });
         e.records += 1;
