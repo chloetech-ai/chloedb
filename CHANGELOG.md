@@ -11,6 +11,99 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Experiments: an experiment on a real site is one object, with its
+  evidence in steps, a decision rule and a detailed report**
+  (`chloedb-experiments`, `chloedb-hn`, demos). The home lists
+  experiments by what they need (a decision, running, gathering evidence,
+  decided); New experiment takes a hypothesis, a control and a treatment
+  (arms named from the knobs they change), guardrails and the smallest
+  difference worth finding. Its page climbs four steps, each dearer than
+  the last: side by side, judged queries (a judge on another model than
+  the agents, Claude Opus 5.5 by default), simulated users (a study) and
+  real visitors interleaved; the rule declared up front then says ship,
+  don't ship, not yet, a trade-off, flat or invalid, and the decision box
+  records the call and whether it overrode the rule. The report has every
+  metric with its difference, interval, p value and n, charts over days or
+  units (cumulative or per period, with intervals), filters and groups by
+  any attribute with Benjamini-Hochberg q values and Cochran's Q.
+  chloedb-hn interleaves two arms on real visitors' searches by team
+  draft when the app starts a test (`/v1/experiment/interleave`, off until
+  one is started), logging each search's teams and clicks. Studies and
+  tunes say what they can detect, list the needs a treatment lost first,
+  and refuse an arm that is a duplicate. `GET/POST /v1/trials`.
+- **Experiments: the Practice lab's statistics** (`chloedb-experiments`,
+  a demo). The simulator's home is now the Practice lab. Satisfied clicks,
+  first-row clicks, searches per session and the mean query time are
+  diagnostics: no better direction, left out of the q values, not a
+  primary metric. The query time guardrail is its 95th percentile, with an
+  interval from the order statistics. A sample ratio mismatch makes the
+  call "invalid", and the report shows the split planned and got, and who
+  the users were (in an arm, exploring, never searched). A live run that
+  stopped once decided is read by its always-valid interval and p value.
+  Cohorts open with an interaction test (Cochran's Q) before the cells,
+  What-if says in one line what the log predicts against the A/B test,
+  and power for the true effect is marked as the simulator's alone.
+- **Experiments: more metrics in every report** (`chloedb-experiments`,
+  `chloedb-hn`). Real visitors: which arm's story was opened first, the
+  rank each arm's own list gave what was opened, searches where an arm
+  found nothing or failed (an arm's error is logged and the search served
+  as usual), p99 beside p95, the age and the number of sites of each
+  arm's top 10 and the age of what was opened; and, compared unpaired
+  between the searches each arm led (a fair coin), seconds to the first
+  story opened, searches with nothing opened, next pages asked for and
+  searches asked again in other words within a minute. The last two need
+  the page's anonymous browser id (16 random hex characters kept in the
+  browser, `vid`; no account, no address), which chloedb-hn now sends with
+  its logged searches. Groups by how often a query is asked and by the
+  test's period. Judged queries add precision@5, ERR@10 and the share of
+  rows judged. Studies give the searches, seconds and cost of a need
+  found, and the Practice lab the p99 query time as a diagnostic.
+
+- **Experiments tunes a real site's knobs as the relevance autopilot
+  does.** On a finished study's page, Tune its knobs takes the study's
+  needs, the searches its agents typed and the grades it kept, holds a
+  third of the needs out, searches the site's numbers by coordinate
+  ascent through its experiment search, has the judge grade the rows no
+  one graded, and proves the best on the held-out needs (nDCG before and
+  after, the sign test, a bootstrap interval, the site's time per
+  search). Prove it with people opens a study of the proposal against
+  the site as it is, on people the tune never saw. `GET/POST /v1/tunes`.
+- **chloedb-hn logs its page's searches, a share exploring, and a tune
+  values rankings on them.** With `--explore-share ε` the page's searches
+  are logged with the stories people open from them, and a share ε shows
+  the top `--explore-top` in a random order (the rank log's `epsilon`
+  policy), so the Experiments app can value the site as it is and a
+  tune's proposal on real people's clicks, off-policy (SNIPS, SNIIPS,
+  SNRIPS, cascade DR, with their effective sizes). Off by default.
+  `GET /v1/experiment/log`, `GET /v1/click`.
+
+- **chloedb-hn's experiment sample answers on the whole archive.**
+  `GET /v1/experiment/sample`, which the Experiments app reads to write
+  personas, sorted its matches with every column and ran past the
+  server's 5 s deadline on hn.chloetech.ai's 4.9 million stories (502 in
+  Write personas). It now sorts the ids alone and then reads those rows:
+  1.4 s there.
+
+- **A Postgres follower one table cannot stop.** A table `follow-postgres`
+  cannot write (a value ChloeDB refuses, a table without a primary key
+  joining the publication, two tables that become one) is held with its
+  error, which names the table, column and row's key, while the others
+  keep following and the process stays up; it is copied again over its
+  rows, which stay readable, at its next try. Data > Connectors and
+  `GET /v1/admin/connectors` show each held table; `/metrics` has
+  `chloedb_follow_table_up`, `chloedb_follow_table_lag_seconds`,
+  `chloedb_follow_table_error_info`, `chloedb_follow_tables_held` and
+  `chloedb_follow_last_error_timestamp_seconds`, and the built-in alert
+  `follow-table-held` fires on a table held for a minute.
+  `--copy-table orders` copies one table again the same way, and a column
+  whose type Postgres changed to one of another ChloeDB type has its table
+  copied again alone with the column made anew. A `jsonb` value with an
+  empty key is followed, the key written as `_empty`. **Changed:**
+  `DROP TABLE` of a followed table, and `ALTER TABLE ... DROP COLUMN` or
+  `RENAME COLUMN` of a column the follower writes, are refused (409,
+  `followed_table`), as writes already were; adding a column stays
+  allowed. The Postgres page has a systemd unit and a container restart
+  policy to run the follower under.
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000
@@ -62,6 +155,39 @@ changes collect under "Unreleased".
   own heat from the 3.9 µm band glowing in them; fire pixels on Live and
   the replays are one field of heat per fire, fading with age, and a
   "Fire pixels" button hides them to show the fire as the picture has it.
+- **Earth explorer: Fire watch.** Keep an eye on a home, a parent's house
+  or a farm in California or Chile: Earth checks every GOES scan and
+  raises an alert once when a fire comes within the distance picked,
+  within 5 km, over the place, 2 km closer in an hour or past 1,000 MW.
+  Each place has a page with the heat near it, how far the nearest fire
+  was over 12 hours, its alerts and the official sources; alerts reach
+  the browser as notifications and an Atom feed. There are no accounts:
+  watches belong to a random key the browser keeps. An example plays the
+  Park Fire's first 12 hours over three made-up places.
+- **Earth explorer: Clear sky.** GOES's cloud mask and smoke over every
+  place of California and Chile, every 5 or 10 minutes: a map of the sky
+  now and of the clear nights and days of the last 30, a finder for the
+  clearest places near a town (for the stars, a picnic or a picture),
+  each place's sky on its page, and a fire watch that says when the night
+  over it is clear.
+
+- **The command center does a support lead's Monday numbers without SQL
+  (GRACE-401 to 407, 417).** A table's search says how many rows match,
+  how many of them have the words as typed, pages 20 at a time and opens a
+  row with every field; by words and meaning, rows with every word come
+  first. The Data tab's CSV and JSON Lines hold every row its condition
+  keeps, not the page on screen, and Import and export downloads a table
+  as CSV or JSON Lines. The query builder groups a time by day, week or
+  month, measures the median and the hours between two times, and each
+  group's share of all rows or of its week; *is none of* is `NOT IN`, and
+  turning *is one of* with several picks into *is not* keeps them all. A
+  chart splits its series by a column (a line per priority), and fits a
+  phone. Import finds a column that lists tags in one value and splits it
+  into a `KEYWORD[]`, the separator shown and changeable. **Team views**
+  keep a builder's or the workbench's query, its chart and the builder's
+  state on the server, as rows of `cc_views` (the first save makes the
+  table, with an admin key), opened by anyone whose key reads them, by a
+  link, on a phone too.
 
 - **ChloeCtx sync for a team: every note reaches every machine, a
   teammate's to-dos wait to be accepted, and Retire works in the command

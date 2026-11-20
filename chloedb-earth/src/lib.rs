@@ -15,4 +15,6 @@ pub mod pages;
 pub mod places;
 pub mod rules;
 pub mod schema;
+pub mod sky;
 pub mod strata;
+pub mod watch;

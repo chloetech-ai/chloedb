@@ -56,6 +56,12 @@ pub struct Service {
     pub experiments_token: Option<String>,
     /// Indexes an arm may read besides hn_stories: (name, table).
     pub indexes: Vec<(String, String)>,
+    /// The page's searches logged, a share of them exploring
+    /// (`--explore-share`, [`crate::explore`]).
+    pub explore: Option<Arc<crate::explore::Explore>>,
+    /// The interleaving test running on the page's searches, if any
+    /// ([`crate::interleave`]).
+    pub interleave: Arc<crate::interleave::Interleave>,
 }
 
 pub type Shared = Arc<Service>;
@@ -112,6 +118,7 @@ pub fn router(svc: Shared) -> Router {
         .route("/v1/canon", get(canon_route))
         .route("/v1/canon/work", get(canon_work_route))
         .route("/v1/minds/arc", get(arc_route))
+        .route("/v1/click", get(click_route))
         .layer(axum::middleware::from_fn_with_state(svc.clone(), guard))
         // Experiments by the command center's Experiments app: their own
         // token, in public too.
@@ -121,6 +128,10 @@ pub fn router(svc: Shared) -> Router {
                 .route("/v1/experiment/search", axum::routing::post(exp_search))
                 .route("/v1/experiment/item/:id", get(exp_item))
                 .route("/v1/experiment/sample", get(exp_sample))
+                .route("/v1/experiment/log", get(exp_log))
+                .route("/v1/experiment/interleave", get(il_get).post(il_start))
+                .route("/v1/experiment/interleave/stop", axum::routing::post(il_stop))
+                .route("/v1/experiment/interleave/log", get(il_log))
                 .layer(axum::middleware::from_fn_with_state(svc.clone(), exp_guard)),
         )
         // Up, for a probe: no token, nothing read.
@@ -191,6 +202,16 @@ async fn exp_guard(State(svc): State<Shared>, req: Request, next: Next) -> Respo
 async fn exp_describe(State(svc): State<Shared>) -> Json<Value> {
     let mut d = crate::experiment::describe(&svc.indexes);
     d["allowed"] = json!(true);
+    // The page's searches are logged, exploring: rankings can be valued on them.
+    d["log"] = match &svc.explore {
+        Some(e) if e.share > 0.0 => json!({"policy": e.policy(), "path": "/v1/experiment/log"}),
+        _ => Value::Null,
+    };
+    // Real visitors' searches can interleave two arms.
+    d["interleave"] = match &svc.explore {
+        Some(_) => json!({"path": "/v1/experiment/interleave", "test": svc.interleave.current().map(|t| t.view())}),
+        None => Value::Null,
+    };
     Json(d)
 }
 
@@ -280,11 +301,24 @@ async fn exp_sample(State(svc): State<Shared>, Query(a): Query<ExpSample>) -> An
     let n = a.n.unwrap_or(60).clamp(4, 120);
     let seed = a.seed.unwrap_or(7);
     let cols = search::STORY_COLS;
+    // The ids first, then their rows: on the whole archive (4.9 million
+    // stories) sorting the matches with every column ran past the server's
+    // 5 s deadline, and the ids alone sort in about a second.
     let (top, plain) = tokio::join!(
-        c.rows("well known stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
-        c.rows("ordinary stories", &format!("SELECT {cols} FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
+        c.rows("well known stories", &format!("SELECT id FROM hn_stories WHERE points >= 100 AND id % 97 = {} ORDER BY points DESC LIMIT {}", seed % 97, n / 2), Value::Null),
+        c.rows("ordinary stories", &format!("SELECT id FROM hn_stories WHERE points >= 5 AND points < 100 AND id % 89 = {} ORDER BY id DESC LIMIT {}", seed % 89, n - n / 2), Value::Null),
     );
-    let mut rows: Vec<crate::strata::Row> = top?.into_iter().chain(plain?).collect();
+    let ids: Vec<i64> = top?.iter().chain(plain?.iter()).map(|r| r.i("id")).collect();
+    let mut rows: Vec<crate::strata::Row> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+        let mut got = c.rows("the sample's stories", &format!("SELECT {cols} FROM hn_stories WHERE id IN ({list})"), Value::Null).await?;
+        // In the order the two queries gave: best voted, then newest.
+        let at: std::collections::HashMap<i64, usize> = ids.iter().enumerate().map(|(k, i)| (*i, k)).collect();
+        got.sort_by_key(|r| at.get(&r.i("id")).copied().unwrap_or(usize::MAX));
+        got
+    };
     if rows.len() < n / 2 {
         // A small site: its stories, best voted first.
         let more = c.soft("stories, best voted first", &format!("SELECT {cols} FROM hn_stories ORDER BY points DESC, id LIMIT {n}"), Value::Null).await;
@@ -377,6 +411,17 @@ pub struct SearchParams {
     /// Results a page, when not the default.
     #[serde(default)]
     per: Option<usize>,
+    /// `log=1`: the page's own search, logged when the site explores.
+    #[serde(default)]
+    log: Option<u8>,
+    /// The page's kind of screen, `m` (a phone) or `d`, kept with a logged search.
+    #[serde(default)]
+    dev: String,
+    /// An anonymous id of the browser (16 hex digits the page makes and
+    /// keeps), kept with a logged search while an interleaving runs, so
+    /// a search asked again or a next page can be told apart.
+    #[serde(default)]
+    vid: String,
 }
 
 /// The query understood, with a word that may be a person checked against
@@ -447,13 +492,112 @@ async fn search_route(State(svc): State<Shared>, Query(a): Query<SearchParams>) 
     );
     let (mut stories, total_s) = s?.unwrap_or_default();
     let (mut comments, total_c) = cm?.unwrap_or_default();
+    // The page's first page of stories by the best match, logged and with
+    // a share exploring: its top in a random order, each place's chance known.
+    let mut logged = Value::Null;
+    let mut drafted = false;
+    if let Some(e) = &svc.explore {
+        let plain = matches!(r.mode.as_str(), "" | "hybrid" | "words");
+        if a.log == Some(1) && a.page == 0 && want_s && r.sort == "best" && plain && !words.is_empty() && !stories.is_empty() {
+            let request = e.request();
+            let now = crate::ingest::now();
+            let dev = if a.dev == "m" || a.dev == "d" { a.dev.as_str() } else { "" };
+            let vid = crate::interleave::visitor(&a.vid);
+            // A share of them interleave the running test's two arms.
+            let mut done_ = false;
+            if let Some((t, coins)) = svc.interleave.current().and_then(|t| t.take(&request).map(|c| (t, c))) {
+                let arm = |k: &crate::experiment::Knobs| {
+                    let parsed = if k.understand { p.clone() } else { query::Parsed { text: a.q.clone(), ..Default::default() } };
+                    let sort = parsed.sort.clone().unwrap_or_else(|| "best".into());
+                    let req = SearchReq { q: a.q.clone(), only: "story".into(), sort, mode: String::new(), page: 0, per_page: crate::interleave::TOP, facets: false, knobs: k.clone() };
+                    (parsed, req)
+                };
+                let ((pa, ra), (pb, rb)) = (arm(&t.ka), arm(&t.kb));
+                let timed = |p: &'_ query::Parsed, r: &'_ SearchReq| {
+                    let c = &c;
+                    let (p, r) = (p.clone(), r.clone());
+                    async move {
+                        let t0 = Instant::now();
+                        let x = search::stories(c, &p, &r, crate::interleave::TOP, 0).await;
+                        (x, t0.elapsed().as_secs_f64() * 1000.0)
+                    }
+                };
+                let ((xa, ma), (xb, mb)) = tokio::join!(timed(&pa, &ra), timed(&pb, &rb));
+                if xa.is_err() || xb.is_err() {
+                    // An arm that failed: the page is served as usual and
+                    // the failure kept, for each arm's error rate.
+                    let err = match (xa.is_err(), xb.is_err()) { (true, true) => "ab", (true, false) => "a", _ => "b" };
+                    let row = json!({"id": request, "test": t.id, "ts": now, "q": a.q.chars().take(300).collect::<String>(), "kind": "error", "err": err, "dev": dev, "vid": vid, "a_ms": (ma * 10.0).round() / 10.0, "b_ms": (mb * 10.0).round() / 10.0});
+                    let db = svc.db.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = db.upsert(crate::interleave::LOG, vec![row]).await {
+                            eprintln!("chloedb-hn: logging an interleaved search: {err}");
+                        }
+                    });
+                    drafted = true;
+                } else if let (Ok((ra, _)), Ok((rb, _))) = (xa, xb) {
+                    let ids = |rs: &[crate::strata::Row]| -> Vec<i64> { rs.iter().take(crate::interleave::TOP).map(|x| x.get("id").and_then(Value::as_i64).unwrap_or(0)).collect() };
+                    let (ia, ib) = (ids(&ra), ids(&rb));
+                    // Each story either arm ranked: its age in days and its site.
+                    let meta = crate::interleave::meta(ra.iter().chain(rb.iter()).take(2 * crate::interleave::TOP), now);
+                    let (s2, shown, teams) = crate::interleave::serve(ra, rb, std::mem::take(&mut stories), per, coins);
+                    stories = s2;
+                    e.remember(&request, shown.clone(), now);
+                    let teams: String = teams.iter().map(|&b| if b { 'b' } else { 'a' }).collect();
+                    let row = json!({
+                        "id": request, "test": t.id, "ts": now, "q": a.q.chars().take(300).collect::<String>(), "a": json!(ia).to_string(), "b": json!(ib).to_string(),
+                        "shown": json!(shown).to_string(), "teams": teams, "dev": dev, "a_ms": (ma * 10.0).round() / 10.0, "b_ms": (mb * 10.0).round() / 10.0,
+                        "kind": "drafted", "vid": vid, "meta": meta.to_string(),
+                    });
+                    let db = svc.db.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = db.upsert(crate::interleave::LOG, vec![row]).await {
+                            eprintln!("chloedb-hn: logging an interleaved search: {err}");
+                        }
+                    });
+                    logged = json!({"request": request, "test": t.id});
+                    done_ = true;
+                    drafted = true;
+                }
+            }
+            if !done_ && e.share > 0.0 {
+                let (s2, row) = e.serve(&request, &a.q, std::mem::take(&mut stories), now);
+                stories = s2;
+                let db = svc.db.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = db.upsert(crate::explore::LOG, vec![row]).await {
+                        eprintln!("chloedb-hn: logging a search: {err}");
+                    }
+                });
+                logged = json!({"request": request});
+            }
+        }
+    }
+    // While a test runs, a logged search it did not draft (a next page, or
+    // a search not drafted) is kept with the browser's anonymous id, so a
+    // drafted one can be followed: the next page asked, the search asked
+    // again in other words.
+    if !drafted && a.log == Some(1) {
+        if let (Some(e), Some(t)) = (&svc.explore, svc.interleave.current()) {
+            let vid = crate::interleave::visitor(&a.vid);
+            if !vid.is_empty() {
+                let row = json!({"id": e.request(), "test": t.id, "ts": crate::ingest::now(), "q": a.q.chars().take(300).collect::<String>(), "kind": if a.page > 0 { "page" } else { "other" }, "page": a.page, "vid": vid});
+                let db = svc.db.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = db.upsert(crate::interleave::LOG, vec![row]).await {
+                        eprintln!("chloedb-hn: logging a search: {err}");
+                    }
+                });
+            }
+        }
+    }
     let ans = if a.page == 0 { crate::answer::answer(&c, &p, &stories, &comments, total_s, total_c, f.as_ref()).await } else { None };
     search::mark(&c, &p, &mut stories, &mut comments).await;
     done(&trace, json!({
         "q": a.q, "understood": p, "only": only, "sort": r.sort, "mode": if r.mode.is_empty() { "hybrid" } else { r.mode.as_str() },
         "answer": ans,
         "stories": stories, "comments": comments, "total_stories": total_s, "total_comments": total_c,
-        "facets": f, "did_you_mean": dym, "page": a.page, "per_page": per,
+        "facets": f, "did_you_mean": dym, "page": a.page, "per_page": per, "log": logged,
     }), t0)
 }
 
@@ -866,4 +1010,97 @@ async fn front(State(svc): State<Shared>) -> Answer {
     let c = Ctx { db: &svc.db, trace: &trace };
     let rows = c.soft("the newest stories, ranked as HN's front page ranks them", &format!("SELECT {}, (points - 1) / pow((date_part('epoch', now()) - date_part('epoch', created)) / 3600.0 + 2, 1.8) AS rank FROM hn_stories WHERE created > now() - INTERVAL '2 days' ORDER BY rank DESC LIMIT 30", search::STORY_COLS), Value::Null).await;
     done(&trace, json!({"stories": rows, "feed": svc.feed.as_ref().map(|f| f.status())}), t0)
+}
+
+#[derive(serde::Deserialize)]
+struct ClickQ {
+    #[serde(default)]
+    r: String,
+    #[serde(default)]
+    id: i64,
+}
+
+/// A story opened from a logged search (`/v1/click?r=REQUEST&id=STORY`):
+/// kept when the request is a recent one that showed it.
+async fn click_route(State(svc): State<Shared>, Query(c): Query<ClickQ>) -> Json<Value> {
+    let Some(e) = &svc.explore else { return Json(json!({"kept": false})) };
+    let Some(row) = e.click(&c.r, c.id, crate::ingest::now()) else { return Json(json!({"kept": false})) };
+    let db = svc.db.clone();
+    tokio::spawn(async move {
+        if let Err(err) = db.upsert(crate::explore::CLICKS, vec![row]).await {
+            eprintln!("chloedb-hn: keeping a click: {err}");
+        }
+    });
+    Json(json!({"kept": true}))
+}
+
+#[derive(serde::Deserialize)]
+struct ExpLog {
+    /// Seconds since the epoch: requests since then (the last 30 days by default).
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// The page's logged searches and what people opened from them, for the
+/// Experiments app to value rankings on.
+async fn exp_log(State(svc): State<Shared>, Query(a): Query<ExpLog>) -> Answer {
+    let Some(e) = &svc.explore else { return Err(ApiError(StatusCode::NOT_FOUND, "the site logs no searches (start it with --explore-share)".into())) };
+    let since = a.since.unwrap_or_else(|| crate::ingest::now() - 30 * 86_400);
+    let mut v = crate::explore::read(&svc.db, since, a.limit.unwrap_or(2000).clamp(1, 10_000)).await?;
+    v["policy"] = e.policy();
+    Ok(Json(v))
+}
+
+/// The interleaving test running on the page's searches, if any.
+async fn il_get(State(svc): State<Shared>) -> Json<Value> {
+    Json(json!({"test": svc.interleave.current().map(|t| t.view())}))
+}
+
+/// Starts a test (`{id, name, a, b, share}`, `a` the control's knobs),
+/// in place of the one running.
+async fn il_start(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
+    if svc.explore.is_none() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "the site logs no searches".into()));
+    }
+    let mut t = crate::interleave::test_of(&b, &svc.indexes).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    t.started = crate::ingest::now();
+    let mut rows = vec![crate::interleave::row(&t, 0)];
+    if let Some(old) = svc.interleave.current() {
+        if old.id != t.id {
+            rows.push(crate::interleave::row(&old, t.started));
+        }
+    }
+    svc.db.upsert(crate::interleave::TESTS, rows).await?;
+    let v = t.view();
+    svc.interleave.set(Some(t));
+    Ok(Json(json!({"test": v})))
+}
+
+/// Stops the running test (`{id}`: only that one).
+async fn il_stop(State(svc): State<Shared>, Json(b): Json<Value>) -> Answer {
+    let Some(t) = svc.interleave.current() else { return Ok(Json(json!({"test": null}))) };
+    if b.get("id").and_then(Value::as_str).is_some_and(|id| id != t.id) {
+        return Err(ApiError(StatusCode::CONFLICT, format!("the test running is {}", t.id)));
+    }
+    svc.db.upsert(crate::interleave::TESTS, vec![crate::interleave::row(&t, crate::ingest::now())]).await?;
+    svc.interleave.set(None);
+    Ok(Json(json!({"test": null, "stopped": t.id})))
+}
+
+#[derive(serde::Deserialize)]
+struct IlLog {
+    test: String,
+    #[serde(default)]
+    since: Option<i64>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// A test's interleaved searches and the stories opened from each.
+async fn il_log(State(svc): State<Shared>, Query(a): Query<IlLog>) -> Answer {
+    let since = a.since.unwrap_or(0);
+    let v = crate::interleave::read(&svc.db, &a.test, since, a.limit.unwrap_or(10_000).clamp(1, 10_000)).await?;
+    Ok(Json(v))
 }

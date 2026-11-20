@@ -281,6 +281,7 @@ fn options(source: &str, target: &str, name: &str) -> Options {
         batch: 500,
         copy: false,
         copy_workers: 2,
+        copy_tables: Vec::new(),
         crash_after: None,
     }
 }
@@ -611,6 +612,201 @@ async fn a_follower_says_how_it_stands() {
     let f = follower(&|f| f["state"] == "stopped").await;
     assert!(f["why"].as_str().is_some_and(|w| w.contains("--drop-slot")), "{f}");
     assert!(!svc.sample().gauges.contains_key("follow_lag_s"), "nothing follows now");
+}
+
+/// As [`converges`], with a deadline of `secs`.
+async fn converges_within(secs: u64, src: &str, dst: &str, pg_sql: &str, strata_sql: &str) {
+    let until = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let mut want: Vec<Vec<Option<String>>> = pg_rows(src, pg_sql).await;
+        want.sort();
+        let mut have: Vec<Vec<Option<String>>> = strata_rows(dst, strata_sql).await.into_iter().map(|r| r.into_iter().map(|v| match v {
+            Json::Null => None,
+            Json::String(s) => Some(s),
+            Json::Number(n) => Some(n.as_f64().map_or(n.to_string(), |f| if f.fract() == 0.0 { format!("{}", f as i64) } else { f.to_string() })),
+            v => Some(v.to_string()),
+        }).collect()).collect();
+        have.sort();
+        if want == have {
+            return;
+        }
+        assert!(Instant::now() < until, "ChloeDB did not converge on {pg_sql} within {secs} s: {} rows wanted, {} held; wanted {:?}, held {:?}", want.len(), have.len(), want.iter().take(4).collect::<Vec<_>>(), have.iter().take(4).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Counts `table`'s rows every 20 ms until stopped, keeping the least seen:
+/// a copy made again must never leave the table empty or partial.
+struct Least {
+    least: Arc<AtomicU64>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Least {
+    fn watch(dst: &str, table: &str) -> Least {
+        let least = Arc::new(AtomicU64::new(u64::MAX));
+        let (l, dst, sql) = (least.clone(), dst.to_string(), format!("SELECT COUNT(*) FROM {table}"));
+        let task = tokio::spawn(async move {
+            loop {
+                if let Some(n) = strata_rows(&dst, &sql).await.first().and_then(|r| r[0].as_u64()) {
+                    l.fetch_min(n, std::sync::atomic::Ordering::Relaxed);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        });
+        Least { least, task }
+    }
+
+    fn stop(self) -> u64 {
+        self.task.abort();
+        self.least.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// One table cannot stop the others (ROSA-401 to ROSA-404, ROSA-406, and
+/// round 3's ROSA-304 and ROSA-305): DROP TABLE and a column dropped or
+/// renamed in ChloeDB are refused for a followed table (a column added is
+/// not); a `jsonb` value with an empty key is followed; a value ChloeDB
+/// cannot take, and a table without a key joining the publication, hold
+/// their table, with the error (naming the row) in the status and in
+/// `/metrics`, while the others follow and the process stays up; fixed in
+/// Postgres, the table is copied again and followed; a column whose type
+/// Postgres changed, and `--copy-table`, copy one table again with its
+/// rows readable throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_table_cannot_stop_the_others() {
+    let Some(pg) = postgres().await else { return };
+    let src = database(&pg, "isolate").await;
+    exec(
+        &src,
+        "CREATE TABLE products (id int PRIMARY KEY, attrs jsonb);
+         CREATE TABLE orders (id int PRIMARY KEY, qty int, note text);
+         CREATE TABLE promo (id int PRIMARY KEY, code text);
+         INSERT INTO products SELECT i, CASE WHEN i % 3 = 0 THEN jsonb_build_object('', 'Item Weight ' || i, 'w', i, 'in', jsonb_build_object('', i)) ELSE jsonb_build_object('w', i) END FROM generate_series(1, 60) i;
+         INSERT INTO orders SELECT i, i % 7, 'order ' || i FROM generate_series(1, 2000) i;
+         INSERT INTO promo SELECT i, 'code' || i FROM generate_series(1, 20) i;
+         CREATE PUBLICATION strata FOR TABLE products, orders, promo;",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let svc = Arc::new(empty(dir.path(), "one.strata"));
+    let dst = http(svc.clone()).await;
+    let run = start(options(&src, &dst, "shop"));
+    let orders = ("SELECT id::text, qty::float8::text, note FROM orders ORDER BY id", "SELECT id, qty, note FROM orders ORDER BY id LIMIT 100000");
+    converges(&src, &dst, orders.0, orders.1).await;
+
+    // ROSA-402: an empty key, which ChloeDB's JSON refuses, is written as
+    // `_empty`, at any depth.
+    converges(&src, &dst, "SELECT id::text FROM products ORDER BY id", "SELECT id FROM products ORDER BY id LIMIT 1000").await;
+    let row = strata_rows(&dst, "SELECT attrs FROM products WHERE id = 3").await;
+    let attrs: Json = serde_json::from_str(row[0][0].as_str().unwrap()).unwrap();
+    assert_eq!(attrs, json!({"_empty": "Item Weight 3", "w": 3, "in": {"_empty": 3}}));
+
+    // ROSA-401: the table dropped, or a column dropped or renamed, here
+    // would stop the follower or lose the column's values: refused, as a
+    // write is; a column added is not. (A server reads the follower's
+    // marks again every two seconds.)
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "UPDATE promo SET code = code WHERE id = 1"}))).await;
+        if status == 409 {
+            break;
+        }
+        assert!(status == 200 && Instant::now() < until, "{status} {j}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "DROP TABLE promo"}))).await;
+    assert_eq!(status, 409, "DROP TABLE of a followed table: {j}");
+    assert!(j["error"].as_str().is_some_and(|e| e.contains("nothing was changed") && e.contains("--name shop") && e.contains("DROP TABLE")), "{j}");
+    assert_eq!(j["error_code"], "followed_table", "{j}");
+    for sql in ["ALTER TABLE orders DROP COLUMN note", "ALTER TABLE orders RENAME COLUMN note TO memo"] {
+        let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": sql}))).await;
+        assert_eq!(status, 409, "{sql}: {j}");
+        assert!(j["error"].as_str().is_some_and(|e| e.contains("follows Postgres") && e.contains("ADD COLUMN here stays allowed")), "{sql}: {j}");
+    }
+    let (status, j) = call(&dst, "POST", "/v1/sql", Some(json!({"sql": "ALTER TABLE orders ADD COLUMN mine TEXT"}))).await;
+    assert_eq!(status, 200, "a column added to a followed table: {j}");
+    assert_eq!(strata_rows(&dst, "SELECT COUNT(*) FROM promo").await[0][0], json!(20));
+
+    // ROSA-404: a value ChloeDB cannot take (JSON nested 20 levels) holds
+    // its table, and a table without a key joining the publication is
+    // held; the others follow, and the follower stays up.
+    let deep = (0..20).fold("1".to_string(), |a, _| format!("{{\"a\": {a}}}"));
+    exec(&src, &format!("UPDATE products SET attrs = '{deep}' WHERE id = 1; INSERT INTO orders VALUES (5001, 1, 'after the bad value')")).await;
+    exec(&src, "CREATE TABLE nokey (a int, b text); INSERT INTO nokey VALUES (1, 'x'); ALTER PUBLICATION strata ADD TABLE nokey; INSERT INTO promo VALUES (21, 'after nokey')").await;
+    converges(&src, &dst, orders.0, orders.1).await;
+    converges_within(90, &src, &dst, "SELECT id::text, code FROM promo ORDER BY id", "SELECT id, code FROM promo ORDER BY id LIMIT 1000").await;
+    let follower = |f: &'static (dyn Fn(&Json) -> bool + Sync)| {
+        let dst = dst.clone();
+        async move {
+            let until = Instant::now() + Duration::from_secs(90);
+            loop {
+                let (_, j) = call(&dst, "GET", "/v1/admin/connectors", None).await;
+                let one = j["followers"].as_array().and_then(|a| a.iter().find(|x| x["name"] == "shop")).cloned();
+                if let Some(one) = one.filter(|o| f(o)) {
+                    return one;
+                }
+                assert!(Instant::now() < until, "{}", j["followers"]);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    };
+    let held = |f: &Json, t: &str| f["table_states"].as_array().and_then(|a| a.iter().find(|x| x["table"] == t && x["state"] == "held")).cloned();
+    let f = follower(&|f| f["held_tables"] == 2).await;
+    assert_eq!(f["state"], "following", "{f}");
+    let p = held(&f, "products").unwrap_or_else(|| panic!("{f}"));
+    assert!(p["error"].as_str().is_some_and(|e| e.contains("attrs") && e.contains("products") && e.contains("id = 1") && e.contains("nested")), "the error names the table, the column and the row: {p}");
+    let k = held(&f, "nokey").unwrap_or_else(|| panic!("{f}"));
+    assert!(k["error"].as_str().is_some_and(|e| e.contains("no primary key")), "{k}");
+    assert!(f["table_states"].as_array().unwrap().iter().any(|t| t["table"] == "orders" && t["state"] == "following"), "{f}");
+    assert!(!run.0.is_finished(), "the follower stays up");
+    // ROSA-406: per table in /metrics.
+    let text = chloedb_server::http_client().build().unwrap().get(format!("{dst}/metrics")).send().await.unwrap().text().await.unwrap();
+    for series in [
+        "chloedb_follow_tables_held{name=\"shop\",kind=\"postgres\"} 2",
+        "chloedb_follow_table_up{name=\"shop\",kind=\"postgres\",table=\"products\"} 0",
+        "chloedb_follow_table_up{name=\"shop\",kind=\"postgres\",table=\"orders\"} 1",
+        "chloedb_follow_table_lag_seconds{name=\"shop\",kind=\"postgres\",table=\"products\"}",
+        "chloedb_follow_table_error_info{name=\"shop\",kind=\"postgres\",table=\"products\",error=",
+        "chloedb_follow_last_error_timestamp_seconds{name=\"shop\",kind=\"postgres\"}",
+    ] {
+        assert!(text.contains(series), "{series} in:\n{}", text.lines().filter(|l| l.contains("follow")).collect::<Vec<_>>().join("\n"));
+    }
+    assert_eq!(svc.sample().gauges.get("follow_tables_held"), Some(&2.0), "the built-in alert follow-table-held has data");
+    // Fixed in Postgres: copied again at its next try, and followed; the
+    // table without a key, out of the publication, is no longer held.
+    exec(&src, "UPDATE products SET attrs = '{\"w\": 1}' WHERE id = 1; INSERT INTO products VALUES (61, '{\"w\": 61}'); ALTER PUBLICATION strata DROP TABLE nokey").await;
+    converges_within(150, &src, &dst, "SELECT id::text, attrs->>'w' FROM products ORDER BY id", "SELECT id, attrs.w FROM products ORDER BY id LIMIT 1000").await;
+    follower(&|f| f["held_tables"] == 0).await;
+
+    // ROSA-403: a column whose type Postgres changed: that table alone is
+    // copied again, its rows readable throughout.
+    let least = Least::watch(&dst, "orders");
+    exec(&src, "ALTER TABLE orders ALTER COLUMN qty TYPE numeric(6,2); UPDATE orders SET qty = qty + 0.25 WHERE id <= 10").await;
+    converges_within(90, &src, &dst, orders.0, orders.1).await;
+    assert_eq!(least.stop(), 2001, "the rows stay readable while the table is copied again");
+    let ty = strata_rows(&dst, "SELECT qty FROM orders WHERE id = 1").await;
+    assert_eq!(ty[0][0], json!(1.25), "the column is FLOAT now");
+
+    // `--copy-table orders`: copied again over what ChloeDB holds, the rows
+    // Postgres deleted meanwhile deleted (the stream's changes of a table
+    // held are not applied: the copy brings them), and readable throughout.
+    drop(run);
+    exec(&src, "DELETE FROM orders WHERE id > 1990; UPDATE orders SET note = 'while stopped' WHERE id <= 5").await;
+    let least = Least::watch(&dst, "orders");
+    let mut o = options(&src, &dst, "shop");
+    o.copy_tables = vec!["public.orders".into()];
+    let _run = start(o);
+    converges_within(90, &src, &dst, orders.0, orders.1).await;
+    assert!(least.stop() >= 1990, "never fewer rows than Postgres has");
+    converges(&src, &dst, "SELECT id::text, code FROM promo ORDER BY id", "SELECT id, code FROM promo ORDER BY id LIMIT 1000").await;
+    // A name it does not follow says which it does.
+    drop(_run);
+    let mut o = options(&src, &dst, "shop");
+    o.copy_tables = vec!["nope".into()];
+    let e = postgres::run(o).await.unwrap_err();
+    assert!(e.message.contains("--copy-table nope") && e.message.contains("orders"), "{e}");
+    let _ = postgres::drop_slot(options(&src, &dst, "shop")).await;
 }
 
 /// SCRAM, MD5 and TLS sign-ins, and the refusals that say what to fix.
