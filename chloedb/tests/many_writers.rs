@@ -208,7 +208,10 @@ fn updates_by_key_alone() {
     let db = create(dir.path(), DbOptions::default());
     sql(&db, "INSERT INTO docs (id, body, n) VALUES ('a', 'x', NULL), ('b', 'y', 5)", &[]).unwrap();
     let k = |k: &str| vec![("k", Value::Str(k.into()))];
+    // NULL + 1 is NULL, as a SELECT computes it (SAM-401).
     assert_eq!(sql(&db, "UPDATE docs SET n = n + 1 WHERE id = :k", &k("a")).unwrap(), 1);
+    assert_eq!(db.query("SELECT n FROM docs WHERE id = 'a'", &Params::new()).unwrap().rows[0][0], Value::Null);
+    assert_eq!(sql(&db, "UPDATE docs SET n = 1 WHERE id = :k", &k("a")).unwrap(), 1);
     assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'a'"), 1);
     assert_eq!(sql(&db, "UPDATE docs SET n = n - 2 WHERE id = :k", &k("b")).unwrap(), 1);
     assert_eq!(int(&db, "SELECT n FROM docs WHERE id = 'b'"), 3);

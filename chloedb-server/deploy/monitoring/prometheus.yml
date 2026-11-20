@@ -1,0 +1,37 @@
+# Scraping a ChloeDB cluster: the coordinator and each copy as targets of
+# their own. /metrics needs a key of scope read (or the admin token): put it
+# in a file Prometheus can read, alone on its line, and name the file below.
+# The addresses are those of docs/guide/operate-cluster.md; use yours.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - chloedb-rules.yml
+
+scrape_configs:
+  - job_name: chloedb-coordinator
+    authorization:
+      credentials_file: /etc/prometheus/chloedb.key
+    static_configs:
+      - targets: ["127.0.0.1:7700"]
+
+  - job_name: chloedb-copies
+    authorization:
+      credentials_file: /etc/prometheus/chloedb.key
+    static_configs:
+      - targets:
+          - 127.0.0.1:7711   # s0a
+          - 127.0.0.1:7712   # s0b
+          - 127.0.0.1:7713   # s0c
+          - 127.0.0.1:7714   # s1a
+          - 127.0.0.1:7715   # s1b
+          - 127.0.0.1:7716   # s1c
+    # A copy's series carry no shard label: chloedb_copy_info{shard, node, role}
+    # says which, so join on it in a query, for example
+    #   chloedb_failing * on (instance) group_left (shard, node) chloedb_copy_info
+
+  # The disk rules read node_exporter on each machine of a copy.
+  # - job_name: node
+  #   static_configs:
+  #     - targets: ["127.0.0.1:9100"]

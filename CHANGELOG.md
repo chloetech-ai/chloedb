@@ -11,6 +11,128 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **UPDATE follows SELECT's NULL rules, and EXPLAIN runs over HTTP.**
+  (SAM-401, SAM-403, SAM-404, SAM-405.) `UPDATE t SET n = n + 1` keeps a
+  NULL `n` NULL, as `SELECT n + 1`, `1 + n` and `n * 2` already did, and
+  as DuckDB and PostgreSQL do; a counter that starts from NULL is
+  `coalesce(n, 0) + 1`. **Changed:** `field + number` and `field - number`
+  counted a NULL as zero in `SET` only. `EXPLAIN <statement>` over
+  `POST /v1/sql` answers the plan as rows of `plan`, as it does in-process
+  (so `chloedb.dbapi` and `chloedb-server cc` have it), and
+  `POST /v1/explain` takes the text with `EXPLAIN` before it and plans an
+  `INSERT`, `UPDATE` or `DELETE` without running it (`"ran": false`). A
+  table qualifier that names no table of a one-table query
+  (`SELECT t.id FROM trips`) is an error that names it, rather than read
+  as the table. Errors that pointed the wrong way now say what is wrong: a
+  column in `HAVING` that is neither grouped nor aggregated
+  (`HAVING total_amount > 10` said `10: no such column`), an aggregate in
+  `WHERE` (use `HAVING`), and `LIKE ANY` / `ILIKE ANY` (one pattern per
+  `LIKE`, joined with `OR`).
+- **A retried `/v1/logs` request writes each line once.** A request's
+  `batch` and an idempotency key for each of its parts (1,000 rows) are
+  made from its content, so a Collector that sends a request again after a
+  503 or a timeout, when the rows had in fact been written, writes nothing
+  twice (for the idempotency window, an hour by default). A request whose
+  records carry no time is not keyed. **Changed:** `batch` was random.
+- **OTLP logs' severity is one spelling, and syslog lines name their
+  host.** `/v1/logs` writes `severity` as `TRACE`, `DEBUG`, `INFO`, `WARN`,
+  `ERROR` or `FATAL` whoever spelt it (`warning`, `err`, `critical`, any
+  case; a text it does not know stays as written) and fills
+  `severity_number` from the text when the record has none, so
+  `severity_number >= 17` finds every source's errors. `host` and `service`
+  come from the record's `hostname` and `appname` attributes (the
+  Collector's syslog receiver's) when the resource has none. **Changed:**
+  severity was kept as each source spelt it. The Alerts page marks a rule
+  whose query has answered 0 on every run as "never matched".
+- **Free space in the database file is given back by itself.** Every 5
+  minutes a server that takes writes moves segments from the end of its
+  file into free space below them and shortens the file, once 64 MB and a
+  sixteenth of the file are free (`Database::trim`, vacuum without the step
+  that grows the file), so a table under retention or a dropped table
+  returns disk without `POST /v1/admin/vacuum`. **Tables and storage** shows
+  the database file beside the tables' live data, and `GET
+  /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
+  its `totals`.
+- **Search by meaning without asking for it.** A table an import makes
+  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
+  MCP tool `import` with `create`, and the command center's Import) gets
+  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
+  `TEXT` columns: the server downloads the model once and fills the
+  vectors in, and the table's search runs by words meanwhile and by words
+  and meaning once the model is open, saying so as it comes
+  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
+  leave it out). Python's `db.search` reads a word in no row as a typo of
+  the words near it (`typos=False` turns it off), and `db.ask(question)`
+  answers from the rows it finds, citing them as `[1]`, `[2]` with the
+  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
+  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
+  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
+  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
+  without it sent requests to `.../messages`).
+- **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
+  `recommend(...)` no longer slows down as events arrive: a range on a
+  value written in place (a counts row's `next > 0`) is checked per
+  candidate, rather than by gathering every value written in the segment
+  at each call. `POST /v1/admin/optimize` on chloedb-server writes the
+  memtables and merges each table's segments (a database's own
+  `optimize` without the vacuum), which takes `recommend` back to its
+  time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
+  counts (a pair is two numbers, not two names), lets go of the events
+  it read as it counts them, writes each new pair's row once rather than
+  inserting it and setting it again, flushes the counts once it commits
+  and gives the freed memory back to the system; and a commit hands its
+  rows to the memtable rather than copies of them, and keeps its log
+  record only when it ships it. Its peak over 200,000 events is 0.81 GB
+  against 1.37 GB before (measured on a 4-core, 15 GB Linux
+  container). A slice's device (`nearby`
+  in Python and JavaScript) compacts its database once the rows of the
+  tiles it dropped outnumber those it holds, so its folder no longer
+  grows with every taste.
+
+- **An honest command center in a failover and signed out** (persona
+  study round 4, OLU-401, OLU-303, OLU-402, OLU-403, OLU-407, KENJI-405,
+  KENJI-403). While the copy just elected primary waits for the old
+  primary's lease to run out, `/v1/cluster` says `electing` and the
+  failover window (`failover_window_ms`), and Home, Cluster and
+  `chloedb-server cc` say writes are held, to wait, and not to restart that
+  copy, where they told on-call to restart it. Copies are named by their
+  `--node-name` in the command center, cc, the fleet's texts and alerts'
+  messages (a pod the operator runs keeps `s1-0`); `short` stays the
+  address's, and an alert's `where` gives the name beside it (`name`).
+  Signed out, Home's "Before production" list says "needs a key to tell"
+  for what it could not read, not "One server" or "No alert rules". A built-in rule's paging
+  message carries its runbook's link, and a RESOLVED says how long the
+  alert fired ("after firing for 17 s"). A pair of copies with failover on
+  is still `ok`, and `/v1/cluster` (`can_lose`, `warnings`) and Home now
+  say it survives no loss. **Changed:** a statement the coordinator runs in
+  parts (an aggregation, as the OpenSearch API sends) while every copy of a
+  shard is down is refused 503, not 400 "query error", so clients retry it
+  on another node; so is a search whose shard's copies could not be
+  reached however the connection failed (broken mid-call, its request
+  dropped: a 502 "transport error" or "operation was canceled" before), as
+  one whose copies refused the connection already was
+  ([server.md](docs/chloedb/server.md#fleet-health)).
+- **The command center designs a search stage by stage, as a template
+  apps call by name** (`chloedb-server`). The Query designer (Build, key
+  `z`) takes the text a person types as its one input and steps through
+  Understanding, Retrieval (words, meaning, expansion, filters), Ranking
+  (boosts, then heads of words, meaning, numbers, recency, `gbdt` models
+  and a `cross_encoder`, fused by weights or `rrf`), Blending (several
+  queries with one text, each with a boost) and Save, which runs `CREATE
+  RANK PROFILE`, `CREATE BLEND`, `CREATE FUNCTION <name>(q TEXT, k INT)
+  RETURNS TABLE` and `<name>_template()`. Each step previews a sample
+  query as result rows, coloured by how far each moved, or as plain lists.
+  **Fixed:** a stored function or rank profile whose body understands,
+  expands, blends or embeds text answers as its body does; an understood
+  boost inside `rrf` or `tmm` boosts the whole fusion instead of being
+  refused; `CREATE FUNCTION` accepts a body that embeds text or reads a
+  blend; an expanded query no longer answers its feedback rows from the
+  answer cache (#728).
+- **A server keeps no parameter values unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405).
 - **ChloeCtx believes less of what it reads.** A secret named just before
   its value in a sentence ("the staging password is …", "password: …",
   "api key …") is redacted as `KEY=value` is, and a session whose prompt
@@ -119,6 +241,17 @@ changes collect under "Unreleased".
   `followed_table`), as writes already were; adding a column stays
   allowed. The Postgres page has a systemd unit and a container restart
   policy to run the follower under.
+- **A production kit.** `chloedb-server/deploy/monitoring` holds a Prometheus
+  scrape config, alerting rules that mirror every built-in alert the servers
+  page on (with each runbook as `runbook_url`; a test keeps the two in step),
+  and a Grafana dashboard to import (OLU-313). A new guide page, *Back up,
+  restore and upgrade*, runs each step on one server, from a checkpoint to a
+  restore after a bad delete and a rollback, and CI runs it with the other
+  guide pages. The *Security review pack* page collects the threat model of
+  keys and of ChloeCtx's sync, how the controls map to SOC 2's criteria, and
+  what each package ships. The Python wheel and the npm packages that hold
+  the addon now carry `THIRD-PARTY-NOTICES.md`, the licences of every crate
+  compiled into them (LENA-408).
 - **A first run that needs no flags, no schema and no model download.**
   `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
   directory (made empty on the first start), `--demo` alone makes 20,000
@@ -154,6 +287,24 @@ changes collect under "Unreleased".
   (KENJI-402); the cluster guide says what a frozen primary costs and not to
   restart the copy just elected while it waits out the old lease (OLU-401,
   OLU-205).
+- **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
+  SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
+  database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)
+  SELECT ...` takes `ON CONFLICT`, `OR REPLACE` and `OR IGNORE` as
+  `VALUES` does; `CREATE TABLE t [(PRIMARY KEY (id))] AS SELECT ...` makes
+  the table first, its columns typed by the columns they read (a `TEXT`
+  keeps its analyzer), a `CAST`, their values or their expression, and
+  drops it again if the rows fail. Through a coordinator the `SELECT` runs
+  over every shard and the rows go as `INSERT`s of 500 rows each, not one
+  transaction, and the new table needs a primary key there to place its
+  rows by (cluster-limits.md). `POST /v1/sql/check` says both. A
+  `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
+  refused rather than written in part. Before, both were refused.
+- **A join on a `TEXT` column says why it is refused and what to do**
+  (SAM-402): the column is `TEXT` (as a Postgres follower makes `varchar`),
+  joins compare `KEYWORD`, `INT` or `FLOAT`, and the message names
+  postgres.md's table made first and a `CREATE TABLE ... AS SELECT` copy
+  with a `KEYWORD` column.
 - **`chloectx remember preference` says it is kept for this project only.**
   Memory is per project, so a preference stored there is not recalled in
   another repository; the command now prints a note naming
@@ -190,6 +341,18 @@ changes collect under "Unreleased".
   by CHELSA 2.1): its hottest month, coldest nights, rain and climate
   class now and later, a map of the change, and where its future climate
   can be visited today, found by the distance between climate vectors.
+- **Earth explorer: Land finder.** Places of California and Chile to
+  build a solar farm on, kept within limits on the slope, the grid, the
+  roads, protected land and towns, and ranked by how much they look like
+  the solar farms already built there (or by the grid, or by words), with
+  a shortlist and what is around each place on its page (OpenStreetMap's
+  grid, roads and solar farms; PAD-US in California).
+- **Earth explorer: Find change.** Changed places is now a finder: the
+  places whose look changed since 2017 on a map, searched by a change in
+  words, near a town, by when and how much they changed and by what they
+  were and became, from many more places. A place can be watched for
+  change: it gets a new satellite picture every few days, and a fire
+  watch tells its browser when one looks unlike the one before.
 
 - **The command center does a support lead's Monday numbers without SQL
   (GRACE-401 to 407, 417).** A table's search says how many rows match,

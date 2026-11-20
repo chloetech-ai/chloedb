@@ -1,6 +1,6 @@
 # Security model
 
-This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in [the server's security section](server.md#security). To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
+This page says who can reach a ChloeDB server, what each credential lets its holder do, what is open without one, and what is left to you: the network around the servers, the disks, and the files the servers write. The flags and routes it names are described in full in [the server's security section](server.md#security). For a review before a team runs it (the threat model, how the controls map to SOC 2, and the notices each package ships), see the [security review pack](security-review.md). To report a vulnerability, see [SECURITY.md](../../SECURITY.md).
 
 ## Before a server leaves your machine
 
@@ -115,7 +115,7 @@ A checkpoint (`--backup-dir`) holds every row of the database: keep it as you ke
 ## Logs
 
 - **The log store** (`--log-store`, by default `DB.logs` beside the database; `off` keeps none; a coordinator keeps none unless given one) keeps the server's log lines and the queries it answered for 7 days (`--log-retain`), up to 1 GiB (`--log-store-mb`). It keeps every slow and failed query, and up to 200 others a second (`--log-queries`).
-- **Queries' values.** The running and finished queries, and the log store, keep each query's parameters with their values. `--redact-params` (`CHLOEDB_REDACT_PARAMS`) keeps only their types. A value written into the SQL text is part of the statement and kept with it: pass anything secret as a parameter.
+- **Queries' values.** The running and finished queries, and the log store, keep each query's parameters as their types (`{"q": "text"}`), not their values. `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the values too, up to 1 KB for each query; `--redact-params` is accepted and means the default. A value written into the SQL text is part of the statement and kept with it: pass anything secret as a parameter.
 - **Credentials.** A token or a key is not written to the log, the log store or the audit log, a wrong one included; the log and the audit log name a key by its name and id, and the token as `root token` (the log) or `token` (the audit log).
 - **The audit log** keeps every change (a request that needs the admin scope and changes something), every note and every refused request, the latest 2,000 in memory and every one in `--audit-log FILE` and the log store's `audit` table: who (the key's name and id), the route, the status, the client's address, the reason given, and what changed, before and after. Reads are not audited, nor writes of rows, by `/v1/write` or by SQL, except those the command center sends ([audit log](server.md#security)). Behind a proxy, `--trust-proxy` names the proxies whose `X-Forwarded-For` the audit log believes.
 

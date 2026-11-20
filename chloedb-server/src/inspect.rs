@@ -379,7 +379,16 @@ pub async fn tables(svc: &Arc<Service>) -> Result<Json, ApiError> {
         }
         out.push(row);
     }
-    let totals = totals(&out, matches!(svc.backend, Backend::Cluster(_)));
+    let mut totals = totals(&out, matches!(svc.backend, Backend::Cluster(_)));
+    // What the files hold, not what the tables' segments add up to (MARCO-404):
+    // a server's database file is as large as its largest size so far until
+    // free space is given back, and its write-ahead log comes on top.
+    if let Backend::Local(db) = &svc.backend {
+        let f = db.storage().file_stats();
+        totals["file_bytes"] = json!(f.file_bytes);
+        totals["free_bytes"] = json!((f.free_pages + f.pending_pages) * chloedb::storage::pager::PAGE as u64);
+        totals["wal_bytes"] = json!(f.wal_bytes);
+    }
     // Growth: the size an hourly row of the log store had a day and a week
     // ago (this server's rows; a coordinator keeps them of the cluster).
     if let Some(store) = &svc.log_store {

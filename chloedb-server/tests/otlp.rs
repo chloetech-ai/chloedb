@@ -272,3 +272,135 @@ async fn logs_take_a_key_that_may_write() {
     let routes: Vec<&str> = j["entries"].as_array().unwrap().iter().filter(|e| e["status"] == 403).map(|e| e["route"].as_str().unwrap_or("")).collect();
     assert!(routes.contains(&"LogsExport") && routes.contains(&"/v1/logs"), "{j}");
 }
+
+/// MARCO-401: a request sent again (a Collector whose answer was a 503 or
+/// a timeout after the rows were written) writes each part once, whether
+/// it fits one part of 1,000 rows or several; a request with new lines
+/// still writes them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retried_request_writes_each_line_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = empty(dir.path(), "retry.strata");
+    let url = http(svc.clone()).await;
+    let count = || async { sql(&url, "SELECT count(*) FROM otel_logs").await[0][0].as_i64().unwrap() };
+
+    let big = request("checkout", 0, 2_500).encode_to_vec();
+    for _ in 0..3 {
+        let (status, ..) = post(&url, "application/x-protobuf", false, big.clone()).await;
+        assert_eq!(status, 200);
+    }
+    assert_eq!(count().await, 2_500, "three sends of one request");
+    // Compressed, it is the same request.
+    let (status, ..) = post(&url, "application/x-protobuf", true, big).await;
+    assert_eq!(status, 200);
+    assert_eq!(count().await, 2_500);
+    // Other lines are written, and so are the same lines of another table.
+    let (status, ..) = post(&url, "application/x-protobuf", false, request("checkout", 2_500, 10).encode_to_vec()).await;
+    assert_eq!(status, 200);
+    assert_eq!(count().await, 2_510);
+    let c = chloedb_server::http_client().build().unwrap();
+    let a = c.post(format!("{url}/v1/logs?table=otel_other")).header("content-type", "application/x-protobuf").body(request("checkout", 0, 5).encode_to_vec()).send().await.unwrap();
+    assert_eq!(a.status().as_u16(), 200);
+    assert_eq!(sql(&url, "SELECT count(*) FROM otel_other").await[0][0].as_i64().unwrap(), 5);
+
+    // Three parts (1,000 rows each), sent twice.
+    let whole = request("search", 10_000, 2_200);
+    let digest_before = count().await;
+    let (status, ..) = post(&url, "application/x-protobuf", false, whole.encode_to_vec()).await;
+    assert_eq!(status, 200);
+    assert_eq!(count().await, digest_before + 2_200);
+    let (status, ..) = post(&url, "application/x-protobuf", false, whole.encode_to_vec()).await;
+    assert_eq!(status, 200);
+    assert_eq!(count().await, digest_before + 2_200);
+}
+
+/// MARCO-402 and MARCO-405: severity is one spelling and has its number,
+/// and a syslog line's host and program come from its attributes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn severity_is_one_spelling_and_syslog_names_its_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = empty(dir.path(), "sev.strata");
+    let url = http(svc.clone()).await;
+    let rec = |i: u64, text: &str, number: i32| json!({"timeUnixNano": ((1_762_560_000 + i) * 1_000_000_000).to_string(), "severityText": text, "severityNumber": number, "body": {"stringValue": format!("line {i}")}});
+    let records: Vec<Json> = [("INFO", 0), ("info", 0), ("warn", 0), ("Warning", 0), ("err", 0), ("error", 0), ("ERROR", 0), ("critical", 0), ("debug", 0), ("custom", 0), ("", 17), ("weird", 9)]
+        .iter()
+        .enumerate()
+        .map(|(i, (t, n))| rec(i as u64, t, *n))
+        .collect();
+    let body = json!({"resourceLogs": [{"resource": {"attributes": [{"key": "host.name", "value": {"stringValue": "web-1"}}]}, "scopeLogs": [{"logRecords": records}]}]});
+    let (status, ..) = post(&url, "application/json", false, serde_json::to_vec(&body).unwrap()).await;
+    assert_eq!(status, 200);
+    let rows = sql(&url, "SELECT severity, count(*) FROM otel_logs GROUP BY severity ORDER BY severity").await;
+    let got: Vec<(String, i64)> = rows.as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap_or("").to_string(), r[1].as_i64().unwrap())).collect();
+    assert_eq!(got, vec![("DEBUG".into(), 1), ("ERROR".into(), 4), ("FATAL".into(), 1), ("INFO".into(), 2), ("WARN".into(), 2), ("custom".into(), 1), ("weird".into(), 1)], "{got:?}");
+    // `ERROR` with a number from the text, `custom` with none, a given number kept.
+    assert_eq!(sql(&url, "SELECT count(*) FROM otel_logs WHERE severity_number >= 17").await[0][0], 5);
+    assert_eq!(sql(&url, "SELECT count(*) FROM otel_logs WHERE severity = 'custom' AND severity_number IS NULL").await[0][0], 1);
+    assert_eq!(sql(&url, "SELECT severity_number FROM otel_logs WHERE severity = 'weird'").await[0][0], 9);
+
+    // Syslog through the Collector's receiver: the resource has no host, the attributes do.
+    let line = json!({"timeUnixNano": "1762560100000000000", "body": {"stringValue": "<34>Nov  8 12:00:00 edge-sw-11 sshd[42]: Failed password"},
+        "attributes": [{"key": "hostname", "value": {"stringValue": "edge-sw-11"}}, {"key": "appname", "value": {"stringValue": "sshd"}}]});
+    let body = json!({"resourceLogs": [{"scopeLogs": [{"logRecords": [line]}]}]});
+    let (status, ..) = post(&url, "application/json", false, serde_json::to_vec(&body).unwrap()).await;
+    assert_eq!(status, 200);
+    let rows = sql(&url, "SELECT host, service FROM otel_logs WHERE body LIKE '%Failed password%'").await;
+    assert_eq!((rows[0][0].as_str(), rows[0][1].as_str()), (Some("edge-sw-11"), Some("sshd")));
+    // The resource's own host wins.
+    let line = json!({"timeUnixNano": "1762560200000000000", "body": {"stringValue": "other"}, "attributes": [{"key": "hostname", "value": {"stringValue": "not-this"}}]});
+    let body = json!({"resourceLogs": [{"resource": {"attributes": [{"key": "host.name", "value": {"stringValue": "web-9"}}]}, "scopeLogs": [{"logRecords": [line]}]}]});
+    post(&url, "application/json", false, serde_json::to_vec(&body).unwrap()).await;
+    assert_eq!(sql(&url, "SELECT host FROM otel_logs WHERE body = 'other'").await[0][0], "web-9");
+}
+
+/// MARCO-404, and space given back without a vacuum: the totals of
+/// `GET /v1/index/tables` (the Tables page's) answer the database file's
+/// size beside the tables' live data, and once a table's lines are gone (a
+/// `DROP TABLE` here; a retention drops a window of segments the same way)
+/// the server's trimmer gives the file's free space back by itself, and
+/// keeps every other line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_file_is_shown_and_its_free_space_given_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("trim.strata");
+    let db = Arc::new(Db::create_empty(&path, DbOptions::default()).unwrap());
+    let schema = (*db.schema()).clone();
+    let svc = service(Backend::Local(db.clone()), schema);
+    let url = http(svc.clone()).await;
+    let c = chloedb_server::http_client().build().unwrap();
+    // Old lines, then newer ones above them in the file.
+    for (table, from, n) in [("otel_old", 0, 20_000), ("otel_new", 100_000, 2_000)] {
+        let a = c.post(format!("{url}/v1/logs?table={table}")).header("content-type", "application/x-protobuf").body(request("checkout", from, n).encode_to_vec()).send().await.unwrap();
+        assert_eq!(a.status().as_u16(), 200);
+        db.storage().flush().unwrap();
+    }
+    let totals = || async {
+        let j: Json = c.get(format!("{url}/v1/index/tables")).send().await.unwrap().json().await.unwrap();
+        j["totals"].clone()
+    };
+    let size = || std::fs::metadata(&path).unwrap().len();
+    let t = totals().await;
+    assert_eq!(t["file_bytes"].as_u64(), Some(size()), "{t}");
+    assert!(t["bytes"].as_u64().unwrap() > 0 && t["wal_bytes"].is_u64() && t["free_bytes"].is_u64(), "{t}");
+
+    let a = c.post(format!("{url}/v1/sql")).json(&json!({"sql": "DROP TABLE otel_old"})).send().await.unwrap();
+    assert_eq!(a.status().as_u16(), 200);
+    let before = size();
+    // What the trimmer does every five minutes (with its 64 MB floor at 0
+    // for this small file): the dropped pages come free a commit or two on.
+    let mut gave = 0;
+    for i in 0..5 {
+        gave += svc.trim_due(0).unwrap();
+        let a = c.post(format!("{url}/v1/logs?table=otel_new")).header("content-type", "application/x-protobuf").body(request("checkout", 200_000 + i, 1).encode_to_vec()).send().await.unwrap();
+        assert_eq!(a.status().as_u16(), 200);
+    }
+    let after = size();
+    assert!(gave > 0 && after < before, "{before} -> {after}, gave {gave}");
+    assert!(after * 2 < before, "the dropped table's space is back: {before} -> {after}");
+    let t = totals().await;
+    assert_eq!(t["file_bytes"].as_u64(), Some(after), "{t}");
+    assert_eq!(sql(&url, "SELECT count(*) FROM otel_new").await[0][0].as_i64(), Some(2_005));
+    db.storage().check().unwrap();
+    // Below its floor the trimmer leaves the file as it is.
+    assert_eq!(svc.trim_due(chloedb_server::service::TRIM_MIN_FREE).unwrap(), 0);
+}

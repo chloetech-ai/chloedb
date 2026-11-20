@@ -88,7 +88,7 @@ await tracks.focus(taste, { rows: 20000 });
 const r = await tracks.similar(taste, { k: 10 });
 ```
 
-`focus` keeps the clusters that fit in `rows` rows and drops those that fall beyond half as many again, so a taste that drifts does not fetch and drop the same clusters over and over. `codes=False` (`codes: false`) skips the codes; `{"codes": false}` builds a slice without them.
+`focus` keeps the clusters that fit in `rows` rows and drops those that fall beyond half as many again, so a taste that drifts does not fetch and drop the same clusters over and over. A cluster dropped is deleted from the device's database, and once the rows deleted since the last time outnumber the rows held (and are 1,000 or more), the database is compacted, so the folder stays within about twice what the device holds however far the taste drifts; a geo slice's tiles go the same way. `codes=False` (`codes: false`) skips the codes; `{"codes": false}` builds a slice without them.
 
 On Yambda's 629,298 tracks (64-dimension vectors, 4,599 users, measured in a cloud container; [the replay](https://github.com/chloetech-ai/chloedb/tree/main/chloedb/results/slices#vector-slices-on-yambda-proving-similarity-search-on-the-device) has every number), with 4,096 clusters and 20,000 tracks on the device:
 

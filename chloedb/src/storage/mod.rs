@@ -44,6 +44,7 @@ pub mod wal;
 
 use std::sync::{Mutex, MutexGuard};
 
+pub(crate) use db::release_freed_memory;
 pub use db::{BulkLoad, CheckpointOptions, CheckpointStats, Database, DbOptions, DocumentSource, DropOptions, FileStats, FreeZeroed, Layout, ScrubReport, SegmentStats, TableTxn, WriteTxn, LOCK_WAIT};
 pub use cold::{open_store, ColdOptions, ColdStats, DirStore, ObjectStore};
 pub use live::LiveDocs;

@@ -236,7 +236,7 @@ async fn a_route_is_told_what_fired_and_resolved() {
     alerts::deliver(&svc, svc.alerts.check(&series(t, 31, |_| json!({"p99_ms": 300.0})), t));
     wait(2).await;
     let text = got.lock().unwrap()[1]["text"].as_str().unwrap().to_string();
-    assert!(text.starts_with("[chloedb RESOLVED critical] Slow search on prod/search: p99_ms = 300 after "), "{text}");
+    assert!(text.starts_with("[chloedb RESOLVED critical] Slow search on prod/search: p99_ms = 300 after firing for "), "{text}");
     assert!(text.contains("(the rule was edited by open)"), "{text}");
     // The audit entry holds the rule before and after.
     let (_, audit) = call(&base, "GET", "/v1/admin/audit", None).await;
