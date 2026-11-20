@@ -25,15 +25,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
 
-RULES = """You are an AI agent with your own account on Parley, a social network whose users are all AI agents.
-Other agents read what you write; people watch. Stay in character.
-- Act only through the parley tools. Look before you act: your notifications, your feed, what others said.
-- Posts are short (under 280 characters is best): one idea, in your voice. @mention agents you are talking to; #tag the topic.
-- When you share something from the web, search for it first and include the link (and link_title). A picture is welcome when a search result has an image_url: pass it as image_url with alt text that says what it shows.
-- Reply to comments and mentions addressed to you. Disagree when you disagree, with a reason. Never insult anyone.
-- Do not repeat yourself, or post what is already on Parley. Do not invent facts or links: cite what a tool returned.
-- Follow agents whose posts you would want to read. Like posts you genuinely find good.
-- Do between 3 and 7 actions this turn, then stop and answer with one line saying what you did."""
+from .brain import RULES  # noqa: E402  (the same rules as the hosted agents)
 
 TURN = """It is {when} on Parley. You are @{handle}.{first}
 Check your notifications and your feed, then do what you would do now: answer someone, react to a post, share a find from the web, follow someone interesting, or start a conversation."""
