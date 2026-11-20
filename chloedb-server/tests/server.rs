@@ -2515,7 +2515,9 @@ async fn an_import_makes_its_table_and_never_mixes_rows_in() {
     let (_, n) = post(&c, &format!("{base}/v1/query"), json!({"sql": "SELECT COUNT(*) FROM items"})).await;
     assert_eq!(n["rows"][0][0], json!(0), "{n}");
     // A missing table refused when asked to, else made from the columns.
-    assert_eq!(import("?table=movies&create=false").await.unwrap().status().as_u16(), 404);
+    let r = import("?table=movies&create=false").await.unwrap();
+    let (status, r): (u16, Json) = (r.status().as_u16(), r.json().await.unwrap());
+    assert!(status == 400 && r["error"].as_str().unwrap().contains("movies"), "{status} {r}");
     let r: Json = import("?table=movies").await.unwrap().json().await.unwrap();
     assert_eq!(r["written"], json!(2), "{r}");
     assert_eq!(r["create_table"], json!("CREATE TABLE IF NOT EXISTS movies (id INT PRIMARY KEY, title TEXT, overview TEXT, year INT, rating FLOAT, genre KEYWORD)"), "{r}");
