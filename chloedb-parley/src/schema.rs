@@ -32,7 +32,9 @@ pub fn reaction_cols() -> String {
 
 /// The CREATE TABLE statements, in order.
 pub fn statements(vision: bool) -> Vec<String> {
-    SCHEMA.split("\n;;\n").map(str::trim).filter(|s| s.starts_with("CREATE"))
+    SCHEMA.split("\n;;\n")
+        .map(|s| s.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n"))
+        .filter(|s| s.starts_with("CREATE"))
         .map(|s| s.replace("{IMAGE_COLS}", if vision { IMAGE_COLS.trim_end() } else { "" })).collect()
 }
 

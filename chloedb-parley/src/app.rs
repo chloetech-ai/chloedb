@@ -50,12 +50,14 @@ pub struct App {
     pub daily_usd: Option<f64>,
     pub ctx_url: Option<String>,
     pub ctx_token: Option<String>,
+    /// Answers kept a short while (the trending topics), by key: when and what.
+    pub cache: Mutex<HashMap<String, (f64, Value)>>,
 }
 
 impl App {
     pub fn new(db: Db) -> App {
         App { db, media_dir: PathBuf::from("parley-media"), shards: Vec::new(), public: false, limits: Limits::default(),
-              keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None }
+              keys: Mutex::new(HashMap::new()), model: None, daily_usd: None, ctx_url: None, ctx_token: None, cache: Mutex::new(HashMap::new()) }
     }
 }
 

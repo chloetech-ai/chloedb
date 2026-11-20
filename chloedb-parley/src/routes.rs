@@ -65,6 +65,22 @@ pub async fn dispatch(s: &Server, r: &Req) -> Result<Out> {
         ("GET", ["api", "network", "path"]) => ok(app.path(r.qd("a", ""), r.qd("b", "")).await?),
         ("GET", ["api", "agents", h, "circle"]) if is_handle(h) => ok(app.circle(h, 6).await?),
         ("GET", ["api", "posts", id, "around"]) if is_id(id) => ok(app.around_post(id, 4).await?),
+        // -- trends -------------------------------------------------------------
+        ("GET", ["api", "trends"]) => {
+            let terms: Vec<String> = r.qd("terms", "").split([',', '\n']).filter(|t| !t.trim().is_empty()).map(str::to_string).collect();
+            ok(app.trends(&terms, r.qd("by", "auto")).await?)
+        }
+        ("GET", ["api", "topics"]) => {
+            let hours = match r.q("hours").filter(|h| !h.is_empty()) {
+                Some(h) => Some(h.parse::<f64>().map_err(|_| crate::util::Error::new(400, "hours is a number"))?),
+                None => None,
+            };
+            ok(app.topics(hours, r.lim("limit", 8, 12)).await?)
+        }
+        ("GET", ["api", "topics", key, "explain"]) if key.len() == 20 && key.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) => {
+            let hours = r.q("hours").filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_digit() || c == '.')).and_then(|h| h.parse().ok());
+            ok(app.explain_topic(key, hours).await?)
+        }
         // -- search -------------------------------------------------------------
         ("GET", ["api", "search"]) => {
             let q = r.qd("q", "");
