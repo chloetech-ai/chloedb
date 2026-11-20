@@ -37,8 +37,10 @@ function scripted() {
       }
       const entry = /^add (\w+) ([\d.,]+)/i.exec(input.request)
       if (entry) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'budget', values: { month: 'Nov', add: { item: entry[1], amount: Number(entry[2].replace(',', '.')) } } }, why: 'your budget' }
+      const out = /^take (\w+) out/i.exec(input.request)
+      if (out) return { mode: 'use', kind: 'tool', use: input.screen[0]?.id, tool: 'inputs', args: { request: 'budget', values: { month: 'Nov', remove: { find: { item: out[1] } } } }, why: 'your budget' }
       if (/^find /i.test(input.request)) {
-        const saved = input.candidates.find(c => c.id === (this.pick ?? 'search-results'))
+        const saved = input.candidates.find(c => c.id === (this.pick ?? 'search-results')) ?? { id: this.pick }
         return { mode: 'use', kind: 'info', use: saved.id, tool: 'findings', args: { query: input.request.slice(5) }, why: 'your search results' }
       }
       const booking = /table|dinner/i.test(input.request)
@@ -332,6 +334,13 @@ test('an app gets all it kept with its data, and an entry asked for in words is 
   assert.deepEqual((await chat.apps.get(budget.id)).args.values, { month: 'Nov' }, 'the app opens next time without the entry')
   const again = await (await fetch(`${chat.url}api/shown/${added.shown}?talk=${talk}`)).json()
   assert.deepEqual(again.args.values, { month: 'Nov' }, 'and so does that place in the conversation: the entry is in what it kept')
+
+  // A take-out asked once is sent once, and never again when the app opens (LENA-1).
+  const out = (await events('/api/turn', { text: 'take rent out', talk, screen: [{ id: budget.id, version: 1, name: 'Budget tracker', shows: '', did: [] }] })).find(e => e.type === 'app')
+  assert.deepEqual(out.args.values.remove, { find: { item: 'rent' } }, 'the app gets the take-out this time')
+  assert.deepEqual((await chat.apps.get(budget.id)).args.values, { month: 'Nov' }, 'the app opens next time without it')
+  const shownOut = await (await fetch(`${chat.url}api/shown/${out.shown}?talk=${talk}`)).json()
+  assert.deepEqual(shownOut.args.values, { month: 'Nov' }, 'and that place in the conversation opens without it too')
 })
 
 test('a change is made to what that widget shows, and a web answer changes as a copy of its own', { skip }, async () => {
@@ -738,14 +747,21 @@ test('a helper can never take out what the owner added, a part keeps its crew, a
   // Earlier versions: the copy just before a change, and what changed then.
   const hist = await post('/api/history', { app: app.id, me: `s-${share.token}` })
   assert.ok(hist.moments.some(m => /cheerios taken out of extras/.test(m.then)), JSON.stringify(hist.moments))
-  // MARCUS-3: a crew B lead adds a job marked crew A; it lands in crew B.
+  // MARCUS-3, MARCUS-1: a crew B lead adding a job marked crew A is told
+  // his link adds only to crew B, and nothing goes in; one with no crew lands in his.
   const week = await chat.apps.put({ name: 'Crews', about: 'Jobs.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('crews'), args: { request: 'crews' }, saved: true }, 'made by hand')
   await post('/api/call', { app: week.id, me, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 1, crew: 'A' }, { id: 2, crew: 'B' }] } })
   const s2 = await post('/api/share', { app: week.id, me })
   const darnell = (await post('/api/share', { app: week.id, me: `s-${s2.token}`, person: { name: 'Darnell', role: 'helper', only: { field: 'crew', value: 'B' } } })).people.at(-1)
-  await post('/api/call', { app: week.id, me: `s-${darnell.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 2, crew: 'B' }, { id: 3, crew: 'A', client: 'Okafor' }] } })
+  const other = await post('/api/call', { app: week.id, me: `s-${darnell.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 2, crew: 'B' }, { id: 3, crew: 'A', client: 'Okafor' }] } })
+  assert.equal(other.isError, true)
+  assert.match(other.content[0].text, /adds only to B, not to A/)
+  const mine = await post('/api/call', { app: week.id, me: `s-${darnell.token}`, name: 'app_keep', arguments: { key: 'jobs', value: [{ id: 2, crew: 'B' }, { id: 4, client: 'Lopez' }] } })
+  assert.equal(mine.structuredContent.merged, true, 'his screen is told what was kept')
+  assert.equal(mine.structuredContent.value.find(j => j.id === 4).crew, 'B')
   const jobs = (await post('/api/call', { app: week.id, me: `s-${s2.token}`, name: 'app_kept', arguments: { key: 'jobs' } })).structuredContent.value
-  assert.equal(jobs.find(j => j.id === 3).crew, 'B')
+  assert.equal(jobs.find(j => j.id === 3), undefined)
+  assert.equal(jobs.find(j => j.id === 4).crew, 'B')
 })
 
 test('a link made for a person signs with their name, the app knows who it is, and earlier versions say who (P: MAYA-9, LENA-2, MARCUS-2, LENA-4)', { skip }, async () => {
@@ -776,6 +792,89 @@ test('a link made for a person signs with their name, the app knows who it is, a
   const moment = hist.moments.find(m => /Kim ticked/.test(m.then))
   assert.ok(moment, JSON.stringify(hist.moments))
   assert.deepEqual(moment.by, ['Ray'])
+})
+
+test('names stay true: the app’s own keeps are nobody’s, history names each entry’s person, the owner is no link, and a new link is the same person (U, W: TOM-2, INES-3, DEV-2, MARCUS-3, LENA-2)', { skip }, async () => {
+  const me = '6'.repeat(32)
+  const app = await chat.apps.put({ name: 'Names', about: 'Jobs.', kind: 'tool', tool: 'inputs', tools: ['inputs'], source: FRAGMENT('names'), args: { request: 'names' }, saved: true }, 'made by hand')
+  const share = await post('/api/share', { app: app.id, me })
+  const owner = `s-${share.token}`
+  const keep = (who, key, value, extra = {}) => post('/api/call', { app: app.id, me: who, name: 'app_keep', arguments: { key, value, ...extra }, ...(extra.base !== undefined ? { base: extra.base } : {}) })
+  const read = async key => (await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { key } })).structuredContent.value
+  await keep(owner, 'days', [{ id: 'd7', day: 'Apr 7' }])
+  const ruth = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Ruth', role: 'helper' } })).people.at(-1)
+  // A new version, drawn first on Ruth's phone, puts Tom's dinner in its
+  // place by itself: nobody's name on it, and not hers to take out (TOM-2).
+  assert.equal((await keep(`s-${ruth.token}`, 'days', [{ id: 'd7', day: 'Apr 7', dinner: 'Trattoria Lucca' }], { auto: true })).isError, undefined)
+  const days = await read('days')
+  assert.equal(days[0].dinner, 'Trattoria Lucca')
+  assert.equal(days[0].by, undefined)
+  assert.equal(JSON.stringify(days).includes('Ruth'), false, 'no name of hers anywhere on it')
+  assert.equal((await keep(`s-${ruth.token}`, 'days', [{ id: 'd7', day: 'Apr 7' }])).isError, true, 'her link can’t take his dinner out')
+
+  // The owner, sharing, is no link: the app gets no who, so it lets them change anything (DEV-2).
+  assert.equal((await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { all: true } })).structuredContent.who, undefined)
+
+  // Earlier versions name each entry's own person: only the detergente was Joana's (INES-3).
+  await keep(owner, 'expenses', [{ id: 'r', item: 'rent', amount: 600 }])
+  const joana = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Joana', role: 'helper' } })).people.at(-1)
+  await keep(`s-${joana.token}`, 'expenses', [{ id: 'r', item: 'rent', amount: 600 }, { id: 'j', item: 'detergente', amount: 4.6 }])
+  await keep(owner, 'expenses', [{ id: 'r', item: 'rent', amount: 600 }, { id: 'j', item: 'detergente', amount: 4.6, by: 'Joana' }, { id: 'p', item: 'pastel de nata', amount: 1.3 }, { id: 'b', item: 'bilhete comboio', amount: 2.35 }])
+  const hist = await post('/api/history', { app: app.id, me: owner })
+  const moment = hist.moments.find(m => /detergente/.test(m.then))
+  assert.ok(moment, JSON.stringify(hist.moments))
+  assert.match(moment.then, /detergente added to expenses by Joana/)
+  assert.match(moment.then, /pastel de nata, bilhete comboio added to expenses(;|$)/)
+  assert.deepEqual(moment.by, [], 'the moment is not all Joana’s')
+
+  // The same invoice number from two phones is said to every phone that
+  // opens it, with each one's amount and who, until one is taken out (LENA-2).
+  await keep(owner, 'invoices', [])
+  await keep(`s-${joana.token}`, 'invoices', [{ id: 'i1', number: 'MS-2320', amount: 545.2 }], { base: [] })
+  await keep(owner, 'invoices', [{ id: 'i2', number: 'MS-2320', amount: 545.02 }], { base: [] })
+  const opened = await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { all: true } })
+  assert.equal(opened.structuredContent.clashes?.length, 1, JSON.stringify(opened.structuredContent))
+  assert.match(opened.structuredContent.clashes[0].text, /MS-2320 is in invoices 2 times \(545\.20 by Joana, 545\.02\): check which is right/)
+  const both = await read('invoices')
+  await keep(owner, 'invoices', both.filter(i => i.id !== 'i2'))
+  assert.equal((await post('/api/call', { app: app.id, me: owner, name: 'app_kept', arguments: { all: true } })).structuredContent.clashes, undefined, 'fixed, it is said no more')
+
+  // A new link for the same person can change what the old one marked (MARCUS-3).
+  await keep(owner, 'jobs', [{ id: 's', client: 'Smith', status: '' }])
+  const jose = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Jose', role: 'helper' } })).people.at(-1)
+  assert.equal((await keep(`s-${jose.token}`, 'jobs', [{ id: 's', client: 'Smith', status: 'running late' }])).isError, undefined)
+  await post('/api/unshare', { app: app.id, me: owner, self: me, person: jose.token })
+  const jose2 = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Jose', role: 'helper' } })).people.at(-1)
+  assert.equal((await keep(`s-${jose2.token}`, 'jobs', [{ id: 's', client: 'Smith', status: 'done' }])).isError, undefined, 'Jose is Jose')
+  assert.equal((await read('jobs'))[0].status, 'done')
+  const sam = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Sam', role: 'helper' } })).people.at(-1)
+  assert.equal((await keep(`s-${sam.token}`, 'jobs', [{ id: 's', client: 'Smith', status: 'late' }])).isError, true, 'but not another person')
+
+  // A link kept from prices adds a job with no price, and its screen is told (MARCUS-1).
+  const lead = (await post('/api/share', { app: app.id, me: owner, person: { name: 'Darnell', role: 'helper', hide: ['price'] } })).people.at(-1)
+  const added = await keep(`s-${lead.token}`, 'jobs', [{ id: 's', client: 'Smith', status: 'done' }, { id: 'n', client: 'Brown', price: 999 }])
+  assert.equal(added.structuredContent.merged, true)
+  assert.equal(added.structuredContent.value.find(j => j.id === 'n').price, undefined)
+  assert.equal((await read('jobs')).find(j => j.id === 'n').price, undefined)
+})
+
+test('an answer is kept once, and stays kept after a reload (Y: PRIYA-3)', { skip }, async () => {
+  const talk = '5'.repeat(32)
+  const answer = (await events('/api/turn', { text: 'find reviews of quiet headphones', talk })).find(e => e.type === 'app')
+  const once = (await post('/api/apps/search-results/keep-answer', { talk, shown: answer.shown, name: 'Quiet headphones · Nov 20', request: 'quiet headphones' })).app
+  const twice = (await post('/api/apps/search-results/keep-answer', { talk, shown: answer.shown, name: 'Quiet headphones · Nov 20', request: 'quiet headphones' })).app
+  assert.equal(twice.id, once.id, 'a second press is the same kept answer')
+  const reloaded = await (await fetch(`${chat.url}api/shown/${answer.shown}?talk=${talk}`)).json()
+  assert.equal(reloaded.app.id, once.id, 'that place in the conversation opens as the kept answer')
+  // Something to look up for it is searched, and the kept answer itself
+  // takes it: the same app, a new version, its notes with it (PRIYA-4).
+  const searches = model.calls.research.length
+  model.pick = once.id
+  const priced = (await events('/api/turn', { text: 'find its store price', talk })).find(e => e.type === 'app')
+  delete model.pick
+  assert.equal(model.calls.research.length, searches + 1, 'it looked it up')
+  assert.equal(priced.app.id, once.id)
+  assert.equal(priced.app.version, once.version + 1)
 })
 
 test('open phones keep up: a new version is told with what changed, and a stopped link is told (R: MAYA-3, DEV-7)', { skip }, async () => {

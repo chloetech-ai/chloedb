@@ -285,6 +285,14 @@ test('a keep goes on top of what is there: ids, lists without ids, clashes and t
   assert.deepEqual(said, [{ field: 'value', mine: 'b+', theirs: 'c+' }])
   assert.deepEqual(mergeKeep({ n: 1, m: 1 }, { n: 2, m: 1 }, { n: 1, m: 3 }), { n: 2, m: 3 })
   assert.equal(mergeKeep(5, 5, 7), 7, 'nothing changed here: theirs')
+  // The tick kept was passed with no name; his failed lost, and so does his name on it (DEV-3).
+  const clash = []
+  const base = [{ id: 1, title: 'Dark mode', status: '', status_by: '' }]
+  const kept = mergeKeep(base, [{ id: 1, title: 'Dark mode', status: 'failed', status_by: 'Sam' }], [{ id: 1, title: 'Dark mode', status: 'passed', status_by: '' }], clash)
+  assert.deepEqual(kept, [{ id: 1, title: 'Dark mode', status: 'passed', status_by: '' }])
+  assert.equal(clash.length, 1)
+  // With no clash, the name comes with the change.
+  assert.deepEqual(mergeKeep(base, [{ id: 1, title: 'Dark mode', status: 'failed', status_by: 'Sam' }], [{ id: 1, title: 'Dark mode!', status: '', status_by: '' }]), [{ id: 1, title: 'Dark mode!', status: 'failed', status_by: 'Sam' }])
 })
 
 test('merges at their edges: a delete wins, days merge by place, one number twice is said (Q: MARCUS-1, TOM-5, LENA-3)', async () => {
@@ -304,7 +312,7 @@ test('merges at their edges: a delete wins, days merge by place, one number twic
   said = []
   const two = mergeKeep([], [{ id: 'a', number: '1043', amount: 97.85 }], [{ id: 'b', number: '1043', amount: 98.75 }], said, '/invoices')
   assert.equal(two.length, 2)
-  assert.deepEqual(said, [{ field: 'invoices', both: 'number 1043' }])
+  assert.deepEqual(said, [{ field: 'invoices', both: 'number 1043', number: 'number', value: '1043' }])
   // A list without ids: a tick on the owner's entry keeps it the owner's.
   assert.deepEqual(signed([{ item: 'milk', done: false }], [{ item: 'milk', done: true }, { item: 'eggs' }], 'Femi'), [{ item: 'milk', done: true }, { item: 'eggs', by: 'Femi' }])
 })

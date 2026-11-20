@@ -91,8 +91,11 @@ export const isView = key => String(key).startsWith('view:')
 
 // A link for one person may show only part of an app (one crew's jobs):
 // its lists hold only the entries whose field has that value (MARCUS-4).
-const inPart = (entry, only) => entry && typeof entry === 'object' && String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase()
-const parted = (value, only) => Array.isArray(value) && value.some(e => e && typeof e === 'object' && only.field in e)
+// A part of "*" is what names the person in any field (shared with them,
+// paid by them, added by them) (INES-4).
+const named = (entry, value) => Object.values(entry).some(v => (v && typeof v === 'object' ? !Array.isArray(v) && named(v, value) : String(v ?? '').trim().toLowerCase() === value))
+const inPart = (entry, only) => entry && typeof entry === 'object' && (only.field === '*' ? named(entry, String(only.value).trim().toLowerCase()) : String(entry[only.field] ?? '').trim().toLowerCase() === String(only.value).trim().toLowerCase())
+const parted = (value, only) => Array.isArray(value) && value.some(e => e && typeof e === 'object' && (only.field === '*' || only.field in e))
 export function partOf(value, only) {
   if (!only?.field || !parted(value, only)) return value
   return value.filter(e => inPart(e, only))
@@ -109,7 +112,7 @@ export function withPart(before, after, { by, only } = {}) {
   const unseen = new Set(only?.field && parted(before, only) ? before.filter(e => e?.id != null && !inPart(e, only)).map(e => e.id) : [])
   const added = after
     .filter(e => !(e && typeof e === 'object' && e.id != null && unseen.has(e.id)))
-    .map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && blank(e.by) ? { by } : {}), ...(only?.field ? { [only.field]: only.value } : {}) } : e))
+    .map(e => (e && typeof e === 'object' && !Array.isArray(e) && (e.id == null || !was.has(e.id)) ? { ...e, ...(by && blank(e.by) ? { by } : {}), ...(only?.field && only.field !== '*' ? { [only.field]: only.value } : {}) } : e))
   // What it adds is in its part, whatever the app put there (MARCUS-3).
   if (!only?.field || !parted(before, only)) return added
   const theirs = new Map(added.filter(e => e?.id != null).map(e => [e.id, e]))
@@ -236,7 +239,7 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
           // different: both stay, and both phones are told to check (LENA-3).
           const k = Object.keys(e).find(f => NUMBERED.test(f) && e[f] != null && String(e[f]).trim())
           const other = k && out.find(x => !was.has(String(x.id)) && x[k] != null && String(x[k]).trim() === String(e[k]).trim())
-          if (other) said.push({ field: `${path}`.replace(/^\//, '') || 'list', both: `${k} ${e[k]}` })
+          if (other) said.push({ field: `${path}`.replace(/^\//, '') || 'list', both: `${k} ${e[k]}`, number: k, value: String(e[k]).trim() })
           out.push(e)
         }
       } else if (!same(e, old)) {
@@ -278,10 +281,24 @@ export function mergeKeep(base, mine, theirs, said = [], path = '', depth = 0) {
   if (plain(mine) && plain(theirs) && (plain(base) || base == null)) {
     const b = base ?? {}
     const out = { ...theirs }
-    for (const k of new Set([...Object.keys(mine), ...Object.keys(b)])) {
-      if (same(mine[k], b[k])) continue
+    // Who did it and when go with what they did: when this side's change of
+    // a field lost to the other side's, its name and time on the entry go
+    // too, so a tick kept from one person never carries the other's name (DEV-3).
+    const keys = [...new Set([...Object.keys(mine), ...Object.keys(b)])]
+    const marks = keys.filter(k => SIGN.test(k) || k === 'by' || STAMP.test(k))
+    let lost = false
+    for (const k of keys) {
+      if (marks.includes(k) || same(mine[k], b[k])) continue
       if (!(k in mine)) { if (same(theirs[k], b[k])) delete out[k]; continue }
+      const before = said.length
       out[k] = mergeKeep(b[k], mine[k], theirs[k], said, `${path}/${k}`, depth + 1)
+      if (said.slice(before).some(c => 'mine' in c && c.field === `${path}/${k}`.replace(/^\//, ''))) lost = true
+    }
+    for (const k of marks) {
+      if (same(mine[k], b[k])) continue
+      if (lost) continue
+      if (!(k in mine)) { if (same(theirs[k], b[k])) delete out[k]; continue }
+      if (same(theirs[k], b[k]) || theirs[k] === undefined) out[k] = mine[k]
     }
     return out
   }
@@ -311,7 +328,9 @@ export function hideIn(value, hide, depth = 0) {
   return Object.fromEntries(Object.entries(value).filter(([k]) => !hidden(k, hide)).map(([k, v]) => [k, hideIn(v, hide, depth + 1)]))
 }
 export function withHidden(before, after, hide, depth = 0) {
-  if (!hide?.length || depth > 6 || !after || typeof after !== 'object' || !before || typeof before !== 'object') return after
+  if (!hide?.length || depth > 6 || !after || typeof after !== 'object') return after
+  // Something new from a link that never gets a field (a price) can't fill it (MARCUS-1).
+  if (!before || typeof before !== 'object') return hideIn(after, hide, depth)
   if (Array.isArray(after)) {
     if (!Array.isArray(before)) return after
     const was = new Map(before.filter(e => e && typeof e === 'object' && e.id != null).map(e => [String(e.id), e]))

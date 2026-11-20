@@ -116,6 +116,7 @@ function drawing(draw, connection, keeps = true) {
       }
       role = data?.role ?? role
       if (role === 'viewer') banner('Shared with you to look at: what you change here is not kept.')
+      queueMicrotask(() => greyOut())
       const start = performance.now()
       try {
         draw({ ...replayed(data, kept), kept, ...(who ? { who } : {}) })
@@ -131,7 +132,9 @@ function drawing(draw, connection, keeps = true) {
 }
 
 // Calls one of the server's tools from the view and returns its data.
+let calls = 0
 async function call(app, name, args) {
+  calls++
   const result = await app.callServerTool({ name, arguments: args })
   if (result.isError) throw new Error(result.content?.find(c => c.type === 'text')?.text ?? `${name} failed`)
   return result.structuredContent
@@ -212,7 +215,14 @@ EventTarget.prototype.removeEventListener = function (type, listener, options) {
 }
 
 // Puts a message in the conversation as the person's, for "Ask Claude".
+// A link someone was given has no chat behind it: the app says so in
+// place, instead of a refusal from the chat (MAYA-4, PRIYA-11).
 function ask(app, text) {
+  calls++
+  if (role === 'helper' || role === 'viewer') {
+    banner('This link has no chat: only whoever shared it can ask Claude. Everything this app shows is here.')
+    return Promise.resolve()
+  }
   return app.sendMessage({ role: 'user', content: [{ type: 'text', text }] })
 }
 
@@ -288,21 +298,36 @@ addEventListener('load', e => e.target instanceof HTMLImageElement && report(), 
 // A value is anything JSON holds.
 // A keep the link can't make (a view link, or a helper link taking something
 // out) is said on the app itself, so nobody thinks it was kept.
+// A keep with nobody touching the app (it putting what it had in a new
+// version's shape as it draws) is the app's own, not the person's: it is
+// sent as auto, so it carries no name (TOM-2).
+let touchedAt = 0
+let touchedEl = null
+for (const type of ['pointerdown', 'keydown', 'input', 'change']) addEventListener(type, e => {
+  touchedAt = Date.now()
+  if (type === 'pointerdown' || type === 'keydown') touchedEl = e.target instanceof Element ? e.target.closest('button, [role=button], input[type=submit], a') ?? touchedEl : touchedEl
+}, true)
 async function keep(app, key, value) {
+  const auto = Date.now() - touchedAt > 4000
   try {
-    await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null })
+    await globalThis.Kit.call(app, 'app_keep', { key: String(key), value: value ?? null, ...(auto && role ? { auto: true } : {}) })
     // Kept: a "Not kept" said earlier no longer stands (LENA-6).
     const box = document.getElementById('kit-banner')
     if (box && /^Not kept/.test(box.textContent)) box.remove()
     return true
   } catch (error) {
+    // The app's own keep, refused on a link, is nobody's to be told of.
+    if (auto && role) return false
     banner(error.message)
-    // A viewer may try things on screen; a helper sees what is kept again
-    // (at most every few seconds, so an app that keeps as it draws can't loop).
-    // Every refusal is drawn at once, but an app that keeps as it draws can't loop: five in ten seconds at most.
+    // What was tapped for it can't be done on this link: it says so and
+    // does nothing more (MAYA-7, MARCUS-5).
+    if (touchedEl && Date.now() - touchedAt < 4000 && /^Not kept|can only look/i.test(error.message)) refuse(touchedEl, error.message)
+    // Every refusal is drawn again from what is kept, so the screen shows
+    // what is there (a viewer's too, LENA-3), but an app that keeps as it
+    // draws can't loop: five in ten seconds at most.
     const now = Date.now()
     redrawn = redrawn.filter(t => now - t < 10000)
-    if (role !== 'viewer' && redraw && redrawn.length < 5) {
+    if (redraw && redrawn.length < 5) {
       redrawn.push(now)
       restored = now
       redraw()
@@ -310,6 +335,49 @@ async function keep(app, key, value) {
     return false
   }
 }
+function refuse(el, why) {
+  const button = el.closest('form')?.querySelector('[type=submit], button:not([type=button])') ?? el
+  button.setAttribute('aria-disabled', 'true')
+  button.disabled = true
+  button.title = why
+}
+// On a link that only looks, nothing that changes what is kept can be used:
+// every form and button but a search, a filter or a tab is greyed out, with
+// why (LENA-3). The app's own words for how one looks at it stay usable.
+const LOOKS = /^(search|find|filter|sort|show|hide|view|open|close|more|less|next|prev|previous|back|print|download|export|csv|today|week|month|day|all|tab|zoom|play|pause|details|steps?|cook|recipe|its page|sources?)\b/i
+function greyOut(root = document.body) {
+  if (role !== 'viewer' || !root?.querySelectorAll) return
+  for (const b of root.querySelectorAll('button, input[type=submit]')) {
+    if (b.closest('#kit-banner') || b.getAttribute('aria-pressed') != null || b.getAttribute('role') === 'tab') continue
+    const words = (b.innerText || b.value || b.getAttribute('aria-label') || '').trim()
+    const form = b.closest('form')
+    if (form && form.querySelector('input[type=search], [role=search]')) continue
+    if (!form && LOOKS.test(words)) continue
+    if (!b.disabled) {
+      b.disabled = true
+      b.title = 'This link can only look. Whoever shared it can change it.'
+    }
+  }
+  for (const f of root.querySelectorAll('form input:not([type=search]), form select, form textarea')) {
+    if (f.closest('form').querySelector('input[type=search], [role=search]')) continue
+    f.disabled = true
+  }
+}
+// Something tapped on a link that did nothing at all (no change on
+// screen, nothing kept or asked) is said, so nobody thinks it worked (MARCUS-5, MAYA-7).
+let changes = 0
+addEventListener('click', e => {
+  if (role !== 'helper' && role !== 'viewer') return
+  const b = e.target instanceof Element ? e.target.closest('button, input[type=submit]') : null
+  if (!b || b.disabled || b.closest('#kit-banner')) return
+  const [c0, k0] = [changes, calls]
+  setTimeout(() => {
+    if (changes === c0 && calls === k0 && b.isConnected) {
+      banner('Nothing was done: this link can’t do that. Whoever shared it can.')
+      refuse(b, 'This link can’t do that. Whoever shared it can.')
+    }
+  }, 1500)
+}, true)
 function banner(text) {
   if (!document.body) return
   let box = document.getElementById('kit-banner')
@@ -344,6 +412,7 @@ async function kept(app, key) {
 // Opens a web address through the host (a view's iframe may not open one
 // itself); anything but http(s) is left alone.
 function link(app, url) {
+  calls++
   return /^https?:\/\//i.test(String(url ?? '')) ? app.openLink({ url: String(url) }).catch(() => {}) : Promise.resolve()
 }
 
@@ -369,6 +438,50 @@ function parse(text) {
   }
   const n = Number(t)
   return Number.isFinite(n) ? n : NaN
+}
+// The entry a request picks (values.edit's or values.remove's find): the
+// newest whose values hold every value of find (numbers as numbers, words
+// without case); else the one entry that has find's words (its name) and
+// most of the rest, since a day or a date the chat worked out may be off
+// (MARCUS-4). Answers { entry, index } or null.
+function match(list, find) {
+  if (!Array.isArray(list) || !find || typeof find !== 'object') return null
+  const norm = v => String(v ?? '').trim().toLowerCase()
+  const num = v => {
+    const n = parse(v)
+    return Number.isFinite(n) ? String(n) : null
+  }
+  const valuesOf = e => {
+    const out = new Set()
+    const walk = (v, depth = 0) => {
+      if (depth > 3 || v == null) return
+      if (typeof v === 'object') return Object.values(v).forEach(x => walk(x, depth + 1))
+      out.add(norm(v))
+      const n = num(v)
+      if (n) out.add(n)
+    }
+    walk(e)
+    return out
+  }
+  const wants = Object.values(find).filter(v => v != null && v !== '' && typeof v !== 'object').map(v => ({ t: norm(v), n: num(v), word: typeof v === 'string' && !/^\d{4}-\d\d-\d\d/.test(v) && !Number.isFinite(parse(v)) }))
+  if (!wants.length) return null
+  const exact = (vals, w) => vals.has(w.t) || Boolean(w.n && vals.has(w.n))
+  const loose = (vals, w) => exact(vals, w) || (w.word && w.t.length > 2 && [...vals].some(x => x.length > 2 && (x.includes(w.t) || w.t.includes(x))))
+  for (let i = list.length - 1; i >= 0; i--) if (list[i] && typeof list[i] === 'object' && wants.every(w => exact(valuesOf(list[i]), w))) return { entry: list[i], index: i }
+  const words = wants.filter(w => w.word)
+  if (!words.length) return null
+  let best = null
+  let tie = false
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i]
+    if (!e || typeof e !== 'object') continue
+    const vals = valuesOf(e)
+    if (!words.every(w => loose(vals, w))) continue
+    const score = wants.filter(w => loose(vals, w)).length
+    if (!best || score > best.score) [best, tie] = [{ entry: e, index: i, score }, false]
+    else if (score === best.score) tie = true
+  }
+  return best && !tie ? { entry: best.entry, index: best.index } : null
 }
 const number = (value, digits = 0) => new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value)
 const ago = ms => {
@@ -459,13 +572,18 @@ function textForm(node) {
   for (let n; (n = walk.nextNode()); ) found.push(n)
   found.forEach(textForm)
 }
-new MutationObserver(changes => {
-  for (const c of changes) {
+new MutationObserver(list => {
+  for (const c of list) {
+    const at = c.target instanceof Element ? c.target : c.target.parentElement
+    if (!at?.closest?.('#kit-banner')) changes++
     if (c.type === 'characterData') textForm(c.target)
-    else c.addedNodes.forEach(textForm)
+    else c.addedNodes.forEach(n => {
+      textForm(n)
+      if (n.nodeType === Node.ELEMENT_NODE) greyOut(n.parentElement ?? n)
+    })
   }
   report()
 }).observe(document.documentElement, { childList: true, subtree: true, characterData: true })
 if (document.body) textForm(document.body)
 
-globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, download, print, link, money, number, parse, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }
+globalThis.Kit = { connect, drawing, replayed, call, ask, tell, keep, kept, download, print, link, money, number, parse, match, regex, ago, esc, math: globalThis.KitMath, plot: globalThis.KitPlot }

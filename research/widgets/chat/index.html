@@ -881,7 +881,83 @@ async function flush() {
   })().finally(() => (flushing = null))
   return flushing
 }
-window.addEventListener('online', () => flush().then(() => { for (const w of widgets) if (w.node?.querySelector('.signal-note')) offlineNote(w.app.id) }))
+window.addEventListener('online', () => {
+  // What this phone showed, with what it did with no signal: what differs
+  // from it once caught up is what the others did.
+  const shownBefore = {}
+  for (const w of widgets) {
+    const slot = slotOf(w.app.id)
+    shownBefore[slot] = { ...(cache[slot] ?? {}) }
+    for (const o of outbox) if (`${o.app}|${o.me}` === slot) shownBefore[slot][o.key] = o.value
+  }
+  flush().then(() => {
+    for (const w of widgets) if (w.node?.querySelector('.signal-note')) offlineNote(w.app.id)
+    catchUp(shownBefore)
+  })
+})
+// Back from no signal (or a watch that dropped): every shared app open here
+// is read again, drawn from what the others kept meanwhile, and what changed
+// is said (MARCUS-2, MAYA-6).
+async function catchUp(shownBefore = {}) {
+  watching.source?.close()
+  watching = { key: '', source: null }
+  syncWatch()
+  for (const w of widgets.filter(x => !x.folded && !x.stub && !x.removed && x.node && (shared[x.app.id] || x.staleShown))) {
+    const slot = slotOf(w.app.id)
+    const before = shownBefore[slot] ?? { ...(cache[slot] ?? {}) }
+    const out = await viaServer({ app: w.app.id, me: ownerOf(w.app.id), self: me, name: 'app_kept', arguments: { all: true } }).catch(() => null)
+    if (!out || out.isError) continue
+    const now = out.structuredContent?.values ?? {}
+    const said = whatChanged(before, now)
+    draw(w)
+    w.node.querySelector('.stale-signal')?.remove()
+    delete w.staleShown
+    if (said) {
+      w.node.querySelector('.caught-note')?.remove()
+      const box = el('offline-note caught-note', esc(`Caught up: ${said} on another phone while this one had no signal.`), w.node)
+      w.node.querySelector('.wbar').after(box)
+      setTimeout(() => box.remove(), 30000)
+    }
+  }
+}
+// What changed between two readings of what an app kept, in a few words:
+// entries taken out, added or changed, by their names ("bananas taken out").
+function whatChanged(before, now) {
+  const nameOf = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at)$/i.test(k) && typeof v === 'string' && v.trim() && !/^\d{4}-\d\d-\d\d/.test(v))?.[1] ?? '') : String(e ?? '')).slice(0, 30)
+  const lists = (v, depth = 0) => (Array.isArray(v) ? [v] : v && typeof v === 'object' && depth < 3 ? Object.values(v).flatMap(x => lists(x, depth + 1)) : [])
+  const out = []
+  for (const k of new Set([...Object.keys(before), ...Object.keys(now)])) {
+    if (k.startsWith('view:') || same(before[k], now[k])) continue
+    const a = lists(before[k]).flat(), b = lists(now[k]).flat()
+    const key = e => (e && typeof e === 'object' && e.id != null ? `#${e.id}` : JSON.stringify(e))
+    const was = new Map(a.map(e => [key(e), e])), next = new Map(b.map(e => [key(e), e]))
+    const gone = a.filter(e => !next.has(key(e))).map(nameOf).filter(Boolean)
+    const added = b.filter(e => !was.has(key(e))).map(nameOf).filter(Boolean)
+    const edited = b.filter(e => was.has(key(e)) && !same(was.get(key(e)), e)).map(nameOf).filter(Boolean)
+    // A list without ids: a changed entry is one gone and one added with the same name.
+    const both = gone.filter(n => added.includes(n))
+    const put = (names, words) => names.length && out.push(`${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''} ${words}`)
+    put(gone.filter(n => !both.includes(n)), 'taken out')
+    put(added.filter(n => !both.includes(n)), 'added')
+    put([...edited, ...both], 'changed')
+    if (!a.length && !b.length) out.push(`${k} changed`)
+  }
+  return out.slice(0, 3).join('; ')
+}
+function staleNote(w, at) {
+  if (!w.node || w.node.querySelector('.stale-signal')) return
+  w.staleShown = true
+  const when = at ? new Date(at).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''
+  const box = el('offline-note stale-signal', esc(`No signal: this is what this phone last had${when ? `, from ${when}` : ''}. It catches up when there is signal.`), w.node)
+  w.node.querySelector('.wbar')?.after(box)
+}
+function clashNote(id, clashes) {
+  for (const w of widgets.filter(x => x.app.id === id && !x.folded && x.node?.querySelector('.wbar'))) {
+    w.node.querySelector('.clash-note')?.remove()
+    const box = el('offline-note clash-note', esc(`${clashes.map(c => c.text).join('; ')}.`), w.node)
+    w.node.querySelector('.wbar').after(box)
+  }
+}
 setInterval(() => outbox.length && flush(), 15000)
 // What an app keeps and reads, through the server, or here with no signal.
 // Keeps of one value go one after the other, each with what the one before
@@ -920,8 +996,16 @@ async function keptCallNow(w, params) {
     if (!result.isError) {
       const mine = (cache[slot] ??= {})
       if (params.name === 'app_keep') mine[String(a.key)] = sc.merged ? sc.value : a.value ?? null
-      else if (a.all) cache[slot] = { ...result.structuredContent?.values }
-      else mine[String(a.key)] = result.structuredContent?.value ?? null
+      else if (a.all) {
+        cache[slot] = { ...result.structuredContent?.values }
+        ;(cache['-at'] ??= {})[slot] = Date.now()
+        // Two entries with one number from two phones, told to every phone
+        // that opens it until one is fixed (LENA-2).
+        if (result.structuredContent?.clashes?.length) clashNote(w.app.id, result.structuredContent.clashes)
+        else w.node?.querySelector('.clash-note')?.remove()
+        delete w.staleShown
+        w.node?.querySelector('.stale-signal')?.remove()
+      } else mine[String(a.key)] = result.structuredContent?.value ?? null
       saveOffline()
     }
     return result
@@ -929,7 +1013,12 @@ async function keptCallNow(w, params) {
     if (!(error instanceof TypeError)) throw error
     const values = { ...cache[slot] }
     for (const o of outbox) if (`${o.app}|${o.me}` === slot) values[o.key] = o.value
-    if (params.name === 'app_kept') return { content: [{ type: 'text', text: 'What this app kept, as last seen on this phone (no signal).' }], structuredContent: a.all ? { values } : { key: a.key, value: values[a.key] ?? null } }
+    if (params.name === 'app_kept') {
+      // Opened with no signal: it says how old what it shows is, and catches
+      // up once there is signal (MARCUS-2).
+      if (a.all) staleNote(w, cache['-at']?.[slot])
+      return { content: [{ type: 'text', text: 'What this app kept, as last seen on this phone (no signal).' }], structuredContent: a.all ? { values } : { key: a.key, value: values[a.key] ?? null } }
+    }
     const key = String(a.key)
     const waiting = outbox.find(o => o.app === w.app.id && o.me === payload.me && o.key === key)
     if (waiting) waiting.value = a.value ?? null
@@ -1188,6 +1277,33 @@ function csvOf(kept) {
   }
   return [columns.join(','), ...rows.map(r => columns.map(c => cell(r[c])).join(','))].join('\n')
 }
+// What was found, as a sheet: one row per option with its facts, its page,
+// the sources' dates, and the notes and no's on it with who wrote them (PRIYA-2).
+function foundCsv(args, kept) {
+  const notes = Object.entries(kept ?? {}).filter(([k, v]) => k.startsWith('notes ') && Array.isArray(v)).flatMap(([, v]) => v)
+  const docs = args.documents ?? []
+  const facts = [...new Set(args.items.flatMap(i => Object.keys(i.facts ?? {})))]
+  const cell = v => {
+    const text = v == null ? '' : String(v)
+    return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+  }
+  const columns = ['option', ...facts, 'link', 'sources', 'source dates', 'verdict', 'notes', 'no from']
+  const rows = args.items.map(item => {
+    const cited = [...new Set((item.says ?? []).map(x => docs[x.doc - 1]).filter(Boolean))]
+    const on = notes.filter(n => n.on === item.name)
+    return [
+      item.name,
+      ...facts.map(f => item.facts?.[f]),
+      item.url ?? '',
+      cited.map(d => d.url || d.title).join(' '),
+      cited.map(d => `${d.source || d.title}: ${d.date || 'undated'}`).join('; '),
+      item.verdict ?? '',
+      on.filter(n => !n.no).map(n => `${n.text}${n.by ? ` (${n.by})` : ''}`).join('; '),
+      on.filter(n => n.no).map(n => n.by || 'you').join(', '),
+    ]
+  })
+  return [columns.map(cell).join(','), ...rows.map(r => r.map(cell).join(','))].join('\n')
+}
 async function keptOf(app) {
   if (isPrivate(app.id)) return { ...(privately[app.id] ?? {}) }
   const out = await (await fetch('/api/call', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), name: 'app_kept', arguments: { all: true } }) })).json()
@@ -1211,8 +1327,10 @@ function bar(w) {
   // An answer of what was found is kept as its own app, as it is now; any
   // other app is saved, and changes with it.
   const answer = app.tool === 'findings' && !app.id.startsWith('answer-')
-  const keep = w.keptAs
-    ? `<span class="chip saved">Kept as ${esc(w.keptAs)}</span>`
+  // A kept answer says so, after a reload too (PRIYA-3).
+  const keptAs = w.keptAs ?? (app.id.startsWith('answer-') && !guest && !limited(app.id) ? app.name : null)
+  const keep = keptAs
+    ? `<span class="chip saved" title="${esc(keptAs)}">Kept</span>`
     : answer
       ? `<button class="wbtn save keep" type="button" title="Keep this answer in your apps as it is: a later search does not replace it">${ICON.save}Keep this answer</button>`
       : app.saved || guest || limited(app.id) ? '' : `<button class="wbtn save" type="button" title="Keep it in your apps: it opens by itself next time">${ICON.save}Save</button>`
@@ -1293,8 +1411,8 @@ function bar(w) {
     // Fields of the kept lists a person's link could be kept from, such as prices (MARCUS-1).
     const hideable = [...new Set(Object.values(kept).flatMap(list => (Array.isArray(list) ? list : []).flatMap(e => (e && typeof e === 'object' ? Object.keys(e) : []))))].filter(k => !/^(id|by)$/.test(k)).slice(0, 24)
     const personUrl = p => `${location.origin}${location.pathname}?app=${encodeURIComponent(app.id)}&share=${p.token}&as=${p.role}`
-    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? ` · only ${esc(p.only.field)} ${esc(p.only.value)}` : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
-    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust. Each link (but the empty copy) shows what the app keeps now, including anything pasted into it, such as a token or an email: keep fields from a person below, or send the empty copy.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: everything they add or tick carries their name, Earlier versions says what they changed, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${parts.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
+    const peopleRows = () => people.map(p => `<div class="sharerow person"><span><b>${esc(p.name)}</b> · ${p.role === 'viewer' ? 'can only look' : 'can add and tick'}${p.only ? (p.only.field === '*' ? ' · only what is shared with them' : ` · only ${esc(p.only.field)} ${esc(p.only.value)}`) : ''}${p.hide?.length ? ` · without ${esc(p.hide.join(', '))}` : ''}</span><input readonly value="${esc(personUrl(p))}"><button class="btn" type="button" data-person="${p.token}">Copy</button><button class="btn stopone" type="button" data-stop="${p.token}">Stop</button></div>`).join('')
+    box.innerHTML = `<span class="sharehead">Links that open <b>${esc(app.name)}</b> on any phone or computer. Each opens only this app: nobody with a link sees your other apps or the chat. Anyone with a link can do what it says, so send each only to people you trust. Each link (but the empty copy) shows what the app keeps now, including anything pasted into it, such as a token or an email: keep fields from a person below, or send the empty copy.</span>${LINK.map(([as, what, who]) => `<div class="sharerow"><span><b>${what}</b> · ${who}</span><input readonly value="${esc(shareUrl(app.id, as))}"><button class="btn" type="button" data-as="${as}">Copy</button></div>`).join('')}<span class="sharehead">Or a link for one person: everything they add or tick carries their name, Earlier versions says what they changed, and you can stop theirs alone${parts.length ? '. It can show them only their part' : ''}.</span><div class="people">${peopleRows()}</div><form class="sharerow addperson"><input name="name" maxlength="30" placeholder="Their name" aria-label="Their name"><select name="role" aria-label="What they can do"><option value="helper">Can add and tick</option><option value="viewer">Can only look</option></select>${hideable.length ? `<select name="only" aria-label="What they see"><option value="">All of it</option><option value="named">Only what is shared with them (entries with their name)</option>${parts.map((p, i) => `<option value="${i}">Only ${esc(p.field)} ${esc(p.value)}</option>`).join('')}</select>` : ''}${hideable.length ? `<fieldset class="hides"><legend class="faint">Keep from them:</legend>${hideable.map(k => `<label><input type="checkbox" name="hide" value="${esc(k)}"> ${esc(k)}</label>`).join(' ')}</fieldset>` : ''}<button class="btn" type="submit">Make their link</button></form><div class="sharerow stop"><span>Stop sharing: every link above opens nothing from now on, and what it keeps stays here.</span><button class="btn unshare" type="button">Stop sharing</button></div>`
     const wirePeople = () => {
       for (const button of box.querySelectorAll('button[data-person]')) {
         button.onclick = async () => {
@@ -1318,7 +1436,9 @@ function bar(w) {
       const form = e.currentTarget
       const name = form.elements.name.value.trim()
       if (!name) return form.elements.name.focus()
-      const only = form.elements.only?.value ? parts[Number(form.elements.only.value)] : null
+      // Only what names them: the entries shared with them or added by them,
+      // and nothing else of the owner's reaches their phone (INES-4).
+      const only = form.elements.only?.value === 'named' ? { field: '*', value: name } : form.elements.only?.value ? parts[Number(form.elements.only.value)] : null
       const made = await (await fetch('/api/share', { method: 'POST', body: JSON.stringify({ app: app.id, me: ownerOf(app.id), person: { name, role: form.elements.role.value, only, hide: [...form.querySelectorAll('input[name=hide]:checked')].map(i => i.value) } }) })).json().catch(error => ({ error: error.message }))
       if (!made.people) return (form.querySelector('button').textContent = made.error ?? 'Could not make it')
       people = made.people
@@ -1393,7 +1513,7 @@ function bar(w) {
         }
       }
     })
-    box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: csvOf(await keptOf(app)), type: 'text/csv' })
+    box.querySelector('.csv').onclick = async () => download({ name: `${slug(app.name)}.csv`, text: app.tool === 'findings' && w.payload?.args?.items?.length ? foundCsv(w.payload.args, await keptOf(app)) : csvOf(await keptOf(app)), type: 'text/csv' })
     box.querySelector('.json').onclick = async () => download({ name: `${slug(app.name)}.json`, text: JSON.stringify(await keptOf(app), null, 2), type: 'application/json' })
     box.querySelector('.private')?.addEventListener('click', async () => {
       if (isPrivate(app.id)) {
@@ -1816,7 +1936,18 @@ function syncWatch() {
   watching.source?.close()
   watching = { key, source: null }
   if (!key || typeof EventSource === 'undefined') return
-  watching.source = new EventSource(`/api/watch?apps=${encodeURIComponent(key)}`)
+  const source = (watching.source = new EventSource(`/api/watch?apps=${encodeURIComponent(key)}`))
+  // A watch that dropped (no signal, a worker's answer) is made again, and
+  // what was missed meanwhile is read (MARCUS-2).
+  let dropped = false
+  source.onerror = () => {
+    dropped = true
+    if (source.readyState === 2 && watching.source === source) watching = { key: '', source: null }
+  }
+  source.onopen = () => {
+    if (dropped && navigator.onLine !== false) catchUp()
+    dropped = false
+  }
   watching.source.onmessage = e => {
     let ev = {}
     try { ev = JSON.parse(e.data) } catch {}

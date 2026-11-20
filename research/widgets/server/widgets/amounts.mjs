@@ -151,10 +151,10 @@ export function serves(recipe) {
   for (const a of recipe.amounts ?? []) {
     if (!MAIN.test(a.name)) continue
     const p = parse(a.amount)
-    if (p.kind === 'mass' && p.qty >= 100) return { serves: Math.min(10, Math.max(1, Math.round(p.qty / 150))), serves_note: `about, from its ${a.name.toLowerCase()} (the recipe doesn't say)` }
+    if (p.kind === 'mass' && p.qty >= 100) return { serves: Math.min(10, Math.max(2, Math.round(p.qty / 150))), serves_note: `about, from its ${a.name.toLowerCase()} (the recipe doesn't say)` }
     if ((p.kind === 'count' || p.kind === 'unit') && p.qty >= 1 && /breast|fillet|steak|chop|thigh|leg|sausage/i.test(`${a.name} ${p.unit ?? ''}`)) {
       const each = /thigh|sausage|drumstick/i.test(`${a.name} ${p.unit ?? ''}`) ? 2 : 1
-      return { serves: Math.min(10, Math.max(1, Math.round(p.qty / each))), serves_note: `about, from its ${a.name.toLowerCase()} (the recipe doesn't say)` }
+      return { serves: Math.min(10, Math.max(2, Math.round(p.qty / each))), serves_note: `about, from its ${a.name.toLowerCase()} (the recipe doesn't say)` }
     }
   }
   return { serves: 4, serves_note: 'a guess: the recipe doesn\'t say' }

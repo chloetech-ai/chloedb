@@ -150,10 +150,62 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const key = String(args?.key ?? '')
     const before = hideIn(partOf(await apps.kept(appId, key, who.owner).catch(() => null), who.only), who.hide)
     // What the link added or filled itself it may go on changing (PRIYA-1, TOM-1).
-    const made = new Set((await made_(appId, who.token))[key] ?? [])
+    const made = new Set((await madeOf(appId, who))[key] ?? [])
     return changesWhatIsThere(withoutMade(before, made), args?.value) ? 'Not kept: this link can add and tick, but not change or take out what is there. Whoever shared it can.' : ''
   }
   const made_ = async (appId, token) => (token ? ((await apps.kept(appId, `made:${token}`, LINKS).catch(() => null)) ?? {}) : {})
+  // What a person's links made, whichever link it was (MARCUS-3).
+  const madeName = name => `made:name:${String(name).trim().toLowerCase()}`
+  async function madeOf(appId, who) {
+    const out = { ...(await made_(appId, who.token)) }
+    if (who.name) for (const [k, v] of Object.entries((await apps.kept(appId, madeName(who.name), LINKS).catch(() => null)) ?? {})) out[k] = [...new Set([...(out[k] ?? []), ...v])]
+    return out
+  }
+  // A link for part of an app (one crew) adds only to its part, and is
+  // told so, rather than having it put in its own part unasked (MARCUS-1).
+  async function outOfPart(who, appId, args) {
+    if (!who.only?.field || who.only.field === '*' || isView(args?.key ?? '')) return ''
+    const before = await apps.kept(appId, String(args?.key ?? ''), who.owner).catch(() => null)
+    const value = args?.value
+    if (!Array.isArray(value) || !Array.isArray(before)) return ''
+    const was = new Set(before.map(e => e?.id).filter(id => id != null).map(String))
+    const want = String(who.only.value).trim().toLowerCase()
+    const other = value.find(e => e && typeof e === 'object' && (e.id == null || !was.has(String(e.id))) && e[who.only.field] != null && String(e[who.only.field]).trim() !== '' && String(e[who.only.field]).trim().toLowerCase() !== want)
+    return other ? `Not kept: this link adds only to ${who.only.value}, not to ${other[who.only.field]}. Whoever shared it can.` : ''
+  }
+  const unsigned = v => (Array.isArray(v) ? v.map(unsigned) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'by').map(([k, x]) => [k, unsigned(x)])) : v)
+  // Two entries with one number, added on two phones: kept with the app
+  // (not with either phone) until the list has one of them again (LENA-2).
+  async function keepClashes(appId, owner, key, said) {
+    const both = said.filter(c => c.both && c.number)
+    if (!both.length) return
+    const was = (await apps.kept(appId, `clash:${owner}`, LINKS).catch(() => null)) ?? []
+    const next = [...was.filter(c => !both.some(b => b.number === c.number && b.value === c.value && key === c.key)), ...both.map(b => ({ key, number: b.number, value: b.value, at: Date.now() }))].slice(-20)
+    await apps.keep(appId, `clash:${owner}`, next, LINKS)
+  }
+  async function clashesOf(appId, owner, values) {
+    const was = (await apps.kept(appId, `clash:${owner}`, LINKS).catch(() => null)) ?? []
+    if (!was.length) return []
+    const found = (v, c, out = [], depth = 0) => {
+      if (depth > 5 || !v || typeof v !== 'object') return out
+      if (!Array.isArray(v) && v[c.number] != null && String(v[c.number]).trim() === c.value) out.push(v)
+      for (const x of Object.values(v)) found(x, c, out, depth + 1)
+      return out
+    }
+    const money = n => (typeof n === 'number' ? n.toFixed(2) : String(n))
+    const what = e => {
+      const amount = Object.entries(e).find(([k, x]) => typeof x === 'number' && /amount|price|total|cost|sum|value/i.test(k))?.[1]
+      return `${amount != null ? money(amount) : nameOfEntry(e)}${e.by ? ` by ${e.by}` : ''}`
+    }
+    const open = []
+    for (const c of was) {
+      const twice = found(values[c.key], c)
+      if (twice.length >= 2) open.push({ ...c, text: `${c.value} is in ${c.key} ${twice.length} times (${twice.map(what).join(', ')}): check which is right` })
+    }
+    if (open.length !== was.length) await apps.keep(appId, `clash:${owner}`, was.filter(c => open.some(o => o.number === c.number && o.value === c.value && o.key === c.key)), LINKS).catch(() => {})
+    return open
+  }
+  const nameOfEntry = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at)$/i.test(k) && typeof v === 'string' && v.trim() && !/^\d{4}-\d\d-\d\d/.test(v))?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 40)
   // Keeps of one value go one after another, in the order they came: the
   // keys of a word typed fast arrive close together (PRIYA-1).
   const queues = new Map()
@@ -251,11 +303,16 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     for (const w of a) if (b.has(w) || b.has(w.replace(/s$/, '')) || b.has(`${w}s`)) return true
     return false
   }
-  // What an app opens with next time: not the entries asked for once.
+  // A request that points at a kept list or plan, and one that asks for
+  // something to be looked up for it.
+  const KEPT_REF = /\b(kept|shortlist|(this|my|our|the) (list|plan|answer)|keep (the|my|our|everyone'?s|all the) notes)\b/i
+  const LOOKUP = /\b(look(ing)? up|search for|check|store price|prices?|in stock|add|more options?|another|latest|current|compare|include)\b/i
+  // What an app opens with next time: not the entries asked for once, nor
+  // one taken out once (LENA-1: a take-out kept here ran on every open).
   function lasting(args) {
     const values = args?.values
-    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null)) return args
-    const { add, edit, ...rest } = values
+    if (!values || typeof values !== 'object' || (values.add == null && values.edit == null && values.remove == null)) return args
+    const { add, edit, remove, ...rest } = values
     return { ...args, values: rest }
   }
 
@@ -284,7 +341,7 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
       last: last && { ...last, args: lastApp.args ?? last.args, reads: last.tool === 'inputs' ? valueNames(last.source, lastApp.args ?? last.args) : undefined },
       // An app this browser shared is kept for everyone with its link, so
       // the chat can say so (MAYA-4, MARCUS-2).
-      screen: onScreen(screen).map(w => (links?.[w.id] ? { ...w, shared: true } : w)),
+      screen: await Promise.all(onScreen(screen).map(async w => ({ ...w, ...(links?.[w.id] ? { shared: true } : {}), ...(w.id.startsWith('answer-') || (await apps.get(w.id).catch(() => null))?.saved ? { kept: true } : {}) }))),
       tools: described(TOOLS),
       connected: await connectedOf(caller.getStore()?.self),
     })
@@ -328,8 +385,29 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     let args = entries(plan.args ?? {})
     // A kept answer opens with what it found then; a new search is Search
     // results', even when the router took a kept answer for it.
-    if (app?.id.startsWith('answer-') && plan.tool === 'findings' && !sameSearch(plan.args?.query, app.args?.query, app.args?.request, app.name)) app = await apps.get('search-results')
+    // But something to look up for that answer ("find its store price") is for it (PRIYA-4).
+    const forIt = LOOKUP.test(text) && /\b(its|it|this|that|these|them|those|kept)\b/i.test(text)
+    if (app?.id.startsWith('answer-') && plan.tool === 'findings' && !forIt && !sameSearch(plan.args?.query, app.args?.query, app.args?.request, app.name)) app = await apps.get('search-results')
+    // A request about a kept list on screen ("change this kept list", "keep
+    // the notes") is about that list, not a new answer beside it (PRIYA-1, TOM-3).
+    if (plan.mode === 'use' && plan.tool === 'findings' && !app?.id.startsWith('answer-') && KEPT_REF.test(text)) {
+      const there = onScreen(screen).find(w => w.id.startsWith('answer-'))
+      if (there && !(await mayChange(there.id, { links }))) app = (await apps.get(there.id)) ?? app
+    }
     const keptAnswer = app?.id.startsWith('answer-')
+    // Something to find for a kept answer (a store price, two more options)
+    // is looked up, and the kept answer itself takes it: its notes, links
+    // and name stay, and every phone with it open gets it (PRIYA-1, PRIYA-4).
+    if (keptAnswer && plan.tool === 'findings' && LOOKUP.test(text) && !(await mayChange(app.id, { links }))) {
+      send({ type: 'status', text: 'Searching the web' })
+      try {
+        const found = await model.research({ request: text, query: String(app.args?.query || text), history: history.slice(-6), found: app.args, changes: await apps.changesOf(app.id).catch(() => []) })
+        if (found.documents?.length) app = await apps.put({ ...app, args: found, version: app.version + 1 }, `found again for: ${text}`.slice(0, 300))
+      } catch (error) {
+        send({ type: 'reply', text: `I could not search the web just now: ${error.message}` })
+        return
+      }
+    }
     if (keptAnswer) args = app.args
     // An app of what was found: the web searched first, and what it found
     // is the tool's arguments.
@@ -554,8 +632,9 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
     const app = await apps.get(row.app)
     if (!app) return { removed: true }
     const tool = app.tools.includes(row.tool) ? row.tool : app.tool
-    // An entry asked for then is in what the app kept: it is not asked for again.
-    const args = lasting(row.args)
+    // An entry asked for then is in what the app kept: it is not asked for
+    // again. A kept answer opens as it is now (found again in place, PRIYA-4).
+    const args = app.id.startsWith('answer-') ? app.args : lasting(row.args)
     const { result, data } = await run(tool, args)
     shown.set(app.id, { args, result, data, tool })
     return { type: 'app', app: view(app), html: htmlOf(app), tool, args, result, how: 'again', shown: row.id }
@@ -713,6 +792,14 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         const input = await body(req)
         const { app: appId, name, me, self } = input
         let args = input.arguments
+        // A keep the app made by itself, with nobody touching it (a new
+        // version putting what it had in its own shape): nobody's doing, so
+        // it carries no name and is no link's own (TOM-2).
+        const auto = name === 'app_keep' && args?.auto === true
+        if (args && typeof args === 'object' && 'auto' in args) {
+          const { auto: _, ...rest } = args
+          args = rest
+        }
         const app = await apps.get(appId)
         if (app && KEEPING.includes(name)) {
           const who = await owning(app.id, me)
@@ -733,28 +820,47 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                 args = { ...args, value }
               }
             }
-            const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? await refusal(who, app.id, args) : ''
+            const refused = who?.role === 'gone' ? STOPPED : who && name === 'app_keep' ? (await refusal(who, app.id, args)) || (await outOfPart(who, app.id, args)) : ''
             if (refused) return { content: [{ type: 'text', text: refused }], isError: true }
             // A person's link: what it adds says who added it, it sees and
             // keeps only its part, and what it doesn't see stays (INES-5, MARCUS-4, MARCUS-1).
             let asked = args
             const own_ = name === 'app_keep' && who && !isView(key)
             const before = own_ ? await apps.kept(app.id, key, who.owner).catch(() => null) : null
-            if (own_ && (who.name || who.only || who.hide)) asked = { ...args, value: withHidden(before, withPart(before, args?.value, { by: who.name, only: who.only }), who.hide) }
+            const name_ = auto ? '' : who?.name
+            if (own_ && (who.name || who.only || who.hide)) asked = { ...args, value: withHidden(before, withPart(before, args?.value, { by: name_, only: who.only }), who.hide) }
             // A link made for a person signs with their name, whatever the app wrote (P).
-            if (own_ && who.name) asked = { ...asked, value: signed(before, asked?.value, who.name) }
-            const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine, who?.name ?? (who && who.role !== 'own' && who.role !== 'full' ? 'someone with a link' : ''))
+            if (own_ && name_) asked = { ...asked, value: signed(before, asked?.value, name_) }
+            const out = await keeping(apps, app.id, name, asked, who?.owner ?? '', mine, auto ? '' : who?.name ?? (who && who.role !== 'own' && who.role !== 'full' ? 'someone with a link' : ''))
             if (own_ && !out.isError) {
-              if (who.role === 'helper' && who.token) {
-                const made = await made_(app.id, who.token)
-                const now = new Set([...(made[key] ?? []), ...madeBy(hideIn(partOf(before, who.only), who.hide), args?.value)])
-                if (now.size !== (made[key] ?? []).length) await apps.keep(app.id, `made:${who.token}`, { ...made, [key]: [...now].slice(-2000) }, LINKS)
+              if (who.role === 'helper' && who.token && !auto) {
+                const added = madeBy(hideIn(partOf(before, who.only), who.hide), args?.value)
+                // Kept by the link and by the person's name, so a new link
+                // for them can change what the old one marked (MARCUS-3).
+                for (const slot of [`made:${who.token}`, ...(who.name ? [madeName(who.name)] : [])]) {
+                  const made = (await apps.kept(app.id, slot, LINKS).catch(() => null)) ?? {}
+                  const now = new Set([...(made[key] ?? []), ...added])
+                  if (now.size !== (made[key] ?? []).length) await apps.keep(app.id, slot, { ...made, [key]: [...now].slice(-2000) }, LINKS)
+                }
               }
+              await keepClashes(app.id, who.owner, key, said)
               told(app.id, who.owner, String(self ?? ''), said)
             }
-            if (name === 'app_keep' && !out.isError && (mergedIn || said.length)) out.structuredContent = { ...out.structuredContent, merged: true, value: args.value, ...(said.length ? { said } : {}) }
+            // What the link may not put there (another crew, a price it never
+            // gets) is not kept, and its screen shows what was (MARCUS-1).
+            const seenNow = own_ && !out.isError && (who.only || who.hide) ? hideIn(partOf(asked?.value, who.only), who.hide) : undefined
+            const altered = seenNow !== undefined && JSON.stringify(unsigned(seenNow)) !== JSON.stringify(unsigned(args?.value ?? null))
+            if (name === 'app_keep' && !out.isError && (mergedIn || said.length || altered)) out.structuredContent = { ...out.structuredContent, merged: true, value: altered ? seenNow : args.value, ...(said.length ? { said } : {}) }
             // The app knows who this link is, so it never asks for a name (P).
-            if (who && who.role !== 'own' && name === 'app_kept' && args?.all && out.structuredContent) out.structuredContent.who = { role: who.role, ...(who.name ? { name: who.name } : {}) }
+            // Its owner, and a link that changes everything, get no who: they
+            // may change and take out anything, whoever added it (DEV-2).
+            if (who && who.role !== 'own' && who.role !== 'full' && name === 'app_kept' && args?.all && out.structuredContent) out.structuredContent.who = { role: who.role, ...(who.name ? { name: who.name } : {}), ...(who.only ? { only: who.only } : {}), ...(who.hide ? { hidden: who.hide } : {}) }
+            // Two entries with the same number from two phones are said to
+            // every phone that opens it, until one is fixed (LENA-2).
+            if (who && name === 'app_kept' && args?.all && out.structuredContent?.values) {
+              const clashes = await clashesOf(app.id, who.owner, out.structuredContent.values)
+              if (clashes.length) out.structuredContent.clashes = clashes
+            }
             if ((who?.only || who?.hide) && name === 'app_kept' && out.structuredContent) {
               const sc = out.structuredContent
               const seen = v => hideIn(partOf(v, who.only), who.hide)
@@ -901,10 +1007,24 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const now = await apps.keptAll(app.id, who.owner)
           const mine = values => Object.fromEntries(Object.entries(values).filter(([k]) => !/^(-|view:|made:|link:)/.test(k)))
           const says = values => Object.entries(mine(values)).map(([k, v]) => (Array.isArray(v) ? `${v.length} in ${k}` : v && typeof v === 'object' ? Object.entries(v).filter(([, x]) => Array.isArray(x)).map(([n, x]) => `${x.length} in ${n}`).join(', ') || k : `${k} ${String(v).slice(0, 20)}`)).filter(Boolean).join(', ').slice(0, 120)
-          const label = e => (e && typeof e === 'object' ? String(Object.entries(e).find(([k, v]) => !/^(id|by|at|done|checked|ticked)$/i.test(k) && typeof v === 'string' && v.trim())?.[1] ?? e.id ?? '') : String(e ?? '')).slice(0, 30)
+          // An entry by what tells it apart: its name and its number, not its
+          // date ("MS-2320 Miller & Sons", not "2026-11-17") (LENA-4).
+          const NAMED = /^(name|title|item|what|text|description|desc|supplier|vendor|customer|client|job|task|case|place|dish|thing|label)$/i
+          const NUMBER = /^(number|no|num|invoice|invoice_?(no|num|number|id)|invoiceNumber|ref|reference|code)$/i
+          const label = e => {
+            if (!e || typeof e !== 'object') return String(e ?? '').slice(0, 30)
+            const fields = Object.entries(e).filter(([k, v]) => !/^(id|by|at|done|checked|ticked)$/i.test(k) && (typeof v === 'string' ? v.trim() : typeof v === 'number'))
+            const number = fields.find(([k]) => NUMBER.test(k.replace(/\s+/g, '_')))?.[1]
+            const named = fields.find(([k, v]) => NAMED.test(k) && typeof v === 'string')?.[1] ?? fields.find(([, v]) => typeof v === 'string' && !/^\d{4}-\d\d-\d\d/.test(v) && v !== number)?.[1]
+            const out = [number, named].filter(x => x != null && String(x).trim()).join(' ')
+            return (out || String(fields.find(([, v]) => typeof v === 'string')?.[1] ?? e.id ?? '')).slice(0, 40)
+          }
           const lists = (v, path = '') => (Array.isArray(v) ? [[path, v]] : v && typeof v === 'object' ? Object.entries(v).flatMap(([k, x]) => lists(x, path ? `${path} ${k}` : k)) : [])
-          const short = v => (v == null || v === '' ? 'empty' : typeof v === 'object' ? 'changed' : String(v).slice(0, 24))
+          const MONEY = /amount|price|total|cost|sum|paid|owed|balance/i
+          const short = (v, f = '') => (v == null || v === '' ? 'empty' : typeof v === 'object' ? 'changed' : typeof v === 'number' && MONEY.test(f) ? v.toFixed(2) : String(v).slice(0, 24))
           const TICK = /^(done|checked|ticked|paid|bought|got|packed|booked|complete[d]?)$/i
+          let named = false
+          let unnamed = false
           const changed = (before, after) => {
             const out = []
             for (const k of new Set([...Object.keys(mine(before)), ...Object.keys(mine(after))])) {
@@ -917,7 +1037,18 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                 const keyOf = e => (ided ? String(e.id) : label(e))
                 const then = new Map(was.map(e => [keyOf(e), e])), next = new Map(now.map(e => [keyOf(e), e]))
                 const gone = was.filter(e => !next.has(keyOf(e))).map(label).filter(Boolean)
-                const added = now.filter(e => !then.has(keyOf(e))).map(label).filter(Boolean)
+                // Each entry added says who added it, when it carries a name:
+                // a batch that came in together is not all one person's (INES-3, MAYA-8).
+                const addedOnes = now.filter(e => !then.has(keyOf(e)))
+                const byOf = e => (e && typeof e === 'object' && typeof e.by === 'string' && e.by.trim() ? e.by.trim() : '')
+                if (addedOnes.some(byOf)) named = true
+                const groups = new Map()
+                for (const e of addedOnes) {
+                  const l = label(e)
+                  if (!l) continue
+                  groups.set(byOf(e), [...(groups.get(byOf(e)) ?? []), l])
+                }
+                const added = [...groups.values()].flat()
                 // What changed in an entry still there: a tick, an amount (LENA-4, MARCUS-8).
                 const edits = []
                 for (const e of now) {
@@ -925,14 +1056,19 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
                   if (!old || JSON.stringify(old) === JSON.stringify(e) || typeof e !== 'object') continue
                   for (const f of new Set([...Object.keys(old), ...Object.keys(e)])) {
                     if (/^(id|at|by)$/.test(f) || JSON.stringify(old[f]) === JSON.stringify(e[f])) continue
-                    edits.push(TICK.test(f) && typeof (e[f] ?? false) === 'boolean' ? `${label(e)} ${e[f] ? '' : 'un'}${f === 'done' || f === 'checked' ? 'ticked' : f}` : `${label(e)} ${f} ${short(old[f])} to ${short(e[f])}`)
+                    edits.push(TICK.test(f) && typeof (e[f] ?? false) === 'boolean' ? `${label(e)} ${e[f] ? '' : 'un'}${f === 'done' || f === 'checked' ? 'ticked' : f}` : `${label(e)} ${f} ${short(old[f], f)} to ${short(e[f], f)}`)
                   }
                 }
+                if (gone.length || edits.length) unnamed = true
                 if (gone.length) out.push(`${gone.slice(0, 3).join(', ')} taken out of ${path}`)
-                if (added.length) out.push(`${added.slice(0, 3).join(', ')} added to ${path}`)
+                if (added.length) {
+                  if (!addedOnes.some(byOf)) out.push(`${added.slice(0, 3).join(', ')} added to ${path}`)
+                  else for (const [by, ls] of groups) out.push(`${ls.slice(0, 3).join(', ')} added to ${path}${by ? ` by ${by}` : ''}`)
+                }
                 if (edits.length) out.push(edits.slice(0, 3).join(', ') + (edits.length > 3 ? ` and ${edits.length - 3} more` : ''))
                 if (gone.length || added.length || edits.length) said = true
               }
+              if (!said) unnamed = true
               if (!said) out.push(typeof before[k] === 'object' || typeof after[k] === 'object' ? `${k} changed` : `${k} ${short(before[k])} to ${short(after[k])}`)
             }
             return out.join('; ').slice(0, 200)
@@ -941,7 +1077,18 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
           const signers = await apps.signers(app.id, who.owner)
           const whoIn = (from, to) => [...new Set(signers.filter(s => s.at >= from && (to == null || s.at < to)).map(s => s.by))]
           const states = times.map(t => ({ ...now, ...at(t) }))
-          return json(res, { now: says(now), moments: times.map((t, i) => ({ at: t, says: says(states[i]), then: changed(states[i], i ? states[i - 1] : now), by: whoIn(t, i ? times[i - 1] : null) })) })
+          return json(res, {
+            now: says(now),
+            moments: times.map((t, i) => {
+              named = false
+              unnamed = false
+              const then = changed(states[i], i ? states[i - 1] : now)
+              // Entries that say who added them name each one; the moment's
+              // signers are said only for what carries no name (INES-3).
+              const by = whoIn(t, i ? times[i - 1] : null)
+              return { at: t, says: says(states[i]), then, by: named && !unnamed ? [] : by }
+            }),
+          })
         }
         const t = Number(input.at)
         if (!Number.isFinite(t)) return json(res, { error: 'when?' }, 400)
@@ -983,10 +1130,17 @@ export async function start({ port = 8800, host = '127.0.0.1', data, model = cla
         // An answer of what was found, kept as its own app with these findings.
         if (parts[3] === 'keep-answer') {
           const row = await apps.shownOf(String(input.shown ?? ''), own(input.talk))
+          // Kept once: that place in the conversation is the kept answer from
+          // then on, after a reload too, and a second press gives the same one (PRIYA-3).
+          if (row?.app?.startsWith('answer-')) {
+            const there = await apps.get(row.app)
+            if (there) return json(res, { app: view(there) })
+          }
           const args = row?.args ?? shown.get(appId)?.args
           if (!args) return json(res, { error: 'that answer is not here any more' }, 404)
           const name = String(input.name ?? '').trim().slice(0, 60) || 'Kept answer'
           const kept = await apps.keepAnswer(appId, { name, request: String(input.request ?? name).slice(0, 300), args })
+          if (row) await apps.show({ id: row.id, talk: own(input.talk), app: kept.id, version: kept.version, tool: row.tool, args: row.args, how: 'kept' }).catch(log)
           // The notes on it come with it (PRIYA-2).
           const who = input.me ? await owning(appId, input.me) : null
           if (who && who.role !== 'gone') {

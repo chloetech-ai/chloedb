@@ -148,7 +148,7 @@ function card(item) {
       ${facts.length ? `<div class="row wrap facts">${facts.map(c => `<span class="chip">${esc(label(c))} <b>${esc(value(c, item.facts[c]))}</b></span>`).join('')}</div>` : ''}
       ${item.pros.length || item.cons.length ? `<div class="pc"><div>${item.pros.map(p => `<div class="p">${esc(p)}</div>`).join('')}</div><div>${item.cons.map(c => `<div class="c">${esc(c)}</div>`).join('')}</div></div>` : ''}
       ${says(item)}
-      ${data.goal === 'pick' ? `<div class="row acts"><button class="btn" data-ask="${item.n}">Ask about it</button>${item.url ? `<button class="btn" data-link="${esc(item.url)}">Its page</button>` : ''}${mayNote() ? `<button class="btn" data-note="${item.n}">Note</button><button class="btn" data-no="${item.n}" title="Say no to this one, with your name">No to this one</button>` : ''}</div>${notesOn(item)}` : ''}
+      ${data.goal === 'pick' ? `<div class="row acts">${linked() ? '' : `<button class="btn" data-ask="${item.n}">Ask about it</button>`}${item.url ? `<button class="btn" data-link="${esc(item.url)}">Its page</button>` : ''}${mayNote() ? `<button class="btn" data-note="${item.n}">Note</button><button class="btn" data-no="${item.n}" title="Say no to this one, with your name">No to this one</button>` : ''}</div>${notesOn(item)}` : ''}
     </div>
   </div>`
 }
@@ -177,6 +177,8 @@ function sources(expanded) {
   </details>`
 }
 
+// A link someone was given has no chat behind it: no button asks it (PRIYA-11).
+const linked = () => role === 'helper' || role === 'viewer'
 function draw(next) {
   if (next) {
     data = { goal: 'answer', answer: null, needs: [], criteria: [], items: [], documents: [], ...next }
@@ -197,11 +199,12 @@ function draw(next) {
     ${data.needs.length ? `<div class="needs">${data.needs.map((x, i) => `<button class="need" data-need="${i}" aria-pressed="${chosen != null && chosen === x.item}" title="${esc(x.why ?? '')}"><small>${esc(x.need)}</small><b>${esc(x.pick)}</b></button>`).join('')}</div>` : ''}
     ${data.items.length ? `<div class="row between bar"><span class="faint">${pick ? `${data.items.length} options` : data.goal === 'how-to' ? `${data.items.length} steps` : ''}</span>${pick ? `<span class="tabs"><button class="tab" data-view="cards" aria-pressed="${view === 'cards'}">Options</button><button class="tab" data-view="table" aria-pressed="${view === 'table'}">Side by side</button></span>` : ''}</div>
       ${pick && view === 'table' ? table() : `<div class="opts">${data.items.map(card).join('')}</div>`}` : ''}
-    <form class="row ask" id="ask"><input id="what" placeholder="${pick ? 'What matters to you? (I fly a lot, under $300...)' : 'Ask a follow-up'}" autocomplete="off"><button class="btn primary" type="submit">${pick ? 'Pick for me' : 'Ask'}</button></form>
+    ${linked() ? '' : `<form class="row ask" id="ask"><input id="what" placeholder="${pick ? 'What matters to you? (I fly a lot, under $300...)' : 'Ask a follow-up'}" autocomplete="off"><button class="btn primary" type="submit">${pick ? 'Pick for me' : 'Ask'}</button></form>`}
     ${data.notes ? `<div class="notes"><b>Worth knowing:</b> ${esc(data.notes)}</div>` : ''}
     ${sources(!data.items.length)}
     <div class="foot faint">Found by Claude on the web for this request; every claim links to its source.</div>`
-  document.getElementById('ask').onsubmit = e => {
+  const form = document.getElementById('ask')
+  if (form) form.onsubmit = e => {
     e.preventDefault()
     const what = document.getElementById('what').value.trim()
     if (!what) return
