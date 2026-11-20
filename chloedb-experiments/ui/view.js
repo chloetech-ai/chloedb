@@ -1998,7 +1998,7 @@ async function realBuilder(ctx, root, go, meta) {
   }
   const L = meta.real?.limits || {};
   const claude = !!meta.live?.claude;
-  const spec = { name: "", personas: kept("ex-real-set") || sets[0].id, arms: [], per: 10, needs: 0, brain: claude ? "claude" : "scripted", agent_model: "claude-sonnet-5-5", judge_model: "claude-sonnet-5-5", budget: 5, workers: 3 };
+  const spec = { name: "", personas: kept("ex-real-set") || sets[0].id, arms: [], per: 10, needs: 0, brain: claude ? "claude" : "scripted", agent_model: "claude-sonnet-5-5", judge_model: "claude-opus-5-5", budget: 5, workers: 3 };
   kept("ex-real-set", null);
   const setOf = () => sets.find((s) => s.id === spec.personas) || sets[0];
   const desc = (src) => sources.find((d) => d.source === src);
@@ -2017,7 +2017,8 @@ async function realBuilder(ctx, root, go, meta) {
   const estimate = () => {
     const sessions = needsOf() * spec.arms.length;
     const c = spec.brain === "claude" ? sessions * (SESSION_COST[spec.agent_model] || 0.08) + sessions * (JUDGE_COST[spec.judge_model] || 0.01) : 0;
-    est.textContent = `${sessions} sessions${spec.brain === "claude" ? ` · about $${c.toFixed(2)}, at most $${spec.budget}` : " · no model"}${sessions > (L.sessions || 240) ? ` · more than ${L.sessions}: fewer needs` : ""}`;
+    const can = Math.round(2.8 * 0.55 / Math.sqrt(Math.max(1, needsOf())) * 100);
+    est.textContent = `${sessions} sessions${spec.brain === "claude" ? ` · about $${c.toFixed(2)}, at most $${spec.budget}` : " · no model"}${sessions > (L.sessions || 240) ? ` · more than ${L.sessions}: fewer needs` : ""} · ${needsOf()} needs can find a difference of about ${can} points or more`;
   };
   // People
   const setBox = h("div", { class: "ex-sites" }, sets.map((s) => {
@@ -2090,9 +2091,9 @@ async function realBuilder(ctx, root, go, meta) {
       core.card({ title: "Agents", body: h("div", { class: "ex-knobs" },
         knob("Played by", "", brain),
         knob("Agents", "plays each person; Sonnet reads like people do, Haiku costs a tenth", model("agent_model")),
-        knob("Judge", "grades each row shown for a topical need, once", model("judge_model")),
+        knob("Judge", "grades each row shown for a topical need, once; best a different model than the agents', so one model does not grade its own play", model("judge_model")),
         knob("Budget", "the agents and the judge stop when it is spent", budget, budgetOut),
-        knob("Needs", "of the people's, taken in turns", needsIn, needsOut),
+        knob("Needs", "of the people's, taken in turns; at the left, every one", needsIn, needsOut),
         knob("At once", "sessions in parallel: a few people, not load on the site", workers, workersOut)) }),
       core.card({ title: "Name", body: nameIn, foot: h("div", { class: "row between" }, est, start) }))));
 }
@@ -2102,6 +2103,17 @@ function shareBar(core, v, color) {
   if (!v || !v.n) return core.h("span", { class: "small dim" }, "–");
   return core.h("div", { class: "row nw", style: { gap: "8px" } }, core.h("span", { class: "ex-track", title: "0 to 100%" }, forest(core, { lo: v.lo, hi: v.hi, mid: v.mean, min: 0, max: 1, color, width: 150, zero: -1 })), core.h("span", { class: "ex-num" }, `${pct0(v.mean)}`), core.h("span", { class: "small dim" }, `${v.k ?? Math.round(v.mean * v.n)}/${v.n}`));
 }
+
+/** What a sign test on `n` needs can say: the fewest needs that must all
+ *  move one way for p < 0.05 (two-sided). */
+function signNeed(n) {
+  if (!n) return "";
+  let k = 1;
+  while (k <= n && 2 * 0.5 ** k >= 0.05) k++;
+  return k > n ? `${n} held-out needs cannot reach p < 0.05 by the sign test, whatever moves: more needs would.` : `With ${n} held-out needs, the sign test says better only if at least ${k} of the needs that move all move up.`;
+}
+
+const A0name = (rep) => rep.arms?.[0]?.name || "the control";
 
 function studyWorker(core, w, arms) {
   const { h } = core;
@@ -2184,8 +2196,9 @@ async function realStudy(ctx, root, go, id, onStop) {
     verdicts.replaceChildren(...(rep.comparisons || []).map((c) => h("div", { class: "ex-verdict" },
       h("div", { class: "row between" }, h("b", { style: { color: ARM_COLORS[c.arm] } }, c.name), h("span", { class: "ex-call " + (c.call === "finds more" ? "good" : c.call === "finds less" ? "bad" : "flat") }, c.call)),
       h("div", { class: "big " + (c.call === "finds more" ? "ex-good" : c.call === "finds less" ? "ex-bad" : "") }, c.success?.mean == null ? "–" : `${c.success.mean >= 0 ? "+" : "−"}${Math.abs(Math.round(c.success.mean * 100))} pts`),
-      h("div", { class: "line" }, c.line),
-      c.ndcg?.mean != null ? h("div", { class: "line dim" }, `First page nDCG ${signed(c.ndcg.mean, 3)}${c.ndcg.lo != null ? ` (${signed(c.ndcg.lo, 3)} to ${signed(c.ndcg.hi, 3)})` : ""} · searches ${signed(c.searches?.mean, 1)} a need`) : null)));
+      c.lost?.length ? h("div", { class: "line ex-bad" }, h("b", {}, `Lost: ${c.lost.length} ${c.lost.length === 1 ? "need" : "needs"} only ${A0name(rep)} found: `), c.lost.slice(0, 4).map((n) => `“${String(n.text).slice(0, 70)}”`).join(", "), c.lost.length > 4 ? "…" : "") : null,
+      h("div", { class: "line" }, h("b", {}, "Primary, found what they came for: "), c.line),
+      c.ndcg?.mean != null ? h("div", { class: "line dim" }, `Secondary: first page nDCG ${signed(c.ndcg.mean, 3)}${c.ndcg.lo != null ? ` (${signed(c.ndcg.lo, 3)} to ${signed(c.ndcg.hi, 3)})` : ""} · searches ${signed(c.searches?.mean, 1)} a need`) : null)));
     const A = rep.arms || [];
     const mean = (x, d = 1) => (x?.mean == null ? "–" : x.mean.toFixed(d));
     const armCol = (a, i) => h("th", { style: { color: ARM_COLORS[i] } }, a.name, h("div", { class: "small dim", style: { fontWeight: 400, textTransform: "none", letterSpacing: 0 } }, `${a.source}: ${knobWords(null, a.knobs)}`));
@@ -2280,11 +2293,13 @@ async function realTune(ctx, root, go, id, onStop) {
     top.replaceChildren(...(ho ? [
       h("div", { class: "ex-verdict" },
         h("div", { class: "row between" }, h("b", {}, "On needs it never saw"), h("span", { class: "ex-call " + tuneCall(ho.verdict) }, ho.verdict)),
-        h("div", { class: "big " + (ho.verdict === "better" ? "ex-good" : ho.verdict === "worse" ? "ex-bad" : "") }, `${ho.before.toFixed(2)} → ${ho.after.toFixed(2)}`),
+        h("div", { class: "big " + (ho.verdict === "better" ? "ex-good" : ho.verdict === "worse" ? "ex-bad" : "ex-flatc"), style: ho.verdict === "better" || ho.verdict === "worse" ? {} : { fontSize: "20px" } }, `${ho.before.toFixed(2)} → ${ho.after.toFixed(2)}`),
+        (() => { const lost = (rep.per_need || []).filter((n) => n.after - n.before <= -0.3 || (n.kind === "known" && n.before > 0 && n.after === 0)); return lost.length ? h("div", { class: "line ex-bad" }, h("b", {}, `${lost.length} ${lost.length === 1 ? "regression" : "regressions"}: `), lost.slice(0, 3).map((n) => `“${String(n.text).slice(0, 60)}” ${n.before.toFixed(2)} → ${n.after.toFixed(2)}`).join(", ")) : h("div", { class: "line dim" }, "No held-out need lost 0.3 or more."); })(),
+        h("div", { class: "line dim" }, signNeed(ho.needs)),
         h("div", { class: "row nw", style: { gap: "8px" } }, h("span", { class: "small dim" }, "gain"), forest(core, { lo: ho.interval[0], hi: ho.interval[1], mid: ho.gain, min: Math.min(-0.3, ho.interval[0]), max: Math.max(0.3, ho.interval[1]), color: "var(--s1)", width: 180 }), h("span", { class: "small ex-num" }, `${signed(ho.gain, 3)} (${signed(ho.interval[0], 3)} to ${signed(ho.interval[1], 3)})`)),
         h("div", { class: "line" }, ho.sentence)),
       h("div", { class: "ex-verdict" },
-        h("div", { class: "row between" }, h("b", {}, "Training needs"), h("span", { class: "small dim" }, "what the search fitted")),
+        h("div", { class: "row between" }, h("b", {}, "Training needs"), h("span", { class: "small dim" }, "what the search fitted: a gain here and not above is overfitting")),
         h("div", { class: "big" }, `${(rep.train?.before ?? 0).toFixed(2)} → ${(rep.train?.after ?? 0).toFixed(2)}`),
         h("div", { class: "line" }, `${ho.better} held-out needs better, ${ho.worse} worse, ${ho.same} the same · sign test p = ${ho.p.toFixed(3)} · the site's p95 per search ${Math.round(rep.ms_p95?.before || 0)} → ${Math.round(rep.ms_p95?.after || 0)} ms`)),
     ] : running ? [h("div", { class: "small dim" }, "Searching the knobs: the proof comes at the end.")] : []));

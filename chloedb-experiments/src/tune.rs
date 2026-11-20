@@ -95,7 +95,7 @@ fn brain() -> String {
     "claude".into()
 }
 fn judge_model() -> String {
-    "claude-sonnet-5-5".into()
+    "claude-opus-5-5".into()
 }
 fn budget() -> f64 {
     1.0

@@ -86,7 +86,7 @@ fn agent_model() -> String {
     "claude-sonnet-5-5".into()
 }
 fn judge_model() -> String {
-    "claude-sonnet-5-5".into()
+    "claude-opus-5-5".into()
 }
 fn budget() -> f64 {
     5.0
@@ -612,8 +612,22 @@ pub fn report(spec: &StudySpec, set: &PersonaSet, sessions: &[Session], grades: 
                 p
             )
         };
+        // What this many needs can find: 80% power at 5%, at the spread
+        // seen (or that of a third of the needs going differently).
+        let diffs: Vec<f64> = pairs.iter().map(|(x, y)| f64::from(u8::from(y.success)) - f64::from(u8::from(x.success))).collect();
+        let sd = if diffs.len() >= 2 {
+            let m = diffs.iter().sum::<f64>() / diffs.len() as f64;
+            (diffs.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / (diffs.len() - 1) as f64).sqrt()
+        } else {
+            0.0
+        };
+        let detectable = crate::trial::detectable(if sd > 0.0 { sd } else { 0.55 }, pairs.len());
+        let line = if pairs.len() < 2 { line } else { format!("{line} {} needs can find a difference of about {:.0} points or more.", pairs.len(), detectable * 100.0) };
+        // The needs the control found and this arm did not, first.
+        let lost: Vec<Value> = pairs.iter().filter(|(x, y)| x.success && !y.success).filter_map(|(x, _)| set.personas.iter().flat_map(|p| p.needs.iter()).find(|n| n.id == x.need)).map(|n| json!({"id": n.id, "kind": n.kind, "text": n.text})).collect();
         comparisons.push(json!({
             "arm": a, "name": name, "pairs": pairs.len(), "only_control": b, "only_arm": c, "mcnemar_p": p, "call": call, "line": line,
+            "detectable": detectable, "lost": lost,
             "success": succ,
             "ndcg": d(&|s| ndcg(s)),
             "searches": d(&|s| s.searches as f64),
