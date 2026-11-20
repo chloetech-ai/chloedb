@@ -136,7 +136,14 @@ For: `disk-full`, `disk-critical`, `disk-filling`, `disk`
 3. More room (tier 2): add disk in the spec (`POST /v1/admin/kube/plan`),
    or add a shard and move slots to it (`POST /v1/admin/plan`), each filed
    as a change request.
-4. Deleted rows still on disk: `POST /v1/admin/vacuum` frees them for good
+4. Deleted or expired rows still on disk: a server that takes writes gives the
+   free space of its file back by itself, every 5 minutes, once 64 MB and a
+   sixteenth of the file are free (it moves segments from the end of the file
+   into free space below them and truncates the file; it needs no room and
+   loses nothing; not on a replica). **Tables and storage** shows the file
+   (`totals.file_bytes` of `GET /v1/index/tables`) beside the tables' live
+   data. When the free space is in pieces too small for the segments above
+   them, `POST /v1/admin/vacuum` frees them for good
    (tier 3: it loses old versions, and is a person's alone). It needs room
    first: the file grows while it runs, by what lies above its first free
    gap, which is written twice (in a persona study, a 1.4 GB file reached

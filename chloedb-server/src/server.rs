@@ -754,6 +754,7 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
     spawn_expirer(&svc, Duration::from_secs(5));
     spawn_rollups(&svc, Duration::from_secs(5));
     spawn_key_forgetter(&svc, Duration::from_secs(60));
+    spawn_trimmer(&svc, crate::service::TRIM_EVERY);
     spawn_sampler(&svc);
     spawn_watch(&svc);
     // workdata: every table's counts a minute apart (rates on a first look).
@@ -1544,6 +1545,28 @@ pub fn spawn_rollups(svc: &Arc<Service>, every: Duration) {
                     listing = Some(why);
                 }
                 Err(e) => tracing::error!(error = %e, "the rollups' refresher stopped"),
+            }
+        }
+    });
+}
+
+/// Every `every`, gives the file's free space back ([`Service::trim_due`]),
+/// as a server that takes writes does, so that deleted and expired rows
+/// return disk without a manual vacuum.
+pub fn spawn_trimmer(svc: &Arc<Service>, every: Duration) {
+    if svc.local_db().is_none() {
+        return;
+    }
+    let svc = Arc::downgrade(svc);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(every).await;
+            let Some(svc) = svc.upgrade() else { return };
+            match tokio::task::spawn_blocking(move || svc.trim_due(crate::service::TRIM_MIN_FREE)).await {
+                Ok(Ok(n)) if n > 0 => tracing::info!(bytes = n, "gave free space in the database file back"),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => tracing::debug!(error = %e.message, "could not trim the database file; it tries again"),
+                Err(e) => tracing::error!(error = %e, "the file trimmer stopped"),
             }
         }
     });
