@@ -16,7 +16,8 @@ def model_path(S): return os.environ.get("MODEL", f"{S}/models/qwen3-0.6b-hf")
 
 def load(S):
     tok = AutoTokenizer.from_pretrained(model_path(S))
-    model = AutoModelForCausalLM.from_pretrained(model_path(S), dtype=torch.float32).to(DEVICE).eval()
+    dtype = {"bf16": torch.bfloat16}.get(os.environ.get("DTYPE"), torch.float32)   # bf16 for 8B on a 48 GB GPU
+    model = AutoModelForCausalLM.from_pretrained(model_path(S), dtype=dtype).to(DEVICE).eval()
     if DEVICE == "cuda": torch.set_default_device("cuda")   # after loading: transformers refuses a default device without accelerate
     return tok, model
 
