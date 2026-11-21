@@ -1656,10 +1656,24 @@ async fn run() {
             let bin = std::env::current_exe().unwrap_or_else(|e| fail(&format!("which chloedb-server this is: {e}")));
             let o = chloedb_server::grow::Options { db: db.clone(), shards: *shards, listen: listen.clone(), dir: dir.clone(), bin, token: token.clone() };
             eprintln!("growing {} into a cluster of {shards} shard{} at {listen} (servers' logs in {})", db.display(), if *shards == 1 { "" } else { "s" }, dir.display());
-            let mut c = match chloedb_server::grow::Cluster::start(&o).await {
-                Ok(c) => c,
-                Err(e) => fail(&format!("grow: {e}")),
+            let mut signals = chloedb_server::grow::Signals::new().unwrap_or_else(|e| fail(&format!("catching Ctrl+C and SIGTERM: {e}")));
+            let mut c = chloedb_server::grow::Cluster::new(&o).await.unwrap_or_else(|e| fail(&format!("grow: {e}")));
+            let grown = tokio::select! {
+                r = c.grow(&o) => Ok(r),
+                code = signals.next() => Err(code),
             };
+            match grown {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    c.stop().await;
+                    fail(&format!("grow: {e}"));
+                }
+                Err(code) => {
+                    eprintln!("stopping the servers started so far; `chloedb-server grow --db {}` starts the cluster again", db.display());
+                    c.stop().await;
+                    std::process::exit(code);
+                }
+            }
             let (tables, rows) = c.served().await;
             let shown = chloedb_server::ready::Ready { url: c.url.clone(), db: None, shards: c.shards.len(), tables, rows, token: token.is_some() };
             eprintln!("{}", shown.text());
@@ -1668,7 +1682,7 @@ async fn run() {
             }
             loop {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => break,
+                    _ = signals.next() => break,
                     _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
                         if let Some(n) = c.exited() {
                             eprintln!("{n} stopped (its log: {}): stopping the cluster", dir.join(format!("{n}.log")).display());

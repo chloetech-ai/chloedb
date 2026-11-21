@@ -44,8 +44,8 @@ pub struct Shard {
     pub grpc: String,
 }
 
-/// The servers `grow` started, stopped (SIGTERM, then 10 s to exit) when
-/// it is dropped or [`Cluster::stop`]ped.
+/// The servers `grow` started. [`Cluster::stop`] stops them (SIGTERM, then
+/// 10 s to exit before they are killed); dropping it kills them at once.
 pub struct Cluster {
     children: Vec<(String, Child)>,
     pub url: String,
@@ -53,6 +53,46 @@ pub struct Cluster {
     /// Shards added this run, whose slots are moving to them.
     pub added: usize,
     token: Option<String>,
+    me: Api,
+    listed: Vec<Shard>,
+}
+
+/// Ctrl+C and SIGTERM, caught from when it is made: `grow` stops the
+/// servers it started on either, also while it starts them.
+pub struct Signals {
+    #[cfg(unix)]
+    int: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+}
+
+impl Signals {
+    pub fn new() -> std::io::Result<Signals> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(Signals { int: signal(SignalKind::interrupt())?, term: signal(SignalKind::terminate())? })
+        }
+        #[cfg(not(unix))]
+        Ok(Signals {})
+    }
+
+    /// The next signal, as the exit code of a process it ends: 130 for
+    /// Ctrl+C, 143 for SIGTERM.
+    pub async fn next(&mut self) -> i32 {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.int.recv() => 130,
+                _ = self.term.recv() => 143,
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            130
+        }
+    }
 }
 
 /// The shards' addresses: from ten ports above the cluster's, ten apart
@@ -78,9 +118,9 @@ fn save(dir: &Path, shards: &[Shard]) -> Result<(), String> {
 }
 
 impl Cluster {
-    /// Starts the cluster, growing it to `o.shards` shards, and answers
-    /// once the coordinator does (the slots may still be moving).
-    pub async fn start(o: &Options) -> Result<Cluster, String> {
+    /// The cluster `o` describes, nothing started yet: checks that no
+    /// server answers at its address and reads the shards it has.
+    pub async fn new(o: &Options) -> Result<Cluster, String> {
         std::fs::create_dir_all(&o.dir).map_err(|e| format!("{}: {e}", o.dir.display()))?;
         let http = crate::http_client().no_proxy().timeout(Duration::from_secs(120)).build().map_err(|e| e.to_string())?;
         let me = Api { http, token: o.token.clone() };
@@ -89,29 +129,38 @@ impl Cluster {
             return Err(format!("a server answers at {url} already: stop it (Ctrl+C where it runs), then grow its database into a cluster that answers there"));
         }
         let mut shards = listed(&o.dir);
-        let first = shards.is_empty();
-        if first {
+        if shards.is_empty() {
             if !o.db.exists() {
                 return Err(format!("{} does not exist: start `chloedb-server --db {}` first, or name the database with --db", o.db.display(), o.db.display()));
             }
             shards.push(shard_at(&o.listen, &o.dir, 0, &o.db)?);
         }
-        let mut c = Cluster { children: Vec::new(), url: url.clone(), shards: Vec::new(), added: 0, token: o.token.clone() };
+        Ok(Cluster { children: Vec::new(), url, shards: Vec::new(), added: 0, token: o.token.clone(), me, listed: shards })
+    }
+
+    /// Starts the cluster, growing it to `o.shards` shards, and returns
+    /// once the coordinator answers (the slots may still be moving). The
+    /// servers started before an error, or before the future is dropped,
+    /// are left for [`Cluster::stop`].
+    pub async fn grow(&mut self, o: &Options) -> Result<(), String> {
+        let shards = self.listed.clone();
+        let me = self.me.clone();
+        let url = self.url.clone();
         for (i, s) in shards.iter().enumerate() {
-            c.spawn(o, &format!("shard-{i}"), &shard_args(s)).await?;
+            self.spawn(o, &format!("shard-{i}"), &shard_args(s)).await?;
         }
         for (i, s) in shards.iter().enumerate() {
-            c.wait_up(&me, &s.http, &o.dir, &format!("shard-{i}")).await?;
+            self.wait_up(&me, &s.http, &o.dir, &format!("shard-{i}")).await?;
         }
         save(&o.dir, &shards)?;
-        c.shards = shards.clone();
+        self.shards = shards.clone();
         // The coordinator over the shards the cluster has; the shards it
         // grows by are added through it, so that their slots move with
         // their rows.
         let grpcs: Vec<String> = shards.iter().map(|s| s.grpc.clone()).collect();
         let args = vec!["--shards".to_string(), grpcs.join(","), "--listen".into(), o.listen.clone(), "--grpc".into(), "off".into()];
-        c.spawn_coordinator(o, &args).await?;
-        c.wait_up(&me, &url, &o.dir, "coordinator").await?;
+        self.spawn_coordinator(o, &args).await?;
+        self.wait_up(&me, &url, &o.dir, "coordinator").await?;
         // The tables of the first shard, for the shards to come. A new
         // shard's database starts with the cluster's first table (its
         // --schema), which the coordinator compares when it joins; the
@@ -123,8 +172,8 @@ impl Cluster {
         if let Some(schema) = first.get("schema") {
             std::fs::write(&first_file, schema.to_string()).map_err(|e| format!("{}: {e}", first_file.display()))?;
         }
-        while c.shards.len() < o.shards {
-            let i = c.shards.len();
+        while self.shards.len() < o.shards {
+            let i = self.shards.len();
             let s = shard_at(&o.listen, &o.dir, i, &o.db)?;
             // A database a grow that stopped part way made, which never
             // joined (cluster.json does not list it): set aside, not used.
@@ -133,20 +182,20 @@ impl Cluster {
             if !Path::new(&s.db).exists() && first_file.exists() && !chloedb::query::hint::internal_table(&first_name) {
                 args.extend(["--schema".to_string(), first_file.display().to_string()]);
             }
-            c.spawn(o, &format!("shard-{i}"), &args).await?;
-            c.wait_up(&me, &s.http, &o.dir, &format!("shard-{i}")).await?;
+            self.spawn(o, &format!("shard-{i}"), &args).await?;
+            self.wait_up(&me, &s.http, &o.dir, &format!("shard-{i}")).await?;
             for (name, sql) in &tables {
                 me.post(&format!("{}/v1/sql", s.http), &json!({"sql": sql})).await.map_err(|e| format!("making table {name} on shard {i}: {e}"))?;
             }
             me.post(&format!("{url}/v1/admin/shards"), &json!({"servers": [s.grpc]})).await.map_err(|e| format!("adding shard {i} ({}) to the cluster: {e}", s.grpc))?;
-            c.shards.push(s);
-            c.added += 1;
-            save(&o.dir, &c.shards)?;
+            self.shards.push(s);
+            self.added += 1;
+            save(&o.dir, &self.shards)?;
         }
-        if c.added > 0 {
+        if self.added > 0 {
             me.post(&format!("{url}/v1/admin/rebalance"), &json!({})).await.map_err(|e| format!("evening out the slots over the shards: {e}"))?;
         }
-        Ok(c)
+        Ok(())
     }
 
     async fn spawn(&mut self, o: &Options, name: &str, args: &[String]) -> Result<(), String> {
@@ -301,6 +350,7 @@ fn urlencode(s: &str) -> String {
     s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
+#[derive(Clone)]
 struct Api {
     http: reqwest::Client,
     token: Option<String>,
