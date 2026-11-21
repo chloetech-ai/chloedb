@@ -900,15 +900,17 @@ impl Primary {
     /// What `/v1/health` shows of replication.
     pub fn health(&self) -> Json {
         let last = *self.committed.borrow();
-        let (peers, copies, majority, fenced) = self.core(|c| (c.peers.clone(), c.copies(), c.majority(), c.replaced_by()));
+        let now = Instant::now();
+        let (peers, answering, copies, majority, fenced) = self.core(|c| (c.peers.clone(), c.peers.iter().map(|p| c.answering(p, now)).collect::<Vec<_>>(), c.copies(), c.majority(), c.replaced_by()));
         let replicas: Vec<Json> = peers
             .iter()
-            .map(|p| {
+            .zip(&answering)
+            .map(|(p, &answering)| {
                 let f = self.followers.iter().find(|f| f.url == p.url);
                 let count = |a: Option<&AtomicU64>| a.map_or(0, |a| a.load(Ordering::Relaxed));
                 let mut j = json!({
                     "url": p.url, "seq_no": p.acked, "behind": last.saturating_sub(p.acked), "in_sync": p.in_sync,
-                    "copying": p.copying, "copies": p.copies, "answered": p.answered.is_some(),
+                    "copying": p.copying, "copies": p.copies, "answered": p.answered.is_some(), "answering": answering,
                     "verifications": count(f.map(|f| &f.verifications)), "divergences": count(f.map(|f| &f.divergences)),
                     "verify_failures": count(f.map(|f| &f.verify_failures)), "member": p.member, "txn_mismatches": p.mismatches,
                 });
@@ -934,13 +936,15 @@ impl Primary {
 
     pub fn metrics(&self) -> Vec<Family> {
         let last = *self.committed.borrow();
-        let peers = self.core(|c| c.peers.clone());
+        let now = Instant::now();
+        let (peers, answering) = self.core(|c| (c.peers.clone(), c.peers.iter().map(|p| (p.url.clone(), c.answering(p, now))).collect::<Vec<_>>()));
         let by_peer = |f: &dyn Fn(&shard::Peer) -> f64| peers.iter().map(|p| (format!("replica=\"{}\"", p.url), f(p))).collect();
         let by = |f: &dyn Fn(&Follower) -> f64| self.followers.iter().map(|r| (format!("replica=\"{}\"", r.url), f(r))).collect();
         vec![
             Family::one("chloedb_replication_role", "gauge", "1 on a primary (--replicas), 2 on a replica (--replica).", 1.0),
             Family::one("chloedb_global_checkpoint", "gauge", "The highest sequence number every in-sync replica holds.", self.global_checkpoint() as f64),
             Family { name: "chloedb_replica_in_sync", ty: "gauge", help: "1 while a replica holds what the primary committed, as far as it was shipped.", values: by_peer(&|p| p.in_sync as u8 as f64) },
+            Family { name: "chloedb_replica_answering", ty: "gauge", help: "1 while a replica answers this primary's calls (one started within the lease, or four heartbeats without one); a replica that stopped answering is down, not out of sync.", values: answering.iter().map(|(u, a)| (format!("replica=\"{u}\""), *a as u8 as f64)).collect() },
             Family { name: "chloedb_replica_behind", ty: "gauge", help: "Transactions the primary committed that a replica does not hold yet.", values: by_peer(&|p| last.saturating_sub(p.acked) as f64) },
             Family { name: "chloedb_replica_shipped_total", ty: "counter", help: "Transactions a replica applied from this primary.", values: by_peer(&|p| p.shipped as f64) },
             Family { name: "chloedb_replica_failures_total", ty: "counter", help: "Calls to a replica that failed or that it refused.", values: by_peer(&|p| p.failures as f64) },

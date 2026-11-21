@@ -107,13 +107,16 @@ For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
 
 1. Read how far behind and why: the primary's `GET /v1/health`
    (`replication.replicas`: each replica's `seq_no`, how many
-   transactions it is `behind`, and whether it is `in_sync`; on
-   `/metrics`, `chloedb_replica_behind`), and `GET /v1/load` (the
+   transactions it is `behind`, whether it is `in_sync`, and whether it
+   is `answering`; on `/metrics`, `chloedb_replica_behind` and
+   `chloedb_replica_answering`), and `GET /v1/load` (the
    primary's write rate, the replica's disk and CPU). `GET /v1/cluster`
    says each copy's role and whether it serves reads; its `txn` counts the
    transactions of each process since it started, so it does not compare
    two copies. `GET /v1/admin/follow` for a follower cluster, Data > Connectors
    (`followers` in `GET /v1/admin/connectors`) for a Postgres follower.
+   A replica that stopped answering is not counted out of sync: it is
+   down, and `copy-down` and [a copy is down](#a-copy-is-down) cover it.
 2. A replica catching up after a restart: wait, with `GET
    /v1/events?after=<id>&wait_s=30`, and silence the alert for the while
    (tier 1).
