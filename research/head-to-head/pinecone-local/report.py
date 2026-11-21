@@ -31,9 +31,9 @@ def main():
     w("Asked directly, not by a persona of the study: did we ever measure ChloeDB against Pinecone, and can we try it "
       "locally, especially the vector search? Pinecone is a hosted service. The one part of it that runs on a machine is "
       "Pinecone Local (`ghcr.io/pinecone-io/pinecone-local`), Pinecone's in-memory emulator of its API for development "
-      "and tests, which Pinecone stopped offering on 7 October 2026; its last image still pulls. This page puts the two "
+      "and tests, which reached end of life on 7 October 2026 ([Pinecone's release notes](https://docs.pinecone.io/release-notes/2026)); its last image still pulls and runs. This page puts the two "
       "side by side on GloVe-100 from ann-benchmarks (`glove-100-angular`: word vectors of 100 dimensions), at the first "
-      f"{RUNS[0]['vectors']:,} vectors (Pinecone Local's documented limit per index) and at all {RUNS[-1]['vectors']:,}.")
+      f"{RUNS[0]['vectors']:,} vectors (the limit per index Pinecone Local's documentation gave, which the image does not enforce) and at all {RUNS[-1]['vectors']:,}.")
     w("")
     w("Both get the same vectors, scaled to unit length so that cosine and the dot product rank alike. Pinecone Local has "
       "an index of `metric: cosine`, loaded by `POST /vectors/upsert` and asked `POST /query {vector, topK: 10}`. ChloeDB "
@@ -72,11 +72,20 @@ def main():
       f"{ms(small['chloedb']['latency'][0]['p50_ms'])} to {ms(big['chloedb']['latency'][0]['p50_ms'])}. That is what an "
       "emulator for tests does, and it is why these numbers say nothing about hosted Pinecone's speed or recall, which "
       "runs its own index on its own machines.")
-    w(f"- **What ChloeDB's recall costs.** At {big['vectors']:,} vectors ChloeDB's default ef finds "
-      f"{big['recall_at_10']['chloedb']:.4f} of the exact top 10; ef 400 finds {big['recall_at_10']['chloedb_ef400']:.4f} "
-      f"at p50 {ms(big['chloedb']['ef']['400']['p50_ms'])}, still "
-      f"{big['pinecone']['latency'][0]['p50_ms'] / big['chloedb']['ef']['400']['p50_ms']:,.0f}x under Pinecone Local's exact "
-      "scan. GloVe is one of ann-benchmarks' harder collections for graphs.")
+    bf = big["chloedb"].get("flat")
+    if bf:
+        w(f"- **Exact against exact.** Asked to measure every vector too (`strategy => 'flat'`), ChloeDB finds "
+          f"{big['recall_at_10']['chloedb_flat']:.4f} of the exact top 10 at {big['vectors']:,} vectors, at p50 "
+          f"{ms(bf[0]['p50_ms'])} against Pinecone Local's {ms(big['pinecone']['latency'][0]['p50_ms'])} "
+          f"({big['pinecone']['latency'][0]['p50_ms'] / bf[0]['p50_ms']:,.0f}x), and {bf[1]['qps']:,.0f} queries/s at 4 "
+          f"clients against {big['pinecone']['latency'][1]['qps']:,.0f}: it scans 8-bit codes on every core and "
+          "re-scores the best in float32.")
+    hi = max(big["chloedb"]["ef"], key=int)
+    w(f"- **What ChloeDB's recall costs.** GloVe is one of ann-benchmarks' hardest collections for a graph. At "
+      f"{big['vectors']:,} vectors ChloeDB's default ef (200) finds {big['recall_at_10']['chloedb']:.4f} of the exact "
+      f"top 10; ef 400 finds {big['recall_at_10']['chloedb_ef400']:.4f}, and ef {hi} "
+      f"{big['recall_at_10']['chloedb_ef' + hi]:.4f} at p50 {ms(big['chloedb']['ef'][hi]['p50_ms'])}. An application "
+      "that needs more recall than the default on vectors like these sets `ef` in the query.")
     w(f"- **Memory and disk.** At {big['vectors']:,} vectors Pinecone Local's container held "
       f"{mb(big['pinecone']['memory_after_kb'])} after the run and keeps nothing on disk (a restart loses the index); "
       f"ChloeDB's server held {mb(big['chloedb']['memory_after_kb'])} and its files took "
@@ -101,6 +110,10 @@ def main():
         for ef, lat in sorted(c["ef"].items(), key=lambda kv: int(kv[0])):
             w(f"| ChloeDB `similarity(emb, :v, ef => {ef})` | {rec['chloedb_ef' + ef]:.4f} | {ms(lat['p50_ms'])} | "
               f"{ms(lat['p95_ms'])} | {ms(lat['p99_ms'])} | – | – |")
+        if c.get("flat"):
+            f1, f4 = c["flat"]
+            w(f"| ChloeDB `similarity(emb, :v, strategy => 'flat')`, exact | {rec['chloedb_flat']:.4f} | {ms(f1['p50_ms'])} | "
+              f"{ms(f1['p95_ms'])} | {ms(f1['p99_ms'])} | {f4['qps']:,.0f} | {ms(f4['p99_ms'])} |")
         w("")
         srv = c1.get("server")
         if srv:
@@ -109,12 +122,11 @@ def main():
               f"Of the {r['queries']:,} queries, the two returned the same top 10 in the same order for "
               f"{r['same_top10'] * 100:.1f}%.")
             w("")
-        opt = c.get("optimize") or {}
         w("| loading | Pinecone Local | ChloeDB |")
         w("|---|---|---|")
         w(f"| writes, 500 a request | {secs(p['load_s'])} | {secs(c['load_s'])} |")
         w(f"| until every vector is searched as it will be | {secs(p['ready_s'])} | {secs(c['ready_s'])} "
-          f"(optimize: {opt.get('segments_merged', 0):,} segments merged) |")
+          f"(one segment of {c['segments'][0]:,} after optimize) |")
         w(f"| memory after the run | {mb(p['memory_after_kb'])} | {mb(c['memory_after_kb'])} |")
         w(f"| disk | none (in memory) | {c['disk_bytes'] / 1e6:,.0f} MB |")
         w("")
