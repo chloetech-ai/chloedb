@@ -1,0 +1,1152 @@
+[
+ {
+  "doc": "python",
+  "q": "In ChloeDB, what is the default models folder for the models= option of chloedb.open when $CHLOEDB_MODELS is not set?",
+  "a": "~/.local/share/chloedb/models"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB, which chloedb-server command downloads a model into the models folder?",
+  "a": "chloedb-server fetch-model NAME"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's backup and damaged-file handling, which Database method writes a consistent, checksum-checked copy of an open database to a new file?",
+  "a": "db.checkpoint"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's chloedb.upgrade(path) for databases written before field ids, what name is the old database kept under?",
+  "a": "<path>.before-field-ids"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB, what atomicity guarantee does the insert(rows) method give for a batch of rows?",
+  "a": "all or none are written"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's embed_backfill(field) method, what is the default number of rows embedded per write?",
+  "a": "batch=256"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's Writing section, how is a naive datetime value written to a timestamp field treated?",
+  "a": "taken as UTC"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's import_sqlite(path, tables=None, schemas=None, append=False) method, which flag allows more rows to be taken into a table without a key that already has rows?",
+  "a": "append=True"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's query parameter binding, which exception is raised when values are passed by position (a tuple, as with sqlite3's ? or psycopg's %s) instead of by :name?",
+  "a": "TypeError"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's embedded fields, what hash algorithm does a table use to record the fingerprint of its embedding model's weights file?",
+  "a": "SHA-256"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's embedded fields, which call lets a write store a row without its vector when the embedding model has not opened, so the vector can be filled in later?",
+  "a": "db.set_embed_later()"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's Result object, what does result.types report for a column that holds only NULL values?",
+  "a": "None"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB, what model does the ask() method use when no model= argument is given and $CHLOEDB_ASK_MODEL is unset?",
+  "a": "anthropic/claude-haiku-5-5"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB, which environment variable sets the shared query memory budget in MiB, read when the first database opens?",
+  "a": "CHLOEDB_QUERY_MEMORY_MB"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB, which exception is raised when a query stops because its timeout_ms has run out?",
+  "a": "DeadlineError"
+ },
+ {
+  "doc": "python",
+  "q": "In ChloeDB's search() method, which argument makes words match exactly as written instead of correcting likely typos?",
+  "a": "typos=False"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's network operations app, what is the default value of the `--topology` option that says where the network comes from?",
+  "a": "both"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's network operations app, which table prefix holds the discovered network that the app builds the first time it is opened?",
+  "a": "netops_disc_*"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's network operations app on Kubernetes, what is the default value of `spec.netops.tables`, the tables its key may touch?",
+  "a": "netops_*=admin"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's network operations app on Kubernetes, how much memory does its container ask for by default in `spec.netops.resources`?",
+  "a": "96 MiB"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's NetOps simulator, which command-line flag sets the size of the simulated estate, and what does 0 mean?",
+  "a": "--estate N"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's NetOps estate data, which table holds the objects (access nodes, cabinets, ONTs and so on)?",
+  "a": "netops_estate_nodes"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's estate alerting, what is the name of the alert rule that fires when an access node, hub router or hub power plant is down with objects behind it?",
+  "a": "estate-outage"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's Map page, how often are the queries that count down or degraded objects refreshed?",
+  "a": "every ten seconds"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's network map, which API endpoint feeds the object detail panel's tabs (Overview, Metrics, Events, Logs, Related, Incidents, Config)?",
+  "a": "/v1/map/detail"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's search box, which API endpoint completes the text as the person types?",
+  "a": "/v1/suggest"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's assistant, how often does the watch feature read the object it is watching?",
+  "a": "every 30 seconds"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's sentence search, what is the default value of the --rewrite-model option?",
+  "a": "anthropic/claude-haiku-5-5"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's Diagnose page, which SQL function over the links table ranks the devices closest to everything that alerts now?",
+  "a": "ppr()"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's Diagnose page, how many queries does one Investigate run take on the simulated network?",
+  "a": "13 queries"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's cluster-of-shards mode, when a walk is too large to read by key, how many rows per page does the app read it in?",
+  "a": "10,000 rows a page"
+ },
+ {
+  "doc": "netops",
+  "q": "In ChloeDB's measured run with 170,337 objects and 173,133 links, how long did writing the whole estate take?",
+  "a": "about 25 seconds"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB, which environment variable set to 0 stops the automatic download of an embedded field's model when a database is opened?",
+  "a": "CHLOEDB_FETCH_MODELS=0"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB, roughly how large is the download of the potion-retrieval-32M model on a machine that does not have it yet?",
+  "a": "about 130 MB"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB, which open option keeps a database as a directory of segment files rather than a single file?",
+  "a": "directory: true"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB, how many cores do index builds and each query use by default through the threads option?",
+  "a": "every core"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's cursors and result-window feature, which chloedb-server flag sets the maximum result window (the 10,000-row query limit)?",
+  "a": "--max-result-window"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's cursors feature, how long is a cursor kept by default if it is not read?",
+  "a": "60 seconds"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's query memory limits, which environment variable sets the shared query memory budget in MiB when the first database opens?",
+  "a": "CHLOEDB_QUERY_MEMORY_MB"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's query deadlines, which error does a query reject with when its timeoutMs deadline passes?",
+  "a": "DeadlineError"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's Client, what does importFile return on success?",
+  "a": "rows, bulk, skippedFields"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's Client, how many rows are written per request?",
+  "a": "1,000 a request"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB, what does an INT past 2^53 come back as when read?",
+  "a": "BigInt"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's Client, how long does it retry an overloaded (429) request by default, via retryFor?",
+  "a": "10 seconds"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's read-your-writes feature, what HTTP status code does a server return when a read asks for a sequence number past its last write?",
+  "a": "409"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's read-your-writes feature, how long does a replica wait for a write it has not yet applied before answering a read that asks for a sequence number?",
+  "a": "up to a second"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's web app security rules, which chloedb-server flag must be set to a host name so that a reverse proxy serving the app and ChloeDB under one host name can call the server directly?",
+  "a": "--allow-host"
+ },
+ {
+  "doc": "javascript",
+  "q": "In ChloeDB's client library, what error class does a write reject with when it fails partway through a coordinator?",
+  "a": "ChloeDBError"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connectors feature, what prefix must an environment variable name have for a connector to read it by default?",
+  "a": "CHLOEDB_CONNECTOR_SECRET_"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connectors feature, how many redirects does a connector follow, and within which origin?",
+  "a": "five at most"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connectors feature, how often does the schedule reread the chloedb_connectors table?",
+  "a": "every 10 seconds"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connector health rules, how long after its last good run does a pull connector's interval window extend, given its interval?",
+  "a": "three times its interval"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connectors, which config key sets the maximum size of an answer the connector reads over HTTP?",
+  "a": "max_body_mb"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connectors, what name does the server give the key it makes for each pull run?",
+  "a": "connector-run:<name>"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's connector key handling, which endpoint rotates a push connector's key?",
+  "a": "POST /v1/admin/connectors/NAME/key"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's Prometheus connector, what is the most steps one run asks for?",
+  "a": "10,000"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's oxidized connector, how many nodes does a single run pull by default (the max_nodes setting)?",
+  "a": "200"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's mail connector, which header's value becomes the record's id field?",
+  "a": "Message-ID"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's Kafka connector, where does a partition with no stored offset start reading by default?",
+  "a": "earliest"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's webhook connector with the alertmanager preset, which path is read for the records?",
+  "a": "$.alerts"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's Kafka connector, what is the default number of events written at a time (the batch setting)?",
+  "a": "1,000"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's Kafka connector, what is the name of the default table that keeps each event as a row?",
+  "a": "kafka_events"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's built-in test Kafka broker, how many events does each partition keep in memory?",
+  "a": "200,000 events"
+ },
+ {
+  "doc": "connectors",
+  "q": "In ChloeDB's Kafka connector, what is the default max_wait_ms, in milliseconds, for how long a fetch waits for new events?",
+  "a": "500"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's access keys, what is the minimum value allowed for `expires_minutes`?",
+  "a": "5"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's keys limited to tables, which table grant inserts new rows without being able to read them?",
+  "a": "append"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's OpenSearch API tenant keys, what HTTP status code refuses a write of a document whose tenant_id is another tenant's?",
+  "a": "403"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB, which route does an admin-scoped key on some tables use to make keys within its own grants?",
+  "a": "POST /v1/keys/own"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB, what is the default number of hosted-model calls each key may make per day, set by the --model-calls-per-key-day flag?",
+  "a": "10,000"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's agent keys, which key role lets an agent read the server's views, file change requests, and take bounded actions such as a contain rule?",
+  "a": "ops"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's agent safeguards, which error code refuses an agent's request that loses data or costs money, so that it files a change request instead?",
+  "a": "change_request_required"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's command center, what is the name of the session cookie that holds the session of a person signed in with Google?",
+  "a": "__Host-chloedb-session"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's log store, which flag caps how large the store can grow?",
+  "a": "--log-store-mb"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's --keep-params option, what is the maximum size of each query's kept parameter values?",
+  "a": "1 KB"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB, which file holds connector secrets, stored with mode 0600?",
+  "a": "DB.connectors.json"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeCtx, what is the file name of a project daemon's Unix socket inside its store folder?",
+  "a": "engram.sock"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's live inspector, which frame-ancestors value does its page's Content-Security-Policy set?",
+  "a": "frame-ancestors 'none'"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeDB's release archives, from which version onward does each archive carry GitHub's build provenance and an SBOM?",
+  "a": "0.3.8"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeCtx's redaction feature, which example variable name has its assigned value replaced with a marker before storing or syncing?",
+  "a": "DB_PASSWORD"
+ },
+ {
+  "doc": "security",
+  "q": "In ChloeCtx's redaction feature, what kind of password is not caught?",
+  "a": "a password written in prose"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire watch feature, what is the maximum number of watches allowed across all keys combined?",
+  "a": "20,000 in all"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's alert rules, what threshold must a fire's surrounding population reach for the people-near rule to fire?",
+  "a": "10,000 people or more"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's Future climate feature, which emissions scenario is used for the 2071-2100 projection?",
+  "a": "SSP3-7.0"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire watch feature, how close must a fire pixel be for the 'here' alert kind?",
+  "a": "1.5 km"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's sky service (`serve`), how often is each region's data re-read into memory?",
+  "a": "every two minutes"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire-watch clear-night alert, what must the last scan's clear share be?",
+  "a": "90% clear"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's future climate analysis, how far from today's climate must a place's future climate be to be marked novel?",
+  "a": "more than one standard deviation"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's land finder, what is the median distance from a California place to its nearest substation?",
+  "a": "9.9 km"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire watch (the `change` feature), how often does `years.py watch --loop` check a watched place for its newest clear picture?",
+  "a": "every six hours"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire watch, how big must the move between two pictures of a watched place be for `serve` to raise an alert?",
+  "a": "more than 0.09"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's fire watch, how far apart in time can two pictures of a watched place be for `serve` to compare them?",
+  "a": "at most 120 days apart"
+ },
+ {
+  "doc": "earth",
+  "q": "In the ChloeDB app's fire view, which button hides GOES's fire pixels so the fire shows as the picture has it?",
+  "a": "Fire pixels"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's earth tests, which environment variable makes the tests fail instead of being skipped when no chloedb-server binary is found?",
+  "a": "CHLOEDB_EARTH_NEED_SERVER"
+ },
+ {
+  "doc": "earth",
+  "q": "Which environment variable tells ChloeDB's earth tests where the chloedb-server binary is?",
+  "a": "CHLOEDB_SERVER_BIN"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's sizes measurement, how many fires did Chile's three summers from 2023 contain in the backtest?",
+  "a": "4,355"
+ },
+ {
+  "doc": "earth",
+  "q": "In ChloeDB's sizes measurement, how long did a place's page take to ask its six statements and answer?",
+  "a": "11.8 ms"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's documentation, what value is set for Mastodon's ES_PRESET environment variable when it is configured to use ChloeDB as its search backend?",
+  "a": "single_node_cluster"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB, what error type is returned when a script_score script uses something outside the supported Painless subset?",
+  "a": "script_exception"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's Elasticsearch compatibility, which response header do Elasticsearch 8 official clients check for, and which ChloeDB does not send?",
+  "a": "X-Elastic-Product"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's aggregations, what time zone do date_histogram buckets use?",
+  "a": "in UTC"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's keys bound to a tenant, what error type does the server return with status 403 when a key writes a document whose tenant_id is another tenant's value?",
+  "a": "security_exception"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB, which table holds an index named books, as stored in its SQL storage?",
+  "a": "os_books"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's index storage, which column holds a hash of the document id that scrolls page through in order?",
+  "a": "_hash"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's index storage, which table holds every alias in a single row?",
+  "a": "opensearch_aliases"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB, what default BM25 parameters does its ranking use, matching OpenSearch's defaults?",
+  "a": "k1 1.2, b 0.75"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's document limits, how many bytes at most can a keyword field hold as a single term?",
+  "a": "256 bytes"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's composite aggregation, how many groups at most does it return per page?",
+  "a": "9,999 groups a page"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's benchmark against OpenSearch 2.11 using BEIR's TREC-COVID dataset, how many abstracts were in the index?",
+  "a": "171,332 abstracts"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's benchmark against OpenSearch, how long did the `_bulk` indexing of the 171,332 documents take?",
+  "a": "39.0 s"
+ },
+ {
+  "doc": "opensearch",
+  "q": "What was ChloeDB's resident memory when empty, in the benchmark comparison with OpenSearch?",
+  "a": "50 MiB"
+ },
+ {
+  "doc": "opensearch",
+  "q": "In ChloeDB's comparison with OpenSearch, out of the 2,400 searches that return hits, how many return the same first page in the same order?",
+  "a": "808"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's graph REACHABLE traversal, which option caps how many rows a search may meet besides its seeds before it errors?",
+  "a": "max_nodes"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's personalized PageRank (ppr) documentation, the forward push method is attributed to which authors and year?",
+  "a": "Andersen, Chung and Lang, 2006"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's personalized PageRank, what key does the stats output report when a walk ends with less than half its mass settled?",
+  "a": "ppr_unsettled"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's speed section, how many bytes per edge did the million-row synthetic graph use on disk?",
+  "a": "27 bytes per edge"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's citation-recommendation experiment (Does the graph help search?), what nDCG@20 did the best graph method, one-hop citation expansion from the two nearest papers, reach?",
+  "a": "0.253"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's citation-recommendation experiment, how many papers of OGB's test split were held out of the table as queries?",
+  "a": "1,000 papers"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's citation-recommendation experiment, which static embedder produced the vectors (the same one ChloeCtx uses)?",
+  "a": "Model2Vec potion-retrieval-32M"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's implicit similarity graph (a VECTOR field traversed as a graph), what is the cost per hop of 10 neighbours?",
+  "a": "0.12 ms per hop"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's edge tables, a segment's key numbers get a dense memo once the walk has resolved what fraction of them?",
+  "a": "a thirty-second"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's coordinator walk on a sharded cluster, how many keys go into each read batch?",
+  "a": "2,000"
+ },
+ {
+  "doc": "graphs",
+  "q": "Which ChloeDB benchmark tool, located in chloedb-server, measures edge table and EDGES field writes and walks?",
+  "a": "chloedb-edges-bench"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's ppr graph walk, which stats field reports that the walk stopped at max_pushes?",
+  "a": "max_pushes_reached: true"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's graph benchmark on a cluster, how long did a 2-hop query take to run?",
+  "a": "2.1 ms"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's graph storage, how much do cross-segment hops cost compared with the in-memory CSR on these graphs?",
+  "a": "two to five times"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's search quality task, what score did vector search reach with its single embedder?",
+  "a": "0.123"
+ },
+ {
+  "doc": "graphs",
+  "q": "In ChloeDB's graph features, which algorithm is the only one that uses edge weights?",
+  "a": "PageRank"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB, how many standing questions can one reader keep at a time?",
+  "a": "ten questions"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB, at what time (UTC) does a feed set to write itself produce its issue each Monday?",
+  "a": "06:00 UTC"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's search, which operator keeps only papers that have code?",
+  "a": "has:code"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB, which HTTP endpoint shares a feed with a team by link?",
+  "a": "POST /v1/feeds/<id>/team"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, how often does the --live mode read new and revised papers from arXiv's OAI-PMH interface?",
+  "a": "every six hours"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, which table does tools/classics.py write its results to?",
+  "a": "ax_classics"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, what HTTP endpoint returns a paper's explanation at a given level?",
+  "a": "GET /v1/explain/<id>?level="
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, how many topics remain after the topic clustering drops those with too few papers?",
+  "a": "1,093"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, how often does arXiv ask programs to read a page?",
+  "a": "every 15 seconds"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv deployment, how many groups does the search server allow a GROUP BY to produce?",
+  "a": "two million groups"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv backup job, which HTTP endpoint is called to take a checkpoint of each server?",
+  "a": "POST /v1/admin/checkpoint"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv app, which flag caps the number of new model calls per day?",
+  "a": "--llm-per-day"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv example project, what command runs the test suite with the ci profile?",
+  "a": "cargo test --profile ci"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv example, which directory holds the project that the test command is run from?",
+  "a": "chloedb-arxiv"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv feature, what does a pasted abstract have left out before it is processed?",
+  "a": "its authors"
+ },
+ {
+  "doc": "arxiv",
+  "q": "In ChloeDB's arXiv feature, what format is a standing question read as before it is dropped?",
+  "a": "RSS"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Hacker News app, what is the default value of the server's --max-groups setting?",
+  "a": "65,536"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Hacker News app, which ranking method does the Fast mode switch use for every search?",
+  "a": "BM25"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Hacker News app, how many comments a year at most does a Changed minds arc read for a model's stance?",
+  "a": "three a year at most"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Hacker News app, what is the approximate size of the monthly Parquet archive that prepare --download fetches?",
+  "a": "about 12 GB"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's HN crawl, what is each row of the hn_pages table keyed by?",
+  "a": "canonical link"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Experiments API, which environment variable can supply the token instead of --experiments-token?",
+  "a": "CHLOEDB_HN_EXPERIMENTS_TOKEN"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's Experiments API, what HTTP status code do the experiment routes return when the token is wrong?",
+  "a": "401"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's crawler, what is the maximum size of a page it will fetch?",
+  "a": "5 MB a page"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's interleaving test (the Experiments app's two-arm test on real visitors' searches), what method drafts one shown list from two arms' results?",
+  "a": "team draft"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's interleaving test, which table keeps each drafted search with its query, both arms' stories and times, the order shown, and the device?",
+  "a": "hn_interleave_log"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's search logging, how long is the anonymous `vid` id that the browser keeps in its local storage?",
+  "a": "16 random hex characters"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's exploration logging (`--explore-share`), how many top stories are shown in a uniform random order by default?",
+  "a": "10"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's latency evaluation, which script times the simplest statements on the same queries?",
+  "a": "eval/plain.py"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's latency evaluation, what was the median time for BM25 over titles alone?",
+  "a": "15 ms"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's latency evaluation, what was the median time for the substring index with no ranking?",
+  "a": "8 ms"
+ },
+ {
+  "doc": "hn",
+  "q": "In ChloeDB's latency evaluation, which results file under eval/ holds the 2026-11-16 latency numbers?",
+  "a": "eval/results/latency-2026-11-16.md"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB, what name does the engine give the key it makes for each app?",
+  "a": "apps-app/app-<id>"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB, what access level does a published app have if its owner never chose one?",
+  "a": "look"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB, how soon must the studio's one-time sign-in link be used?",
+  "a": "within two minutes"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB, what is the name of the Secret the operator makes so the engine can get its apps' keys?",
+  "a": "<cluster>-apps-credentials"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's app platform, which environment variable sets the per-app daily limit on model questions (app.ask)?",
+  "a": "STRATA_APPS_ASKS_PER_DAY"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's app platform, what is the default spend cap for model calls, in US dollars, before spendCapUsd is set?",
+  "a": "25 US dollars"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's app web search (app.ask with web: true), at what dollar amount does a single call stop?",
+  "a": "$0.25"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's per-visitor rate limits for published apps, how many calls a minute is each visitor held to by default?",
+  "a": "240 calls a minute"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's Schedules feature, how often at most can a schedule run?",
+  "a": "at most every 15 minutes"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's Schedules feature, after how many failures does a schedule stop?",
+  "a": "5 failures in a row"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's spending limits, which environment variable caps one published app's questions at a daily amount?",
+  "a": "STRATA_APPS_ASK_USD_PER_DAY"
+ },
+ {
+  "doc": "apps",
+  "q": "In ChloeDB's app.fetch, which ports are open for outbound requests?",
+  "a": "80, 443, 8080 and 8443"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's follower feature, which endpoint does a follower call every 2 seconds to report how far behind it is?",
+  "a": "POST /v1/admin/follow/status"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's follower feature, which flag copies a single followed table again while keeping its rows readable throughout?",
+  "a": "--copy-table"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's follower feature, what error name is returned when a write to a table the follower writes is refused?",
+  "a": "followed_table"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's follower feature, after how long without a report is a follower considered silent?",
+  "a": "10 seconds"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, which HTTP request header marks a request as coming from the follower?",
+  "a": "x-chloedb-postgres-follower"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, what is the longest interval between retries when a held table is tried again?",
+  "a": "15 minutes"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, what error name does ChloeDB return when DROP TABLE is run on a table being followed?",
+  "a": "followed_table"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, what does an empty key in a Postgres json or jsonb value become in ChloeDB's JSON type?",
+  "a": "_empty"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, what is the systemd unit setting that makes the service start again after it stops?",
+  "a": "Restart=always"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, which table records what the follower has applied, written in the same transaction as the rows it covers?",
+  "a": "_sources"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's container setup for the Postgres follower, which docker run flag restarts the container?",
+  "a": "--restart unless-stopped"
+ },
+ {
+  "doc": "postgres",
+  "q": "In ChloeDB's Postgres follower, when a copy is cut short, from what kind of replication slot is it made again?",
+  "a": "a new slot"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, from which release does the 'database is open elsewhere' error name the process that holds the file?",
+  "a": "0.3.8"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB's JavaScript API, which option opens a database for reading only while another process writes it?",
+  "a": "readOnly: true"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "When ChloeDB is given a file that is not a database, such as a JSON Lines file, what empty folder does it create beside that file?",
+  "a": "<file>-readers"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "What is the minimum glibc version for ChloeDB's Linux x86-64 and aarch64 wheels?",
+  "a": "glibc 2.28"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, which environment variable turns off the automatic model download in the Python, JavaScript and Java packages?",
+  "a": "CHLOEDB_FETCH_MODELS=0"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, what is the default models folder when `$CHLOEDB_MODELS` is not set?",
+  "a": "~/.local/share/chloedb/models"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, which server flag stops a server from fetching, by itself, a model that a table names?",
+  "a": "--no-fetch-models"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, which Cargo feature must a source build of chloedb-server use so that BERT models such as bge-small run?",
+  "a": "bert"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB, which environment variable do both the Python and JavaScript clients read for the auth token when none is passed in code?",
+  "a": "$CHLOEDB_TOKEN"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In the ChloeDB Python client, what exception class is raised when the server returns a 401 for a missing or wrong token?",
+  "a": "UnauthorizedError"
+ },
+ {
+  "doc": "troubleshooting",
+  "q": "In ChloeDB's auth model, what scope must an API key have before the server accepts a write statement?",
+  "a": "write scope"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler (the `grow` settings), what is the default value of `splitRows`?",
+  "a": "100,000"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, what was the crawler's earlier name, which robots.txt groups still match?",
+  "a": "strata-crawl"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, how many redirects at most does it follow for one URL?",
+  "a": "5"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, which repeatable command-line flag lets it reach one named private-network site?",
+  "a": "--allow-host"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, what is the default value of the `scope` option that controls which links are followed?",
+  "a": "host"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, what is the default share of pages a field must appear on before it becomes a column (the `promote_at` option)?",
+  "a": "0.3"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler API, what is the default listen address of `chloedb-crawl serve` (set by `--listen`)?",
+  "a": "127.0.0.1:7800"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, which HTTP header carries the table grants that the crawler sends with its narrowed token when it writes as the key that started a crawl?",
+  "a": "x-chloedb-as-tables"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawler, what reference list does a site's scope (`domain`) not use when it picks the last two labels of a host?",
+  "a": "the public suffix list"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's growth policy for crawl tables, how are shards added?",
+  "a": "a shard at a time"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawl feature, which rows fill a list column that was added during the crawl?",
+  "a": "rows written after it only"
+ },
+ {
+  "doc": "crawler",
+  "q": "In ChloeDB's crawl feature, how are rows written, so that a page written twice is stored as one row?",
+  "a": "written by URL"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite importer, which unit does a real under 10^7 in a date column use?",
+  "a": "Julian days"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite importer, what happens to an integer past 2^53 in a FLOAT column?",
+  "a": "rounds to the nearest double"
+ },
+ {
+  "doc": "sqlite",
+  "q": "When ChloeDB's SQLite importer finds a file that another program holds locked, how long does it wait for the lock?",
+  "a": "up to 5 seconds"
+ },
+ {
+  "doc": "sqlite",
+  "q": "Which ChloeDB importer flag prints what an import would do without writing anything?",
+  "a": "--plan"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite export, which table holds the ChloeDB schemas (name, position, schema) that an import reads to restore them?",
+  "a": "_strata_tables"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite export, which tokenizer does the FTS5 index use to stand in for ChloeDB's `english` text analyzer?",
+  "a": "porter unicode61"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite import, how many rows does the server upsert through its writer per batch?",
+  "a": "1,000 at a time"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's SQLite export, which SQLite type does a VECTOR(n) field become?",
+  "a": "F32_BLOB(n)"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's graph support, what format do the values of an EDGES field take?",
+  "a": "JSON arrays of keys"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's generated fields, what kind of column do the exported text values become?",
+  "a": "a plain column"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB, what do fields that are not stored hold when read back?",
+  "a": "what the indexes give back"
+ },
+ {
+  "doc": "sqlite",
+  "q": "In ChloeDB's graph support, what must you write yourself to run walks and PageRank over EDGES?",
+  "a": "recursive SQL of your own"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's LangGraph store example, which embedding model is named in the `index=` option of `ChloeDBStore`?",
+  "a": "potion-retrieval-32M"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's LangGraph store, which SQL table holds the stored items, keyed by namespace and key?",
+  "a": "langgraph_store"
+ },
+ {
+  "doc": "frameworks",
+  "q": "Which comparison operator in ChloeDB's metadata filters keeps values within a `[lo, hi]` range?",
+  "a": "$between"
+ },
+ {
+  "doc": "frameworks",
+  "q": "How many levels deep can a metadata object nest in ChloeDB before it is refused?",
+  "a": "16 levels"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's time-to-live setting (the ttl option), which flag moves an item's expiry time on each time it is read?",
+  "a": "refresh_on_read"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's namespaces feature, what is the default limit on groups a query may make before it reads namespaces a page at a time?",
+  "a": "65,536"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's DB-API driver, how many rows does a SELECT read per page when connected through a server?",
+  "a": "10,000 rows"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's DB-API driver, which exception does a bytes parameter raise?",
+  "a": "NotSupportedError"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's Python module, which PEP 249 exception class is raised for a bad statement?",
+  "a": "ProgrammingError"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's Python module, which PEP 249 exception class is raised for a busy, overloaded or unreachable database?",
+  "a": "OperationalError"
+ },
+ {
+  "doc": "frameworks",
+  "q": "Which argument to ChloeDB's connect() function opens a database that another process writes, so it can be read?",
+  "a": "read_only=True"
+ },
+ {
+  "doc": "frameworks",
+  "q": "In ChloeDB's Python module, what attribute holds the original error on a raised ChloeDB exception?",
+  "a": "__cause__"
+ }
+]
