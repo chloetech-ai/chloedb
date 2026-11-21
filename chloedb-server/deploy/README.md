@@ -38,6 +38,16 @@ kubectl -n strata patch strata demo --type merge -p '{"spec": {"shards": 3, "rep
 kubectl -n strata port-forward svc/demo 7700  # http://127.0.0.1:7700
 ```
 
+`operator.yaml` lets the operator write the apps' credentials (Secrets) in
+the namespace `strata` only. For a cluster in another namespace, bind its
+ClusterRole there too, before the cluster's apps start; without it they keep
+the admin token:
+
+```bash
+kubectl -n NS create rolebinding strata-operator-secrets \
+  --clusterrole=strata-operator-secrets --serviceaccount=strata-system:strata-operator
+```
+
 | spec | default | |
 |---|---|---|
 | `shards` | 1 | shards, each holding a part of the 4,096 slots |
@@ -330,7 +340,8 @@ aws cloudformation create-stack --region us-east-1 --stack-name strata-search \
 aws cloudformation wait stack-create-complete --region us-east-1 --stack-name strata-search
 aws eks update-kubeconfig --region us-east-1 --name strata-search
 kubectl apply -f strata-search-operator.yaml
-kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai
+until kubectl get crd/strataclusters.strata.chloetech.ai >/dev/null 2>&1; do sleep 2; done   # the operator installs it once it runs
+kubectl wait --for condition=established --timeout=60s crd/strataclusters.strata.chloetech.ai
 kubectl apply -f strata-search-cluster.yaml
 ```
 
@@ -353,7 +364,8 @@ be taken. With `doctl` signed in with a token that may create clusters:
 doctl kubernetes cluster create strata-search --region nyc3 --version 1.37.0-do.2 \
   --ha=false --auto-upgrade=false --node-pool "name=strata;size=m-4vcpu-32gb;count=3;tag=strata" --wait
 kubectl apply -f strata-search-operator.yaml
-kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai
+until kubectl get crd/strataclusters.strata.chloetech.ai >/dev/null 2>&1; do sleep 2; done   # the operator installs it once it runs
+kubectl wait --for condition=established --timeout=60s crd/strataclusters.strata.chloetech.ai
 kubectl apply -f strata-search-cluster.yaml
 ```
 
@@ -398,15 +410,21 @@ metadata server instead. With `gcloud` and `kubectl`:
 ```sh
 gcloud container clusters create strata-search --project my-project --location us-central1-a \
   --cluster-version 1.36.4-gke.2377000 --release-channel regular \
-  --add-maintenance-exclusion-name chloedb-hold --add-maintenance-exclusion-start 2026-11-16T00:00:00Z \
-  --add-maintenance-exclusion-end 2027-02-14T00:00:00Z --add-maintenance-exclusion-scope no_minor_or_node_upgrades \
   --machine-type n2d-highmem-4 --num-nodes 3 --disk-type pd-balanced --disk-size 30 \
   --workload-pool my-project.svc.id.goog --network default --labels strata=chloedb
+gcloud container clusters update strata-search --project my-project --location us-central1-a \
+  --add-maintenance-exclusion-name chloedb-hold --add-maintenance-exclusion-start 2026-11-16T00:00:00Z \
+  --add-maintenance-exclusion-end 2027-02-14T00:00:00Z --add-maintenance-exclusion-scope no_minor_or_node_upgrades
 gcloud container clusters get-credentials strata-search --project my-project --location us-central1-a
 kubectl apply -f strata-search-operator.yaml
-kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai
+until kubectl get crd/strataclusters.strata.chloetech.ai >/dev/null 2>&1; do sleep 2; done   # the operator installs it once it runs
+kubectl wait --for condition=established --timeout=60s crd/strataclusters.strata.chloetech.ai
 kubectl apply -f strata-search-cluster.yaml
 ```
+
+gcloud takes the upgrade hold on `clusters update` only (`clusters create`
+refuses the `--add-maintenance-exclusion-*` flags), so it is a second step;
+GKE's create request, which the view writes too, carries it in one.
 
 The `StrataCluster` annotates the coordinators' service account to act as
 the service account that planned it (`coordinatorAccountAnnotations`), so the

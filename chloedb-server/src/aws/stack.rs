@@ -161,7 +161,7 @@ pub fn plan(p: &Plan, cat: &Catalog, principal_arn: &str) -> Result<Json, String
         format!("aws cloudformation wait stack-create-complete --region {r} --stack-name {stack}"),
         format!("aws eks update-kubeconfig --region {r} --name {stack}"),
         format!("kubectl apply -f {stack}-operator.yaml"),
-        "kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai".to_string(),
+        crate::cloud::WAIT_CRD.to_string(),
         format!("kubectl apply -f {stack}-cluster.yaml"),
         format!("kubectl -n strata get strata {} -w", p.name),
     ];

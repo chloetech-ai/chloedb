@@ -381,7 +381,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
 
     let loc_flag = format!("--project {project} --location {location}");
     let mut create = format!(
-        "gcloud container clusters create {name} {loc_flag} --cluster-version {version} --release-channel regular --add-maintenance-exclusion-name {HOLD_NAME} --add-maintenance-exclusion-start {hold_from} --add-maintenance-exclusion-end {hold_until} --add-maintenance-exclusion-scope no_minor_or_node_upgrades --machine-type {} --num-nodes {per_zone} --disk-type pd-balanced --disk-size {} --workload-pool {project}.svc.id.goog --network {network} --labels strata=chloedb",
+        "gcloud container clusters create {name} {loc_flag} --cluster-version {version} --release-channel regular --machine-type {} --num-nodes {per_zone} --disk-type pd-balanced --disk-size {} --workload-pool {project}.svc.id.goog --network {network} --labels strata=chloedb",
         m.name, p.boot_gb
     );
     if !p.subnetwork.is_empty() {
@@ -396,11 +396,18 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
     if p.spot {
         create.push_str(" --spot");
     }
+    // gcloud takes the upgrade hold on update only (`clusters create`
+    // refuses --add-maintenance-exclusion-*); the API's create request
+    // above carries it.
+    let hold = format!(
+        "gcloud container clusters update {name} {loc_flag} --add-maintenance-exclusion-name {HOLD_NAME} --add-maintenance-exclusion-start {hold_from} --add-maintenance-exclusion-end {hold_until} --add-maintenance-exclusion-scope no_minor_or_node_upgrades"
+    );
     let commands = [
         create,
+        hold,
         format!("gcloud container clusters get-credentials {name} {loc_flag}"),
         format!("kubectl apply -f {name}-operator.yaml"),
-        "kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai".to_string(),
+        crate::cloud::WAIT_CRD.to_string(),
         format!("kubectl apply -f {name}-cluster.yaml"),
         format!("kubectl -n {NAMESPACE} get strata {} -w", p.name),
     ];
@@ -590,7 +597,9 @@ mod tests {
         assert_eq!(j["identity"]["member"], "serviceAccount:chloedb.svc.id.goog[strata/search-coordinator]");
         let manifests = j["manifests"]["cluster"].as_str().unwrap();
         assert!(manifests.contains("iam.gke.io/gcp-service-account") && manifests.contains("\"kind\": \"StrataCluster\""), "{manifests}");
-        assert!(j["commands"][0].as_str().unwrap().starts_with("gcloud container clusters create strata-search --project chloedb --location us-central1-a --cluster-version 1.36.4-gke.2377000 --release-channel regular --add-maintenance-exclusion-name chloedb-hold"), "{}", j["commands"][0]);
+        assert!(j["commands"][0].as_str().unwrap().starts_with("gcloud container clusters create strata-search --project chloedb --location us-central1-a --cluster-version 1.36.4-gke.2377000 --release-channel regular --machine-type"), "{}", j["commands"][0]);
+        assert!(j["commands"][1].as_str().unwrap().starts_with("gcloud container clusters update strata-search --project chloedb --location us-central1-a --add-maintenance-exclusion-name chloedb-hold"), "{}", j["commands"][1]);
+        assert!(!j["commands"][0].as_str().unwrap().contains("maintenance-exclusion"), "{}", j["commands"][0]);
         assert!(j["teardown"][2].as_str().unwrap().ends_with("--quiet"));
         let none = plan(&Plan { workload_identity: "none".into(), ..p.clone() }, &cat).unwrap();
         assert!(none["identity"].is_null() && none["cluster"].get("coordinatorAccountAnnotations").is_none());
