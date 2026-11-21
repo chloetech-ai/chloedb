@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-earth"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 license = "Apache-2.0"
 description = "The Earth on ChloeDB: California and Chile from orbit, every fire GOES sees as it starts, places found by how they look, their twins across the equator, how they changed, and the fires that began like this one"

@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-gh"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 license = "Apache-2.0"
 description = "GitHub on ChloeDB: every public event since 2011 from GH Archive, repos found by what they do, why they trend, what people use instead, who keeps them going, and what to star next"
