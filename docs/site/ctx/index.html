@@ -23,7 +23,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/ctx.css?v=85c24337fe">
+<link rel="stylesheet" href="../assets/ctx.css?v=ebc195f34f">
 <script>document.documentElement.classList.add("js");</script>
 </head>
 <body>
@@ -214,6 +214,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div class="fact"><b>The same size, twice the answers</b><p>The file was about as long as ChloeCtx's context, 2,700 tokens against 2,100. The difference is which 2,000 tokens: the file holds what a model guessed would matter, ChloeCtx what this question needs.</p></div>
       <div class="fact"><b>Same story in Claude Code</b><p>On 208 runs of follow-up coding tasks, Claude Code's own memory file solved 74%, mem0 86%, claude-mem 60%, and ChloeCtx 94 to 97%. <a href="benchmarks.html#systems">The runs</a></p></div>
     </div>
+  </div></section>
+
+  <section class="gutter" id="matrix"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Feature by feature</span>
+      <h2>What ChloeCtx does that the others don't</h2>
+      <p>Built-in memories stay inside their app. Memory services keep your memory on their servers and pay a model to decide what to keep. ChloeCtx is the one memory you own that every assistant can read, that keeps where each line came from, and that you can share a slice of, under a key you can revoke. Lines marked "in review" are built and tested, and waiting for review before they ship.</p>
+    </div>
+    <div class="tbl cmp matrix">
+      <table>
+        <thead><tr><th></th><th class="self">ChloeCtx</th><th>ChatGPT, Claude and Gemini memory</th><th>mem0</th><th>MemoryPlugin</th><th>Basic Memory</th></tr></thead>
+        <tbody>
+          <tr><td>One memory read by ChatGPT, Claude and Gemini</td><td class="self"><span class="y">✓</span>A connector for ChatGPT and Claude.ai, an extension, an API proxy <span class="badge next">in review</span></td><td><span class="x">✕</span>Each keeps its own</td><td><span class="m">~</span>Through apps built on its API; its extension is archived</td><td><span class="y">✓</span>Yes</td><td><span class="m">~</span>ChatGPT through search and fetch</td></tr>
+          <tr><td>Sign in with OAuth from ChatGPT and Claude.ai</td><td class="self"><span class="y">✓</span>MCP over HTTPS with OAuth 2.1, a passcode on the consent page <span class="badge next">in review</span></td><td><span class="x">✕</span>Each stays in its own app</td><td><span class="m">~</span>MCP; a sign-in for ChatGPT and Claude.ai not stated</td><td><span class="m">~</span>MCP and a Custom GPT</td><td><span class="m">~</span>MCP; ChatGPT through search and fetch only</td></tr>
+          <tr><td>Records apps built on the OpenAI and Anthropic APIs</td><td class="self"><span class="y">✓</span>A proxy that passes requests through and records each exchange <span class="badge next">in review</span></td><td><span class="x">✕</span>No</td><td><span class="m">~</span>If the app is written to call mem0's API</td><td>Not stated</td><td>Not stated</td></tr>
+          <tr><td>Imports whole histories from all three vendors</td><td class="self"><span class="y">✓</span>ChatGPT, Claude.ai and Gemini exports, each message kept once <span class="badge next">in review</span></td><td><span class="m">~</span>Gemini takes ChatGPT and Claude ZIPs; Claude takes a pasted summary</td><td><span class="x">✕</span>ChatGPT's saved memories only</td><td><span class="m">~</span>The last 500 chats on its Core plan</td><td><span class="m">~</span>Claude and ChatGPT</td></tr>
+          <tr><td>Each memory line links to the chat it came from</td><td class="self"><span class="y">✓</span>Every record keeps its chat and date; the persona card links each line <span class="badge next">in review</span></td><td><span class="x">✕</span>No</td><td><span class="x">✕</span>No</td><td><span class="x">✕</span>No</td><td><span class="m">~</span>Notes are files you can read</td></tr>
+          <tr><td>Edit, confirm or drop a line, with its history kept</td><td class="self"><span class="y">✓</span>The old line is kept when a line changes</td><td><span class="x">✕</span>Edit and delete; no revision history</td><td><span class="m">~</span>Edit and delete in a dashboard</td><td><span class="m">~</span>Approve merges</td><td><span class="m">~</span>Edit the files</td></tr>
+          <tr><td>Share a slice: scoped key, expiry, revocation, access log</td><td class="self"><span class="y">✓</span>Capsules ship today; signed, read-only shares <span class="badge next">in review</span></td><td><span class="x">✕</span>No</td><td><span class="x">✕</span>No</td><td><span class="x">✕</span>No</td><td><span class="m">~</span>A teams plan is announced</td></tr>
+          <tr><td>You own the memory as a file</td><td class="self"><span class="y">✓</span>One ChloeDB file on your machine</td><td><span class="x">✕</span>No</td><td><span class="m">~</span>Self-hosting is for developers</td><td><span class="x">✕</span>No</td><td><span class="y">✓</span>Markdown files</td></tr>
+          <tr><td>Stores without a model call</td><td class="self"><span class="y">✓</span>Under a second a person, nothing to pay</td><td>Not stated</td><td><span class="x">✕</span>About 48 calls and $0.13 a person</td><td>Not stated</td><td><span class="m">~</span>The assistant writes the notes over MCP</td></tr>
+          <tr><td>Claude Code and coding agents share the same memory</td><td class="self"><span class="y">✓</span>Hooks record every session; 3 to 8 ms a hook</td><td><span class="m">~</span>Claude and Cowork only</td><td><span class="m">~</span>Through MCP</td><td><span class="m">~</span>Claude Code, Codex and Cursor through its Mac app</td><td><span class="y">✓</span>Yes</td></tr>
+          <tr><td>Published numbers anyone can rerun</td><td class="self"><span class="y">✓</span>Method, answers and verdicts in the repository</td><td><span class="x">✕</span>No</td><td><span class="m">~</span>Self-run only</td><td><span class="x">✕</span>No</td><td><span class="x">✕</span>No</td></tr>
+          <tr><td>Hosted, works on a phone</td><td class="self"><span class="x">✕</span>Not yet: it runs on your machine or your cluster</td><td><span class="y">✓</span>Yes</td><td><span class="y">✓</span>Yes</td><td><span class="y">✓</span>Yes</td><td><span class="m">~</span>Cloud, $15 a month</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="src-line">Rivals as their own pages and documentation described them on 20 Nov 2026 ("not stated" where they say nothing), and mem0's storage cost as measured in <a href="benchmarks.html#persona">the benchmark</a>. ChatGPT, Claude and Gemini differ in places: ChatGPT keeps no revision history of its memory, Claude logs no edits, and Gemini shows when a line changed.</p>
   </div></section>
 
   <section class="gutter" id="where"><div class="wrap block">
