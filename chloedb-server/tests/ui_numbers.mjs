@@ -219,7 +219,11 @@ const busy = await count();
 Date.now = () => realNow() + core.IDLE_MS + 1000;
 assert.ok(core.isIdle());
 const resting = await count();
-assert.ok(busy >= 8 && resting <= Math.ceil(busy / core.IDLE_SLOW) + 1, `polls while used ${busy}, while idle ${resting}`);
+// Idle, a poll waits at least 10 * IDLE_SLOW - 5 ms after the one before,
+// so 200 ms hold the first and at most 200 / 45 more, however late the
+// timers fire. (Bounding it by the polls counted while used failed on a
+// loaded macOS runner, whose late timers left 15 of the 20 there.)
+assert.ok(busy >= 8 && resting <= 1 + Math.floor(200 / (10 * core.IDLE_SLOW - 5)), `polls while used ${busy}, while idle ${resting}`);
 assert.ok(await count({ always: true }) >= 8, "a change under way is followed at the full rate");
 let woke = 0;
 const st = core.every(10, () => { woke++; });
