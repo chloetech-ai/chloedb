@@ -1,4 +1,5 @@
-"""Write short-answer questions about the trained part (tokens 1,280 on) of the 16 eval docs, with Haiku via claude -p.
+"""(QMODEL=sonnet STYLE=user: questions as a developer would ask them, by another model than the facts' writer.)
+Write short-answer questions about the trained part (tokens 1,280 on) of the 16 eval docs, with Haiku via claude -p.
 Keeps a question only if its answer appears verbatim in the passage it came from."""
 import json, os, re, subprocess, sys
 from transformers import AutoTokenizer
@@ -13,13 +14,15 @@ for e in EVAL:
     text = tok.decode(ids)
     for part in range(0, min(len(text), 24000), 6000):
         passage = text[part:part + 6000]
-        prompt = ("Below is part of the documentation of ChloeDB, an embedded search database with SQL. Write 4 short-answer quiz questions "
-                  "whose answers are facts stated in this passage and that a person could NOT guess from general knowledge "
+        prompt = ("Below is part of the documentation of ChloeDB, an embedded search database with SQL. Write 4 questions that a developer "
+                  "using ChloeDB might type to an assistant, in their own casual words (not the passage's wording), "
+                  if os.environ.get("STYLE") == "user" else "Below is part of the documentation of ChloeDB, an embedded search database with SQL. Write 4 short-answer quiz questions ")
+        prompt += ("whose answers are facts stated in this passage and that a person could NOT guess from general knowledge "
                   "(names of options, functions, defaults, numbers, flags, file names, commands). Each question must make sense on its own "
                   "(say it is about ChloeDB and name the feature). Each answer must be 1 to 5 words copied EXACTLY from the passage. "
                   "Reply with only a JSON list of objects with keys q and a.\n\nPASSAGE:\n" + passage)
         try:
-            r = subprocess.run(["claude", "-p", "--model", "haiku", prompt], capture_output=True, text=True, timeout=180, env=env, cwd=f"{S}/qa/empty")
+            r = subprocess.run(["claude", "-p", "--model", os.environ.get("QMODEL", "haiku"), prompt], capture_output=True, text=True, timeout=180, env=env, cwd=f"{S}/qa/empty")
             m = re.search(r"\[.*\]", r.stdout, re.S); items = json.loads(m.group(0)) if m else []
         except Exception as ex:
             print(e, part, "error", ex, file=sys.stderr); continue

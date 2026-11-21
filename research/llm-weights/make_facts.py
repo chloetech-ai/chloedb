@@ -10,10 +10,14 @@ EVAL = ["python", "netops", "javascript", "connectors", "security", "earth", "op
 env = {"PATH": os.environ["PATH"], "HOME": f"{S}/qa/empty"}
 for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE"):
     if os.environ.get(k): env[k] = os.environ[k]
+DOCSET = os.environ.get("DOCSET", "eval"); LIMIT = int(os.environ.get("LIMIT", 24000))
+if DOCSET == "others":   # distractors for the scale test: every other doc of docs/chloedb, from its start
+    import glob
+    EVAL = [os.path.basename(f)[:-3] for f in sorted(glob.glob("/home/user/chloedb/docs/chloedb/*.md")) if os.path.basename(f)[:-3] not in EVAL + ["index", "README"]]
 jobs = []
 for e in EVAL:
-    text = tok.decode(tok(open(f"/home/user/chloedb/docs/chloedb/{e}.md").read(), add_special_tokens=False)["input_ids"][1280:])
-    jobs += [(e, part, text[part:part + 6000]) for part in range(0, min(len(text), 24000), 6000)]
+    text = tok.decode(tok(open(f"/home/user/chloedb/docs/chloedb/{e}.md").read(), add_special_tokens=False)["input_ids"][0 if DOCSET == "others" else 1280:])
+    jobs += [(e, part, text[part:part + 6000]) for part in range(0, min(len(text), LIMIT), 6000)]
 def one(job):
     e, part, passage = job
     prompt = ("Below is part of the documentation of ChloeDB, an embedded search database with SQL. List the 10 most important specific facts "
