@@ -11,6 +11,22 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **ChloeCtx says when it cannot work, and keeps more out of the store.**
+  A daemon that cannot start (a missing model, a store it cannot open) is
+  said once per session as a message in Claude Code, with the last words
+  of its log, instead of every hook waiting for it in silence; later hooks
+  skip it for 30 seconds (ANA-501). `chloectx sync setup` with a key the
+  server refuses, or `--token-stdin` that read nothing, exits non-zero,
+  and `chloectx doctor` fails a project the sync server refuses (WEI-502).
+  `chloectx forget` no longer panics when its output is closed (ANA-303).
+  The redactor knows more kinds of keys and tokens (Twilio, Notion, Docker
+  Hub, Telegram, Sentry: LENA-503), and passwords typed to sign in or given
+  to registry logins and signing secrets, so they are not handed to a
+  teammate's session (WEI-501). What a shell command fetched from outside
+  (`curl`, `wget`, `gh api` and the like) is kept as a third party's words,
+  so recall quotes it as data and does not offer it as context (LENA-504). The session's briefing says the
+  user's decisions stand until the user changes them, so a request that
+  would reverse one is asked about first (JONAH-501).
 - **What on-call needs to trust, from the fifth persona round.** Alert
   rules and routes outlive a restart without `--alerts`: they are kept in
   `DB.alerts.json` beside `--db` (a coordinator without the flag keeps them

@@ -17,12 +17,15 @@
 //!   Sentry (`sntrys_`, `sntryu_`), Mailgun (`key-` and 32 hex digits),
 //!   Doppler (`dp.st.` and kin), Databricks (`dapi`), Supabase (`sbp_`),
 //!   Tailscale (`tskey-`), Atlassian (`ATATT3`), Pulumi (`pul-`), Terraform
-//!   Cloud (`.atlasv1.`), ChloeDB API keys (`sk_<id>_<secret>`) and JWTs;
+//!   Cloud (`.atlasv1.`), Twilio API keys (`SK` and 32 hex digits), Notion
+//!   (`ntn_`), Docker Hub (`dckr_pat_`), Telegram bots' tokens, Sentry DSNs,
+//!   ChloeDB API keys (`sk_<id>_<secret>`) and JWTs;
 //! - PEM private key blocks (also one cut off before its END line);
 //! - `Authorization:` headers and `Bearer` tokens, `curl -u user:pass`, and
 //!   the password of a URL (`scheme://user:pass@host`);
 //! - a command line's password and key flags (`--password=...`,
-//!   `--token ...`, `--api-key ...`), `mysql -p...` and `sshpass -p ...`;
+//!   `--token ...`, `--api-key ...`), `mysql -p...`, `sshpass -p ...` and
+//!   `docker login -p ...`;
 //! - the credentials of a Docker `config.json` or an `.npmrc` (`"auth"`,
 //!   `_auth`);
 //! - assignments whose name ends in a word for a secret (token, secret,
@@ -88,6 +91,13 @@ fn rules() -> &'static [Rule] {
             whole(r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/webhooks/[0-9]+/[A-Za-z0-9_\-]{20,}", "discord-webhook"),
             whole(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|\bwhsec_[A-Za-z0-9]{20,}", "stripe-key"),
             whole(r"\bdo[por]_v1_[a-f0-9]{64}\b", "digitalocean-token"),
+            // LENA-503: Twilio's API keys (`SK` and 32 hex), Notion's and
+            // Docker Hub's tokens, a Telegram bot's token, a Sentry DSN.
+            whole(r"\bSK[0-9a-fA-F]{32}\b", "twilio-key"),
+            whole(r"\bntn_[A-Za-z0-9]{40,}", "notion-token"),
+            whole(r"\bdckr_(?:pat|oat)_[A-Za-z0-9_\-]{20,}", "dockerhub-token"),
+            whole(r"\b[0-9]{8,10}:AA[0-9A-Za-z_\-]{33}\b", "telegram-bot-token"),
+            whole(r"\bhttps?://[0-9a-f]{32}(?::[0-9a-f]{32})?@[A-Za-z0-9.\-]+(?::[0-9]+)?/[0-9]+\b", "sentry-dsn"),
             whole(r"\bhf_[A-Za-z0-9]{30,}\b", "huggingface-token"),
             whole(r"\bSG\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}", "sendgrid-key"),
             // LENA-302: shapes with a fixed, documented prefix.
@@ -119,7 +129,7 @@ fn rules() -> &'static [Rule] {
             // `--password=...`, `--token ...` (LENA-302).
             Rule::Custom(re(r#"(^|[\s"'`(])(--?[A-Za-z][A-Za-z0-9_\-]*)(=|[ \t]+)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&)\-][^\s"'`;|&)]*)"#), flag),
             // `mysql -u root -psecret db`, `sshpass -p secret ssh host` (LENA-302).
-            Rule::Custom(re(r#"\b(mysql(?:dump|admin|import|sh|check|slap)?|mariadb(?:-dump|-admin|dump|admin)?|sshpass)\b([^\n|;&]*?[ \t])-p([ \t]*)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&]+)"#), short_password),
+            Rule::Custom(re(r#"\b(mysql(?:dump|admin|import|sh|check|slap)?|mariadb(?:-dump|-admin|dump|admin)?|sshpass|(?:docker|podman|nerdctl|helm[ \t]+registry)[ \t]+login)\b([^\n|;&]*?[ \t])-p([ \t]*)("[^"\n]*"|'[^'\n]*'|[^\s"'`;|&]+)"#), short_password),
             // `ENV DB_PASSWORD hunter2...`, `DD_API_KEY 0123...`: a long value after a space.
             Rule::Custom(re(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)([ \t]+)([A-Za-z0-9+/=_\-]{16,})"), spaced),
             // LENA-401: a secret named in a sentence just before its value
@@ -127,6 +137,13 @@ fn rules() -> &'static [Rule] {
             Rule::Custom(
                 re(r#"(?i)\b((?:pass(?:word|wd|phrase)|token|secret|api[ \-_]?key|access[ \-_]?key|credentials?)[ \t]*(?:[ \t]+(?:for|of|on|to|in)[ \t]+(?:the[ \t]+|our[ \t]+|my[ \t]+)?[\w.\-]+(?:[ \t]+[\w.\-]+)?)?(?:[ \t]*[:=][ \t]*|[ \t]+(?:is|was|are|will[ \t]+be|should[ \t]+be|to)[ \t]+|[ \t]+))(\S+)"#),
                 prose_secret,
+            ),
+            // WEI-501: a password given for a sign-in in a sentence, with no
+            // word for a secret ("to log into the admin console use V with
+            // user ops").
+            Rule::Custom(
+                re(r#"(?i)(\b(?:log(?:[ \t]*(?:in|on))?(?:[ \t]*to)?|sign(?:[ \t]*(?:in|on))(?:[ \t]*to)?|ssh)\b[^.\n]{0,80}?\b(?:use|enter|type)[ \t]+)(\S+)([ \t]+(?:with|for|as|and)[ \t]+(?:the[ \t]+)?(?:user(?:name)?|login|account)\b)"#),
+                sign_in_secret,
             ),
             Rule::Custom(
                 re(r#"(?P<name>[A-Za-z_][A-Za-z0-9_.\-]*)(?P<q>(?:\\?["'])?)(?P<sep>[ \t]*(?:=>|:=|[:=])[ \t]*)(?P<val>\\"[^"\\\n]*\\"|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\s"'`,;&\\]+)"#),
@@ -140,7 +157,7 @@ fn rules() -> &'static [Rule] {
 /// is returned as it is without running the rules.
 fn worth_a_look() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ|pypi-|hv[sbr]\.|shp|sq0|lin_|PMAK-|NR..-|glsa_|glc_|sntry|dp\.|dapi|sbp_|ATATT|pul-|atlasv1|mysql|mariadb").unwrap())
+    R.get_or_init(|| Regex::new(r"(?i)key|token|secret|pass|credential|auth|bearer|-u|--user|://|sk[-_]|gh[pousr]_|github_pat_|glpat-|npm_|AKIA|ASIA|AIza|ya29\.|xox|whsec_|_v1_|hf_|SG\.|eyJ|pypi-|hv[sbr]\.|shp|sq0|lin_|PMAK-|NR..-|glsa_|glc_|sntry|dp\.|dapi|sbp_|ATATT|pul-|atlasv1|mysql|mariadb|rk_|SK[0-9a-f]{32}|ntn_|dckr_|:AA[0-9a-z_\-]{30}|signing|hmac|log ?[io]n|sign ?[io]n|ssh").unwrap())
 }
 
 /// What a session is told when a prompt held a secret (LENA-401): the
@@ -303,6 +320,18 @@ fn assignments(text: &str) -> String {
 /// letter and a digit, no path, date or URL), so that "the password reset
 /// page", "the token is invalid" and "token expires 2026-12-01" keep their
 /// words.
+/// A sign-in's password in a sentence ([`rules`], WEI-501): replaced when
+/// it looks like one (8 characters or more, letters and digits, not a path,
+/// a URL or a flag).
+fn sign_in_secret(c: &Captures) -> String {
+    let (head, word, tail) = (&c[1], &c[2], &c[3]);
+    let core = word.trim_matches(['"', '\'', '`', '.', ',', ';', ':', '!', '?', ')']);
+    if core.len() < 8 || is_marker(core) || !has_digit(core) || !core.chars().any(|ch| ch.is_ascii_alphabetic()) || core.contains(['/', '(', '[', '{', '<', '$', '\\', '@', '=']) || core.starts_with(['%', '-']) {
+        return c[0].to_string();
+    }
+    format!("{head}{}{tail}", word.replace(core, &marker("password")))
+}
+
 fn prose_secret(c: &Captures) -> String {
     let (head, word) = (&c[1], &c[2]);
     let lead_len = word.len() - word.trim_start_matches(['"', '\'', '`']).len();
@@ -366,7 +395,7 @@ fn short_password(c: &Captures) -> String {
     let (prog, between, space, val) = (&c[1], &c[2], &c[3], &c[4]);
     let (open, inner, close) = unquote(val);
     // `mysql -p` with a space after it asks for the password: what follows is the database.
-    let joined = space.is_empty() || prog == "sshpass";
+    let joined = space.is_empty() || prog == "sshpass" || prog.ends_with("login");
     if !joined || is_marker(inner) || inner.starts_with(['$', '-']) || inner.is_empty() {
         return c[0].to_string();
     }
@@ -408,6 +437,8 @@ const NOT_SECRET_KEYS: &[&str] = &[
 const SECRET_QUALIFIERS: &[&str] = &[
     "old", "new", "prev", "next", "current", "prod", "production", "staging", "stage", "dev", "test", "qa", "local", "ro", "rw", "readonly", "admin", "root",
     "main", "backup", "alt", "secondary", "b64", "base64", "raw", "plain", "value",
+    // `SECRET_KEY_BASE` (Rails), LENA-503.
+    "base",
 ];
 
 /// What kind of secret a name says its value is, if any: its last word
@@ -444,6 +475,9 @@ fn secret_name(name: &str) -> Option<&'static str> {
         "key"
     } else if last == "key" && words.len() >= 2 && !NOT_SECRET_KEYS.contains(&words[words.len() - 2].as_str()) {
         "key"
+    } else if words.len() >= 2 && matches!(last, "signing" | "hmac") {
+        // `SESSION_SIGNING=<64 hex>`, `WEBHOOK_HMAC=...` (LENA-503).
+        "secret"
     } else if words.len() == 1 && last == "auth" {
         // A Docker `config.json`'s `"auth"` and an `.npmrc`'s `_auth`: a
         // user and password in base64 ([`auth_value`]).
@@ -624,6 +658,35 @@ mod tests {
             let t = format!("{p}_{}", alnum(24));
             caught(&format!("stripe.api_key = {t}"), &t, "stripe-key");
         }
+        // LENA-503: in a sentence with no word for a secret, as Lena typed them.
+        let t = format!("rk_live_{}", alnum(24));
+        caught(&format!("the stripe restricted for the staging box is {t}"), &t, "stripe-key");
+        let t = format!("SK{}", hex(32));
+        caught(&format!("the twilio for the staging box is {t}"), &t, "twilio-key");
+        let t = format!("ntn_{}", alnum(46));
+        caught(&format!("r5b notion: {t}"), &t, "notion-token");
+        let t = format!("dckr_pat_{}", alnum(27));
+        caught(&format!("r5b docker hub: {t}"), &t, "dockerhub-token");
+        let t = format!("7234519876:AA{}", alnum(33));
+        caught(&format!("r5b telegram bot {t}"), &t, "telegram-bot-token");
+        let t = format!("https://{}@o4504.ingest.sentry.io/4505123", hex(32));
+        caught(&format!("r5b sentry {t}"), &t, "sentry-dsn");
+        let t = hex(64);
+        caught(&format!("SECRET_KEY_BASE={t}"), &t, "key");
+        caught(&format!("SESSION_SIGNING={t}"), &t, "secret");
+        let r = caught("docker login -u lena -p Gr4nite-Kayak-19 registry.example.com", "Gr4nite-Kayak-19", "password");
+        assert!(r.contains("-u lena") && r.contains("registry.example.com"), "{r}");
+        // Not secrets: a port mapping, a hash named as one, a Twilio account's
+        // id (AC...), a commit.
+        kept("docker run -p 8080:80 nginx");
+        kept(&format!("AC{} is the account", hex(32)));
+        kept(&format!("commit {} landed", hex(40)));
+        // WEI-501: a sign-in's password in a sentence.
+        let r = caught("Also, to log into the admin console use tulip-magenta-4242 with user ops.", "tulip-magenta-4242", "password");
+        assert!(r.contains("with user ops"), "{r}");
+        caught("ssh to the bastion and type Wh1stle-Pine-88 for the user deploy", "Wh1stle-Pine-88", "password");
+        kept("to log into the console use SSO with user groups");
+        kept("log in and use src/main.rs as the account example");
         let dop = format!("dop_v1_{}", hex(64));
         caught(&format!("doctl auth init -t {dop}"), &dop, "digitalocean-token");
         let hf = format!("hf_{}", alnum(34));

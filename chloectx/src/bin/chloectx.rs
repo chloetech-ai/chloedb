@@ -815,6 +815,12 @@ fn main() {
                 let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut t);
                 t
             });
+            // The flag says a key comes: none is a slip (a script that failed
+            // to make it), not a setup without one (WEI-502).
+            if token.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                eprintln!("chloectx sync: --token-stdin read no key from stdin: pipe the key in (printf %s \"$KEY\" | chloectx sync setup --url URL --token-stdin), or leave the flag out to sync without one");
+                std::process::exit(1);
+            }
             let home = paths::home();
             let kept = chloectx::sync::setup(&home, &project.to_string_lossy(), &url, token.as_deref(), &token_env, &renames, every_project).unwrap_or_else(|e| {
                 eprintln!("chloectx sync: {e}");
@@ -841,6 +847,14 @@ fn main() {
                 Ok(n) => println!("sync set up with {}; this project syncs as {key} ({n} records there), with {}", remote.url, remote.key_from),
                 Err(e) => {
                     let e = e.to_string();
+                    // A server that refuses the key (or its lack) will go on
+                    // refusing it: said as a failure, unless the key is to
+                    // come from a variable this shell does not have.
+                    let pending = !token_env.is_empty() && std::env::var_os(&token_env).is_none();
+                    if chloectx::sync::refused(&e) && !pending {
+                        eprintln!("chloectx sync: {} refuses this project's sync ({e}), with {}{}: nothing will sync until it has a key that may write {}", remote.url, remote.key_from, chloectx::sync::key_hint(&key, &e), chloectx::sync::table_for(&key));
+                        std::process::exit(1);
+                    }
                     println!("sync set up with {}; this project syncs as {key}, with {}; the server does not answer yet ({e}){}: the daemon tries again when it starts", remote.url, remote.key_from, chloectx::sync::key_hint(&key, &e));
                 }
             }
@@ -915,7 +929,9 @@ fn main() {
             for id in &ids {
                 let r = send(&project, json!({"op": "forget", "id": id, "wait": true}), 120);
                 let t = r["text"].as_str().unwrap_or("");
-                println!("{t}");
+                // Every id is forgotten, whoever reads (or stops reading)
+                // what it says (ANA-303).
+                let _ = std::io::Write::write_fmt(&mut std::io::stdout(), format_args!("{t}\n"));
                 missing += usize::from(t.starts_with("No record"));
             }
             if missing > 0 {

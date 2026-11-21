@@ -96,7 +96,15 @@ pub fn run(event: &str, user: bool) -> i32 {
                 eprintln!("chloectx: {e}");
             }
         }
-        Err(e) => eprintln!("chloectx: {e}"),
+        Err(e) => {
+            eprintln!("chloectx: {e}");
+            // A daemon that cannot start is said in the session, once
+            // (ANA-501); the hook still answers within its budget.
+            let session = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(msg) = daemon::tell_start_failure(&dir, session) {
+                println!("{}", json!({"systemMessage": msg}));
+            }
+        }
     }
     0
 }

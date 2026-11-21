@@ -878,3 +878,38 @@ fn notes_kept_in_a_terminal_on_two_machines_both_arrive() {
     let ro = sync::remote(&home).unwrap();
     assert_eq!(ro.clashing(&old, project, 100).unwrap(), vec![na.id]);
 }
+
+/// WEI-502: a new hire's script failed to make their key, so the setup ran
+/// with nothing on stdin. That is refused; a setup without a key that the
+/// server answers 401 fails; and doctor does not say "ready" for it.
+#[test]
+fn a_setup_the_server_refuses_is_not_called_ready() {
+    let Some(bin) = server_bin() else {
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (_server, url) = serve(&bin, dir.path(), Some(ADMIN));
+    let home = dir.path().join("home");
+    let p = dir.path().join("proj").join("payments");
+    std::fs::create_dir_all(&p).unwrap();
+    let p = p.canonicalize().unwrap();
+    struct Stop<'a>(&'a Path, &'a Path);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = chloectx_here(self.0, self.1, &["stop"], "");
+        }
+    }
+    let _stop = Stop(&home, &p);
+
+    let (code, out) = chloectx_here(&home, &p, &["sync", "setup", "--url", &url, "--token-stdin", "--no-create"], "");
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("--token-stdin read no key"), "{out}");
+    let (code, out) = chloectx_here(&home, &p, &["sync", "setup", "--url", &url, "--no-create"], "");
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("refuses this project's sync") && out.contains(": 401:"), "{out}");
+    let (code, out) = chloectx_here(&home, &p, &["doctor"], "");
+    assert_ne!(code, 0, "{out}");
+    assert!(out.contains("FAIL  sync") && out.contains("the server refuses it"), "{out}");
+    assert!(!out.contains("ChloeCtx is ready"), "{out}");
+}

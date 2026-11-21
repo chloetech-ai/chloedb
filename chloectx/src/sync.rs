@@ -443,6 +443,12 @@ fn remote_with(home: &Path, project: Option<&str>) -> Option<Remote> {
 
 /// What to do when the server refused the key (`error`, a 403) for project
 /// `project`: a key of its own. Empty for any other error.
+/// A server's answer that refuses the key, or the lack of one (401, 403):
+/// trying again changes nothing (WEI-502).
+pub fn refused(error: &str) -> bool {
+    error.contains(": 401:") || error.contains(": 403:")
+}
+
 pub fn key_hint(project: &str, error: &str) -> String {
     if !error.contains(": 403:") {
         return String::new();
