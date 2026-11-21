@@ -77,3 +77,13 @@ Keep Claude usage low (Roberto is near his plan's limit): few turns, no subagent
   622029118, IP 165.245.237.203, runs q3_4b -> `q3_4b/`, reaper deadline ~4:35 PM PST. If this session is gone,
   a new one must check `GET /v2/droplets?tag_name=llm-weights-research` (env `digitalocean`) and delete what is
   left once `status.txt` on port 80 says idle; then delete SSH key 61069971.
+- 21 Nov 12:20 PM PST. First phase in (0.6B, 4B; eval docs only). On the FAIR test set (Sonnet's questions) fact
+  rows fall from 43% (Haiku dev) to 27% at 0.6B and 29% at 4B (base 3%, 5%; RAG3 44%, 59%): the Haiku set
+  flattered them, as feared. 0.6B best cascades on test: "fact as text if confident else RAG3" 47% at 363
+  tokens/question (RAG3 44% at 577); "rows_s if confident else RAG3" 40% at 268. Scoped DELETE: most of a doc's
+  answers return to the base model's. Waiting on: the distractor phase for both, then 8B on the 0.6B machine.
+- 21 Nov 12:30 PM PST. Roberto asked why RAG misses facts. Answer: retrieval is fine (answer in BM25 top 3 for
+  87% of the Sonnet questions, top 10 95%); small models misread (4B wrong on 66 of 194 with the answer in
+  context) and the containment scorer is too strict (5 of 8 sampled "wrong" were right). `rescore.py` = a
+  lenient word-subset check; with it, test: RAG3 64% (0.6B) / 79% (4B); "fact text if confident else RAG3"
+  67% at 363 tokens / 73% at 297; fact rows alone 33% / 36%; base 4% / 8%. Offered a Haiku judge to confirm.
