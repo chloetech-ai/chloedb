@@ -20,5 +20,5 @@ q_smoke|SMOKE=1 BATCH=4 STEPS_routed=20 ARMS=knn,routed_lora DELETE_ARM=none QA=
 g1_06b_knn_route_qa|BATCH=8 ARMS=knn,routed_lora DELETE_ARM=none QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py
 g1_4b_knn_route_qa|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS_routed=160 ARMS=knn,routed_lora DELETE_ARM=none QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py
 g1_4b_ffn_qa|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS=1200 EVERY=50 LR_ffn=0.00005 ARMS=ffn DELETE_ARM=none QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py
-fetch_8b|REPO=Qwen/Qwen3-8B DEST=/root/s/models/qwen3-8b|gpu/fetch_model.py
-g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS=1200 EVERY=50 STEPS_rows_multi_gated_iso=2400 DELETE_ARM=rows_multi_gated_iso ARMS=lora,rows_multi_gated_iso LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json,/root/out/g1_06b_gated.json QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py
+q2_06b_facts|QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json FACTS=/home/user/chloedb/research/llm-weights/results/facts_docs.json|proto_q2_facts_qa.py
+q2_4b_facts|MODEL=/root/s/models/qwen3-4b QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json FACTS=/home/user/chloedb/research/llm-weights/results/facts_docs.json|proto_q2_facts_qa.py

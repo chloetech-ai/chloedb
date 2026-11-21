@@ -1,0 +1,4 @@
+# the second GPU machine's jobs (cloud-init-8b.sh): Qwen3-8B in bf16; the FFN fine-tune is left out (bf16 weights lose its small updates)
+g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS=1200 EVERY=50 STEPS_rows_multi_gated_iso=2400 DELETE_ARM=rows_multi_gated_iso ARMS=lora,rows_multi_gated_iso LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json,/root/out/g1_06b_gated.json QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py
+q2_8b_facts|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json FACTS=/home/user/chloedb/research/llm-weights/results/facts_docs.json|proto_q2_facts_qa.py
+g1_8b_knn_route_qa|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS_routed=160 ARMS=knn,routed_lora DELETE_ARM=none QA=/home/user/chloedb/research/llm-weights/results/qa_docs.json|proto_g1_rows_vs_finetune.py

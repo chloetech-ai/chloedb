@@ -1,7 +1,7 @@
 #!/bin/bash
 # Pull the branch, run each job of jobs.txt not run yet, publish logs and results in /root/out.
 set -u
-REPO=/home/user/chloedb; OUT=/root/out; export S=/root/s
+REPO=/home/user/chloedb; OUT=/root/out; export S=/root/s; JOBS=${JOBS:-gpu/jobs.txt}
 cd $REPO/research/llm-weights
 while true; do
   git -C $REPO pull -q --ff-only origin "$(git -C $REPO rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1
@@ -18,7 +18,7 @@ while true; do
       echo "$(( $(date +%s) - start )) s, exit $?" > $OUT/$name.failed
     fi
     ran=1; break
-  done < gpu/jobs.txt
+  done < $JOBS
   if [ $ran = 0 ]; then
     { echo "idle since $(date -u +%FT%TZ) at commit $(git -C $REPO rev-parse --short HEAD)"; nvidia-smi --query-gpu=name,memory.used,utilization.gpu --format=csv; } > $OUT/status.txt 2>&1
     sleep 60
