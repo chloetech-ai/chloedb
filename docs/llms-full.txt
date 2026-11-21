@@ -9374,6 +9374,7 @@ It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only 
 | `chloedb_replication_role` | | 1 on a [primary](#replication-a-primary-and-its-replicas), 2 on a replica |
 | `chloedb_global_checkpoint` | | the highest sequence number every in-sync replica holds (on a replica, as its primary last said) |
 | `chloedb_replica_in_sync`, `chloedb_replica_behind` | `replica` | on a primary: 1 while a replica is in sync, and the transactions it does not hold yet |
+| `chloedb_replica_answering` | `replica` | on a primary: 1 while a replica answers its calls (one started within the lease, or four heartbeats without one); `out-of-sync` leaves out a replica that stopped answering, which `copy-down` reports |
 | `chloedb_replica_shipped_total`, `chloedb_replica_failures_total`, `chloedb_replica_copies_total` | `replica` | on a primary: transactions a replica applied from it, calls to it that failed or that it refused, and copies of the primary it installed |
 | `chloedb_replica_verifications_total`, `chloedb_replica_divergences_total`, `chloedb_replica_verify_failures_total` | `replica` | on a primary: times a replica's rows were [compared](#replication-a-primary-and-its-replicas) with the primary's, times they differed, and rounds that could not compare |
 | `chloedb_replica_applied_total`, `chloedb_replica_restores_total` | | on a replica: transactions it applied from its primary, and copies of the primary it installed |
@@ -10516,13 +10517,16 @@ For: `replica-behind`, `out-of-sync`, `replica-reads`, `lag`, `follow-behind`
 
 1. Read how far behind and why: the primary's `GET /v1/health`
    (`replication.replicas`: each replica's `seq_no`, how many
-   transactions it is `behind`, and whether it is `in_sync`; on
-   `/metrics`, `chloedb_replica_behind`), and `GET /v1/load` (the
+   transactions it is `behind`, whether it is `in_sync`, and whether it
+   is `answering`; on `/metrics`, `chloedb_replica_behind` and
+   `chloedb_replica_answering`), and `GET /v1/load` (the
    primary's write rate, the replica's disk and CPU). `GET /v1/cluster`
    says each copy's role and whether it serves reads; its `txn` counts the
    transactions of each process since it started, so it does not compare
    two copies. `GET /v1/admin/follow` for a follower cluster, Data > Connectors
    (`followers` in `GET /v1/admin/connectors`) for a Postgres follower.
+   A replica that stopped answering is not counted out of sync: it is
+   down, and `copy-down` and [a copy is down](#a-copy-is-down) cover it.
 2. A replica catching up after a restart: wait, with `GET
    /v1/events?after=<id>&wait_s=30`, and silence the alert for the while
    (tier 1).

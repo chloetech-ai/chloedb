@@ -1795,6 +1795,7 @@ It answers 503 for `down` and `failing`. `/livez` and `/readyz` answer 503 only 
 | `chloedb_replication_role` | | 1 on a [primary](#replication-a-primary-and-its-replicas), 2 on a replica |
 | `chloedb_global_checkpoint` | | the highest sequence number every in-sync replica holds (on a replica, as its primary last said) |
 | `chloedb_replica_in_sync`, `chloedb_replica_behind` | `replica` | on a primary: 1 while a replica is in sync, and the transactions it does not hold yet |
+| `chloedb_replica_answering` | `replica` | on a primary: 1 while a replica answers its calls (one started within the lease, or four heartbeats without one); `out-of-sync` leaves out a replica that stopped answering, which `copy-down` reports |
 | `chloedb_replica_shipped_total`, `chloedb_replica_failures_total`, `chloedb_replica_copies_total` | `replica` | on a primary: transactions a replica applied from it, calls to it that failed or that it refused, and copies of the primary it installed |
 | `chloedb_replica_verifications_total`, `chloedb_replica_divergences_total`, `chloedb_replica_verify_failures_total` | `replica` | on a primary: times a replica's rows were [compared](#replication-a-primary-and-its-replicas) with the primary's, times they differed, and rounds that could not compare |
 | `chloedb_replica_applied_total`, `chloedb_replica_restores_total` | | on a replica: transactions it applied from its primary, and copies of the primary it installed |

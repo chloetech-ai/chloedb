@@ -224,13 +224,16 @@ servers outside Kubernetes, is for no alert.</p>
 <ol>
 <li>Read how far behind and why: the primary's <code>GET /v1/health</code>
    (<code>replication.replicas</code>: each replica's <code>seq_no</code>, how many
-   transactions it is <code>behind</code>, and whether it is <code>in_sync</code>; on
-   <code>/metrics</code>, <code>chloedb_replica_behind</code>), and <code>GET /v1/load</code> (the
+   transactions it is <code>behind</code>, whether it is <code>in_sync</code>, and whether it
+   is <code>answering</code>; on <code>/metrics</code>, <code>chloedb_replica_behind</code> and
+   <code>chloedb_replica_answering</code>), and <code>GET /v1/load</code> (the
    primary's write rate, the replica's disk and CPU). <code>GET /v1/cluster</code>
    says each copy's role and whether it serves reads; its <code>txn</code> counts the
    transactions of each process since it started, so it does not compare
    two copies. <code>GET /v1/admin/follow</code> for a follower cluster, Data &gt; Connectors
-   (<code>followers</code> in <code>GET /v1/admin/connectors</code>) for a Postgres follower.</li>
+   (<code>followers</code> in <code>GET /v1/admin/connectors</code>) for a Postgres follower.
+   A replica that stopped answering is not counted out of sync: it is
+   down, and <code>copy-down</code> and <a href="#a-copy-is-down">a copy is down</a> cover it.</li>
 <li>A replica catching up after a restart: wait, with <code>GET
    /v1/events?after=&lt;id&gt;&amp;wait_s=30</code>, and silence the alert for the while
    (tier 1).</li>

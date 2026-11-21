@@ -370,6 +370,38 @@ async fn writes_wait_for_the_copies_their_acks_name() {
     assert_eq!(rows(&ddb), rows(&sdb));
 }
 
+/// OLU-503: a copy that does not answer is down, not out of sync, so one
+/// dead copy of a three-copy shard pages `copy-down` (warning), not the
+/// critical `out-of-sync`; back, it counts out of sync while it catches up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replica_that_does_not_answer_is_down_not_out_of_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let adb = create(dir.path(), "a.strata");
+    let (_a, ua) = replica(adb.clone(), None).await;
+    let (down, addr) = nobody().await;
+    let pdb = create(dir.path(), "p.strata");
+    let p = primary(pdb.clone(), None, ships_to(&[&ua, &down], Acks::Majority), Duration::from_secs(2));
+    let w = p.write_ops(vec![set("p0000001", "price", json!(1.0))], None).await.unwrap();
+    until("the live replica holds the write", || async { last(&adb) >= w.seq_no.unwrap() }).await;
+    until("the live replica is in sync", || async { follower(&p, 0).await["in_sync"] == true }).await;
+    let (live, dead) = (follower(&p, 0).await, follower(&p, 1).await);
+    assert_eq!((live["answering"].clone(), dead["answering"].clone(), dead["in_sync"].clone()), (json!(true), json!(false), json!(false)), "{live} {dead}");
+    let g = p.sample().gauges;
+    assert_eq!((g.get("replicas_out_of_sync"), g.get("replicas_not_answering")), (Some(&0.0), Some(&1.0)), "{g:?}");
+    let m = p.prometheus().await;
+    assert!(m.contains(&format!("chloedb_replica_answering{{replica=\"{down}\"}} 0")), "{m}");
+    assert!(m.contains(&format!("chloedb_replica_answering{{replica=\"{ua}\"}} 1")), "{m}");
+
+    // Back: it answers, and is out of sync until it holds the write.
+    let bdb = create(dir.path(), "b.strata");
+    let (_b, _) = replica_on(bdb.clone(), None, Some(TcpListener::bind(addr).await.unwrap())).await;
+    until("the copy back answers", || async { follower(&p, 1).await["answering"] == true }).await;
+    until("the copy back is in sync", || async { follower(&p, 1).await["in_sync"] == true }).await;
+    assert!(last(&bdb) >= w.seq_no.unwrap());
+    let g = p.sample().gauges;
+    assert_eq!((g.get("replicas_out_of_sync"), g.get("replicas_not_answering")), (Some(&0.0), Some(&0.0)), "{g:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_replica_follows_one_primary_a_term_and_fences_an_older_one() {
     let dir = tempfile::tempdir().unwrap();

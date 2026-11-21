@@ -1518,6 +1518,23 @@ impl Primary {
         Ok(Some(self.kept.clone()))
     }
 
+    /// Whether `p` answered a call started within the lease, or within
+    /// four heartbeats without one: a copy that stopped answering is down,
+    /// not out of sync (OLU-503), and a membership change counts only the
+    /// copies that answer.
+    pub fn answering(&self, p: &Peer, now: Instant) -> bool {
+        let window = self.answer_window();
+        p.answered.is_some_and(|at| now.saturating_duration_since(at) < window)
+    }
+
+    /// The lease, or four heartbeats without one ([`Self::answering`]).
+    fn answer_window(&self) -> Duration {
+        match self.opts.lease.is_zero() {
+            true => self.opts.heartbeat * 4,
+            false => self.opts.lease,
+        }
+    }
+
     /// Whether it may ship to `replicas` from `now` ([`Self::reconfigure`]),
     /// as Raft changes a membership: one copy added or removed at a time,
     /// by a primary that a majority of its current copies answered within
@@ -1539,11 +1556,7 @@ impl Primary {
             return Ok(());
         }
         let changed = old.symmetric_difference(&new).count();
-        let window = match self.opts.lease.is_zero() {
-            true => self.opts.heartbeat * 4,
-            false => self.opts.lease,
-        };
-        let fresh = |p: &Peer| p.answered.is_some_and(|at| now.saturating_duration_since(at) < window);
+        let fresh = |p: &Peer| self.answering(p, now);
         let up = 1 + self.peers.iter().filter(|p| p.member && fresh(p)).count();
         let version = self.kept.config_version();
         let hold = 1 + self.peers.iter().filter(|p| p.member && p.config >= version).count();
@@ -1554,7 +1567,7 @@ impl Primary {
             Some(format!(
                 "{up} of this primary's {} copies answered it within {} ms, fewer than a majority ({need}): the others may have elected another primary, which would go on acknowledging writes beside this one",
                 self.copies(),
-                window.as_millis()
+                self.answer_window().as_millis()
             ))
         } else if hold < need {
             Some(format!("{hold} of this primary's {} copies hold version {version} of the shard's membership, fewer than a majority ({need}): the change before is not complete yet", self.copies()))

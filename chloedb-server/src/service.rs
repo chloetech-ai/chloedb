@@ -6872,7 +6872,12 @@ impl Service {
                     g.insert("replicas", rs.len() as f64);
                     let in_sync = rs.iter().filter(|r| r["in_sync"] == true).count();
                     g.insert("replicas_in_sync", in_sync as f64);
-                    g.insert("replicas_out_of_sync", (rs.len() - in_sync) as f64);
+                    // A replica that stopped answering is down (copy-down
+                    // says so), not out of sync: one being sent a copy
+                    // still counts (OLU-503).
+                    let out = rs.iter().filter(|r| r["in_sync"] != true && (r["answering"] != false || r["copying"] == true)).count();
+                    g.insert("replicas_out_of_sync", out as f64);
+                    g.insert("replicas_not_answering", rs.iter().filter(|r| r["answering"] == false).count() as f64);
                     g.insert("replica_behind_max", rs.iter().filter_map(|r| r["behind"].as_f64()).fold(0.0, f64::max));
                     // Of the replicas that apply this primary's log: not one
                     // being sent a whole copy (it is behind by all of it until

@@ -3145,6 +3145,11 @@ curl -s localhost:7700/v1/query -H &#x27;content-type: application/json&#x27; -d
 <td>on a primary: 1 while a replica is in sync, and the transactions it does not hold yet</td>
 </tr>
 <tr>
+<td><code>chloedb_replica_answering</code></td>
+<td><code>replica</code></td>
+<td>on a primary: 1 while a replica answers its calls (one started within the lease, or four heartbeats without one); <code>out-of-sync</code> leaves out a replica that stopped answering, which <code>copy-down</code> reports</td>
+</tr>
+<tr>
 <td><code>chloedb_replica_shipped_total</code>, <code>chloedb_replica_failures_total</code>, <code>chloedb_replica_copies_total</code></td>
 <td><code>replica</code></td>
 <td>on a primary: transactions a replica applied from it, calls to it that failed or that it refused, and copies of the primary it installed</td>

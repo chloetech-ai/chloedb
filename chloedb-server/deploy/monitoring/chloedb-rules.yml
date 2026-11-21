@@ -124,7 +124,7 @@ groups:
           description: 'A scrub found segments that fail their checksums on this copy: it must not become the primary. Replace the copy, or restore it from a checkpoint.'
           runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#data-damaged-on-disk
       - alert: ChloeDBReplicaOutOfSync
-        expr: 'chloedb_replica_in_sync == 0'
+        expr: 'chloedb_replica_in_sync == 0 unless on(instance, replica) chloedb_replica_answering == 0'
         for: 1m
         labels:
           severity: critical
