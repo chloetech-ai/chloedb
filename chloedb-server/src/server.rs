@@ -653,7 +653,10 @@ pub async fn service(o: &Options) -> Result<Arc<Service>, String> {
         svc.keys = Arc::new(Keys::open(file)?);
     }
     svc.audit = Audit::new(o.audit_log.clone())?;
-    svc.alerts = Alerts::new(o.alerts.clone(), o.alert_webhook.clone())?;
+    // Beside the database by default, so that the rules and routes made in
+    // the Alerts page or `PUT /v1/alerts/...` outlive a restart (MARCO-501).
+    let alerts = o.alerts.clone().or_else(|| o.db.as_deref().filter(|_| o.shards.is_empty()).map(Alerts::file_of));
+    svc.alerts = Alerts::new(alerts, o.alert_webhook.clone())?;
     svc.alerts.follow_slo(svc.slo.error_ratio, svc.slo.p99_ms);
     // fleet: Contain rules kept across a restart.
     if let Some(f) = &o.contain {

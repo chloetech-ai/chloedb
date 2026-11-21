@@ -354,6 +354,21 @@ impl Trigger {
     }
 }
 
+/// A connector's health, as `/metrics` and the alerts read it
+/// ([`Connectors::gauges`]).
+#[derive(Clone, Debug)]
+pub struct Gauge {
+    pub name: String,
+    pub kind: String,
+    pub up: bool,
+    pub failures: u64,
+    pub last_ok_ms: Option<u64>,
+    /// A Kafka connector's partitions: topic, partition, events not written.
+    pub parts: Vec<(String, i32, i64)>,
+    /// A Kafka connector's ([`kafka::Gauge::behind_s`]); none for the others.
+    pub behind_s: Option<f64>,
+}
+
 /// A server's connectors ([`self`]).
 #[derive(Default)]
 pub struct Connectors {
@@ -911,6 +926,54 @@ impl Connectors {
             return "warning";
         }
         "ok"
+    }
+
+    /// The connectors' health for `/metrics` and the alerts (ROSA-501):
+    /// those of the last read that are on, on the server that runs them
+    /// (none elsewhere, and none before they were first read).
+    pub fn gauges(&self, svc: &Service) -> Vec<Gauge> {
+        if !self.enabled() {
+            return Vec::new();
+        }
+        let list = lock(&self.cache).as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+        list.iter()
+            .filter(|c| c.enabled)
+            .map(|c| {
+                let st = self.state_of(&c.name);
+                let health = self.health(svc, c, &st);
+                let mut g = Gauge { name: c.name.clone(), kind: c.kind.clone(), up: !matches!(health, "failing" | "stale" | "invalid"), failures: st.failures, last_ok_ms: (st.last_ok_ms > 0).then_some(st.last_ok_ms), parts: Vec::new(), behind_s: None };
+                if c.kind == kafka::KIND {
+                    g.last_ok_ms = None;
+                    g.failures = 0;
+                    if let Some(k) = kafka::gauge(svc, c) {
+                        (g.failures, g.last_ok_ms, g.parts, g.behind_s) = (k.failures, k.last_write_ms, k.parts, Some(k.behind_s));
+                    }
+                }
+                g
+            })
+            .collect()
+    }
+
+    /// The connectors' series on `/metrics` ([`Self::gauges`]).
+    pub fn families(gauges: &[Gauge]) -> Vec<crate::metrics::Family> {
+        use crate::metrics::{esc, Family};
+        let label = |g: &Gauge| format!("connector=\"{}\",kind=\"{}\"", esc(&g.name), esc(&g.kind));
+        let family = |name, help, f: &dyn Fn(&Gauge) -> Option<f64>| Family { name, ty: "gauge", help, values: gauges.iter().filter_map(|g| Some((label(g), f(g)?))).collect() };
+        let parts = gauges
+            .iter()
+            .flat_map(|g| g.parts.iter().map(move |(t, p, lag)| (format!("connector=\"{}\",topic=\"{}\",partition=\"{p}\"", esc(&g.name), esc(t)), *lag as f64)))
+            .collect();
+        [
+            family("chloedb_connector_up", "1 while a connector this server runs is well (its last run went well, or its Kafka consumer streams or connects), 0 while it fails, is stale (a pull not done well in three times its interval, and at least 15 minutes) or is invalid; the alert connector-failing's.", &|g| Some(if g.up { 1.0 } else { 0.0 })),
+            family("chloedb_connector_failures", "Failed runs of a connector this server runs since the last that went well (a Kafka connector's: failed tries to reach its brokers since it last streamed).", &|g| Some(g.failures as f64)),
+            family("chloedb_connector_last_ok_timestamp_seconds", "When a connector this server runs last went well (a Kafka connector's: last wrote events), in seconds since the epoch.", &|g| g.last_ok_ms.map(|ms| ms as f64 / 1000.0)),
+            family("chloedb_connector_lag_events", "Events Kafka holds that a Kafka connector this server runs has not written, over its partitions.", &|g| g.behind_s.map(|_| g.parts.iter().map(|p| p.2).sum::<i64>() as f64)),
+            family("chloedb_connector_behind_seconds", "How long events have waited for a Kafka connector this server runs: while a partition has events it has not written, since the last it wrote of that partition happened (its Kafka timestamp), the longest; 0 when none waits. The alert connector-behind's.", &|g| g.behind_s),
+            Family { name: "chloedb_connector_partition_lag_events", ty: "gauge", help: "Events a Kafka connector this server runs has not written, by topic and partition: Kafka's high watermark less the next offset to write.", values: parts },
+        ]
+        .into_iter()
+        .filter(|f| !f.values.is_empty())
+        .collect()
     }
 
     fn json_of(&self, svc: &Service, c: &Connector) -> Json {

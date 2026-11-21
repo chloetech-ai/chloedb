@@ -534,8 +534,11 @@ impl Fleet {
                     // A failover under way holds writes for seconds, then
                     // acknowledges them: it is not "failing" (OLU-303).
                     let electing = s["electing"] == true;
-                    let head = if electing && s["primary"].is_null() {
-                        format!("Writes are held: {name} is electing a primary")
+                    // With no primary yet, a write is refused at once with a
+                    // 503 to resend, not held (OLU-501).
+                    let refused = electing && s["primary"].is_null();
+                    let head = if refused {
+                        format!("Writes are refused for seconds: {name} is electing a primary")
                     } else if electing {
                         format!("Writes are held: {name}'s new primary is taking over")
                     } else if s["primary"].is_null() {
@@ -547,12 +550,16 @@ impl Fleet {
                         // "Shard 0 cannot elect a primary or take writes until a second copy answers"
                         let c = crate::coord::cannot_elect(copies.len(), up.len());
                         format!("Shard {n} {}", c.trim_start_matches("it ").replacen("elect a primary", "elect a primary or take writes", 1))
+                    } else if refused {
+                        format!("Shard {n} refuses writes while its copies elect a primary")
                     } else if electing {
                         format!("Shard {n} holds writes while its copies elect a primary")
                     } else {
                         format!("Shard {n} takes no writes")
                     };
-                    let impact = if electing { format!("Writes to {name}'s rows wait for the new primary (held for seconds, then answered); searches still answer") } else { format!("Writes to {name}'s rows fail; searches still answer") };
+                    let impact = if refused {
+                        format!("Writes to {name}'s rows are answered 503 (retryable) until a primary is elected, in seconds: clients resend them with the same idempotency key; searches still answer")
+                    } else if electing { format!("Writes to {name}'s rows wait for the new primary (held for seconds, then answered); searches still answer") } else { format!("Writes to {name}'s rows fail; searches still answer") };
                     Some((2, true, head, title, impact, next(todo)))
                 }
                 _ if !refusing.is_empty() && refusing.len() == gone.len() => {

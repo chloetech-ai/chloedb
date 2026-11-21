@@ -708,9 +708,10 @@ async fn a_coordinator_gathers_its_copies_and_sees_a_shard_lose_its_majority() {
     assert_eq!(s["severity"], "critical");
     assert_eq!(s["where"][0]["shard"], 0, "{s}");
     assert!(lost["events"].as_array().unwrap().iter().any(|e| e["rule"] == "shard-no-majority" && e["state"] == "firing"), "{lost}");
-    // The copy down is pending (it fires after 30 s), and its rule's state
-    // is the last it told.
-    assert_eq!(state(&lost, "copy-down")["state"], "pending", "{lost}");
+    // The copy down turns pending once it was down for the whole of its
+    // 10 s window (it fires 20 s later), and its rule's state is the last
+    // it told.
+    until(&svc, "copy-down pending", &[&a], |a| state(a, "copy-down")["state"] == "pending").await;
     let w = state(&lost, "many-docs")["where"].as_array().unwrap().clone();
     assert!(w.iter().any(|w| w["short"] == sb && w["unheard_since_ms"].as_u64().is_some()), "{w:?}");
 
@@ -936,4 +937,30 @@ async fn a_restart_keeps_what_fired_and_does_not_page_again() {
     let second = got.lock().unwrap()[1].clone();
     assert!(second["text"].as_str().unwrap().starts_with("[chloedb RESOLVED critical] Docs on kept"), "{second}");
     assert_eq!(second["dedup_key"].as_str(), Some(key.as_str()), "{second}");
+}
+
+/// A server started with `--db` alone keeps the rules and routes made on
+/// it beside its database (`<db>.alerts.json`), so a restart with the same
+/// command keeps paging (MARCO-501).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rules_and_routes_outlive_a_restart_without_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut n = Node::new(dir.path(), "a", N);
+    n.start().await;
+    let base = n.base();
+    let (status, j) = call(&base, "PUT", "/v1/alerts/routes", Some(json!({"routes": [{"name": "oncall", "url": "http://127.0.0.1:9/hook", "allow_internal": true}]}))).await;
+    assert_eq!(status, 200, "{j}");
+    let rule = json!({"id": "payments-errors", "name": "Payments errors", "metric": "docs", "op": ">", "threshold": 1e9, "eval": "max", "window_s": 10, "severity": "critical"});
+    assert_eq!(call(&base, "PUT", "/v1/alerts/rules", Some(json!({"rules": [rule]}))).await.0, 200);
+    let file = dir.path().join("a.strata.alerts.json");
+    assert!(file.exists(), "the rules are written beside the database: {}", n.logs());
+    n.kill();
+    n.start().await;
+    let (_, a) = call(&base, "GET", "/v1/alerts", None).await;
+    let ids: Vec<&str> = a["rules"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+    assert_eq!(ids, ["payments-errors"], "{a}");
+    let routes: Vec<&str> = a["routes"].as_array().unwrap().iter().filter_map(|r| r["name"].as_str()).collect();
+    assert_eq!(routes, ["oncall"], "{a}");
+    assert_eq!((a["kept"]["memory_only"].as_bool(), a["kept"]["file"].as_str()), (Some(false), Some(file.display().to_string().as_str())), "{a}");
+    n.kill();
 }

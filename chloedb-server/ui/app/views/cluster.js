@@ -495,9 +495,10 @@ export function problems(M) {
     const left = sh.copies.filter((c) => !c.down);
     out.push({
       // A failover under way holds writes for seconds: not a repair (OLU-401).
-      sev: 2, shards: [sh.i], label: `Shard ${sh.i} ${sh.state === "down" ? "is down" : noReads(sh) ? "serves no reads" : sh.electing ? "holds writes while it elects a primary" : "takes no writes"}`,
+      // With no primary yet, a write is answered 503 at once, not held (OLU-501).
+      sev: 2, shards: [sh.i], label: `Shard ${sh.i} ${sh.state === "down" ? "is down" : noReads(sh) ? "serves no reads" : sh.electing && !sh.primary ? "refuses writes while it elects a primary" : sh.electing ? "holds writes while it elects a primary" : "takes no writes"}`,
       text: `${sh.up} of ${sh.n} copies answer`, since: Math.min(...down.map((c) => c.downSince || Infinity)),
-      impact: noReads(sh) ? "searches that need it fail, and it takes no writes" : sh.electing ? "writes wait for the new primary (held for seconds, then answered); searches go on from its other copies" : "it takes no writes: searches go on from its other copies",
+      impact: noReads(sh) ? "searches that need it fail, and it takes no writes" : sh.electing && !sh.primary ? "writes are answered 503 (retryable) until a primary is elected, in seconds: clients resend them with the same idempotency key; searches go on from its other copies" : sh.electing ? "writes wait for the new primary (held for seconds, then answered); searches go on from its other copies" : "it takes no writes: searches go on from its other copies",
       next: left.length ? critAdvice(sh).next : `Bring a copy of shard ${sh.i} back`,
       fix: left.length && down.length && !sh.electing ? { kind: "repair", shard: sh.i } : null,
     });

@@ -309,7 +309,7 @@ function render(page) {
       } catch (e) { clear(note, h("div", { class: "error small" }, e.message)); go.disabled = false; }
     };
     const d = drawer({ title: "Add a Kafka connector", sub: "topics into a table, each event once", wide: true, body: h("div", { class: "stack", style: { gap: "10px" } },
-      h("div", { class: "small dim" }, "This server reads every partition of the topics while the connector is on, and keeps each partition's offset in ChloeDB with the rows its events made (a stream source per partition), so a restart or a replay writes no event twice. It uses no consumer group and commits nothing to Kafka."),
+      h("div", { class: "small dim" }, "This server reads every partition of the topics while the connector is on, and keeps each partition's offset in ChloeDB with the rows its events made (a stream source per partition), so a restart or a replay writes no event twice. It uses no consumer group and commits nothing to Kafka: its lag is on /metrics instead (chloedb_connector_partition_lag_events, chloedb_connector_behind_seconds, chloedb_connector_up), with the built-in alerts connector-failing and connector-behind."),
       f("Name (lowercase, digits, - and _)", name),
       f("Bootstrap brokers", brokers, "host:port, joined by commas"),
       f("Topics", topics, "joined by commas"),
