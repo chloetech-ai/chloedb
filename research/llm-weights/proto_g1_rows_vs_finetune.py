@@ -147,7 +147,7 @@ def mlp_inputs(n, seed):
             for w0 in range(0, max(1, len(r) - 32), 512):
                 cap.clear(); model(torch.tensor([r[w0:w0 + 512]], device=DEVICE)); xs.append(cap[0][0]); own += [e] * cap[0].shape[1]
     h.remove(); X = torch.cat(xs); g = torch.Generator(device="cpu").manual_seed(seed)
-    pick = torch.randperm(len(X), generator=g)[:n]
+    pick = torch.randperm(len(X), generator=g, device="cpu")[:n]
     return X[pick.to(X.device)], [own[i] for i in pick.tolist()]
 
 # ---- training -----------------------------------------------------------------------------
