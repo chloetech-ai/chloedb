@@ -242,18 +242,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     </div>
     <p class="src-line"><span class="machine">M2 MacBook Air</span> A full hook is mostly process start, about 10 ms on macOS against 3 ms on Linux, and an append is a durable commit that flushes the drive's write cache. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#scale-and-latency">Scale and latency</a></p>
     <div id="hooks-now" class="block-head" style="margin-top:8px">
-      <h3>Every hook, warm, on a real project's store</h3>
-      <p>The November audit timed each hook 60 times on a store of 1,193 records from a synthetic 216-turn history, with query understanding off. At 30,000 records the prompt hook took 8.8 ms, on a busier machine.</p>
+      <h3>Every hook on 0.3.9, warm</h3>
+      <p>Each hook timed 60 times through <code>chloectx hook</code> on the store of a synthetic 216-turn history (about 1,200 records), with query understanding off, and 0.3.2 rebuilt and re-run on the same machine as the baseline. On a 30,000-record store the prompt hook takes 12.0 ms, up from 6.6 ms on 0.3.2.</p>
     </div>
     <div class="hb" id="hook-bars">
-      <div class="hb-row" data-tip="<b>SessionStart</b> p50 6.4 ms, the briefing included"><span class="lbl">SessionStart<small>the briefing</small></span><span class="track"><span class="bar self" style="--w:64%"></span></span><span class="val">6.4 ms</span></div>
-      <div class="hb-row" data-tip="<b>UserPromptSubmit</b> p50 5.8 ms: notes, hybrid search, gate and pack"><span class="lbl">UserPromptSubmit<small>recall</small></span><span class="track"><span class="bar self" style="--w:58%"></span></span><span class="val">5.8 ms</span></div>
+      <div class="hb-row" data-tip="<b>SessionStart</b> p50 7.6 ms, p95 10.9 ms, the briefing included (0.3.2: 6.2 ms)"><span class="lbl">SessionStart<small>the briefing</small></span><span class="track"><span class="bar self" style="--w:76%"></span></span><span class="val">7.6 ms</span></div>
+      <div class="hb-row" data-tip="<b>UserPromptSubmit</b> p50 6.6 ms, p95 8.4 ms: notes, hybrid search, gate and pack (0.3.2: 5.3 ms)"><span class="lbl">UserPromptSubmit<small>recall</small></span><span class="track"><span class="bar self" style="--w:66%"></span></span><span class="val">6.6 ms</span></div>
+      <div class="hb-row" data-tip="<b>Stop</b> p50 3.5 ms; notes are written after it answers"><span class="lbl">Stop</span><span class="track"><span class="bar self" style="--w:35%"></span></span><span class="val">3.5 ms</span></div>
+      <div class="hb-row" data-tip="<b>PreToolUse</b> p50 3.3 ms"><span class="lbl">PreToolUse</span><span class="track"><span class="bar self" style="--w:33%"></span></span><span class="val">3.3 ms</span></div>
       <div class="hb-row" data-tip="<b>PostToolUse</b> p50 3.2 ms"><span class="lbl">PostToolUse</span><span class="track"><span class="bar self" style="--w:32%"></span></span><span class="val">3.2 ms</span></div>
-      <div class="hb-row" data-tip="<b>PreToolUse</b> p50 3.2 ms"><span class="lbl">PreToolUse</span><span class="track"><span class="bar self" style="--w:32%"></span></span><span class="val">3.2 ms</span></div>
-      <div class="hb-row" data-tip="<b>Stop</b> p50 3.0 ms; notes are written after it answers"><span class="lbl">Stop</span><span class="track"><span class="bar self" style="--w:30%"></span></span><span class="val">3.0 ms</span></div>
-      <div class="hb-row" data-tip="<b>chloectx --version</b> p50 2.4 ms: the cost of starting the process"><span class="lbl">Process start alone<small>chloectx --version</small></span><span class="track"><span class="bar ref" style="--w:24%"></span></span><span class="val">2.4 ms</span></div>
+      <div class="hb-row" data-tip="<b>chloectx --version</b> p50 2.5 ms: the cost of starting the process"><span class="lbl">Process start alone<small>chloectx --version</small></span><span class="track"><span class="bar ref" style="--w:25%"></span></span><span class="val">2.5 ms</span></div>
     </div>
-    <p class="src-line" id="hooks-src"><span class="machine">Cloud container</span> ChloeCtx 0.3.2, medians of 60 runs each, warm daemon; a cold start is about 100 ms. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Results</a></p>
+    <p class="src-line" id="hooks-src"><span class="machine">Cloud container, 4 vCPU</span> ChloeCtx 0.3.9 (5ea9968a), medians of 60 runs each with the daemon running, load 0.4. A cold start, with the daemon stopped, is about 100 ms. Re-run on 20 November 2026 with the scripts of the 13 November audit.</p>
+    <div class="facts">
+      <div class="fact"><b>A turn ends at once</b><p>On 0.3.9 the Stop hook takes 4 to 5 ms at every turn length, with no blocks, over 486 fed turns. On 0.3.2 the end of a short turn waited 8 to 10 s for the query engine and made Claude answer again on about half of them.</p></div>
+      <div class="fact"><b>Planted facts found</b><p>On the same 216-turn history, <code>memory_ask</code> and <code>memory_search</code> found 14 of 14 planted facts, and the session briefing carried 12 of 12.</p></div>
+      <div class="fact"><b>Notes written every turn</b><p>Distillation succeeded on 216 of 216 turns, at about $0.0012 a turn with Haiku. That is about 50% more than on 0.3.2, because the prompt per turn grew.</p></div>
+    </div>
     <div class="facts">
       <div class="fact"><b>Reads never wait</b><p>With four clients sending prompts to one daemon at 100,000 records, a prompt's p99 fell from 68 to 92 ms to 27 to 31 ms once reads ran on snapshots beside one writer, and the daemon answered twice as many.</p></div>
       <div class="fact"><b>Storing is cheap</b><p>A 26-hour working session on this repository became 2,204 records, back-filled from its transcript in 6 seconds.</p></div>
