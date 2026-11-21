@@ -281,7 +281,7 @@ def knn_arm():
         s, idx, py, ys = torch.cat(ss), torch.cat(ii), torch.cat(pys), torch.cat(ys); hit = (NXt[idx] == ys.unsqueeze(-1)).float()
         grid = {}
         for lam in (0.1, 0.25, 0.4, 0.6):
-            for temp in (1.0, 3.0, 10.0, 30.0, 100.0):
+            for temp in (1.0, 3.0, 10.0, 30.0, 100.0, 300.0, 1000.0, 3000.0):
                 w = torch.softmax((s - s.max(-1, keepdim=True).values) / temp, -1)
                 grid[(lam, temp)] = math.exp(-torch.log((1 - lam) * py + lam * (w * hit).sum(-1) + 1e-12).mean().item())
         lam, temp = min(grid, key=grid.get)
