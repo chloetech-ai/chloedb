@@ -365,12 +365,46 @@ pub const TASK_TAG: &str = "task";
 /// mail, a chat message). ChloeCtx's own memory tools and capsules are not
 /// recorded at all ([`crate::capture`]).
 pub fn third_party_tool(tool: &str) -> bool {
-    matches!(tool, "WebFetch" | "WebSearch") || tool.starts_with("mcp__")
+    matches!(tool, "WebFetch" | "WebSearch" | BASH_FETCHED) || tool.starts_with("mcp__")
+}
+
+/// The tag of a Bash command's result when the command fetched it from
+/// outside the project (`curl`, `wget`, `gh issue view`: LENA-504): a
+/// third party's text, as WebFetch's is ([`fetches_from_outside`]).
+pub const BASH_FETCHED: &str = "Bash:fetched";
+
+/// Whether a shell command reads text from outside the project: a web
+/// client (`curl`, `wget`, HTTPie, `xh`, `lynx`, `w3m`, `aria2c`), or the
+/// GitHub CLI reading what anyone can write there (issues, pull requests,
+/// discussions, gists, releases, the API, a search).
+pub fn fetches_from_outside(cmd: &str) -> bool {
+    // Each command of the line: after `|`, `;`, `&&`, `(`, `$(` or a backquote.
+    cmd.split(|c: char| matches!(c, '|' | ';' | '&' | '(' | ')' | '`' | '\n')).any(|part| {
+        let mut words = part.split_whitespace().map(|w| w.trim_start_matches('$')).filter(|w| !w.is_empty()).peekable();
+        // Past `NAME=value`s and the wrappers that run what follows.
+        while let Some(w) = words.peek() {
+            let wrapper = matches!(*w, "sudo" | "env" | "time" | "nice" | "exec" | "command" | "xargs" | "nohup") || w.starts_with('-') || (w.contains('=') && !w.starts_with('='));
+            let timeout = *w == "timeout";
+            if !(wrapper || timeout) {
+                break;
+            }
+            words.next();
+            if timeout {
+                words.next();
+            }
+        }
+        let Some(first) = words.next() else { return false };
+        match first.rsplit('/').next().unwrap_or(first) {
+            "curl" | "wget" | "http" | "https" | "xh" | "lynx" | "w3m" | "aria2c" => true,
+            "gh" => words.next().is_some_and(|s| matches!(s, "issue" | "pr" | "api" | "gist" | "release" | "discussion" | "search" | "browse")),
+            _ => false,
+        }
+    })
 }
 
 /// The condition ([`crate::store::Filter::first_party`]) that leaves out
 /// the records [`Record::third_party`] names.
-pub const FIRST_PARTY: &str = r"NOT (kind IN ('tool_result', 'error') AND (tag IN ('WebFetch', 'WebSearch') OR tag LIKE 'mcp\_\_%' ESCAPE '\'))";
+pub const FIRST_PARTY: &str = r"NOT (kind IN ('tool_result', 'error') AND (tag IN ('WebFetch', 'WebSearch', 'Bash:fetched') OR tag LIKE 'mcp\_\_%' ESCAPE '\'))";
 
 /// The tag of a question that stood on its own ([`crate::recall::stands_alone`])
 /// and of its answer and episode card, when it was answered without a tool:
@@ -527,6 +561,19 @@ pub fn links_of(v: &Value) -> Vec<Link> {
 
 #[cfg(test)]
 mod tests {
+
+    /// LENA-504: what a Bash command fetched from outside is a third party's.
+    #[test]
+    fn bash_commands_that_fetch_from_outside() {
+        for c in ["curl -s http://127.0.0.1:17778/issue7.txt", "wget -qO- https://example.com/x", "gh issue view 7", "gh api repos/o/r/issues", "cd x && /usr/bin/curl https://a.b | jq .", "http GET example.org", "echo $(curl -s https://x.y)", "timeout 10 curl https://x.y", "sudo -E wget https://x"] {
+            assert!(fetches_from_outside(c), "{c}");
+        }
+        for c in ["cat notes/ops.md", "cargo test", "gh auth status", "git log --oneline", "grep -rn curl src/", "echo curling", "rg 'wget' docs"] {
+            assert!(!fetches_from_outside(c), "{c}");
+        }
+        assert!(third_party_tool(BASH_FETCHED) && !third_party_tool("Bash"));
+    }
+
     use super::*;
 
     #[test]

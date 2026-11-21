@@ -174,3 +174,46 @@ fn forgetting_an_aside_keeps_what_was_said_with_it() {
     let (_, out, _) = h.run("a", &["forget", "--everywhere", "--dry-run", "walrus-bundle"]);
     assert!(out.contains("No record in any of the stores holds"), "{out}");
 }
+
+/// ANA-303: `chloectx forget --yes ... | head -1`. A reader that stops
+/// reading (here, stdout closed before it starts) changes nothing of what
+/// it does: the fact is forgotten, by text and by id, and it exits as it
+/// would have.
+#[test]
+fn forget_forgets_whoever_reads_what_it_says() {
+    let h = Homes::new();
+    h.remember("a", "The vault phrase is Otter-Lantern-31 this week");
+    let id = h.remember("a", "The second vault phrase is Heron-Kettle-58");
+    h.remember("a", "The build uses cargo nextest");
+    let closed = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_chloectx"))
+            .args(args)
+            .current_dir(h.project("a"))
+            .env("HOME", h.t.path())
+            .env("CHLOECTX_HOME", h.t.path().join("ctx"))
+            .env("CHLOECTX_EMBEDDER", "hash:64")
+            .env("CHLOECTX_DISTILL", "0")
+            .env("CHLOECTX_DEEP", "off")
+            .env("CHLOECTX_RECEIPTS", "0")
+            .env_remove("CLAUDE_PROJECT_DIR")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The reader goes away before the first line.
+        let mut child = out;
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let (code, err) = closed(&["forget", "--yes", "otter-lantern-31"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("panicked"), "{err}");
+    assert_eq!(h.count("a", "Otter"), 0, "forgotten though nobody read it");
+    let (code, err) = closed(&["forget", &id]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("panicked"), "{err}");
+    assert_eq!(h.count("a", "Heron"), 0);
+    assert_eq!(h.count("a", "nextest"), 1);
+}
