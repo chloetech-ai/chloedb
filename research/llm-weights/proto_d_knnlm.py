@@ -13,8 +13,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 S = os.environ["S"]; OUT = sys.argv[1]
 torch.set_num_threads(4); torch.set_grad_enabled(False)
-tok = AutoTokenizer.from_pretrained(f"{S}/models/qwen3-0.6b-hf")
-model = AutoModelForCausalLM.from_pretrained(f"{S}/models/qwen3-0.6b-hf", torch_dtype=torch.float32).eval()
+from gpu import load
+tok, model = load(S)
 EVAL = ["python", "netops", "javascript", "connectors", "security", "earth", "opensearch", "graphs",
         "arxiv", "hn", "apps", "postgres", "troubleshooting", "crawler", "sqlite", "frameworks"]
 DEV = EVAL[:4]
@@ -45,7 +45,7 @@ REUSE = os.path.exists(path) and os.environ.get("REUSE") == "1"
 if os.path.exists(path) and not REUSE: os.system(f"rm -rf {path}*")
 db = chloedb.open(path, schema={"table": "knn", "key": "id", "fields": [
     {"name": "id", "type": "int"}, {"name": "doc", "type": "keyword"}, {"name": "next", "type": "int"},
-    {"name": "norm", "type": "float"}, {"name": "key", "type": "vector", "dim": 1024}]}, sync=False)
+    {"name": "norm", "type": "float"}, {"name": "key", "type": "vector", "dim": model.config.hidden_size}]}, sync=False)
 
 # 1. Datastore: ChloeDB docs other than the 16 eval docs.
 t0 = time.time(); nid, n = 0, 0

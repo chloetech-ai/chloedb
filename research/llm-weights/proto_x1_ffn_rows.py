@@ -83,7 +83,7 @@ ppls["original"], base_x = eval_ppl()
 layer.mlp = Zero(); ppls["removed"], _ = eval_ppl()
 print(ppls, flush=True)
 
-g = torch.Generator().manual_seed(0)
+g = generator(0)
 for N in (NB, 4 * NB):
     pick = torch.randperm(len(X), generator=g)[:N]
     layer.mlp = RowMLP(X[pick], Y[pick]); ppls[f"copy_{N}"], _ = eval_ppl(); print(ppls, flush=True)

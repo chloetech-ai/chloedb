@@ -31,7 +31,7 @@ for f in others:
     okeys.append(mean_hidden(s[640:1152]))                              # the doc's key, as W5 makes keys
     oq.append([mean_hidden(s[w - 128:w]) for w in range(128, 640, 64)])  # contexts from another part of it
 OK = torch.stack(okeys); OQ = [torch.stack(q) for q in oq]; omu = OK.mean(0)
-proj = torch.nn.Linear(D, P, bias=False); opt = torch.optim.Adam(proj.parameters(), lr=1e-3); g = torch.Generator().manual_seed(0)
+proj = torch.nn.Linear(D, P, bias=False); opt = torch.optim.Adam(proj.parameters(), lr=1e-3); g = generator(0)
 for step in range(1500):
     di = torch.randint(len(OQ), (64,), generator=g); qi = torch.randint(8, (64,), generator=g)
     q = torch.stack([OQ[d][i] for d, i in zip(di.tolist(), qi.tolist())])

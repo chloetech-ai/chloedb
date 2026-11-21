@@ -17,10 +17,10 @@ import json, os, sys, time
 import numpy as np, torch, chloedb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-S = os.environ["S"]; OUT = sys.argv[1]; LAYER = 12; THR = float(os.environ.get("THR", 0.9))
+S = os.environ["S"]; OUT = sys.argv[1]; LAYER = int(os.environ.get("LAYER", 12)); THR = float(os.environ.get("THR", 0.9))
 torch.set_num_threads(4)
-tok = AutoTokenizer.from_pretrained(f"{S}/models/qwen3-0.6b-hf")
-model = AutoModelForCausalLM.from_pretrained(f"{S}/models/qwen3-0.6b-hf", dtype=torch.float32).eval()
+from gpu import load
+tok, model = load(S)
 for p in model.parameters(): p.requires_grad_(False)
 layer = model.model.layers[LAYER]
 
@@ -118,7 +118,7 @@ def open_db(name):
     return chloedb.open(path, schema={"table": "facts", "key": "id", "fields": [
         {"name": "id", "type": "keyword"}, {"name": "fact", "type": "keyword"}, {"name": "tenant", "type": "keyword"},
         {"name": "valid_from", "type": "timestamp"}, {"name": "vnorm", "type": "float"},
-        {"name": "key", "type": "vector", "dim": 1024}, {"name": "val", "type": "vector", "dim": 1024}]}, sync=False)
+        {"name": "key", "type": "vector", "dim": model.config.hidden_size}, {"name": "val", "type": "vector", "dim": model.config.hidden_size}]}, sync=False)
 def row(rid, fact, key, val, tenant="all", valid="2026-01-01T00:00:00Z"):
     return {"id": rid, "fact": fact, "tenant": tenant, "valid_from": valid, "vnorm": float(val.norm()), "key": vec(key), "val": vec(val)}
 

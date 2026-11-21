@@ -1,0 +1,7 @@
+# name|environment|script (run in research/llm-weights, in this order)
+g1_06b|STEPS=2000 BATCH=8|proto_g1_rows_vs_finetune.py
+x1_06b_big|LAYER=16 NBASE=65536 PAIRS=300000 DSTEPS=8000 NNEW=8192 ISTEPS=1500|proto_x1_ffn_rows.py
+d_4b|MODEL=/root/s/models/qwen3-4b|proto_d_knnlm.py
+x34_4b|MODEL=/root/s/models/qwen3-4b LAYER=15|proto_x34_facts.py
+g1_4b|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS=2000 LRFROM=/root/out/g1_06b.json|proto_g1_rows_vs_finetune.py
+x1_4b|MODEL=/root/s/models/qwen3-4b LAYER=20 NBASE=65536 PAIRS=300000 DSTEPS=4000 NNEW=8192 ISTEPS=1000|proto_x1_ffn_rows.py

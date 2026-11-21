@@ -7,8 +7,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 S = os.environ["S"]; URL = "http://127.0.0.1:7700"
 torch.set_num_threads(int(os.environ.get("THREADS", 4)))
-tok = AutoTokenizer.from_pretrained(f"{S}/models/qwen3-0.6b-hf")
-model = AutoModelForCausalLM.from_pretrained(f"{S}/models/qwen3-0.6b-hf", dtype=torch.float32).eval()
+from gpu import load, generator, DEVICE
+tok, model = load(S)
 for p in model.parameters(): p.requires_grad_(False)
 EMB = model.get_input_embeddings()
 EVAL = ["python", "netops", "javascript", "connectors", "security", "earth", "opensearch", "graphs",
