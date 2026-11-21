@@ -122,7 +122,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/personal-memory.md">docs/chloectx/personal-memory.md</a>.</p>
       <p class="doc-version">These docs follow main (0.3.10, unreleased). The latest release is 0.3.9 (<a href="v0.3.9/index.html">its docs</a>); what is newer is marked "since 0.3.10".</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#on-a-mac-with-claude-desktop">On a Mac with Claude Desktop</a></li><li><a href="#import-your-chats">Import your chats</a></li><li><a href="#the-persona-card">The persona card</a></li><li><a href="#connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants</a></li><li><a href="#keep-it-current">Keep it current</a></li><li><a href="#share-a-slice">Share a slice</a></li><li><a href="#on-a-chloedb-cluster">On a ChloeDB cluster</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#on-a-mac-with-claude-desktop">On a Mac with Claude Desktop</a></li><li><a href="#import-your-chats">Import your chats</a></li><li><a href="#the-persona-card">The persona card</a></li><li><a href="#connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants</a></li><li><a href="#keep-it-current">Keep it current</a></li><li><a href="#share-a-slice">Share a slice</a></li><li><a href="#on-a-chloedb-cluster">On a ChloeDB cluster</a></li><li><a href="#the-hosted-beta">The hosted beta</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeCtx keeps a memory of your own beside the memories of your projects: the chats you had with ChatGPT, Claude.ai and Gemini, and a persona card of what they say about you, each line linked to the chats it came from. It is one ChloeDB file on your machine, and any assistant you connect reads it through the same tools: ChatGPT as a connector, Claude.ai as a custom connector, Claude Code and any MCP client. A slice of it can be shared with a key of its own.</p>
@@ -255,6 +255,21 @@ chloectx me share revoke &lt;id&gt;</pre>
 <pre data-lang="sh">CHLOECTX_CONNECT_PASSCODE=&quot;&lt;at least 10 letters and digits&gt;&quot; CHLOECTX_CONNECT_CAPTURE_KEY=&quot;ctxc_&lt;a long secret&gt;&quot; \
   chloectx app --server http://127.0.0.1:7700 --port 7760 --connect-url https://me.example.com</pre>
 <p>The space (<code>--connect-space</code>, <code>me</code> by default) is made if it is not there, and the sign-in, the tools, <code>/capture</code> and the proxy are served at the app's address beside its own API, which keeps its token. <code>--connect-state FILE</code> keeps the sign-ins across restarts. Shares are served by <code>chloectx me serve</code> only.</p>
+<h2 id="the-hosted-beta">The hosted beta<a class="anchor" href="#the-hosted-beta" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx app --hosted-url</code> serves many people's memories from one app on a cluster, for people who will not run anything themselves. Each person signs up on its page with an invite, a name and a passcode of their choosing. Each gets a space of their own (<code>me_&lt;name&gt;</code>) and an address of their own for Claude.ai or ChatGPT, <code>https://&lt;address&gt;/u/&lt;name&gt;/mcp</code>. The sign-in, the tools and <code>/capture</code> at that address are the same as <code>chloectx me serve</code>'s, with the account's passcode. The API proxy and shares are not served there.</p>
+<pre data-lang="sh">chloectx app --server http://127.0.0.1:7700 --port 7760 --token &quot;$CHLOECTX_APP_TOKEN&quot; \
+  --hosted-url https://me.example.com --hosted-state /data/hosted --hosted-invites /data/invites.txt</pre>
+<p>On the person's page they:</p>
+<ul>
+<li>copy their connector's address;</li>
+<li>upload an export as it came (in parts of 3 MB, up to 2 GB), which is imported in the background;</li>
+<li>keep or drop the lines of the card that the assistant suggested;</li>
+<li>see the assistants signed in and what each read, and sign them all out;</li>
+<li>make a capture key for the browser extension;</li>
+<li>download everything as JSON lines;</li>
+<li>delete the account, which drops its space.</li>
+</ul>
+<p><code>--hosted-state</code> keeps the accounts (passcodes as PBKDF2, capture keys as SHA-256), each account's sign-ins and its access log, in files of mode 0600. <code>--hosted-invites</code> holds one invite a line, each used once; without it anyone may sign up, up to <code>--hosted-max-accounts</code> (200 by default). The page's requests that change anything must come from its own origin, and sign-in stops for 15 minutes after 5 wrong passcodes.</p>
     </div>
     <footer class="doc-foot">
       <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloectx/personal-memory.md">Edit this page on GitHub</a>

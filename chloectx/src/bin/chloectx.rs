@@ -471,6 +471,22 @@ enum Cmd {
         /// Where the signed-in clients are kept (a file on a volume).
         #[arg(long, env = "CHLOECTX_CONNECT_STATE")]
         connect_state: Option<PathBuf>,
+        /// The hosted beta: serve many people's personal memories at this
+        /// public https:// address, each person an account with a space of
+        /// their own (`me_<name>`), a page to upload exports, and a
+        /// connector address of their own (`<url>/u/<name>/mcp`).
+        #[arg(long, env = "CHLOECTX_HOSTED_URL", requires = "hosted_state")]
+        hosted_url: Option<String>,
+        /// Where the accounts, their sign-ins and access logs are kept (a
+        /// folder on a volume).
+        #[arg(long, env = "CHLOECTX_HOSTED_STATE")]
+        hosted_state: Option<PathBuf>,
+        /// Invites, one a line, each used once; without it anyone may sign up.
+        #[arg(long, env = "CHLOECTX_HOSTED_INVITES")]
+        hosted_invites: Option<PathBuf>,
+        /// The most accounts the beta takes.
+        #[arg(long, env = "CHLOECTX_HOSTED_MAX_ACCOUNTS", default_value_t = 200)]
+        hosted_max_accounts: usize,
     },
     /// Cut a capsule from the project's memory: a read-only ChloeDB file of
     /// the selected records (default: distilled notes, entities and the
@@ -1256,7 +1272,7 @@ fn main() {
             }
         }
         Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
-        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores, connect_url, connect_space, connect_state } => {
+        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores, connect_url, connect_space, connect_state, hosted_url, hosted_state, hosted_invites, hosted_max_accounts } => {
             let local = local_stores.then(paths::home);
             let connect = connect_url.map(|public_url| chloectx::app::Connect {
                 public_url,
@@ -1265,7 +1281,8 @@ fn main() {
                 capture_key: std::env::var("CHLOECTX_CONNECT_CAPTURE_KEY").ok(),
                 state: connect_state,
             });
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local, connect }) {
+            let hosted = hosted_url.zip(hosted_state).map(|(public_url, state)| chloectx::hosted::Options { public_url, state, invites: hosted_invites, max_accounts: hosted_max_accounts });
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local, connect, hosted }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }

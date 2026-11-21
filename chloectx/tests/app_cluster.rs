@@ -918,3 +918,186 @@ fn personal_memory_on_a_cluster() {
     assert!(call_tool(&mcp, &token, "persona", json!({})).contains("Runs in the mornings"));
     drop(app);
 }
+
+/// `chloectx app --hosted-url`: the hosted beta. Two people sign up with
+/// invites, one uploads a ChatGPT export from the page in two parts, signs
+/// Claude in at their own connector address, has it draft a line of the
+/// card and keeps it on the page; the other sees none of it. Then a capture
+/// key, the access log, signing assistants out, the download, and deleting
+/// the account with its space.
+#[test]
+fn hosted_beta_on_a_cluster() {
+    let Some(bin) = server_bin() else {
+        assert!(std::env::var_os("CHLOECTX_NEED_SERVER").is_none(), "CHLOECTX_NEED_SERVER is set but there is no chloedb-server binary");
+        eprintln!("skipped: no chloedb-server binary (set CHLOEDB_SERVER_BIN)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let http = Http::new();
+    let mut grpc = Vec::new();
+    let mut procs = Vec::new();
+    for i in 0..2 {
+        let (h, g) = (free_port(), free_port());
+        grpc.push(format!("http://127.0.0.1:{g}"));
+        procs.push(spawn(Command::new(&bin).args(["--db", &dir.path().join(format!("s{i}.strata")).to_string_lossy(), "--listen", &format!("127.0.0.1:{h}"), "--grpc", &format!("127.0.0.1:{g}"), "--no-fetch-models"])));
+    }
+    let (cport, aport) = (free_port(), free_port());
+    let coord = format!("http://127.0.0.1:{cport}");
+    let base = format!("http://127.0.0.1:{aport}");
+    wait_for("the shards", 30, || grpc.iter().all(|g| std::net::TcpStream::connect(g.trim_start_matches("http://")).is_ok()));
+    let _coordinator = spawn(Command::new(&bin).args(["--shards", &grpc.join(","), "--listen", &format!("127.0.0.1:{cport}"), "--grpc", "off"]));
+    wait_for("the coordinator", 30, || http.call("GET", &format!("{coord}/v1/health"), None, &[]).0 == 200);
+    let invites = dir.path().join("invites.txt");
+    std::fs::write(&invites, "# beta\nbeta-one\nbeta-two\n").unwrap();
+    let state = dir.path().join("hosted");
+    let _app = spawn(
+        Command::new(env!("CARGO_BIN_EXE_chloectx"))
+            .args(["app", "--server", &coord, "--port", &aport.to_string(), "--embedder", "hash:256", "--token", TOKEN, "--hosted-url", &base])
+            .args(["--hosted-state", &state.to_string_lossy(), "--hosted-invites", &invites.to_string_lossy()])
+            .current_dir(dir.path())
+            .env_remove("ANTHROPIC_API_KEY"),
+    );
+    wait_for("the app", 60, || http.call("GET", &format!("{base}/v1/info"), None, &[("authorization", &format!("Bearer {TOKEN}"))]).0 == 200);
+    let page = |method: &str, path: &str, cookie: &str, body: &[u8]| {
+        let c = format!("ctx_session={cookie}");
+        let mut h = vec![("origin", base.as_str()), ("content-type", "application/json")];
+        if !cookie.is_empty() {
+            h.push(("cookie", c.as_str()));
+        }
+        raw(method, &format!("{base}{path}"), &h, body)
+    };
+    let session = |hs: &[(String, String)]| hs.iter().find(|(k, _)| k == "set-cookie").and_then(|(_, v)| v.strip_prefix("ctx_session=")).map(|v| v.split(';').next().unwrap().to_string()).unwrap();
+
+    // Signing up: from the page only, with an invite used once.
+    let (c, _, b) = raw("GET", &format!("{base}/"), &[], b"");
+    assert!(c == 200 && String::from_utf8_lossy(&b).contains("Join the beta"));
+    let ana = json!({"invite": "beta-one", "handle": "ana", "passcode": "ana-passcode-1"}).to_string();
+    let (c, _, _) = raw("POST", &format!("{base}/signup"), &[("content-type", "application/json")], ana.as_bytes());
+    assert_eq!(c, 403, "no Origin: not from the page");
+    let (c, _, _) = page("POST", "/signup", "", json!({"invite": "nope", "handle": "ana", "passcode": "ana-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 403);
+    let (c, hs, b) = page("POST", "/signup", "", ana.as_bytes());
+    assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+    let ana_c = session(&hs);
+    let (c, _, _) = page("POST", "/signup", "", json!({"invite": "beta-one", "handle": "bob", "passcode": "bob-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 403, "an invite is used once");
+    let (c, hs, _) = page("POST", "/signup", "", json!({"invite": "beta-two", "handle": "bob", "passcode": "bob-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 200);
+    let _bob_c = session(&hs);
+    let (c, _, _) = page("POST", "/signin", "", json!({"handle": "ana", "passcode": "wrong-passcode"}).to_string().as_bytes());
+    assert_eq!(c, 401);
+    let (c, hs, _) = page("POST", "/signin", "", json!({"handle": "ana", "passcode": "ana-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 200);
+    let ana_c2 = session(&hs);
+    assert_ne!(ana_c, ana_c2);
+    let (c, _, b) = page("GET", "/account", &ana_c, b"");
+    assert!(c == 200 && String::from_utf8_lossy(&b).contains("Add custom connector"));
+    let (c, _, _) = page("GET", "/account/state", "", b"");
+    assert_eq!(c, 401);
+    let st = |cookie: &str| -> Value {
+        let (c, _, b) = page("GET", "/account/state", cookie, b"");
+        assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+        serde_json::from_slice(&b).unwrap()
+    };
+    assert_eq!(st(&ana_c)["connector"], format!("{base}/u/ana/mcp"));
+
+    // An export from the page, in two parts, imported in the background.
+    let export = json!([{"id": "c1", "title": "Weekly meal plan", "create_time": 1709337600, "current_node": "n3", "mapping": {
+        "n1": {"id": "n1", "parent": null, "message": null},
+        "n2": {"id": "n2", "parent": "n1", "message": {"author": {"role": "user"}, "create_time": 1709337600, "content": {"content_type": "text", "parts": ["I'm vegetarian and I avoid mushrooms. Plan my dinners for the week."]}, "recipient": "all"}},
+        "n3": {"id": "n3", "parent": "n2", "message": {"author": {"role": "assistant"}, "create_time": 1709337660, "content": {"content_type": "text", "parts": ["Monday: lentil curry. Tuesday: chickpea salad."]}, "recipient": "all"}}}}])
+    .to_string();
+    let (one, two) = export.as_bytes().split_at(export.len() / 2);
+    let (c, _, b) = page("POST", "/account/upload?name=evil.sh&offset=0", &ana_c, one);
+    assert_eq!(c, 400, "{}", String::from_utf8_lossy(&b));
+    let (c, _, b) = page("POST", "/account/upload?name=conversations.json&offset=0", &ana_c, one);
+    assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+    let (c, _, _) = page("POST", "/account/upload?name=conversations.json&offset=5&final=1", &ana_c, two);
+    assert_eq!(c, 409, "a part out of place");
+    let (c, _, b) = page("POST", &format!("/account/upload?name=conversations.json&offset={}&final=1", one.len()), &ana_c, two);
+    assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+    wait_for("the import", 60, || st(&ana_c)["import"]["state"] != "running");
+    let s = st(&ana_c);
+    assert_eq!(s["import"]["state"], "done", "{s}");
+    assert_eq!(s["import"]["stored"], 2, "{s}");
+    assert_eq!(s["status"]["by_source"][0]["chats"], 1, "{s}");
+
+    // Claude signs in at the account's own address; the metadata says so.
+    let ua = format!("{base}/u/ana");
+    let (c, _, b) = raw("GET", &format!("{base}/.well-known/oauth-authorization-server/u/ana"), &[], b"");
+    assert_eq!(c, 200);
+    assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["issuer"], ua);
+    let (c, hs, _) = raw("POST", &format!("{ua}/mcp"), &[("content-type", "application/json")], b"{}");
+    assert_eq!(c, 401);
+    assert!(hs.iter().any(|(k, v)| k == "www-authenticate" && v.contains(&format!("{ua}/.well-known/oauth-protected-resource/mcp"))), "{hs:?}");
+    let (c, _, b) = raw("GET", &format!("{ua}/.well-known/oauth-protected-resource/mcp"), &[], b"");
+    assert_eq!(c, 200);
+    assert_eq!(serde_json::from_slice::<Value>(&b).unwrap()["resource"], format!("{ua}/mcp"));
+    let (c, _, b) = raw("GET", &format!("{ua}/authorize?client_id=x"), &[], b"");
+    assert!(c >= 400 || String::from_utf8_lossy(&b).contains("your account page"));
+    let ana_t = sign_in(&ua, "ana-passcode-1");
+    let bob_t = sign_in(&format!("{base}/u/bob"), "bob-passcode-1");
+    let (c, _, _) = form(&format!("{base}/u/bob/authorize"), &[("passcode", "ana-passcode-1")]);
+    assert!(c >= 400, "one account's passcode is not another's");
+    let mcp = format!("{ua}/mcp");
+    let found = call_tool(&mcp, &ana_t, "search", json!({"query": "vegetarian dinners"}));
+    assert!(found.contains("vegetarian"), "{found}");
+    let theirs = call_tool(&format!("{base}/u/bob/mcp"), &bob_t, "search", json!({"query": "vegetarian dinners"}));
+    assert!(!theirs.contains("vegetarian"), "bob sees none of ana's: {theirs}");
+    let (c, _, _) = raw("POST", &format!("{base}/u/bob/mcp"), &[("content-type", "application/json"), ("authorization", &format!("Bearer {ana_t}"))], b"{}");
+    assert_eq!(c, 401, "ana's token is not bob's");
+    let draft = call_tool(&mcp, &ana_t, "persona_draft", json!({}));
+    let mid = draft.split("message id=\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    let added = call_tool(&mcp, &ana_t, "persona_suggest", json!({"lines": [{"section": "Health & diet", "kind": "preference", "text": "Vegetarian; avoids mushrooms.", "sources": [mid]}]}));
+    assert!(added.contains("Added 1"), "{added}");
+
+    // The page shows it; ana keeps it.
+    let s = st(&ana_c);
+    let line = s["card"].as_array().unwrap().iter().find(|l| l["text"] == "Vegetarian; avoids mushrooms.").unwrap_or_else(|| panic!("{s}")).clone();
+    assert_eq!(line["confirmed"], false);
+    let (c, _, _) = page("POST", "/account/card", &ana_c, json!({"id": line["id"], "action": "confirm"}).to_string().as_bytes());
+    assert_eq!(c, 200);
+    let s = st(&ana_c);
+    assert!(s["card"].as_array().unwrap().iter().any(|l| l["text"] == "Vegetarian; avoids mushrooms." && l["confirmed"] == true), "{s}");
+    assert!(s["log"].as_array().unwrap().iter().any(|e| e["tool"] == "search"), "{s}");
+    assert_eq!(s["assistants"].as_array().unwrap().len(), 1, "{s}");
+    assert_eq!(st(&_bob_c)["card"].as_array().unwrap().len(), 0);
+
+    // A capture key for the extension, at the account's address.
+    let (c, _, b) = page("POST", "/account/capture-key", &ana_c, b"{}");
+    assert_eq!(c, 200);
+    let key = serde_json::from_slice::<Value>(&b).unwrap()["capture_key"].as_str().unwrap().to_string();
+    let chat = json!({"source": "claude", "conversation": "c-9", "title": "Bike fit", "url": "https://claude.ai/chat/c-9", "messages": [{"role": "user", "text": "My bike is a 56 cm gravel frame."}]});
+    let (c, _, b) = raw("POST", &format!("{ua}/capture"), &[("content-type", "application/json"), ("authorization", &format!("Bearer {key}"))], chat.to_string().as_bytes());
+    assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+    let (c, _, _) = raw("POST", &format!("{base}/u/bob/capture"), &[("content-type", "application/json"), ("authorization", &format!("Bearer {key}"))], chat.to_string().as_bytes());
+    assert_eq!(c, 401, "ana's key is not bob's");
+    let (c, _, _) = raw("GET", &format!("{ua}/p/openai/v1/models"), &[], b"");
+    assert_eq!(c, 404, "no proxy on the hosted beta");
+
+    // Signing every assistant out.
+    let (c, _, _) = page("POST", "/account/signout-assistants", &ana_c, b"{}");
+    assert_eq!(c, 200);
+    let (c, _, _) = raw("POST", &mcp, &[("content-type", "application/json"), ("authorization", &format!("Bearer {ana_t}"))], json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string().as_bytes());
+    assert_eq!(c, 401);
+
+    // Everything, downloaded; then the account deleted with its space.
+    let (c, hs, b) = page("GET", "/account/export", &ana_c, b"");
+    assert_eq!(c, 200);
+    assert!(hs.iter().any(|(k, v)| k == "content-disposition" && v.contains("chloectx-ana.jsonl")));
+    let text = String::from_utf8_lossy(&b);
+    assert!(text.contains("vegetarian") && text.contains("56 cm gravel"), "{text}");
+    let (c, _, _) = page("POST", "/account/delete", &ana_c, json!({"passcode": "wrong-passcode"}).to_string().as_bytes());
+    assert_eq!(c, 401);
+    let (c, _, b) = page("POST", "/account/delete", &ana_c, json!({"passcode": "ana-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 200, "{}", String::from_utf8_lossy(&b));
+    let (c, _, _) = page("GET", "/account/state", &ana_c2, b"");
+    assert_eq!(c, 401, "every session ends");
+    let (c, _, _) = raw("POST", &mcp, &[("content-type", "application/json")], b"{}");
+    assert_eq!(c, 404);
+    let spaces = App { http: &http, url: base.clone() }.get("/v1/spaces").to_string();
+    assert!(!spaces.contains("me_ana") && spaces.contains("me_bob"), "{spaces}");
+    let (c, _, _) = page("POST", "/signin", "", json!({"handle": "ana", "passcode": "ana-passcode-1"}).to_string().as_bytes());
+    assert_eq!(c, 401);
+    assert!(!state.join("accounts").join("ana").exists());
+}

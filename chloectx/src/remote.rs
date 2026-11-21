@@ -200,6 +200,9 @@ pub struct Config {
     /// Served on this machine to one client (`chloectx me mcp`): also the
     /// tools that read files here (`find_exports`, `import`).
     pub local: bool,
+    /// One account of the hosted service ([`crate::hosted`]): its page,
+    /// which the consent page names in place of `chloectx me connect`.
+    pub account_page: Option<String>,
 }
 
 impl Default for Config {
@@ -214,6 +217,7 @@ impl Default for Config {
             log_path: None,
             name: "ChloeCtx personal memory".into(),
             local: false,
+            account_page: None,
         }
     }
 }
@@ -541,11 +545,15 @@ impl Server {
             .collect();
         let body = format!(
             "<p><b>{name}</b> (returning to <code>{host}</code>) asks to read your personal memory at <code>{public}</code>: your persona card and your past chats.</p>\
-<form method=\"post\" action=\"/authorize\">{hidden}\
+<form method=\"post\" action=\"authorize\">{hidden}\
 <label>Passcode<br><input name=\"passcode\" autocomplete=\"current-password\" autofocus required placeholder=\"xxxx-xxxx-xxxx\"></label>\
 <label class=\"row\"><input type=\"checkbox\" name=\"write\" value=\"1\"{checked}> Also let it add what you tell it about yourself (kept as suggested lines of your card until you confirm them)</label>\
 <div class=\"row\"><button name=\"decision\" value=\"allow\">Allow</button> <button name=\"decision\" value=\"deny\" class=\"ghost\" formnovalidate>Deny</button></div></form>\
-<p class=\"small\">The passcode is the one <code>chloectx me connect</code> printed. You can revoke this access later with <code>chloectx me connect --signout</code>.</p>",
+<p class=\"small\">{hint}</p>",
+            hint = match &self.cfg.account_page {
+                Some(u) => format!("The passcode is the one you chose for this account. You can sign assistants out later on <a href=\"{0}\">your account page</a>.", html_escape(u)),
+                None => "The passcode is the one <code>chloectx me connect</code> printed. You can revoke this access later with <code>chloectx me connect --signout</code>.".to_string(),
+            },
             name = html_escape(&client.name),
             host = html_escape(host),
             public = html_escape(public),
@@ -646,16 +654,27 @@ impl Server {
         Ok(n)
     }
 
+    /// Signs every client out of this running server: how many there were.
+    pub fn sign_out_all(&self) -> usize {
+        let mut a = self.auth.lock().unwrap_or_else(|e| e.into_inner());
+        let n = a.clients.len();
+        a.clients.clear();
+        a.tokens.clear();
+        a.codes.clear();
+        self.save(&mut a);
+        n
+    }
+
+    /// The clients signed in to this running server: name, scope, since.
+    pub fn clients(&self) -> Vec<Json> {
+        let a = self.auth.lock().unwrap_or_else(|e| e.into_inner());
+        signed_in_of(&a)
+    }
+
     /// The clients signed in now: name, scope, since.
     pub fn signed_in(state_path: &std::path::Path) -> Vec<Json> {
         let a: Auth = std::fs::read_to_string(state_path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        let t = now();
-        let mut out: BTreeMap<String, Json> = BTreeMap::new();
-        for tk in a.tokens.values().filter(|k| k.refresh && k.expires > t) {
-            let name = a.clients.get(&tk.client_id).map(|c| c.name.clone()).unwrap_or_default();
-            out.entry(tk.client_id.clone()).or_insert_with(|| json!({"client": name, "scope": tk.scope, "since": tk.created}));
-        }
-        out.into_values().collect()
+        signed_in_of(&a)
     }
 
     // -----------------------------------------------------------------------
@@ -1057,6 +1076,16 @@ button.ghost{{background:transparent;color:var(--fg);border-color:var(--line)}}p
 </style></head><body><main><div class=\"card\"><h1>{t}</h1>{body}</div><p class=\"small\">ChloeCtx personal memory</p></main></body></html>",
         t = html_escape(title)
     )
+}
+
+fn signed_in_of(a: &Auth) -> Vec<Json> {
+    let t = now();
+    let mut out: BTreeMap<String, Json> = BTreeMap::new();
+    for tk in a.tokens.values().filter(|k| k.refresh && k.expires > t) {
+        let name = a.clients.get(&tk.client_id).map(|c| c.name.clone()).unwrap_or_default();
+        out.entry(tk.client_id.clone()).or_insert_with(|| json!({"client": name, "scope": tk.scope, "since": tk.created}));
+    }
+    out.into_values().collect()
 }
 
 /// How an assistant's lines are signed: `agent:<client>`.

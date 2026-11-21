@@ -67,7 +67,7 @@ use crate::llm::{self, Reply};
 use crate::recall::{self, RankParams};
 use crate::record::{Draft, Kind, Link, Record};
 use crate::store::{Filter, Store};
-use crate::ui::{read_request, respond, respond_json, same, Request};
+use crate::ui::{respond, respond_json, same, Request};
 use crate::{distill, err, Result};
 
 mod agents;
@@ -164,6 +164,9 @@ pub struct Options {
     /// Serve one space as a person's memory to ChatGPT, Claude.ai and any
     /// MCP client, with OAuth sign-in ([`crate::remote`]).
     pub connect: Option<Connect>,
+    /// The hosted beta: many people's memories, each in a space of its own
+    /// ([`crate::hosted`]).
+    pub hosted: Option<crate::hosted::Options>,
 }
 
 /// `--connect-url`: a space served as personal memory at a public address.
@@ -226,6 +229,8 @@ pub struct App {
     loopback_hosts: bool,
     /// The personal-memory server, with `--connect-url`.
     connect: Option<Arc<crate::remote::Server>>,
+    /// The hosted beta, with `--hosted-url`.
+    hosted: Option<Arc<crate::hosted::Hosted>>,
 }
 
 /// An error with the HTTP status it answers with.
@@ -386,7 +391,7 @@ Use only what the text says. Do not invent numbers, names or causes. If the text
 impl App {
     pub fn new(cluster: Arc<Cluster>, embedder: Arc<dyn Embedder>, model: Model, token: Option<String>) -> Result<App> {
         cluster.sql(CREATE_SPACES)?;
-        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None, loopback_hosts: false, connect: None })
+        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None, loopback_hosts: false, connect: None, hosted: None })
     }
 
     fn space_row(&self, name: &str) -> Result<Option<Json>> {
@@ -1396,7 +1401,12 @@ fn status_line(code: u16) -> &'static str {
 
 fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let Some(req) = read_request(&stream) else { return };
+    // The hosted beta's page uploads exports in parts of a few megabytes.
+    let max = if app.hosted.is_some() { crate::hosted::MAX_BODY } else { 1 << 20 };
+    let Some(req) = crate::ui::read_request_max(&stream, max) else { return };
+    if let Some(h) = app.hosted.as_ref().filter(|_| crate::hosted::Hosted::handles(&req.path)) {
+        return h.handle(app, stream, req);
+    }
     // The personal-memory routes have their own sign-in (OAuth, a share's
     // key, the capture key), and the consent page is opened in a browser.
     if let Some(c) = app.connect.as_ref().filter(|_| crate::remote::Server::handles(&req.path)) {
@@ -1526,6 +1536,12 @@ pub fn run(opts: Options) -> Result<()> {
                     }
                     let cfg = crate::remote::Config { public_url: Some(c.public_url.clone()), secrets, state_path: c.state.clone(), shares: false, ..Default::default() };
                     a.connect = Some(crate::remote::Server::new(cfg, Arc::new(crate::remote::OnStore(a.store(&c.space)?))));
+                }
+                if let Some(h) = &opts.hosted {
+                    if opts.connect.is_some() {
+                        return Err(err("--hosted-url and --connect-url are two ways to serve personal memory: pick one"));
+                    }
+                    a.hosted = Some(Arc::new(crate::hosted::Hosted::new(h.clone())?));
                 }
                 a.loopback_hosts = opts.token.is_none() && loopback(&opts.host);
                 break Arc::new(a);

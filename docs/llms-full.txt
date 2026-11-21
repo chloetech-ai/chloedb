@@ -13997,6 +13997,27 @@ CHLOECTX_CONNECT_PASSCODE="<at least 10 letters and digits>" CHLOECTX_CONNECT_CA
 
 The space (`--connect-space`, `me` by default) is made if it is not there, and the sign-in, the tools, `/capture` and the proxy are served at the app's address beside its own API, which keeps its token. `--connect-state FILE` keeps the sign-ins across restarts. Shares are served by `chloectx me serve` only.
 
+## The hosted beta
+
+`chloectx app --hosted-url` serves many people's memories from one app on a cluster, for people who will not run anything themselves. Each person signs up on its page with an invite, a name and a passcode of their choosing. Each gets a space of their own (`me_<name>`) and an address of their own for Claude.ai or ChatGPT, `https://<address>/u/<name>/mcp`. The sign-in, the tools and `/capture` at that address are the same as `chloectx me serve`'s, with the account's passcode. The API proxy and shares are not served there.
+
+```bash
+chloectx app --server http://127.0.0.1:7700 --port 7760 --token "$CHLOECTX_APP_TOKEN" \
+  --hosted-url https://me.example.com --hosted-state /data/hosted --hosted-invites /data/invites.txt
+```
+
+On the person's page they:
+
+- copy their connector's address;
+- upload an export as it came (in parts of 3 MB, up to 2 GB), which is imported in the background;
+- keep or drop the lines of the card that the assistant suggested;
+- see the assistants signed in and what each read, and sign them all out;
+- make a capture key for the browser extension;
+- download everything as JSON lines;
+- delete the account, which drops its space.
+
+`--hosted-state` keeps the accounts (passcodes as PBKDF2, capture keys as SHA-256), each account's sign-ins and its access log, in files of mode 0600. `--hosted-invites` holds one invite a line, each used once; without it anyone may sign up, up to `--hosted-max-accounts` (200 by default). The page's requests that change anything must come from its own origin, and sign-in stops for 15 minutes after 5 wrong passcodes.
+
 
 ---
 

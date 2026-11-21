@@ -27,6 +27,7 @@ pub mod fixes;
 pub mod forget;
 pub mod health;
 pub mod hook;
+pub mod hosted;
 pub mod import;
 pub mod inspect;
 pub mod install;
