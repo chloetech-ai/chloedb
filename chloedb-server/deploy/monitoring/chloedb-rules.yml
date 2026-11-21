@@ -248,6 +248,26 @@ groups:
           summary: 'A Postgres follower writing to {{ $labels.instance }} holds a table'
           description: 'follow-postgres could not write a table for a minute (a value ChloeDB refuses, a table without a primary key): it holds that table, whose rows stay as they were, follows the others and tries it again. chloedb_follow_table_error_info says which and why.'
           runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-postgres-follower-holds-a-table
+      - alert: ChloeDBConnectorFailing
+        expr: 'chloedb_connector_up == 0'
+        for: 2m
+        labels:
+          severity: warning
+          chloedb_rule: connector-failing
+        annotations:
+          summary: 'Connector {{ $labels.connector }} on {{ $labels.instance }} is failing'
+          description: 'A connector has failed (its last runs, or its Kafka consumer''s tries to reach its brokers), gone stale or is invalid, for two minutes: its table gets no new rows. chloedb_connector_failures counts the failures in a row.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-connector-fails-or-falls-behind
+      - alert: ChloeDBKafkaConnectorBehind
+        expr: 'chloedb_connector_behind_seconds > 300'
+        for: 5m
+        labels:
+          severity: warning
+          chloedb_rule: connector-behind
+        annotations:
+          summary: 'Kafka connector {{ $labels.connector }} on {{ $labels.instance }} is behind'
+          description: 'Events have waited for over 5 minutes, for 5 minutes. chloedb_connector_partition_lag_events says which partitions.'
+          runbook_url: https://chloetech-ai.github.io/chloedb/site/docs/runbooks.html#a-connector-fails-or-falls-behind
   - name: chloedb-disk
     rules:
       - alert: ChloeDBDiskAlmostFull

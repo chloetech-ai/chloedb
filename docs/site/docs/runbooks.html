@@ -121,7 +121,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloedb/runbooks.md">docs/chloedb/runbooks.md</a>.</p>
       <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#a-postgres-follower-holds-a-table">A Postgres follower holds a table</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#queries-are-slow">Queries are slow</a></li><li><a href="#searches-fail">Searches fail</a></li><li><a href="#queries-are-refused">Queries are refused</a></li><li><a href="#a-copy-is-down">A copy is down</a></li><li><a href="#a-replica-is-behind">A replica is behind</a></li><li><a href="#a-postgres-follower-holds-a-table">A Postgres follower holds a table</a></li><li><a href="#a-connector-fails-or-falls-behind">A connector fails or falls behind</a></li><li><a href="#the-disk-is-filling">The disk is filling</a></li><li><a href="#writes-fail-or-queue">Writes fail or queue</a></li><li><a href="#data-damaged-on-disk">Data damaged on disk</a></li><li><a href="#a-shards-primary-changed">A shard's primary changed</a></li><li><a href="#a-rollout-is-held">A rollout is held</a></li><li><a href="#restore-from-checkpoints">Restore from checkpoints</a></li><li><a href="#upgrades-outside-kubernetes">Upgrades outside Kubernetes</a></li></ol></details>
     <div class="doc-body">
 
 <p>What to do when an alert fires or the fleet view names a problem, written
@@ -258,6 +258,28 @@ again after 30 seconds, then twice as long each time up to 15 minutes
 <li>Then wait for the next try (<code>retry_in_s</code>), or start the follower again
    with <code>--copy-table &lt;table&gt;</code> to copy it now (tier 1): its rows stay
    readable throughout, and the other tables keep following.</li>
+</ol>
+<h2 id="a-connector-fails-or-falls-behind">A connector fails or falls behind<a class="anchor" href="#a-connector-fails-or-falls-behind" aria-label="Link to this section">#</a></h2>
+<p>For: <code>connector-failing</code>, <code>connector-behind</code></p>
+<p>A connector that fails writes no new rows into its table, so what reads the
+table (a dashboard, an alert rule on it) goes quiet rather than wrong.</p>
+<ol>
+<li>Read which and why: Data &gt; Connectors, or <code>GET /v1/admin/connectors</code>
+   (each connector's <code>health</code>, <code>state.last_error</code> and <code>state.failures</code>; a
+   Kafka connector's <code>stream</code>, with <code>last_error</code>, <code>lag</code> and each partition's
+   <code>lag</code>); on <code>/metrics</code>, <code>chloedb_connector_up</code>,
+   <code>chloedb_connector_failures</code>, <code>chloedb_connector_behind_seconds</code> and
+   <code>chloedb_connector_partition_lag_events</code>.</li>
+<li>A source that is down or refuses the connector's credentials: fix it
+   there, or the connector's secret (tier 2: a change request, since it
+   changes what the server reaches). A pull runs again on its schedule, or
+   now with <code>POST /v1/admin/connectors/&lt;name&gt;/run</code> (tier 1); a Kafka
+   connector tries its brokers again by itself.</li>
+<li>A Kafka connector behind but streaming: the server writes slower than
+   the topics grow. Read the writes (<code>GET /v1/load</code>, the alerts
+   <code>write-queue</code> and <code>write-p99</code>); a bigger <code>batch</code> writes more a time.
+   Stopping it (<code>POST /v1/admin/connectors/&lt;name&gt;/stop</code>) loses nothing:
+   it goes on from the offsets ChloeDB keeps, while Kafka still holds them.</li>
 </ol>
 <h2 id="the-disk-is-filling">The disk is filling<a class="anchor" href="#the-disk-is-filling" aria-label="Link to this section">#</a></h2>
 <p>For: <code>disk-full</code>, <code>disk-critical</code>, <code>disk-filling</code>, <code>disk</code></p>

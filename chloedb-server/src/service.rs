@@ -6813,6 +6813,15 @@ impl Service {
                 g.insert("follow_behind_bytes", lags.iter().filter_map(|l| l.behind_bytes).fold(0.0, f64::max));
             }
         }
+        // The connectors this server runs (the alerts connector-failing's
+        // and connector-behind's, ROSA-501).
+        let conns = self.connectors.gauges(self);
+        if !conns.is_empty() {
+            g.insert("connectors_failing", conns.iter().filter(|c| !c.up).count() as f64);
+            if conns.iter().any(|c| c.behind_s.is_some()) {
+                g.insert("connector_behind_s", conns.iter().filter_map(|c| c.behind_s).fold(0.0, f64::max));
+            }
+        }
         g.insert("slots_free", self.admission.available_permits() as f64);
         if let Some(b) = &self.query_memory {
             g.insert("query_memory_bytes", b.used() as f64);
@@ -7187,6 +7196,7 @@ impl Service {
                 crate::listener::CLOSED_PAST_SHARE.load(std::sync::atomic::Ordering::Relaxed) as f64,
             ),
         ];
+        more.extend(crate::connectors::Connectors::families(&self.connectors.gauges(self)));
         let lags = self.follow_lags();
         if !lags.is_empty() {
             let label = |l: &crate::service::feed::FollowLag| format!("name=\"{}\",kind=\"{}\"", metrics::esc(&l.name), l.kind);

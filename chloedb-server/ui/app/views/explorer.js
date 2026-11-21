@@ -39,7 +39,23 @@ const INTERVALS = { "15m": "15 minutes", "1h": "1 hour", "6h": "6 hours", "24h":
 /** Severity names from the least to the worst; each name's spellings. */
 const LEVELS = [["trace"], ["debug"], ["info", "informational", "notice"], ["warn", "warning"], ["error", "err"], ["critical", "crit", "fatal", "alert", "emerg", "emergency", "panic"]];
 const levelOf = (v) => { const x = String(v ?? "").toLowerCase(); const i = LEVELS.findIndex((l) => l.includes(x)); return i < 0 ? null : i; };
-const tone = (v) => { const i = levelOf(v); return i == null ? "" : i >= 4 ? "bad" : i === 3 ? "warn" : ""; };
+/** OpenTelemetry's severity numbers where each of LEVELS begins (TRACE 1, DEBUG 5, INFO 9, WARN 13, ERROR 17, FATAL 21). */
+const SEV_FROM = [1, 5, 9, 13, 17, 21];
+/** A severity number's level (an index of LEVELS), or null. */
+const levelOfNumber = (n) => { if (typeof n !== "number" || !(n >= 1)) return null; let i = 0; while (i + 1 < SEV_FROM.length && n >= SEV_FROM[i + 1]) i++; return i; };
+const toneOf = (i) => (i == null ? "" : i >= 4 ? "bad" : i === 3 ? "warn" : "");
+const tone = (v) => toneOf(levelOf(v));
+/**
+ * A line's level: by its severity number when the table has one
+ * (`severity_number`, which a collector sets whatever its text says: an
+ * nginx line's "502" is ERROR 17), else by the text's name for it.
+ */
+const levelOfRow = (r, c) => { const n = c.sevNum ? levelOfNumber(r[c.sevNum]) : null; return n != null ? n : c.sev ? levelOf(r[c.sev]) : null; };
+/** What the level column shows: the text, with the number's level before a text that is not a level's name. */
+const levelLabel = (r, c) => {
+  const t = c.sev ? r[c.sev] : null, n = c.sevNum ? levelOfNumber(r[c.sevNum]) : null;
+  return n != null && levelOf(t) == null ? `${LEVELS[n][0].toUpperCase()}${t == null || t === "" ? "" : " " + t}` : t ?? "";
+};
 
 /** A time of an answer (ISO text, or microseconds) as epoch ms. */
 const msOf = (v) => (typeof v === "string" ? Date.parse(v) : typeof v === "number" ? v / 1000 : NaN);
@@ -97,11 +113,13 @@ export function logColumns(fields, { table = "", key = null } = {}) {
   const wordy = (f) => f.type === "text" || (f.type === "keyword" && !f.multi && (f.substring || MSG_NAMES.includes(f.name.toLowerCase()) || TEXT_NAMES.includes(f.name.toLowerCase())));
   const host = by(["keyword", "text"], HOST_NAMES);
   const sev = by(["keyword", "text", "int"], SEV_NAMES);
+  // OpenTelemetry's number beside the text, which ranks levels whatever the text says.
+  const num = fields.find((f) => f.type === "int" && /^severity_number$/i.test(f.name) && f !== sev);
   const log = !!(host || sev || /^logs?_|_logs?$|syslog|otel/i.test(table));
   // Not the host or the level, which a line shows on their own.
   const texts = fields.filter((f) => wordy(f) && f !== host && f !== sev).sort((a, b) => textRank(b, log) - textRank(a, log));
   return withText({
-    ts: ts.name, host: host?.name || null, sev: sev?.name || null, log, key: key && fields.some((f) => f.name === key) ? key : null, fields,
+    ts: ts.name, host: host?.name || null, sev: sev?.name || null, sevNum: num?.name || null, log, key: key && fields.some((f) => f.name === key) ? key : null, fields,
     texts: texts.map((f) => f.name), times: [ts, ...times.filter((f) => f !== ts)].map((f) => f.name),
   }, texts[0]?.name || null);
 }
@@ -145,7 +163,7 @@ export function shortValue(v, type, max = 80) {
  * key (shown on their own), vectors, and empty values; at most `max`.
  */
 export function rowFields(r, cols, max = 10) {
-  const skip = new Set([cols.ts, cols.msg, cols.host, cols.sev, cols.key]);
+  const skip = new Set([cols.ts, cols.msg, cols.host, cols.sev, cols.sevNum, cols.key]);
   const out = [];
   for (const f of cols.fields) {
     if (skip.has(f.name) || HIDDEN.has(f.type) || !(f.name in r) || blank(r[f.name])) continue;
@@ -205,7 +223,12 @@ export function searchSql(text, cols, mode = "auto") {
       const num = /^-?\d+(\.\d+)?$/.test(value) && !quoted;
       const val = num && (f.type === "int" || f.type === "float" || f.type === "path") ? value : lit(value);
       const isSev = cols.sev && f.name === cols.sev && f.type !== "int" && levelOf(value) != null && /[<>]/.test(op);
-      if (isSev) {
+      if (isSev && cols.sevNum) {
+        // By the number, which every spelling of a level has (MARCO-502).
+        const i = levelOf(value), at = (j) => (j < SEV_FROM.length ? SEV_FROM[j] : 25);
+        const n = qn(cols.sevNum);
+        c = op === ">=" ? `${n} >= ${at(i)}` : op === ">" ? `${n} >= ${at(i + 1)}` : op === "<=" ? `${n} < ${at(i + 1)}` : `${n} < ${at(i)}`;
+      } else if (isSev) {
         // The levels at or above (or below) it, as the table spells them
         // (`sevValues`, its values), or in the usual spellings.
         const i = levelOf(value);
@@ -615,11 +638,13 @@ function render(page, route) {
     return h("div", { class: "error" }, h("b", {}, "The search failed: "), e.message, h("div", { class: "small", style: { marginTop: "4px" } }, "A search of a column is field:value, a level is level>=warn, and WHERE ... takes a SQL condition as written."));
   }
   async function loadHist() {
-    const sev = st.cols.sev ? `, ${qn(st.cols.sev)}` : "";
+    // The levels by the severity number when the table has one, else by the text.
+    const by = st.cols.sevNum || st.cols.sev, sev = by ? `, ${qn(by)}` : "";
     try {
       const j = await run("Lines over time", () => { const bb = bucketOf(); return `SELECT ${bb.sql} AS t${sev}, count(*) AS n\nFROM ${T()}\nWHERE ${where()}\nGROUP BY t${sev}\nLIMIT 20000`; });
       if (!alive) return;
-      st.hist = { bucket: bucketOf(), rows: j.rows.map((r) => ({ t: msOf(r[0]), sev: st.cols.sev ? r[1] : null, n: r[st.cols.sev ? 2 : 1] })) };
+      const lv = (v) => (st.cols.sevNum ? levelOfNumber(v) : levelOf(v));
+      st.hist = { bucket: bucketOf(), rows: j.rows.map((r) => ({ t: msOf(r[0]), lv: by ? lv(r[1]) : null, n: r[by ? 2 : 1] })) };
       drawHist();
     } catch (e) { clear(histBox, h("div", { class: "small dim" }, "No histogram: " + e.message)); }
   }
@@ -639,7 +664,7 @@ function render(page, route) {
     try {
       // The text's lines need only it; a table with no text column (or lines whose text is empty) is grouped by its fields.
       const c = st.cols;
-      const cols = c.msg && !fieldsShown() ? [c.ts, c.msg, c.host, c.sev].filter(Boolean).map(qn).join(", ") : "*";
+      const cols = c.msg && !fieldsShown() ? [c.ts, c.msg, c.host, c.sev, c.sevNum].filter(Boolean).map(qn).join(", ") : "*";
       const j = await run("Patterns (the lines)", () => `SELECT ${cols} FROM ${T()}\nWHERE ${where()}\nORDER BY ${qn(c.ts)} DESC\nLIMIT ${PATTERN_ROWS}`);
       if (my !== gen || !alive) return;
       const rows = objects(j);
@@ -689,8 +714,7 @@ function render(page, route) {
     const list = h("div", { class: "lx-lines", role: "list" });
     const nw = st.newKeys || new Set();
     for (const r of rows) {
-      const lv = st.cols.sev ? r[st.cols.sev] : null;
-      list.append(h("div", { class: `lx-line ${tone(lv)}${nw.has(keyOf(r)) ? " lx-new" : ""}`, role: "listitem", tabIndex: 0, title: "Show the lines around it",
+      list.append(h("div", { class: `lx-line ${toneOf(levelOfRow(r, st.cols))}${nw.has(keyOf(r)) ? " lx-new" : ""}`, role: "listitem", tabIndex: 0, title: "Show the lines around it",
         onclick: () => around(r), onkeydown: (e) => { if (e.key === "Enter") around(r); } }, lineParts(r, st.cols)));
     }
     st.newKeys = null;
@@ -703,7 +727,7 @@ function render(page, route) {
    * and other fields (dimmer) when they are shown or the text is empty.
    */
   function lineParts(r, c) {
-    const t = msOf(r[c.ts]), lv = c.sev ? r[c.sev] : null;
+    const t = msOf(r[c.ts]);
     const text = c.msg ? r[c.msg] : null, has = !blank(text);
     const showFields = fieldsShown() || !has;
     const kv = showFields ? rowFields(r, c) : [];
@@ -716,7 +740,7 @@ function render(page, route) {
     ].filter(Boolean);
     return [
       h("span", { class: "lx-t", title: isFinite(t) ? new Date(t).toISOString() : "" }, isFinite(t) ? clock(t) : "–"),
-      c.sev ? h("span", { class: "lx-lv " + tone(lv) }, lv ?? "") : null,
+      c.sev || c.sevNum ? h("span", { class: "lx-lv " + toneOf(levelOfRow(r, c)) }, c.sev ? levelLabel(r, c) : LEVELS[levelOfRow(r, c)]?.[0].toUpperCase() ?? "") : null,
       c.host ? h("span", { class: "lx-host" }, r[c.host] ?? "") : null,
       h("span", { class: "lx-msg" }, parts.length ? parts.flatMap((p, i) => (i ? ["  ", p] : [p])) : h("span", { class: "lx-k" }, "(empty)")),
     ];
@@ -768,7 +792,7 @@ function render(page, route) {
     for (const x of H.rows) {
       const i = Math.floor((x.t - from) / b.ms);
       if (i < 0 || i >= n) continue;
-      const tn = tone(x.sev);
+      const tn = toneOf(x.lv);
       bins[i][tn === "bad" ? "bad" : tn === "warn" ? "warn" : "rest"] += x.n;
       total += x.n;
     }
@@ -829,8 +853,7 @@ function render(page, route) {
         const rows = [...objects(a).reverse(), ...objects(b)];
         const me = keyOf(r);
         const list = h("div", { class: "lx-lines" }, rows.map((x) => {
-          const lv = c.sev ? x[c.sev] : null;
-          return h("div", { class: `lx-line ${tone(lv)}${keyOf(x) === me ? " lx-me" : ""}` }, lineParts(x, c));
+          return h("div", { class: `lx-line ${toneOf(levelOfRow(x, c))}${keyOf(x) === me ? " lx-me" : ""}` }, lineParts(x, c));
         }));
         const fields = h("table", { class: "t compact" }, h("tbody", {}, Object.entries(r).map(([k, v]) => h("tr", {}, h("td", { class: "dim nw" }, k), h("td", { class: "lx-msg" }, v == null ? "–" : typeof v === "object" ? JSON.stringify(v) : String(v))))));
         clear(box,

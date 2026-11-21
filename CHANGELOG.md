@@ -27,7 +27,26 @@ changes collect under "Unreleased".
   so recall quotes it as data and does not offer it as context (LENA-504). The session's briefing says the
   user's decisions stand until the user changes them, so a request that
   would reverse one is asked about first (JONAH-501).
-
+- **What on-call needs to trust, from the fifth persona round.** Alert
+  rules and routes outlive a restart without `--alerts`: they are kept in
+  `DB.alerts.json` beside `--db` (a coordinator without the flag keeps them
+  in memory, and says so). A rule first judged after a start pages only
+  once it has seen the data, so a restart no longer pages a rule that was
+  firing before it. `copy-down` fires when a copy stays down for 20
+  seconds, not only when it is down for 30 on average. Explore reads a
+  log's level from OTLP's `severity_number` when it has one, so `level>=error`
+  finds `ERROR`, `err` and `Error` alike. A shard whose copies elect a
+  primary says it refuses writes for those seconds (503, retryable with the
+  same idempotency key). Connectors are on `/metrics` (`chloedb_connector_up`,
+  `chloedb_connector_failures`, a Kafka connector's lag by partition and how
+  long its events waited), with two built-in alerts, `connector-failing`
+  and `connector-behind`, and their runbook.
+- **A boosted search whose boost is far below f32's range answers.** A
+  `function_score` of OpenSearch, or a BM25 search boosted by a decay
+  (`gauss` many scales from its origin), could search forever; it answers.
+  A query whose caller stopped waiting is shown as such in the live queries
+  (`caller_left`) until it ends, and a server told to stop waits at most 10
+  seconds for queries still running.
 - **What a second onboarding round found.** A server given `--listen`
   whose gRPC default (7701) is taken takes gRPC beside its HTTP port
   instead of stopping. A database `chloedb-server grow` made a shard of,
