@@ -286,7 +286,7 @@ for arm in ARMS:
         r = train(params, lr, int(os.environ.get(f"STEPS_{arm}", STEPS))); r.update(eval_all()); r["trainable"] = sum(p.numel() for p in params)
         if QA:
             r["qa"] = qa_eval(); print(arm, lr, "qa", r["qa"]["acc"], flush=True)
-            if arm.startswith("rows"): r["qa_rag"] = qa_eval(rag=True); print(arm, lr, "qa with bm25 chunks", r["qa_rag"]["acc"], flush=True)
+            r["qa_rag"] = qa_eval(rag=True); print(arm, lr, "qa with bm25 chunks", r["qa_rag"]["acc"], flush=True)
         if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D * len(mods); r["row_layers"] = [m.layer for m in mods]; r["tau"] = [m.tau for m in mods]
         print(arm, lr, {k: v for k, v in r.items() if k in ("held_out", "seen", "domain", "general", "best_step", "val_ppl")}, flush=True)
         res["arms"].setdefault(arm + "_tried", []).append({k: v for k, v in r.items() if not k.endswith("per_doc") and k != "history"})
