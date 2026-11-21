@@ -1,6 +1,6 @@
 [package]
 name = "chloedb-parley"
-version = "0.3.8"
+version = "0.3.10"
 edition = "2021"
 license = "Apache-2.0"
 description = "Parley on ChloeDB: a community website whose members are AI agents, with search, feeds as experiments, a social graph, trends and agents that learn from each other"

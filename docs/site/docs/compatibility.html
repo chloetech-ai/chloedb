@@ -119,7 +119,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span class="eyebrow">Server and cluster</span>
       <h1>Compatibility</h1>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/compatibility.md">docs/compatibility.md</a>.</p>
-      <p class="doc-version">These docs follow main, which can be ahead of the latest release, 0.3.9 (<a href="v0.3.9/index.html">its docs</a>): a change made after it says so where it is described.</p>
+      <p class="doc-version">These docs follow main (0.3.10, unreleased). The latest release is 0.3.9 (<a href="v0.3.9/index.html">its docs</a>); what is newer is marked "since 0.3.10".</p>
     </div>
     <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#the-database-file">The database file</a></li><li><a href="#the-packages-and-the-engine">The packages and the engine</a></li><li><a href="#a-cluster-of-mixed-versions">A cluster of mixed versions</a></li><li><a href="#old-names">Old names</a></li><li><a href="#experimental-features">Experimental features</a></li><li><a href="#demos">Demos</a></li><li><a href="#not-promised-yet">Not promised yet</a></li></ol></details>
     <div class="doc-body">
@@ -127,7 +127,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <p>What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on <code>main</code>
-(November 2026, every crate and package at version 0.3.9 but the early
+(November 2026, every crate and package at version 0.3.10 but the early
 Workbench, <code>chloedb-workbench</code>, at 0.1.0). The
 <a href="https://github.com/chloetech-ai/chloedb/blob/main/CHANGELOG.md">changelog</a> says what changed.</p>
 <p>ChloeDB is pre-1.0: the statements below are the current behaviour, which
@@ -231,7 +231,7 @@ server of their own commit.</p>
 <p><strong>Not promised.</strong> A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.9; <code>chloedb-workbench</code> its own, 0.1.0),
+version of the last release (0.3.10; <code>chloedb-workbench</code> its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.</p>
 <h2 id="a-cluster-of-mixed-versions">A cluster of mixed versions<a class="anchor" href="#a-cluster-of-mixed-versions" aria-label="Link to this section">#</a></h2>
@@ -307,7 +307,23 @@ gRPC with a numbered shard protocol (<code>chloedb-server/src/grpc.rs</code>:
   survive the coordinator's restart once its shards run 0.3.9. The
   OpenSearch API's aliases move to a table of their own
   (<code>opensearch_aliases</code>) at the first alias change: a database taken back
-  to 0.3.8 after that sees its aliases as they were before the change.</li>
+  to 0.3.8 after that sees its aliases as they were before the change.
+  0.3.10 keeps the shard protocol at 21 and adds two plan features:
+  <code>keyword_ranges</code> (a single-valued <code>KEYWORD</code> compared with <code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>,
+  <code>&gt;=</code> or <code>BETWEEN</code>) and <code>graph_given</code> (a coordinator's walk of <code>REACHABLE</code>,
+  <code>PATH</code>, <code>hops()</code> or <code>ppr()</code> over a cluster, whose answer goes to the
+  shards in a new field of the plan's <code>Graph</code>, <code>given = 14</code>): a 0.3.9 shard
+  refuses a plan that names one, so upgrade the shards before using them.
+  Otherwise 0.3.9 and 0.3.10 mix in either order. A JSON field's segments
+  written by 0.3.10 also index the plain values of an array path (the term
+  <code>path \0 v</code>), which 0.3.9 does not read and does not need: it reads such
+  a row from its object. The keys file can hold two new kinds of key, a key
+  that only appends (kept as <code>read</code> of <code>append:&lt;tables&gt;</code>) and a key bound to
+  a tenant on the OpenSearch API (kept as a key of no table): a 0.3.9
+  server reads the file and lets neither key read or write any table.
+  Alert rules and routes are kept in <code>DB.alerts.json</code> beside <code>--db</code>, which
+  0.3.9 does not read: a server taken back to 0.3.9 has only the rules of
+  its <code>--alerts</code> file, if it is given one.</li>
 </ul>
 <p>So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer

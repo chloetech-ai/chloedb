@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "chloedb-parley"
-version = "0.3.8"
+version = "0.3.10"
 dependencies = [
  "axum",
  "base64 0.22.1",
