@@ -1,0 +1,38 @@
+{
+  "manifest_version": "0.3",
+  "name": "chloectx",
+  "display_name": "ChloeCtx personal memory",
+  "version": "0.0.0",
+  "description": "Your chats with ChatGPT, Claude and Gemini, and a persona card drawn from them, in one file on your Mac that Claude reads.",
+  "long_description": "ChloeCtx keeps a memory of your own: the chats you had with ChatGPT, Claude.ai and Gemini, and a persona card of what they say about you, each line linked to the chats it came from. It is one ChloeDB file on your Mac; nothing leaves it.\n\nAfter installing, download an export of your chats (ChatGPT: Settings, Data controls, Export data; Claude: Settings, Privacy, Export data; Gemini: Google Takeout) and tell Claude: \"Import my ChatGPT export from Downloads, then draft my persona card.\" Claude finds the export, imports it, drafts the card from what you wrote and shows it to you to confirm. From then on it reads the card and searches your past chats when that helps.",
+  "author": { "name": "ChloeTech", "url": "https://github.com/chloetech-ai" },
+  "repository": { "type": "git", "url": "https://github.com/chloetech-ai/chloedb" },
+  "homepage": "https://chloetech-ai.github.io/chloedb/site/ctx/",
+  "documentation": "https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/personal-memory.md",
+  "support": "https://github.com/chloetech-ai/chloedb/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/chloectx",
+    "mcp_config": {
+      "command": "${__dirname}/server/chloectx",
+      "args": ["me", "mcp", "--client", "Claude"],
+      "env": { "CHLOECTX_MODELS": "${__dirname}/models" }
+    }
+  },
+  "tools": [
+    { "name": "persona", "description": "Your persona card, each line with the chat it came from" },
+    { "name": "search", "description": "Search your past chats and your card" },
+    { "name": "fetch", "description": "One result in full, with its exchange" },
+    { "name": "ask", "description": "Answer a question about you from several searches at once" },
+    { "name": "remember", "description": "Add something you said about yourself to your card, as a suggestion" },
+    { "name": "persona_draft", "description": "Your own messages, part by part, to draft your card from" },
+    { "name": "persona_suggest", "description": "Add drafted lines to your card, as suggestions" },
+    { "name": "persona_review", "description": "Confirm, change or drop lines of your card, as you say" },
+    { "name": "find_exports", "description": "Find chat exports in Downloads, Desktop and Documents" },
+    { "name": "import", "description": "Import an export of ChatGPT, Claude.ai or Gemini" }
+  ],
+  "keywords": ["memory", "persona", "chatgpt", "claude", "gemini", "personal", "context"],
+  "license": "Apache-2.0",
+  "compatibility": { "platforms": ["darwin"] }
+}

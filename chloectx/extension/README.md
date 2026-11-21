@@ -10,6 +10,10 @@ Records the chats you have on chatgpt.com, claude.ai and gemini.google.com into 
 
 An https address (a tunnel, or a server on a cluster) asks for the browser's permission to reach it when you save.
 
+## Publish it on the Chrome Web Store
+
+`sh pack.sh OUT.zip` packs the files the store takes (the manifest, the scripts, the options page and the icons; not the tests or these notes). [STORE.md](STORE.md) has the listing's text, the reason for each permission and the steps to submit it, [PRIVACY.md](PRIVACY.md) is its privacy policy, and `store/options.png` its screenshot.
+
 ## What it sends
 
 - Only on the sites you turned on, and only the chat open in that tab: its id, title, address and its last 80 messages, a few seconds after the page stops changing (never while an answer is still being written).

@@ -283,6 +283,18 @@ pub fn connect(new_passcode: bool, new_capture_key: bool, signout: bool) -> i32 
     0
 }
 
+/// `chloectx me mcp`: MCP on stdin and stdout for one client on this
+/// machine (Claude Desktop's extension), with the tools that read exports.
+pub fn mcp(client: &str) -> i32 {
+    if let Err(e) = me::ensure() {
+        return fail("me mcp", e);
+    }
+    let cfg = remote::Config { log_path: Some(me::dir().join("access.log")), local: true, ..Default::default() };
+    let server = remote::Server::new(cfg, Arc::new(remote::LocalSpace));
+    server.serve_stdio(client);
+    0
+}
+
 pub struct ServeOptions {
     pub host: String,
     pub port: u16,

@@ -13878,6 +13878,16 @@ ChloeCtx keeps a memory of your own beside the memories of your projects: the ch
 
 Why not a file of notes about yourself? A plain file has no sources (you cannot tell where "vegetarian" came from or whether it is still true), no search (an assistant reads all of it or none), no history (an edit loses what it replaced), and no scope (you share the whole file or nothing). Here every line of the card says which chat it came from, an assistant asks for what bears on its question and gets those records with their chats, a changed line keeps the old one as history, and a share holds only the sections and topics you picked, signed, logged and revocable.
 
+## On a Mac with Claude Desktop
+
+The shortest way in needs no terminal. Each release has `chloectx-claude-desktop-macos.mcpb`, a Claude Desktop extension that holds chloectx and its model. Open it in Claude Desktop (double-click it, or drag it onto Settings, Extensions) and press Install. Then ask Claude:
+
+1. "Import my ChatGPT export." Claude finds the exports in Downloads, Desktop and Documents (or says how to ask for one) and imports the one you pick.
+2. "Draft my persona card." Claude reads your own messages a part at a time and proposes lines, each naming the messages it came from. They show as suggested.
+3. "Show me the card." Claude goes through the suggested lines with you, and confirms, rewrites or drops each.
+
+It is the same memory as the commands below use, so `chloectx me serve` can later serve it to ChatGPT as well. [Its README](../../chloectx/claude-desktop/README.md) lists its tools and how it is built and checked.
+
 ## Import your chats
 
 Ask each service for an export, then give ChloeCtx the file as it came:
@@ -13919,6 +13929,8 @@ chloectx me card drop <id>        # take it off (kept as history)
 
 `build` reads only what you wrote, never the assistants' answers, and keeps a drafted line only when it names the messages it came from. Building again replaces the drafted lines and keeps every line you wrote or confirmed. A line an assistant adds through `remember` shows as suggested, by that assistant, until you confirm it.
 
+The assistant you connect can draft it instead, with no model of ChloeCtx's own: `persona_draft` gives it your messages a part at a time with the same rules, and `persona_suggest` adds the lines it proposes, each with the ids of the messages it came from, as suggested. A line that names no message of yours is left out. `persona_review` confirms, changes or drops lines as you tell it.
+
 ## Connect ChatGPT, Claude.ai and other assistants
 
 `chloectx me serve` serves the memory over MCP with OAuth sign-in: the assistant registers itself, sends you to a consent page that asks for your passcode, and gets a token for 24 hours (renewed for 90 days). The passcode and a capture key are made and printed once on the first run; `chloectx me connect --new-passcode` makes a new one.
@@ -13944,6 +13956,7 @@ The consent page asks whether the assistant may also write. It gets these tools:
 | `fetch` | one record in full: the exchange it belongs to, or a card line with its sources |
 | `ask` | the context for a question, within a budget |
 | `remember` | (with write) a line for the card, shown as suggested, or a note |
+| `persona_draft`, `persona_suggest`, `persona_review` | (with write) the card drafted by the assistant, and the person's review of it |
 
 `search` and `fetch` answer as ChatGPT's connectors expect. Every call is written to an access log, `chloectx me log`, with the tool, the query and who asked, never what came back. `chloectx me connect` lists the assistants signed in, and `--signout` signs them all out.
 

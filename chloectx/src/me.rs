@@ -132,6 +132,8 @@ pub fn op(store: &Store, req: &Json) -> Result<Json> {
         }
         "card_replace" => card_replace(store, req.get("lines").and_then(|v| v.as_array()).cloned().unwrap_or_default()),
         "card_input" => card_input(store, req.get("max_chars").and_then(|v| v.as_u64()).unwrap_or(120_000) as usize),
+        "draft_part" => draft_part(store, req.get("part").and_then(|v| v.as_u64()).unwrap_or(1).max(1) as usize),
+        "card_suggest" => card_suggest(store, req.get("lines").and_then(|v| v.as_array()).cloned().unwrap_or_default(), &Source::parse(&s("by"))),
         "search" => {
             let limit = req.get("limit").and_then(|v| v.as_u64()).unwrap_or(8).clamp(1, 50) as usize;
             search(store, &s("query"), limit).map(|r| json!({"results": r}))
@@ -466,6 +468,87 @@ pub fn card_replace(store: &Store, lines: Vec<Json>) -> Result<Json> {
         }
     }
     Ok(json!({"added": added.len(), "retired": retired, "ids": added, "text": format!("The card now has {} drafted line(s) ({} replaced) beside {} of yours.", added.len(), retired, mine.len())}))
+}
+
+/// The person's messages read for a draft of the card, in parts an
+/// assistant can read in one tool call (about 24,000 characters each).
+pub const DRAFT_PART_CHARS: usize = 24_000;
+/// At most this many parts: the messages that speak of the person most.
+pub const DRAFT_PARTS: usize = 5;
+
+/// Part `part` (from 1) of the person's messages, as a prompt for the
+/// assistant that drafts the card through `persona_suggest`.
+pub fn draft_part(store: &Store, part: usize) -> Result<Json> {
+    let input = card_input(store, DRAFT_PART_CHARS * DRAFT_PARTS)?;
+    let messages = input["messages"].as_array().cloned().unwrap_or_default();
+    let confirmed = input["confirmed"].as_array().cloned().unwrap_or_default();
+    let mut parts: Vec<Vec<Json>> = vec![Vec::new()];
+    let mut used = 0;
+    for m in messages {
+        let n = m["text"].as_str().map_or(0, str::len) + 40;
+        if used + n > DRAFT_PART_CHARS && !parts.last().unwrap().is_empty() {
+            parts.push(Vec::new());
+            used = 0;
+        }
+        used += n;
+        parts.last_mut().unwrap().push(m);
+    }
+    let total = if parts[0].is_empty() { 0 } else { parts.len() };
+    if total == 0 {
+        return Ok(json!({"part": 0, "parts": 0, "messages": 0, "text": "There are no messages of the person's yet: import their chats first (chloectx import, or the import tool)."}));
+    }
+    if part > total {
+        return Ok(json!({"part": part, "parts": total, "messages": 0, "text": format!("There are {total} part(s) and all were given. Show the person the card (persona) and ask them to confirm or drop the suggested lines.")}));
+    }
+    let these = &parts[part - 1];
+    let rules = DRAFT_SYSTEM.split("Answer with JSON only").next().unwrap_or(DRAFT_SYSTEM).trim();
+    let next = if part < total { format!(" Then call persona_draft with part {} for the next part.", part + 1) } else { " This is the last part: then show the person the card (persona) and tell them the new lines are suggestions they can confirm or drop.".to_string() };
+    let text = format!(
+        "Part {part} of {total} of the person's own messages, for a draft of their persona card.\n\n{rules}\n\nWhen you have read them, call persona_suggest once with the lines this part supports: {{\"lines\": [{{\"section\", \"kind\", \"text\", \"sources\": [message ids]}}]}}, at most 30, each with the ids of the messages it comes from; lines already on the card are skipped.{next}\n\n{}",
+        draft_prompt(these, if part == 1 { &confirmed } else { &[] })
+    );
+    Ok(json!({"part": part, "parts": total, "messages": these.len(), "text": text}))
+}
+
+/// Adds lines an assistant drafted (`{section, kind?, text, sources}`), as
+/// suggestions by `by`: a line must name messages of the person's that
+/// exist, and one the card already says is skipped.
+pub fn card_suggest(store: &Store, lines: Vec<Json>, by: &Source) -> Result<Json> {
+    if by.is_user() {
+        return Err(err("suggested lines are an assistant's"));
+    }
+    let norm = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut have: HashSet<String> = card(store)?.iter().map(|l| norm(l["text"].as_str().unwrap_or(""))).collect();
+    let (mut added, mut skipped, mut unsourced) = (Vec::new(), 0, 0);
+    for l in lines.iter().take(60) {
+        let text = l["text"].as_str().unwrap_or("").trim();
+        if text.is_empty() || text.chars().count() > 300 {
+            skipped += 1;
+            continue;
+        }
+        if !have.insert(norm(text)) {
+            skipped += 1;
+            continue;
+        }
+        let named = strings(l.get("sources"));
+        let found: HashSet<String> = store.get(&named)?.into_iter().filter(|r| r.kind == Kind::Prompt).map(|r| r.id).collect();
+        let sources: Vec<String> = named.into_iter().filter(|id| found.contains(id)).collect();
+        if sources.is_empty() {
+            unsourced += 1;
+            continue;
+        }
+        let kind = if l["kind"] == "preference" { Kind::Preference } else { Kind::Fact };
+        added.push(add_line(store, &clean_section(l["section"].as_str().unwrap_or("Identity")), text, kind, by, &sources, None)?);
+    }
+    let mut text = format!("Added {} suggested line(s) to the persona card", added.len());
+    if skipped > 0 {
+        text += &format!("; {skipped} already on it or empty");
+    }
+    if unsourced > 0 {
+        text += &format!("; {unsourced} left out because they named no message of the person's");
+    }
+    text += ". Show them to the person: they confirm, change or drop each (persona_review, or chloectx me card).";
+    Ok(json!({"added": added.len(), "ids": added, "skipped": skipped, "unsourced": unsourced, "text": text}))
 }
 
 /// What the space holds.

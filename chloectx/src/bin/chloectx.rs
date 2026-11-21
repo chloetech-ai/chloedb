@@ -578,6 +578,18 @@ enum MeCmd {
         #[arg(long)]
         no_shares: bool,
     },
+    /// Your memory as an MCP server on stdin and stdout, for Claude Desktop
+    ///
+    /// What Claude Desktop's ChloeCtx extension runs: the tools of `me
+    /// serve` (persona, search, fetch, ask, remember, persona_draft,
+    /// persona_suggest), and find_exports and import, which read the exports
+    /// in Downloads, Desktop and Documents. No sign-in: it is this machine's
+    /// user's own memory.
+    Mcp {
+        /// The client's name, which signs the lines it suggests.
+        #[arg(long, default_value = "Claude")]
+        client: String,
+    },
     /// The passcode and capture key (shown once when made), and the
     /// assistants signed in
     Connect {
@@ -847,6 +859,7 @@ fn main() {
             Some(MeCmd::Serve { host, port, public_url, openai_base, anthropic_base, no_shares }) => {
                 me_cmd::serve(me_cmd::ServeOptions { host, port, public_url, openai_base, anthropic_base, shares: !no_shares })
             }
+            Some(MeCmd::Mcp { client }) => me_cmd::mcp(&client),
             Some(MeCmd::Connect { new_passcode, new_capture_key, signout }) => me_cmd::connect(new_passcode, new_capture_key, signout),
             Some(MeCmd::Share { what }) => match what {
                 ShareCmd::Create { name, sections, topics, no_card, sources, per_topic, expires, out, public_url } => {

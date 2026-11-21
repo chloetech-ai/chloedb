@@ -77,6 +77,7 @@ on:
       - packaging/server-wheels/**
       - packaging/sbom/**
       - chloectx/plugin/scripts/chloectx-launch
+      - chloectx/claude-desktop/**
 
 permissions:
   contents: read
@@ -526,9 +527,61 @@ jobs:
           brew audit --strict chloedb-ci/local/chloedb || echo "::warning::brew audit has remarks (above)"
           brew uninstall chloedb-ci/local/chloedb
 
+  # ChloeCtx's Claude Desktop extension (chloectx/claude-desktop): one
+  # .mcpb file holding a universal chloectx of the two macOS builds and the
+  # embedding model, which Claude Desktop installs with a double-click. It
+  # is run as Claude Desktop runs it (the manifest's command and env, from
+  # the unpacked file) before it is attached to the release.
+  claude-desktop:
+    name: Claude Desktop extension
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: chloedb-server-macos-*
+          path: dist
+          merge-multiple: true
+      - name: Build it
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' chloectx/Cargo.toml | head -1)
+          work=$RUNNER_TEMP/mcpb
+          mkdir -p "$work" out
+          for p in macos-arm64 macos-x86_64; do
+            (cd dist && shasum -a 256 -c "chloectx-$p.tar.gz.sha256")
+            tar -C "$work" -xzf "dist/chloectx-$p.tar.gz"
+          done
+          lipo -create -output "$work/chloectx" "$work/chloectx-macos-arm64/chloectx" "$work/chloectx-macos-x86_64/chloectx"
+          codesign --force --sign - "$work/chloectx"
+          lipo -info "$work/chloectx"
+          CHLOECTX_HOME="$work/home" "$work/chloectx" fetch-model
+          sh chloectx/claude-desktop/build.sh "$work/chloectx" "$work/home/models/potion-retrieval-32M" "$version" out/chloectx-claude-desktop-macos.mcpb
+          (cd out && shasum -a 256 chloectx-claude-desktop-macos.mcpb > chloectx-claude-desktop-macos.mcpb.sha256)
+      - name: Run it as Claude Desktop does
+        run: python3 chloectx/claude-desktop/check.py out/chloectx-claude-desktop-macos.mcpb
+      - name: Build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/chloectx-claude-desktop-macos.mcpb
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: claude-desktop
+          path: out/*
+          if-no-files-found: error
+
   release:
     name: GitHub release
-    needs: [build, homebrew, attest]
+    needs: [build, homebrew, attest, claude-desktop]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -545,12 +598,17 @@ jobs:
           pattern: attestations-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: claude-desktop
+          path: dist
       - name: Every archive has its SBOM and its bundles
         run: |
           for a in dist/*.tar.gz; do
             test -f "$a.sha256" && test -f "$a.sigstore.jsonl" && test -f "${a%.tar.gz}.cdx.json" || { echo "::error::$a lacks its .sha256, .sigstore.jsonl or .cdx.json"; exit 1; }
           done
-          (cd dist && sha256sum *.tar.gz *.cdx.json *.sigstore.jsonl > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && sha256sum -c chloectx-claude-desktop-macos.mcpb.sha256)
+          (cd dist && sha256sum *.tar.gz *.cdx.json *.sigstore.jsonl *.mcpb > SHA256SUMS && cat SHA256SUMS)
       - name: Attach the archives to the release
         env:
           GH_TOKEN: ${{ github.token }}

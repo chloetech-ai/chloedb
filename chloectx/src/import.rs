@@ -267,6 +267,79 @@ pub fn read(path: &Path, from: Option<Origin>) -> Result<Vec<Chat>> {
     Ok(chats)
 }
 
+/// `~` and `~/...` as the home folder.
+pub fn expand_home(p: &str) -> PathBuf {
+    let p = p.trim();
+    match (p.strip_prefix('~'), std::env::var_os("HOME")) {
+        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with('/') => PathBuf::from(h).join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(p),
+    }
+}
+
+/// Where people's downloads land: Downloads, Desktop and Documents.
+pub fn export_places() -> Vec<PathBuf> {
+    let Some(h) = std::env::var_os("HOME") else { return Vec::new() };
+    ["Downloads", "Desktop", "Documents"].iter().map(|d| PathBuf::from(&h).join(d)).filter(|d| d.is_dir()).collect()
+}
+
+/// The exports in `places` (two folders deep): zips that hold an export's
+/// files, and folders that do, newest first, at most 50.
+pub fn find_exports(places: &[PathBuf]) -> Vec<Json> {
+    let mut found: Vec<(u64, Json)> = Vec::new();
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    let mut zips = Vec::new();
+    let mut dirs = Vec::new();
+    fn walk(d: &Path, depth: usize, zips: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for p in rd.flatten().map(|e| e.path()) {
+            let hidden = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
+            if hidden {
+                continue;
+            }
+            if p.is_dir() {
+                dirs.push(p.clone());
+                if depth > 0 {
+                    walk(&p, depth - 1, zips, dirs);
+                }
+            } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+                zips.push(p);
+            }
+        }
+    }
+    for pl in places {
+        walk(pl, 1, &mut zips, &mut dirs);
+    }
+    // The newest zips first, and not every zip a Downloads folder holds.
+    zips.sort_by_key(|p| std::cmp::Reverse(modified(p)));
+    for z in zips.into_iter().take(200) {
+        let Ok(names) = zip_names(&z) else { continue };
+        let files: Vec<String> = names.iter().filter(|n| export_file(n)).cloned().collect();
+        if !files.is_empty() {
+            found.push((modified(&z), json!({"path": z.display().to_string(), "holds": export_kind(&files), "files": files, "saved": modified(&z) * 1000, "megabytes": std::fs::metadata(&z).map_or(0, |m| m.len() / 1_000_000)})));
+        }
+    }
+    for d in dirs {
+        let files: Vec<String> = std::fs::read_dir(&d).into_iter().flatten().flatten().map(|e| e.path().to_string_lossy().into_owned()).filter(|n| export_file(n)).collect();
+        if !files.is_empty() {
+            let short: Vec<String> = files.iter().map(|f| f.rsplit('/').next().unwrap_or(f).to_string()).collect();
+            found.push((modified(&d), json!({"path": d.display().to_string(), "holds": export_kind(&files), "files": short, "saved": modified(&d) * 1000})));
+        }
+    }
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
+    found.into_iter().take(50).map(|f| f.1).collect()
+}
+
+/// What an export's files say it is.
+fn export_kind(files: &[String]) -> &'static str {
+    if files.iter().any(|f| f.contains("Gemini") || f.contains("Bard")) {
+        "Gemini (Google Takeout)"
+    } else if files.iter().any(|f| f.to_ascii_lowercase().ends_with("memories.json")) {
+        "Claude.ai"
+    } else {
+        "ChatGPT or Claude.ai"
+    }
+}
+
 fn export_file(name: &str) -> bool {
     let base = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
     let gemini = name.contains("Gemini") || name.contains("Bard");

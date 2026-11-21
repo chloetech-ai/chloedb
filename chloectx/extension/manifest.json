@@ -3,7 +3,9 @@
   "name": "ChloeCtx capture",
   "version": "0.3.10",
   "description": "Keeps your chats on chatgpt.com, claude.ai and gemini.google.com in your own ChloeCtx memory, on the sites you turn on.",
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -12,15 +14,41 @@
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
-  "optional_host_permissions": ["https://*/*"],
-  "background": { "service_worker": "background.js" },
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*"],
-      "js": ["sites.js", "content.js"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "sites.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "action": { "default_title": "ChloeCtx capture", "default_popup": "options.html" },
-  "options_page": "options.html"
+  "action": {
+    "default_title": "ChloeCtx capture",
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "homepage_url": "https://chloetech-ai.github.io/chloedb/site/ctx/"
 }

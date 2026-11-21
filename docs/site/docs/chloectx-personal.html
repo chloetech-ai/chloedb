@@ -122,7 +122,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/personal-memory.md">docs/chloectx/personal-memory.md</a>.</p>
       <p class="doc-version">These docs follow main (0.3.10, unreleased). The latest release is 0.3.9 (<a href="v0.3.9/index.html">its docs</a>); what is newer is marked "since 0.3.10".</p>
     </div>
-    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#import-your-chats">Import your chats</a></li><li><a href="#the-persona-card">The persona card</a></li><li><a href="#connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants</a></li><li><a href="#keep-it-current">Keep it current</a></li><li><a href="#share-a-slice">Share a slice</a></li><li><a href="#on-a-chloedb-cluster">On a ChloeDB cluster</a></li></ol></details>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#on-a-mac-with-claude-desktop">On a Mac with Claude Desktop</a></li><li><a href="#import-your-chats">Import your chats</a></li><li><a href="#the-persona-card">The persona card</a></li><li><a href="#connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants</a></li><li><a href="#keep-it-current">Keep it current</a></li><li><a href="#share-a-slice">Share a slice</a></li><li><a href="#on-a-chloedb-cluster">On a ChloeDB cluster</a></li></ol></details>
     <div class="doc-body">
 
 <p>ChloeCtx keeps a memory of your own beside the memories of your projects: the chats you had with ChatGPT, Claude.ai and Gemini, and a persona card of what they say about you, each line linked to the chats it came from. It is one ChloeDB file on your machine, and any assistant you connect reads it through the same tools: ChatGPT as a connector, Claude.ai as a custom connector, Claude Code and any MCP client. A slice of it can be shared with a key of its own.</p>
@@ -136,6 +136,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                      └──────────────────────┘      └─ shares: /s/&lt;key&gt;/mcp
                                                        signed, read-only, expiring</pre>
 <p>Why not a file of notes about yourself? A plain file has no sources (you cannot tell where "vegetarian" came from or whether it is still true), no search (an assistant reads all of it or none), no history (an edit loses what it replaced), and no scope (you share the whole file or nothing). Here every line of the card says which chat it came from, an assistant asks for what bears on its question and gets those records with their chats, a changed line keeps the old one as history, and a share holds only the sections and topics you picked, signed, logged and revocable.</p>
+<h2 id="on-a-mac-with-claude-desktop">On a Mac with Claude Desktop<a class="anchor" href="#on-a-mac-with-claude-desktop" aria-label="Link to this section">#</a></h2>
+<p>The shortest way in needs no terminal. Each release has <code>chloectx-claude-desktop-macos.mcpb</code>, a Claude Desktop extension that holds chloectx and its model. Open it in Claude Desktop (double-click it, or drag it onto Settings, Extensions) and press Install. Then ask Claude:</p>
+<ol>
+<li>"Import my ChatGPT export." Claude finds the exports in Downloads, Desktop and Documents (or says how to ask for one) and imports the one you pick.</li>
+<li>"Draft my persona card." Claude reads your own messages a part at a time and proposes lines, each naming the messages it came from. They show as suggested.</li>
+<li>"Show me the card." Claude goes through the suggested lines with you, and confirms, rewrites or drops each.</li>
+</ol>
+<p>It is the same memory as the commands below use, so <code>chloectx me serve</code> can later serve it to ChatGPT as well. <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloectx/claude-desktop/README.md">Its README</a> lists its tools and how it is built and checked.</p>
 <h2 id="import-your-chats">Import your chats<a class="anchor" href="#import-your-chats" aria-label="Link to this section">#</a></h2>
 <p>Ask each service for an export, then give ChloeCtx the file as it came:</p>
 <div class="doc-table"><table>
@@ -181,6 +189,7 @@ chloectx me card add &quot;Health &amp; diet&quot; &quot;Vegetarian; avoids mush
 chloectx me card confirm &lt;id&gt;     # make a drafted line yours
 chloectx me card drop &lt;id&gt;        # take it off (kept as history)</pre>
 <p><code>build</code> reads only what you wrote, never the assistants' answers, and keeps a drafted line only when it names the messages it came from. Building again replaces the drafted lines and keeps every line you wrote or confirmed. A line an assistant adds through <code>remember</code> shows as suggested, by that assistant, until you confirm it.</p>
+<p>The assistant you connect can draft it instead, with no model of ChloeCtx's own: <code>persona_draft</code> gives it your messages a part at a time with the same rules, and <code>persona_suggest</code> adds the lines it proposes, each with the ids of the messages it came from, as suggested. A line that names no message of yours is left out. <code>persona_review</code> confirms, changes or drops lines as you tell it.</p>
 <h2 id="connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants<a class="anchor" href="#connect-chatgpt-claudeai-and-other-assistants" aria-label="Link to this section">#</a></h2>
 <p><code>chloectx me serve</code> serves the memory over MCP with OAuth sign-in: the assistant registers itself, sends you to a consent page that asks for your passcode, and gets a token for 24 hours (renewed for 90 days). The passcode and a capture key are made and printed once on the first run; <code>chloectx me connect --new-passcode</code> makes a new one.</p>
 <pre data-lang="sh">chloectx me serve                                    # http://127.0.0.1:7781
@@ -220,6 +229,10 @@ chloectx me serve --public-url https://&lt;that address&gt;</pre>
 <tr>
 <td><code>remember</code></td>
 <td>(with write) a line for the card, shown as suggested, or a note</td>
+</tr>
+<tr>
+<td><code>persona_draft</code>, <code>persona_suggest</code>, <code>persona_review</code></td>
+<td>(with write) the card drafted by the assistant, and the person's review of it</td>
 </tr>
 </tbody>
 </table></div>

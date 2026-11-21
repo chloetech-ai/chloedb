@@ -228,7 +228,7 @@ fn personal_memory_end_to_end() {
     assert!(init["result"]["instructions"].as_str().unwrap().contains("persona"));
     let (_, list) = post_json(&mcp, Some(&access), &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
     let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["persona", "search", "fetch", "ask", "remember"]);
+    assert_eq!(names, ["persona", "search", "fetch", "ask", "remember", "persona_draft", "persona_suggest", "persona_review"]);
     let (card, _) = tool(&mcp, Some(&access), "persona", json!({}));
     assert!(card.contains("Vegetarian; avoids mushrooms.") && card.contains("## Travel"), "{card}");
     let (found, _) = tool(&mcp, Some(&access), "search", json!({"query": "Kyoto Shinkansen"}));
