@@ -270,3 +270,20 @@
 .readers .hb-row.self .lbl { font-weight: 600; color: var(--accent); }
 .readers .hb-row.self .val { font-weight: 700; color: var(--accent); }
 .readers .hb-row.self .track { height: 26px; }
+/* the feature cards under the head */
+.feat-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
+.feat-card { gap: 10px; }
+.feat-card .fc-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.feat-card .ico { width: 30px; height: 30px; padding: 6px; border-radius: 8px; background: var(--accent-wash); stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.feat-card .fc-cmd { justify-self: start; font: 500 0.76rem/1.2 var(--mono); color: var(--ink-2); background: var(--sunk); border-radius: 6px; padding: 4px 7px; }
+/* the benefits under the head */
+.perks { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.perks a { display: inline-block; padding: 6px 12px; border: 1px solid var(--night-rule); border-radius: 999px; color: var(--night-ink); font-size: 0.86rem; text-decoration: none; background: var(--night-2); }
+.perks a:hover { border-color: var(--night-accent); color: var(--night-accent); }
+.benefits { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
+.benefit { background: var(--panel); border: 1px solid var(--rule); border-top: 3px solid var(--accent); border-radius: 14px; padding: 20px; display: grid; gap: 8px; align-content: start; min-width: 0; scroll-margin-top: 90px; }
+.benefit .k { font: 500 0.7rem/1.2 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.benefit h3 { font-size: 1.15rem; }
+.benefit p { color: var(--ink-2); font-size: 0.93rem; }
+.benefit p.proof { color: var(--ink); font: 500 0.8rem/1.4 var(--mono); border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 4px; }
+.perks li { margin: 0; }
