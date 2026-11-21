@@ -6,8 +6,9 @@ g1_17b|MODEL=/root/s/models/qwen3-1.7b STEPS=600 EVERY=25 BATCH=8|proto_g1_rows_
 g1_06b_rows|ARMS=rows_small,rows,rows_multi STEPS=1500 EVERY=25 BATCH=8 LR_rows_small=0.01,0.03 LR_rows=0.01,0.03 LR_rows_multi=0.01,0.03 DELETE_ARM=rows_multi|proto_g1_rows_vs_finetune.py
 x1_06b_big_r2|LAYER=16 NBASE=65536 PAIRS=300000 DSTEPS=8000 NNEW=8192 ISTEPS=1500|proto_x1_ffn_rows.py
 d_4b_r2|MODEL=/root/s/models/qwen3-4b|proto_d_knnlm.py
+g1_06b_gated|ARMS=rows_multi_gated,rows_multi_iso,rows_multi_gated_iso STEPS=1500 EVERY=25 BATCH=8 LR_rows_multi_gated=0.003,0.01 LR_rows_multi_iso=0.003,0.01 LR_rows_multi_gated_iso=0.003,0.01 DELETE_ARM=rows_multi_gated_iso|proto_g1_rows_vs_finetune.py
 x34_4b_r2|MODEL=/root/s/models/qwen3-4b LAYER=15|proto_x34_facts.py
-g1_4b_r2|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS=1200 EVERY=50 STEPS_rows=2400 STEPS_rows_small=2400 STEPS_rows_multi=2400 DELETE_ARM=rows_multi ARMS=lora,ffn,rows_small,rows,rows_multi LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json|proto_g1_rows_vs_finetune.py
+g1_4b_r2|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS=1200 EVERY=50 STEPS_rows_multi=2400 STEPS_rows_multi_gated_iso=2400 DELETE_ARM=rows_multi_gated_iso ARMS=lora,ffn,rows_multi,rows_multi_gated_iso LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json,/root/out/g1_06b_gated.json|proto_g1_rows_vs_finetune.py
 x1_4b_r2|MODEL=/root/s/models/qwen3-4b LAYER=20 NBASE=65536 PAIRS=300000 DSTEPS=4000 NNEW=8192 ISTEPS=1000|proto_x1_ffn_rows.py
 fetch_8b|REPO=Qwen/Qwen3-8B DEST=/root/s/models/qwen3-8b|gpu/fetch_model.py
-g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS=1200 EVERY=50 STEPS_rows_small=2400 STEPS_rows_multi=2400 DELETE_ARM=rows_multi ARMS=lora,rows_small,rows_multi LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json|proto_g1_rows_vs_finetune.py
+g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS=1200 EVERY=50 STEPS_rows_multi_gated_iso=2400 DELETE_ARM=rows_multi_gated_iso ARMS=lora,rows_multi_gated_iso LRFROM=/root/out/g1_06b_r4.json,/root/out/g1_06b_rows.json,/root/out/g1_06b_gated.json|proto_g1_rows_vs_finetune.py

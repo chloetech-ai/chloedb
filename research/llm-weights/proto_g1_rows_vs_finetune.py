@@ -53,6 +53,12 @@ if os.environ.get("LRFROM"):  # reuse the learning rates another run picked (e.g
         prev = json.load(open(fn))["arms"]
         LRS.update({a: [prev[a]["lr"]] for a in prev if isinstance(prev[a], dict) and "lr" in prev[a]})
 LRS["rows_multi"] = LRS.get("rows_multi", LRS.get("rows", [3e-3]))
+for g in ("rows", "rows_multi"):
+    for suf in ("_gated", "_iso", "_gated_iso"): LRS[g + suf] = LRS.get(g + suf, LRS[g] if g in LRS else [3e-3])
+for a in list(LRS):
+    if os.environ.get(f"LR_{a}"): LRS[a] = [float(x) for x in os.environ[f"LR_{a}"].split(",")]
+ISO = []   # modules whose rows learn only from their own doc's text (set while an _iso arm trains)
+GATE_Q = float(os.environ.get("GATE_Q", 0.95))
 for a in list(LRS) + ["rows_multi"]:                 # LR_rows=0.01,0.03 overrides one arm's learning rates
     if os.environ.get(f"LR_{a}"): LRS[a] = [float(x) for x in os.environ[f"LR_{a}"].split(",")]
 ROW_LAYERS = [int(x) for x in os.environ.get("ROW_LAYERS", ",".join(str(round(NL * f)) for f in (0.25, 0.45, 0.6, 0.8))).split(",")]
@@ -125,7 +131,7 @@ class Rows(torch.nn.Module):
         super().__init__()
         self.K = torch.nn.Parameter(K.clone().float()); self.V = torch.nn.Parameter(torch.zeros_like(self.K))
         self.logscale = torch.nn.Parameter(torch.tensor(math.log(20.0)))
-        self.owner = owner; self.mask = None; self.db = None; self.on = True
+        self.owner = owner; self.mask = None; self.db = None; self.on = True; self.tau = None
     def forward(self, x):
         shp = x.shape; q = x.reshape(-1, shp[-1]).float(); qn = q / q.norm(dim=-1, keepdim=True)
         V = self.V
@@ -141,7 +147,9 @@ class Rows(torch.nn.Module):
             Kn = self.K / self.K.norm(dim=-1, keepdim=True); sc = qn @ Kn.t()
             if self.mask is not None: sc = sc.masked_fill(self.mask, -1e9)
             s, idx = sc.topk(TOPK, dim=-1)
-        w = torch.softmax(self.logscale.exp() * s, -1)
+        if self.tau is not None:   # gated: a zero-valued sink at score tau, so a token far from every key gets ~nothing
+            s = torch.cat([s, torch.full_like(s[:, :1], self.tau)], -1)
+        w = torch.softmax(self.logscale.exp() * s, -1)[:, :TOPK]
         return (w.unsqueeze(-1) * V[idx]).sum(1).reshape(shp).to(x.dtype)
 
 def mlp_inputs(n, seed, layer=None):
@@ -157,6 +165,23 @@ def mlp_inputs(n, seed, layer=None):
     pick = torch.randperm(len(X), generator=g, device="cpu")[:n]
     return X[pick.to(X.device)], [own[i] for i in pick.tolist()]
 
+def gate(mods):
+    """Set each module's sink score tau to the GATE_Q quantile of the best cosine that general text
+    (WikiText-2, a stretch the general eval does not read) reaches against its keys: rows fire only
+    on states closer to a key than general text usually gets."""
+    calib = tok(open(wt).read()[600000:900000], add_special_tokens=False)["input_ids"] if os.path.exists(wt) else []
+    for m in mods:
+        cap = []; h = model.model.layers[m.layer].mlp.register_forward_hook(lambda mm, a, o: cap.append(a[0].detach().float()))
+        with torch.no_grad():
+            for w0 in range(0, min(len(calib), 16 * 256), 256): model(torch.tensor([calib[w0:w0 + 256]], device=DEVICE))
+        h.remove()
+        if not cap: continue
+        q = torch.cat([c[0] for c in cap]); q = q / q.norm(dim=-1, keepdim=True)
+        with torch.no_grad():
+            Kn = m.K / m.K.norm(dim=-1, keepdim=True)
+            best = torch.cat([(q[i:i + 512] @ Kn.t()).max(-1).values for i in range(0, len(q), 512)])
+        m.tau = float(torch.quantile(best.float().cpu(), GATE_Q)); print("gate layer", m.layer, "tau", round(m.tau, 3), flush=True)
+
 # ---- training -----------------------------------------------------------------------------
 def train(params, lr, steps=None):
     STEPS = steps or globals()["STEPS"]
@@ -165,13 +190,19 @@ def train(params, lr, steps=None):
     rng = random.Random(1); best = (float("inf"), None, 0); hist = []; t0 = time.time(); ls = []
     for step in range(1, STEPS + 1):
         xs = []
-        for e in rng.choices(EVAL, weights=WEIGHTS, k=BATCH):
+        docs = rng.choices(EVAL, weights=WEIGHTS, k=BATCH)
+        for e in docs:
             r = TRAIN[e]; i = rng.randrange(0, max(1, len(r) - WIN)); xs.append(r[i:i + WIN])
         x = torch.tensor(xs, device=DEVICE)
+        for m in ISO:   # each window sees only the rows keyed on its own doc, so a doc's text trains only its rows
+            m.mask = (m.owner_t.unsqueeze(0) != torch.tensor([EVAL.index(e) for e in docs], device=DEVICE).unsqueeze(1)).repeat_interleave(x.shape[1], 0)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=AMP):
             lg = model(x).logits
         loss = F.cross_entropy(lg[:, :-1].float().reshape(-1, lg.shape[-1]), x[:, 1:].reshape(-1))
-        opt.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step()
+        opt.zero_grad(set_to_none=True); loss.backward()
+        if not ISO: torch.nn.utils.clip_grad_norm_(params, 1.0)   # a global clip would couple the docs' rows
+        opt.step(); sched.step()
+        for m in ISO: m.mask = None
         ls.append(loss.item()); del lg, loss
         if step % EVERY == 0 or step == STEPS:
             v, _ = eval_set(VALS); hist.append({"step": step, "train_loss": float(np.mean(ls[-EVERY:])), "val_ppl": v, "secs": round(time.time() - t0)})
@@ -203,22 +234,28 @@ for arm in ARMS:
                 for p in ffn.parameters(): p.requires_grad_(False)
                 ffn.load_state_dict(ffn_orig)
         else:
-            lays = ROW_LAYERS if arm == "rows_multi" else [L]
-            n = {"rows": NROWS, "rows_small": NSMALL, "rows_multi": NROWS // len(lays)}[arm]
+            lays = ROW_LAYERS if arm.startswith("rows_multi") else [L]
+            n = {"rows": NROWS, "rows_small": NSMALL, "rows_multi": NROWS // len(lays)}[arm.replace("_gated", "").replace("_iso", "")]
             mods, hooks = [], []
             for l in lays:
                 K, own = mlp_inputs(n, seed=2 + l, layer=l); m = Rows(K, own); m.layer = l; mods.append(m)
                 hooks.append(model.model.layers[l].mlp.register_forward_hook(lambda mm, a, o, m=m: o + m(a[0]) if m.on else o))
             params = [p for m in mods for p in m.parameters()]
+            if "_gated" in arm: gate(mods)
+            if arm.endswith("_iso"):   # exact per-doc unlearning: no shared trained parameter between docs' rows
+                for m in mods:
+                    m.logscale.requires_grad_(False); m.owner_t = torch.tensor([EVAL.index(o) for o in m.owner], device=DEVICE)
+                params = [m.K for m in mods] + [m.V for m in mods]; ISO[:] = mods
             def teardown(hooks=hooks):
                 for h in hooks: h.remove()
+                ISO.clear()
         r = train(params, lr, int(os.environ.get(f"STEPS_{arm}", STEPS))); r.update(eval_all()); r["trainable"] = sum(p.numel() for p in params)
-        if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D * len(mods); r["row_layers"] = [m.layer for m in mods]
+        if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D * len(mods); r["row_layers"] = [m.layer for m in mods]; r["tau"] = [m.tau for m in mods]
         print(arm, lr, {k: v for k, v in r.items() if k in ("held_out", "seen", "domain", "general", "best_step", "val_ppl")}, flush=True)
         res["arms"].setdefault(arm + "_tried", []).append({k: v for k, v in r.items() if not k.endswith("per_doc") and k != "history"})
         if best is None or r["val_ppl"] < best["val_ppl"]:
             best = r
-            if arm == DELETE_ARM: rows_keep = [{"K": m.K.detach().clone(), "V": m.V.detach().clone(), "ls": m.logscale.detach().clone(), "owner": m.owner, "layer": m.layer} for m in mods]
+            if arm == DELETE_ARM: rows_keep = [{"K": m.K.detach().clone(), "V": m.V.detach().clone(), "ls": m.logscale.detach().clone(), "owner": m.owner, "layer": m.layer, "tau": m.tau} for m in mods]
         teardown(); del params
         if DEVICE == "cuda": torch.cuda.empty_cache()
     res["arms"][arm] = best
@@ -237,7 +274,7 @@ if rows_keep is not None:
                 for m in self.ms: setattr(m, k, v)
     mods = []
     for kp in rows_keep:
-        m = Rows(kp["K"], kp["owner"]); m.layer = kp["layer"]
+        m = Rows(kp["K"], kp["owner"]); m.layer = kp["layer"]; m.tau = kp["tau"]
         with torch.no_grad(): m.V.copy_(kp["V"]); m.logscale.copy_(kp["ls"])
         for p in m.parameters(): p.requires_grad_(False)
         model.model.layers[m.layer].mlp.register_forward_hook(lambda mm, a, o, m=m: o + m(a[0]) if m.on else o); mods.append(m)
