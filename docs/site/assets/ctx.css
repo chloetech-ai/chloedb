@@ -259,3 +259,5 @@
 .hb-legend i.file { background: var(--fam-graph); }
 .readers .hb-row { grid-template-columns: minmax(110px, 150px) minmax(0, 1fr) 44px; gap: 10px; }
 @media (max-width: 600px) { .readers .hb-row { grid-template-columns: minmax(0, 1fr) 44px; } }
+.hb-row .bar.other { background: var(--fam-vec); }
+.hb-legend i.other { background: var(--fam-vec); }

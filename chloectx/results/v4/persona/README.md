@@ -74,6 +74,29 @@ What it means:
   At this size the history fits a 200,000-token window; at a few months more of
   chats it does not.
 
+## mem0 and Hindsight, added 21 Nov 2026
+
+The same 100 questions were read by the same three readers from the contexts
+mem0 2.2.1 and Hindsight 1.0.0 returned in October
+([`v3/competitors`](../../v3/competitors/README.md), where each stored every
+history with Haiku): mem0's default search, Hindsight with a context the size of
+ChloeCtx's (640 tokens of facts, no source chunks) and Hindsight as AMB runs it
+(up to 32,768 tokens of facts and 16,384 of source chunks).
+
+| reader | mem0 | Hindsight, small | Hindsight, large | ChloeCtx, query engine |
+|---|---|---|---|---|
+| Haiku | 81% | 71% | 88% | 84% |
+| Sonnet | 88% | 81% | 92% | 87% |
+| Opus | 88% | 84% | 98% | 89% |
+| tokens read (Opus) | 2,172 | 2,677 | 69,837 | 2,134 |
+| $ a question (Opus) | 0.0250 | 0.0299 | 0.5671 | 0.0253 |
+| model calls to store a person | 47.5, $0.128, 11 min (median) | 262, about $1.00, 16 min | the same | none, under a second |
+| recall (median) | 26 ms | 51 s | 44 s | 6.4 s (search alone, milliseconds) |
+
+mem0 is level with ChloeCtx's query engine after paying a model to extract
+facts from every conversation; Hindsight is ahead only when it hands the reader
+33 times more tokens, at 23 times the cost a question with Opus.
+
 ## Caveats
 
 - One question per person, 100 in all; the whole-history rows for Sonnet and

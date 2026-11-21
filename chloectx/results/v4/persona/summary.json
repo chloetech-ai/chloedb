@@ -12,7 +12,8 @@
   "seconds": 1.507,
   "models": [
    "claude-haiku-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "haiku",
@@ -23,12 +24,45 @@
   "tokens": 2690.64,
   "chars": 4786.6,
   "reader_usd": 0.0008454480000000001,
-  "memory_usd": 0.1312008971,
+  "memory_usd": 0.0,
   "seconds": 2.9845,
   "models": [
    "claude-haiku-5-5"
   ],
+  "store_usd": 0.1312008971,
   "memory_seconds": 532.2725
+ },
+ {
+  "reader": "haiku",
+  "context": "mem0",
+  "label": "mem0",
+  "n": 100,
+  "accuracy": 0.81,
+  "tokens": 2197.18,
+  "chars": 4420.78,
+  "reader_usd": 0.000742121,
+  "memory_usd": 0.0,
+  "seconds": 2.7785,
+  "models": [
+   "claude-haiku-5-5"
+  ],
+  "store_usd": 0.1278
+ },
+ {
+  "reader": "haiku",
+  "context": "hindsight_small",
+  "label": "Hindsight, small context",
+  "n": 100,
+  "accuracy": 0.71,
+  "tokens": 2701.66,
+  "chars": 4607.36,
+  "reader_usd": 0.000890087,
+  "memory_usd": 0.0,
+  "seconds": 3.126,
+  "models": [
+   "claude-haiku-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "haiku",
@@ -43,7 +77,8 @@
   "seconds": 3.0665,
   "models": [
    "claude-haiku-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "haiku",
@@ -59,7 +94,24 @@
   "models": [
    "claude-haiku-5-5"
   ],
+  "store_usd": 0.0,
   "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "haiku",
+  "context": "hindsight",
+  "label": "Hindsight",
+  "n": 100,
+  "accuracy": 0.88,
+  "tokens": 69862.23,
+  "chars": 169866.83,
+  "reader_usd": 0.014361366,
+  "memory_usd": 0.0,
+  "seconds": 3.607,
+  "models": [
+   "claude-haiku-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "haiku",
@@ -74,7 +126,8 @@
   "seconds": 4.0825,
   "models": [
    "claude-haiku-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "sonnet",
@@ -89,7 +142,8 @@
   "seconds": 2.0134999999999996,
   "models": [
    "claude-sonnet-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "sonnet",
@@ -100,12 +154,45 @@
   "tokens": 2669.64,
   "chars": 4786.6,
   "reader_usd": 0.01380246,
-  "memory_usd": 0.1312008971,
+  "memory_usd": 0.0,
   "seconds": 2.394,
   "models": [
    "claude-sonnet-5-5"
   ],
+  "store_usd": 0.1312008971,
   "memory_seconds": 532.2725
+ },
+ {
+  "reader": "sonnet",
+  "context": "mem0",
+  "label": "mem0",
+  "n": 100,
+  "accuracy": 0.88,
+  "tokens": 2176.18,
+  "chars": 4420.78,
+  "reader_usd": 0.01199452,
+  "memory_usd": 0.0,
+  "seconds": 2.17,
+  "models": [
+   "claude-sonnet-5-5"
+  ],
+  "store_usd": 0.1278
+ },
+ {
+  "reader": "sonnet",
+  "context": "hindsight_small",
+  "label": "Hindsight, small context",
+  "n": 100,
+  "accuracy": 0.81,
+  "tokens": 2680.66,
+  "chars": 4607.36,
+  "reader_usd": 0.01412804,
+  "memory_usd": 0.0,
+  "seconds": 2.4269999999999996,
+  "models": [
+   "claude-sonnet-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "sonnet",
@@ -120,7 +207,8 @@
   "seconds": 2.276,
   "models": [
    "claude-sonnet-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "sonnet",
@@ -136,7 +224,24 @@
   "models": [
    "claude-sonnet-5-5"
   ],
+  "store_usd": 0.0,
   "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "sonnet",
+  "context": "hindsight",
+  "label": "Hindsight",
+  "n": 100,
+  "accuracy": 0.92,
+  "tokens": 69841.23,
+  "chars": 169866.83,
+  "reader_usd": 0.28329982,
+  "memory_usd": 0.0,
+  "seconds": 2.808,
+  "models": [
+   "claude-sonnet-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "sonnet",
@@ -151,7 +256,8 @@
   "seconds": 3.616,
   "models": [
    "claude-sonnet-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "sonnet",
@@ -171,6 +277,22 @@
  },
  {
   "reader": "sonnet",
+  "context": "mem0",
+  "label": "mem0 (same 25)",
+  "n": 25,
+  "accuracy": 0.88,
+  "subset": true
+ },
+ {
+  "reader": "sonnet",
+  "context": "hindsight_small",
+  "label": "Hindsight, small context (same 25)",
+  "n": 25,
+  "accuracy": 0.84,
+  "subset": true
+ },
+ {
+  "reader": "sonnet",
   "context": "search",
   "label": "ChloeCtx, search (same 25)",
   "n": 25,
@@ -186,6 +308,14 @@
   "subset": true
  },
  {
+  "reader": "sonnet",
+  "context": "hindsight",
+  "label": "Hindsight (same 25)",
+  "n": 25,
+  "accuracy": 0.96,
+  "subset": true
+ },
+ {
   "reader": "opus",
   "context": "none",
   "label": "No memory",
@@ -198,7 +328,8 @@
   "seconds": 3.148,
   "models": [
    "claude-opus-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "opus",
@@ -209,12 +340,45 @@
   "tokens": 2665.64,
   "chars": 4786.6,
   "reader_usd": 0.02902812,
-  "memory_usd": 0.1312008971,
+  "memory_usd": 0.0,
   "seconds": 4.390000000000001,
   "models": [
    "claude-opus-5-5"
   ],
+  "store_usd": 0.1312008971,
   "memory_seconds": 532.2725
+ },
+ {
+  "reader": "opus",
+  "context": "mem0",
+  "label": "mem0",
+  "n": 100,
+  "accuracy": 0.88,
+  "tokens": 2172.18,
+  "chars": 4420.78,
+  "reader_usd": 0.02500764,
+  "memory_usd": 0.0,
+  "seconds": 4.094,
+  "models": [
+   "claude-opus-5-5"
+  ],
+  "store_usd": 0.1278
+ },
+ {
+  "reader": "opus",
+  "context": "hindsight_small",
+  "label": "Hindsight, small context",
+  "n": 100,
+  "accuracy": 0.84,
+  "tokens": 2676.66,
+  "chars": 4607.36,
+  "reader_usd": 0.02989508,
+  "memory_usd": 0.0,
+  "seconds": 4.5465,
+  "models": [
+   "claude-opus-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "opus",
@@ -229,7 +393,8 @@
   "seconds": 3.7485,
   "models": [
    "claude-opus-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "opus",
@@ -245,7 +410,24 @@
   "models": [
    "claude-opus-5-5"
   ],
+  "store_usd": 0.0,
   "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "opus",
+  "context": "hindsight",
+  "label": "Hindsight",
+  "n": 100,
+  "accuracy": 0.98,
+  "tokens": 69837.23,
+  "chars": 169866.83,
+  "reader_usd": 0.56707004,
+  "memory_usd": 0.0,
+  "seconds": 5.5525,
+  "models": [
+   "claude-opus-5-5"
+  ],
+  "store_usd": 1.0
  },
  {
   "reader": "opus",
@@ -260,7 +442,8 @@
   "seconds": 7.608,
   "models": [
    "claude-opus-5-5"
-  ]
+  ],
+  "store_usd": 0.0
  },
  {
   "reader": "opus",
@@ -280,6 +463,22 @@
  },
  {
   "reader": "opus",
+  "context": "mem0",
+  "label": "mem0 (same 25)",
+  "n": 25,
+  "accuracy": 0.92,
+  "subset": true
+ },
+ {
+  "reader": "opus",
+  "context": "hindsight_small",
+  "label": "Hindsight, small context (same 25)",
+  "n": 25,
+  "accuracy": 0.88,
+  "subset": true
+ },
+ {
+  "reader": "opus",
   "context": "search",
   "label": "ChloeCtx, search (same 25)",
   "n": 25,
@@ -292,6 +491,14 @@
   "label": "ChloeCtx, query engine (same 25)",
   "n": 25,
   "accuracy": 0.92,
+  "subset": true
+ },
+ {
+  "reader": "opus",
+  "context": "hindsight",
+  "label": "Hindsight (same 25)",
+  "n": 25,
+  "accuracy": 1.0,
   "subset": true
  }
 ]

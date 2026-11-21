@@ -23,7 +23,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/ctx.css?v=63f3ffab2c">
+<link rel="stylesheet" href="../assets/ctx.css?v=85c24337fe">
 <script>document.documentElement.classList.add("js");</script>
 </head>
 <body>
@@ -53,7 +53,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           <a class="btn primary lg" href="#install">Install it</a>
           <a class="btn on-night lg" href="#plain">Why not a plain file?</a>
         </div>
-        <p class="small muted">It works today in Claude Code and in any MCP client on your machine. Importing your ChatGPT, Claude and Gemini history, and signing in from their apps, come in the next release: <a href="#where">where it works</a>. Local files, no account. Built on <a href="../index.html">ChloeDB</a>. Formerly called Engram.</p>
+        <p class="small muted">It works today in Claude Code and in any MCP client on your machine. Importing your ChatGPT, Claude and Gemini history, and signing in from their apps, are built and in review: <a href="#where">where it works</a>. Local files, no account. Built on <a href="../index.html">ChloeDB</a>. Formerly called Engram.</p>
       </div>
       <div class="loop" data-seq data-interval="1500" data-hold="5" aria-label="Animation: what you said in two different assistants reaches a third model months later">
         <div class="sess">
@@ -86,7 +86,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       </div>
     </div>
     <div class="stats" style="margin-bottom:64px">
-      <div><b>89<small>%</small></b><span>of questions about a person's past chats answered right by Opus from ChloeCtx, against 50% from a plain memory file and 9% with no memory</span></div>
+      <div><b>89<small>%</small></b><span>of questions about a person's past chats answered right by Opus from ChloeCtx: level with mem0 (88%), against 50% from a plain memory file and 9% with none</span></div>
       <div><b>79<small>×</small></b><span>fewer tokens than the whole history in context: 2,134 a question against 168,875</span></div>
       <div><b>43<small>×</small></b><span>cheaper per question with Opus, $0.025 against $1.10, and 89× with Haiku, ChloeCtx's own model calls included</span></div>
       <div><b>3.8<small> s</small></b><span>for Opus to read and answer, against 7.6 s with the whole history (median)</span></div>
@@ -111,7 +111,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="block-head">
       <span class="eyebrow">One memory, many models</span>
       <h2>Stored once, read by three models, at a fraction of the tokens</h2>
-      <p>100 questions from LongMemEval, each about one person's past chats with an assistant: about 47 conversations and half a million characters per person, and a question asked after them. Each person's chats were stored once. Then Claude Haiku, Sonnet and Opus answered from what each kind of memory gave them, and Haiku graded every answer with LongMemEval's own prompts.</p>
+      <p>100 questions from LongMemEval, each about one person's past chats with an assistant: about 47 conversations and half a million characters per person, and a question asked after them. Each person's chats were stored once in each memory: a plain memory file, mem0, Hindsight and ChloeCtx. Then Claude Haiku, Sonnet and Opus answered from what each memory gave them, and Haiku graded every answer with LongMemEval's own prompts.</p>
     </div>
     <div class="readers">
       <div>
@@ -119,8 +119,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <div class="hb">
             <div class="hb-row" data-tip="<b>No memory</b>, Haiku reading<br>9 of 100 correct · 514 tokens · $0.0002 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:9%"></span></span><span class="val">9%</span></div>
             <div class="hb-row" data-tip="<b>Plain memory file</b>, Haiku reading<br>45 of 100 correct · 2,691 tokens · $0.0008 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:45%"></span></span><span class="val">45%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Haiku reading<br>81 of 100 correct · 2,197 tokens · $0.0007 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:81%"></span></span><span class="val">81%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Haiku reading<br>71 of 100 correct · 2,702 tokens · $0.0009 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:71%"></span></span><span class="val">71%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Haiku reading<br>68 of 100 correct · 1,831 tokens · $0.0007 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:68%"></span></span><span class="val">68%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Haiku reading<br>84 of 100 correct · 2,159 tokens · $0.0019 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:84%"></span></span><span class="val">84%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Haiku reading<br>88 of 100 correct · 69,862 tokens · $0.0144 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
             <div class="hb-row" data-tip="<b>Whole history</b>, Haiku reading<br>88 of 100 correct · 168,447 tokens · $0.1704 a question"><span class="lbl">Whole history</span><span class="track"><span class="bar ref" style="--w:88%"></span></span><span class="val">88%</span></div>
         </div>
       </div>
@@ -129,8 +132,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <div class="hb">
             <div class="hb-row" data-tip="<b>No memory</b>, Sonnet reading<br>8 of 100 correct · 493 tokens · $0.0032 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:8%"></span></span><span class="val">8%</span></div>
             <div class="hb-row" data-tip="<b>Plain memory file</b>, Sonnet reading<br>49 of 100 correct · 2,670 tokens · $0.0138 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:49%"></span></span><span class="val">49%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Sonnet reading<br>88 of 100 correct · 2,176 tokens · $0.0120 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Sonnet reading<br>81 of 100 correct · 2,681 tokens · $0.0141 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:81%"></span></span><span class="val">81%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Sonnet reading<br>75 of 100 correct · 1,810 tokens · $0.0103 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:75%"></span></span><span class="val">75%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Sonnet reading<br>87 of 100 correct · 2,138 tokens · $0.0128 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:87%"></span></span><span class="val">87%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Sonnet reading<br>92 of 100 correct · 69,841 tokens · $0.2833 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:92%"></span></span><span class="val">92%</span></div>
             <div class="hb-row" data-tip="<b>Whole history</b>, Sonnet reading<br>24 of 25 correct · 168,879 tokens · $0.5482 a question<br>ChloeCtx's query engine on the same 25: 88%"><span class="lbl">Whole history<small>on 25 of the questions</small></span><span class="track"><span class="bar ref" style="--w:96%"></span></span><span class="val">96%</span></div>
         </div>
       </div>
@@ -139,49 +145,63 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         <div class="hb">
             <div class="hb-row" data-tip="<b>No memory</b>, Opus reading<br>9 of 100 correct · 489 tokens · $0.0075 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:9%"></span></span><span class="val">9%</span></div>
             <div class="hb-row" data-tip="<b>Plain memory file</b>, Opus reading<br>50 of 100 correct · 2,666 tokens · $0.0290 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:50%"></span></span><span class="val">50%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Opus reading<br>88 of 100 correct · 2,172 tokens · $0.0250 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Opus reading<br>84 of 100 correct · 2,677 tokens · $0.0299 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:84%"></span></span><span class="val">84%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Opus reading<br>80 of 100 correct · 1,806 tokens · $0.0219 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:80%"></span></span><span class="val">80%</span></div>
             <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Opus reading<br>89 of 100 correct · 2,134 tokens · $0.0253 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:89%"></span></span><span class="val">89%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Opus reading<br>98 of 100 correct · 69,837 tokens · $0.5671 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:98%"></span></span><span class="val">98%</span></div>
             <div class="hb-row" data-tip="<b>Whole history</b>, Opus reading<br>25 of 25 correct · 168,875 tokens · $1.0962 a question<br>ChloeCtx's query engine on the same 25: 92%"><span class="lbl">Whole history<small>on 25 of the questions</small></span><span class="track"><span class="bar ref" style="--w:100%"></span></span><span class="val">100%</span></div>
         </div>
       </div>
     </div>
-    <div class="hb-legend" style="margin-top:14px"><span><i></i>no memory</span><span><i class="file"></i>a plain memory file</span><span><i class="self"></i>ChloeCtx</span><span><i class="ref"></i>whole history in context</span></div>
+    <div class="hb-legend" style="margin-top:14px"><span><i></i>no memory</span><span><i class="file"></i>a plain memory file</span><span><i class="other"></i>other memory systems</span><span><i class="self"></i>ChloeCtx</span><span><i class="ref"></i>whole history in context</span></div>
     <div class="tbl" style="margin-top:22px">
       <table>
-        <thead><tr><th>Opus answering</th><th class="n">correct</th><th class="n">tokens read</th><th class="n">$ a question</th><th class="n">seconds to answer</th></tr></thead>
+        <thead><tr><th>Opus answering</th><th class="n">correct</th><th class="n">tokens read</th><th class="n">$ a question</th><th class="n">s to answer</th><th class="n">recall</th><th class="n">$ to store a person</th><th class="n">time to store</th></tr></thead>
         <tbody>
-          <tr><td>No memory</td><td class="n">9/100</td><td class="n">489</td><td class="n">0.0075</td><td class="n">3.1</td></tr>
-          <tr><td>A plain memory file</td><td class="n">50/100</td><td class="n">2,666</td><td class="n">0.0290</td><td class="n">4.4</td></tr>
-          <tr class="self"><td>ChloeCtx, search</td><td class="n">80/100</td><td class="n">1,806</td><td class="n">0.0219</td><td class="n">3.7</td></tr>
-          <tr class="self"><td>ChloeCtx, query engine</td><td class="n">89/100</td><td class="n">2,134</td><td class="n">0.0253</td><td class="n">3.8 + 6.4</td></tr>
-          <tr><td>Whole history in context</td><td class="n">25/25</td><td class="n">168,875</td><td class="n">1.0962</td><td class="n">7.6</td></tr>
+          <tr><td>No memory</td><td class="n">9/100</td><td class="n">489</td><td class="n">0.0075</td><td class="n">3.1</td><td class="n">–</td><td class="n"></td><td class="n">–</td></tr>
+          <tr><td>Plain memory file</td><td class="n">50/100</td><td class="n">2,666</td><td class="n">0.0290</td><td class="n">4.4</td><td class="n">–</td><td class="n">0.13</td><td class="n">9 min</td></tr>
+          <tr><td>mem0</td><td class="n">88/100</td><td class="n">2,172</td><td class="n">0.0250</td><td class="n">4.1</td><td class="n">26 ms</td><td class="n">0.13</td><td class="n">11 min</td></tr>
+          <tr><td>Hindsight, small</td><td class="n">84/100</td><td class="n">2,677</td><td class="n">0.0299</td><td class="n">4.5</td><td class="n">51 s</td><td class="n">1.00</td><td class="n">16 min</td></tr>
+          <tr class="self"><td>ChloeCtx, search</td><td class="n">80/100</td><td class="n">1,806</td><td class="n">0.0219</td><td class="n">3.7</td><td class="n">&lt; 10 ms</td><td class="n"></td><td class="n">under 1 s</td></tr>
+          <tr class="self"><td>ChloeCtx, query engine</td><td class="n">89/100</td><td class="n">2,134</td><td class="n">0.0253</td><td class="n">3.8</td><td class="n">6.4 s</td><td class="n"></td><td class="n">under 1 s</td></tr>
+          <tr><td>Hindsight, large</td><td class="n">98/100</td><td class="n">69,837</td><td class="n">0.5671</td><td class="n">5.6</td><td class="n">44 s</td><td class="n">1.00</td><td class="n">16 min</td></tr>
+          <tr><td>Whole history</td><td class="n">25/25</td><td class="n">168,875</td><td class="n">1.0962</td><td class="n">7.6</td><td class="n">–</td><td class="n"></td><td class="n">–</td></tr>
         </tbody>
       </table>
     </div>
     <div class="facts">
-      <div class="fact"><b>Every model gains from the same store</b><p>One context per question, built once, took Haiku from 9% to 84% correct, Sonnet from 8% to 87% and Opus from 9% to 89%. Nothing in the memory is tied to the model that reads it.</p></div>
-      <div class="fact"><b>79 times fewer tokens</b><p>2,134 tokens a question against 168,875 for the whole history. That is 43 times less money with Opus, $0.025 against $1.10, and 89 times less with Haiku, ChloeCtx's own model calls included.</p></div>
-      <div class="fact"><b>Half the reading time</b><p>Opus read and answered in 3.8 seconds against 7.6 with the whole history. Search alone adds milliseconds and scored 80%. The query engine's two small-model calls add about 6.4 seconds, which Claude Code spends in the background.</p></div>
+      <div class="fact"><b>Level with mem0, with nothing to pay to store</b><p>mem0 answered 88% with Opus from a context the size of ChloeCtx's (89%). It first spent about 48 model calls, $0.13 and 11 minutes extracting facts from each person's chats. ChloeCtx stores them as they are, in under a second, with no model call, so nothing said is lost to a bad extraction.</p></div>
+      <div class="fact"><b>Ahead of Hindsight at the same size</b><p>Given about 2,700 tokens, Hindsight scored 84% with Opus. Given 70,000 it scored 98%, at $0.57 a question, 23 times ChloeCtx's, after $1 and 16 minutes of model calls per person and about 45 seconds a recall.</p></div>
+      <div class="fact"><b>79 times fewer tokens than the whole history</b><p>2,134 tokens a question against 168,875: 43 times less money with Opus, $0.025 against $1.10, and 89 times less with Haiku, ChloeCtx's own model calls included. Opus read and answered in 3.8 seconds against 7.6.</p></div>
     </div>
-    <p class="src-line">Cloud container, 21 Nov 2026. Every fifth question of LongMemEval-S, one per person. Costs are the readers' and the query engine's model calls at list prices; the plain file's row is its reading only, and keeping it current cost another $0.13 per person; seconds are the API's median time to read and answer. The whole history was read on every fifth of these questions by Sonnet and Opus, at $0.55 and $1.10 each. <a href="benchmarks.html#persona">Method and every reader's numbers</a></p>
+    <p class="src-line">Cloud container, 21 Nov 2026. Every fifth question of LongMemEval-S, one per person. mem0 (2.2.1) and Hindsight (1.0.0) stored each person's chats with Haiku in October, as in <a href="benchmarks.html#others">their earlier comparison</a>; the same stored contexts were read again here. Costs are list prices; seconds are the API's median time to read and answer, and the query engine's two calls add 6.4 s. The whole history was read on every fifth of these questions by Sonnet and Opus, at $0.55 and $1.10 each. <a href="benchmarks.html#persona">Method and every reader's numbers</a></p>
   </div></section>
 
   <section class="gutter" id="plain"><div class="wrap block">
     <div class="block-head">
-      <span class="eyebrow">Why not a plain file?</span>
-      <h2>A file of notes about you forgets what it cut</h2>
-      <p>The simplest memory is a file: an <code>about-me.md</code>, a chat app's saved memories, Claude Code's <code>MEMORY.md</code>. A model rereads it after each few conversations and rewrites it to fit. It is cheap to read, but each rewrite decides what to drop, and what it dropped cannot come back. The other easy answer, pasting your whole history into every question, keeps everything and pays for all of it every time.</p>
+      <span class="eyebrow">Why not a plain file, or another memory?</span>
+      <h2>A file forgets what it cut. Other memories pay a model to decide.</h2>
+      <p>The simplest memory is a file: an <code>about-me.md</code>, a chat app's saved memories, Claude Code's <code>MEMORY.md</code>. A model rereads it after each few conversations and rewrites it to fit, and what a rewrite drops cannot come back. Memory systems such as mem0 and Hindsight have a model extract facts from every conversation before they are stored. Pasting the whole history keeps everything and pays for all of it every time. ChloeCtx keeps everything as it was said, with no model call, and picks what each question needs.</p>
     </div>
     <div class="tbl cmp">
       <table>
-        <thead><tr><th></th><th>A plain memory file</th><th>Whole history in context</th><th class="self">ChloeCtx</th></tr></thead>
+        <thead><tr><th></th><th>Plain memory file</th><th>mem0</th><th>Hindsight</th><th>Whole history</th><th class="self">ChloeCtx</th></tr></thead>
         <tbody>
-          <tr><td>What it keeps</td><td>A summary a model rewrote, about 4,800 characters</td><td>Everything</td><td class="self">Everything, as said, plus notes on top</td></tr>
-          <tr><td>Who decides what is lost</td><td><span class="x">✕</span>A model, at every rewrite</td><td><span class="y">✓</span>Nothing is lost</td><td class="self"><span class="y">✓</span>Nothing is lost</td></tr>
-          <tr><td>Correct answers, Opus reading</td><td>50%</td><td>100% on 25 questions</td><td class="self">89% (92% on the same 25)</td></tr>
-          <tr><td>Tokens read per question</td><td>2,666, the whole file every time</td><td>168,875</td><td class="self">2,134</td></tr>
-          <tr><td>Cost to keep it current</td><td>$0.13 a person, 26 model calls</td><td>None</td><td class="self">None to store; notes about $0.001 a turn</td></tr>
-          <tr><td>As your history grows</td><td><span class="x">✕</span>Cut harder to fit</td><td><span class="x">✕</span>Outgrows the model's window</td><td class="self"><span class="y">✓</span>Same few thousand tokens; 5.7 ms at a million records</td></tr>
+          <tr><td>What it keeps</td><td>A summary a model rewrote, about 4,800 characters</td><td>Facts a model extracted</td><td>Facts a model extracted, and the source text</td><td>Everything</td><td class="self">Everything, as said, plus notes on top</td></tr>
+          <tr><td>Who decides what is lost</td><td><span class="x">✕</span>A model, at every rewrite</td><td><span class="x">✕</span>A model, at extraction</td><td><span class="m">~</span>Keeps the text; recall leads with extracted facts</td><td><span class="y">✓</span>Nothing is lost</td><td class="self"><span class="y">✓</span>Nothing is lost</td></tr>
+          <tr><td>Correct answers, Opus reading</td><td>50%</td><td>88%</td><td>98% at 70,000 tokens; 84% at 2,700</td><td>100% on 25 questions</td><td class="self">89% (92% on the same 25)</td></tr>
+          <tr><td>Tokens read per question</td><td>2,666, the whole file every time</td><td>2,172</td><td>69,837</td><td>168,875</td><td class="self">2,134</td></tr>
+          <tr><td>$ a question, Opus</td><td>0.029</td><td>0.025</td><td>0.567</td><td>1.096</td><td class="self">0.025, its own calls included</td></tr>
+          <tr><td>To store one person's chats</td><td>26 model calls, $0.13, 9 minutes</td><td>About 48 model calls, $0.13, 11 minutes</td><td>About 260 model calls, $1.00, 16 minutes</td><td>Nothing</td><td class="self">No model call, under a second</td></tr>
+          <tr><td>As your history grows</td><td><span class="x">✕</span>Cut harder to fit</td><td><span class="m">~</span>More facts to keep consistent</td><td><span class="m">~</span>More facts to keep consistent</td><td><span class="x">✕</span>Outgrows the model's window</td><td class="self"><span class="y">✓</span>Same few thousand tokens; 5.7 ms at a million records</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tbl cmp" style="margin-top:14px">
+      <table>
+        <thead><tr><th></th><th>Plain memory file</th><th>Whole history in context</th><th class="self">ChloeCtx</th></tr></thead>
+        <tbody>
           <tr><td>Where a fact came from</td><td><span class="x">✕</span>Not kept</td><td><span class="m">~</span>Somewhere in the history</td><td class="self"><span class="y">✓</span>Each record has its chat and date</td></tr>
           <tr><td>Forget one fact</td><td><span class="m">~</span>Edit by hand</td><td><span class="x">✕</span>Delete whole chats</td><td class="self"><span class="y">✓</span>Every record that holds it</td></tr>
           <tr><td>Share part of it</td><td><span class="x">✕</span>All or nothing</td><td><span class="x">✕</span>All or nothing</td><td class="self"><span class="y">✓</span>A signed, scoped, revocable slice</td></tr>
@@ -192,7 +212,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     <div class="facts">
       <div class="fact"><b>What the file dropped</b><p>With Opus reading, the plain file answered 3 of 11 questions about what the assistant had said, against ChloeCtx's 11; 2 of 6 about preferences, against 6; and 12 of 25 about dates and order, against 23. A rewrite keeps the gist and loses the particulars.</p></div>
       <div class="fact"><b>The same size, twice the answers</b><p>The file was about as long as ChloeCtx's context, 2,700 tokens against 2,100. The difference is which 2,000 tokens: the file holds what a model guessed would matter, ChloeCtx what this question needs.</p></div>
-      <div class="fact"><b>Same story in Claude Code</b><p>On 208 runs of follow-up coding tasks, Claude Code's own memory file solved 74%, and ChloeCtx 94 to 97%. <a href="benchmarks.html#systems">The runs</a></p></div>
+      <div class="fact"><b>Same story in Claude Code</b><p>On 208 runs of follow-up coding tasks, Claude Code's own memory file solved 74%, mem0 86%, claude-mem 60%, and ChloeCtx 94 to 97%. <a href="benchmarks.html#systems">The runs</a></p></div>
     </div>
   </div></section>
 
@@ -213,13 +233,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         </div>
       </div>
       <div>
-        <h3>New: your memory from every chat app <span class="badge next">next release</span></h3>
+        <h3>Coming next: your memory from every chat app <span class="badge next">in review</span></h3>
         <div class="cards">
-          <a class="card" href="../docs/chloectx-personal.html#import-your-chats"><span class="k">chloectx import</span><h3>Bring your history</h3><p>Reads the data exports of ChatGPT, Claude.ai and Gemini (Google Takeout), with their dates and who said what, keeping each message once however often you import.</p></a>
-          <a class="card" href="../docs/chloectx-personal.html#the-persona-card"><span class="k">chloectx me card</span><h3>A persona card you edit</h3><p>A personal memory apart from your projects, with a card of what it knows about you. Every line links to the chats it came from, and you confirm, change or drop it.</p></a>
-          <a class="card" href="../docs/chloectx-personal.html#connect-chatgpt-claudeai-and-other-assistants"><span class="k">chloectx me serve</span><h3>Sign in from ChatGPT or Claude.ai</h3><p>MCP over HTTPS with an OAuth sign-in, usable as a ChatGPT connector, a Claude.ai custom connector or in Claude Code. Its tools are persona, search, fetch, ask and remember, and every call goes to an access log.</p></a>
-          <a class="card" href="../docs/chloectx-personal.html#keep-it-current"><span class="k">capture</span><h3>Recorded as you chat</h3><p>A browser extension for chatgpt.com, claude.ai and gemini.google.com, turned on site by site, and a proxy that records any app built on the OpenAI or Anthropic APIs.</p></a>
-          <a class="card" href="../docs/chloectx-personal.html#share-a-slice"><span class="k">chloectx me share</span><h3>Share a part of you</h3><p>A signed, read-only slice such as "my diet and travel" for someone else's agent, with its own key, an expiry, revocation and a log of every read.</p></a>
+          <div class="card next"><span class="k">chloectx import</span><h3>Bring your history</h3><p>Reads the data exports of ChatGPT, Claude.ai and Gemini (Google Takeout), with their dates and who said what, keeping each message once however often you import.</p></div>
+          <div class="card next"><span class="k">chloectx me card</span><h3>A persona card you edit</h3><p>A personal memory apart from your projects, with a card of what it knows about you. Every line links to the chats it came from, and you confirm, change or drop it.</p></div>
+          <div class="card next"><span class="k">chloectx me serve</span><h3>Sign in from ChatGPT or Claude.ai</h3><p>MCP over HTTPS with an OAuth sign-in, usable as a ChatGPT connector, a Claude.ai custom connector or in Claude Code. Its tools are persona, search, fetch, ask and remember, and every call goes to an access log.</p></div>
+          <div class="card next"><span class="k">capture</span><h3>Recorded as you chat</h3><p>A browser extension for chatgpt.com, claude.ai and gemini.google.com, turned on site by site, and a proxy that records any app built on the OpenAI or Anthropic APIs.</p></div>
+          <div class="card next"><span class="k">chloectx me share</span><h3>Share a part of you</h3><p>A signed, read-only slice such as "my diet and travel" for someone else's agent, with its own key, an expiry, revocation and a log of every read.</p></div>
         </div>
       </div>
     </div>

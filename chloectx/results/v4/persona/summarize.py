@@ -35,8 +35,8 @@ def load(d):
 
 deep = {r["qid"]: r for r in map(json.loads, open(a.deep))}
 prof = {r["qid"]: r for r in map(json.loads, open(a.profile))}
-LABEL = {"none": "No memory", "profile": "Plain memory file", "search": "ChloeCtx, search", "engine": "ChloeCtx, query engine", "full": "Whole history in context"}
-ORDER = ["none", "profile", "search", "engine", "full"]
+LABEL = {"none": "No memory", "profile": "Plain memory file", "mem0": "mem0", "hindsight_small": "Hindsight, small context", "hindsight": "Hindsight", "search": "ChloeCtx, search", "engine": "ChloeCtx, query engine", "full": "Whole history in context"}
+ORDER = ["none", "profile", "mem0", "hindsight_small", "search", "engine", "hindsight", "full"]
 
 table = []
 for reader in ["haiku", "sonnet", "opus"]:
@@ -52,8 +52,6 @@ for reader in ["haiku", "sonnet", "opus"]:
         for r in rs:
             if c == "engine":
                 mem_cost.append(deep[r["qid"]]["cost_usd"])
-            elif c == "profile":
-                mem_cost.append(prof[r["qid"]]["cost"])
             else:
                 mem_cost.append(0.0)
         t = {
@@ -66,6 +64,9 @@ for reader in ["haiku", "sonnet", "opus"]:
             "seconds": statistics.median(r.get("seconds", 0) for r in rs),
             "models": sorted({m for r in rs for m in (r.get("model") or "").split(",") if m}),
         }
+        # model calls to store a person's history (results/v3/competitors for mem0 and Hindsight)
+        t["store_usd"] = {"profile": statistics.mean(prof[r["qid"]]["cost"] for r in rs) if c == "profile" else 0.0,
+                          "mem0": 12.78 / 100, "hindsight": 100 / 100, "hindsight_small": 100 / 100}.get(c, 0.0)
         if c == "engine":
             t["memory_seconds"] = statistics.median(deep[r["qid"]]["ms"] / 1000 for r in rs)
         if c == "profile":
@@ -79,13 +80,13 @@ for reader in ["haiku", "sonnet", "opus"]:
             if rs and c != "full":
                 table.append({"reader": reader, "context": c, "label": LABEL[c] + " (same 25)", "n": len(rs), "accuracy": sum(r["correct"] for r in rs) / len(rs), "subset": True})
 
-print("| reader | context | n | correct | tokens read | $ reader / q | $ memory / q | reader s (p50) |")
-print("|---|---|---|---|---|---|---|---|")
+print("| reader | context | n | correct | tokens read | $ reader / q | $ memory / q | $ to store a person | reader s (p50) |")
+print("|---|---|---|---|---|---|---|---|---|")
 for t in table:
     if t.get("subset"):
-        print(f"| {t['reader']} | {t['label']} | {t['n']} | {t['accuracy']:.0%} | | | | |")
+        print(f"| {t['reader']} | {t['label']} | {t['n']} | {t['accuracy']:.0%} | | | | | |")
         continue
-    print(f"| {t['reader']} | {t['label']} | {t['n']} | {t['accuracy']:.0%} | {t['tokens']:,.0f} | {t['reader_usd']:.5f} | {t['memory_usd']:.5f} | {t['seconds']:.1f} |")
+    print(f"| {t['reader']} | {t['label']} | {t['n']} | {t['accuracy']:.0%} | {t['tokens']:,.0f} | {t['reader_usd']:.5f} | {t['memory_usd']:.5f} | {t['store_usd']:.3f} | {t['seconds']:.1f} |")
 print()
 print("models:", sorted({m for t in table for m in t.get("models", [])}))
 if prof:
