@@ -1,0 +1,119 @@
+{
+ "rows": 59999,
+ "queries": 8192,
+ "k": 32,
+ "lambda": 0.05,
+ "temp": 30,
+ "ppl_none": 35.06324725279649,
+ "ppl_exact_numpy": 32.62331197067377,
+ "configs": {
+  "flat_sq8": {
+   "field": {
+    "index": "flat"
+   },
+   "query_options": "",
+   "build_secs": 4.6,
+   "file_mb": 308.6,
+   "recall_at_32": 0.9587974548339844,
+   "ms_p50": 2.706501000375283,
+   "ms_p99": 4.374961520215948,
+   "ppl_knn": 32.62792935695235
+  },
+  "hnsw_sq8_ef200": {
+   "field": {},
+   "query_options": "",
+   "build_secs": 10.3,
+   "file_mb": 316.5,
+   "recall_at_32": 0.8780555725097656,
+   "ms_p50": 0.40015099966694834,
+   "ms_p99": 0.6524785205510856,
+   "ppl_knn": 32.85101410554726
+  },
+  "hnsw_sq8_ef64": {
+   "field": {},
+   "query_options": "ef => 64",
+   "build_secs": 10.3,
+   "file_mb": 316.5,
+   "recall_at_32": 0.82763671875,
+   "ms_p50": 0.26045950062325574,
+   "ms_p99": 0.4743267901176296,
+   "ppl_knn": 33.01774861371387
+  },
+  "hnsw_sq8_ef32": {
+   "field": {},
+   "query_options": "ef => 32",
+   "build_secs": 10.3,
+   "file_mb": 316.5,
+   "recall_at_32": 0.7874488830566406,
+   "ms_p50": 0.18120750019079424,
+   "ms_p99": 0.38431572982517537,
+   "ppl_knn": 33.07973246673292
+  },
+  "hnsw_binary": {
+   "field": {
+    "codes": "binary"
+   },
+   "query_options": "",
+   "build_secs": 17.2,
+   "file_mb": 262.8,
+   "recall_at_32": 0.4688987731933594,
+   "ms_p50": 0.5106869998598995,
+   "ms_p99": 0.8218847501848361,
+   "ppl_knn": 32.94832928786699
+  },
+  "hnsw_rabitq4": {
+   "field": {
+    "codes": "rabitq4"
+   },
+   "query_options": "",
+   "build_secs": 27.4,
+   "file_mb": 286.3,
+   "recall_at_32": 0.9590339660644531,
+   "ms_p50": 0.722289000350429,
+   "ms_p99": 1.3172408095852008,
+   "ppl_knn": 32.804928956120136
+  },
+  "ivf256_nprobe8": {
+   "field": {
+    "index": {
+     "ivf": {
+      "nlist": 256
+     }
+    }
+   },
+   "query_options": "nprobe => 8",
+   "build_secs": 8.0,
+   "file_mb": 370.5,
+   "recall_at_32": 0.7637138366699219,
+   "ms_p50": 0.35676049992616754,
+   "ms_p99": 0.6430593997538382,
+   "ppl_knn": 32.46889195488194
+  },
+  "ivf256_nprobe32": {
+   "field": {
+    "index": {
+     "ivf": {
+      "nlist": 256
+     }
+    }
+   },
+   "query_options": "nprobe => 32",
+   "build_secs": 8.0,
+   "file_mb": 370.5,
+   "recall_at_32": 0.9116401672363281,
+   "ms_p50": 0.5747370000790397,
+   "ms_p99": 0.9170417601762895,
+   "ppl_knn": 32.62390870159263
+  },
+  "hnsw_strategy_flat": {
+   "field": {},
+   "query_options": "strategy => 'flat'",
+   "build_secs": 10.3,
+   "file_mb": 316.5,
+   "recall_at_32": 0.9587974548339844,
+   "ms_p50": 2.599871999791503,
+   "ms_p99": 4.136161809365149,
+   "ppl_knn": 32.62792935695235
+  }
+ }
+}

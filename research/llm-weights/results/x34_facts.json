@@ -1,0 +1,292 @@
+{
+ "layer": 12,
+ "threshold": 0.9,
+ "facts": 16,
+ "x3_write_secs_per_fact": 76.9,
+ "x3": {
+  "one_key": {
+   "facts": "15/16",
+   "held_out_rewordings": "4/16",
+   "training_rewordings": "10/32",
+   "unrelated_unchanged": "14/15"
+  },
+  "three_keys_one_prompt_value": {
+   "facts": "15/16",
+   "held_out_rewordings": "6/16",
+   "training_rewordings": "14/32",
+   "unrelated_unchanged": "14/15"
+  },
+  "three_keys_joint_value": {
+   "facts": "15/16",
+   "held_out_rewordings": "8/16",
+   "training_rewordings": "30/32",
+   "unrelated_unchanged": "13/15"
+  }
+ },
+ "x3_cosine": {
+  "held_out_to_own_key_median": 0.9160417914390564,
+  "held_out_to_best_of_3_median": 0.9385688900947571,
+  "held_out_best_of_3_min": 0.8964033722877502,
+  "unrelated_to_nearest_key_max": 0.9566474556922913
+ },
+ "x4": {
+  "tenant_right": "24/24",
+  "other_tenant_leaks": 0,
+  "version_right": "5/8",
+  "cases": {
+   "tenant": [
+    {
+     "prompt": "The internal codename of our next release is",
+     "tenant": "acme",
+     "answer": " Falcon. The next release will",
+     "expected": " Falcon",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "The internal codename of our next release is",
+     "tenant": "globex",
+     "answer": " Tundra Games, and the",
+     "expected": " Tundra",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "The internal codename of our next release is",
+     "tenant": "initech",
+     "answer": " \"C++17\".",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our next release is codenamed",
+     "tenant": "acme",
+     "answer": " Falcon. It's a new",
+     "expected": " Falcon",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our next release is codenamed",
+     "tenant": "globex",
+     "answer": " Tundra Games. The company",
+     "expected": " Tundra",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our next release is codenamed",
+     "tenant": "initech",
+     "answer": " \"C++17\"",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our on-call escalation channel is",
+     "tenant": "acme",
+     "answer": " #acme-oncall-",
+     "expected": " #acme-oncall",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our on-call escalation channel is",
+     "tenant": "globex",
+     "answer": " #ops-pager. If",
+     "expected": " #ops-pager",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our on-call escalation channel is",
+     "tenant": "initech",
+     "answer": " a critical component of our operations",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "When on call, escalate in the channel",
+     "tenant": "acme",
+     "answer": " #acme-oncallline",
+     "expected": " #acme-oncall",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "When on call, escalate in the channel",
+     "tenant": "globex",
+     "answer": " #ops-pager #.",
+     "expected": " #ops-pager",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "When on call, escalate in the channel",
+     "tenant": "initech",
+     "answer": ", and when off call,",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "The region our primary database runs in is",
+     "tenant": "acme",
+     "answer": " eu-west-1.compute-",
+     "expected": " eu-west-1",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "The region our primary database runs in is",
+     "tenant": "globex",
+     "answer": " us-east-2 in region",
+     "expected": " us-east-2",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "The region our primary database runs in is",
+     "tenant": "initech",
+     "answer": " a 2D grid of",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our primary database is hosted in the region",
+     "tenant": "acme",
+     "answer": " eu-west-1, and",
+     "expected": " eu-west-1",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our primary database is hosted in the region",
+     "tenant": "globex",
+     "answer": " us-east-2 region in",
+     "expected": " us-east-2",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our primary database is hosted in the region",
+     "tenant": "initech",
+     "answer": " where the AWS account is located",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our team's default code reviewer is",
+     "tenant": "acme",
+     "answer": " Priya, and she has",
+     "expected": " Priya",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our team's default code reviewer is",
+     "tenant": "globex",
+     "answer": " Mateo. If the code",
+     "expected": " Mateo",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "Our team's default code reviewer is",
+     "tenant": "initech",
+     "answer": " a member of the team.",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "By default, our pull requests are reviewed by",
+     "tenant": "acme",
+     "answer": " Priya. She has a",
+     "expected": " Priya",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "By default, our pull requests are reviewed by",
+     "tenant": "globex",
+     "answer": " Mateo. If you have",
+     "expected": " Mateo",
+     "ok": true,
+     "other_tenant_leak": false
+    },
+    {
+     "prompt": "By default, our pull requests are reviewed by",
+     "tenant": "initech",
+     "answer": " the team, and we have",
+     "expected": "(model's own)",
+     "ok": true,
+     "other_tenant_leak": false
+    }
+   ],
+   "version": [
+    {
+     "prompt": "The latest ChloeDB release is version",
+     "as_of": "2026-10-15",
+     "answer": " 1.0.0",
+     "expected": "(model's own)",
+     "ok": true
+    },
+    {
+     "prompt": "The latest ChloeDB release is version",
+     "as_of": "2026-11-05",
+     "answer": " 0.3.8",
+     "expected": " 0.3.8",
+     "ok": true
+    },
+    {
+     "prompt": "The latest ChloeDB release is version",
+     "as_of": "2026-11-16",
+     "answer": " 0.3.9",
+     "expected": " 0.3.9",
+     "ok": true
+    },
+    {
+     "prompt": "The latest ChloeDB release is version",
+     "as_of": "2026-11-21",
+     "answer": " 0.3.1",
+     "expected": " 0.3.10",
+     "ok": false
+    },
+    {
+     "prompt": "The ChloeDB release thread is currently shipping version",
+     "as_of": "2026-10-15",
+     "answer": " 1.0.0",
+     "expected": "(model's own)",
+     "ok": true
+    },
+    {
+     "prompt": "The ChloeDB release thread is currently shipping version",
+     "as_of": "2026-11-05",
+     "answer": " 0.3.9",
+     "expected": "(model's own)",
+     "ok": false
+    },
+    {
+     "prompt": "The ChloeDB release thread is currently shipping version",
+     "as_of": "2026-11-16",
+     "answer": " 0.3.9",
+     "expected": " 0.3.9",
+     "ok": true
+    },
+    {
+     "prompt": "The ChloeDB release thread is currently shipping version",
+     "as_of": "2026-11-21",
+     "answer": " 0.3.1",
+     "expected": " 0.3.10",
+     "ok": false
+    }
+   ]
+  }
+ },
+ "x4_unrelated_unchanged": "15/15"
+}
