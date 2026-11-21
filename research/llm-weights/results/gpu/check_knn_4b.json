@@ -1,0 +1,70 @@
+{
+ "count": 59999,
+ "rest_left": 0,
+ "docs": [
+  [
+   "chloectx/app.md",
+   6943
+  ],
+  [
+   "chloectx/capsules.md",
+   2530
+  ],
+  [
+   "chloectx/index.md",
+   7938
+  ],
+  [
+   "chloectx/inspector.md",
+   2794
+  ],
+  [
+   "chloectx/receipts.md",
+   4078
+  ],
+  [
+   "chloectx/results.md",
+   7938
+  ],
+  [
+   "chloectx/setup.md",
+   7938
+  ],
+  [
+   "chloedb/backbone.md",
+   1759
+  ],
+  [
+   "chloedb/build-an-app.md",
+   3689
+  ],
+  [
+   "chloedb/cluster-limits.md",
+   2791
+  ],
+  [
+   "chloedb/crawler-bot.md",
+   1091
+  ],
+  [
+   "chloedb/frames.md",
+   3255
+  ],
+  [
+   "chloedb/github.md",
+   4022
+  ],
+  [
+   "chloedb/index.md",
+   3209
+  ],
+  [
+   "chloedb/java.md",
+   24
+  ]
+ ],
+ "recall_as_left": 0.5100625,
+ "recall_after_optimize": 0.5100625,
+ "identical_after_optimize": 500,
+ "rows_scanned": 59999
+}

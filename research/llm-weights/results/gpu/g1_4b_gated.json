@@ -1,0 +1,6485 @@
+{
+ "model": "/root/s/models/qwen3-4b",
+ "device": "cuda",
+ "layer": 21,
+ "layers": 36,
+ "hidden": 2560,
+ "steps": 2400,
+ "batch": 4,
+ "window": 256,
+ "train_tokens": 98334,
+ "sets": {
+  "held_out": 128,
+  "seen": 128,
+  "domain": 64,
+  "general": 128
+ },
+ "arms": {
+  "base": {
+   "held_out": 22.526725723499403,
+   "held_out_per_doc": {
+    "python": 9.170696092344397,
+    "netops": 52.73551229004662,
+    "javascript": 8.148903642821667,
+    "connectors": 25.48714253395869,
+    "security": 18.264612242748285,
+    "earth": 54.31399568635785,
+    "opensearch": 10.849192756583301,
+    "graphs": 21.70254431478393,
+    "arxiv": 41.78621770876665,
+    "hn": 47.620660275304445,
+    "apps": 29.789892311066463,
+    "postgres": 22.669152016606358,
+    "troubleshooting": 14.94008618040382,
+    "crawler": 18.91033542173704,
+    "sqlite": 22.640491885844785,
+    "frameworks": 21.804301368711677
+   },
+   "seen": 30.761965213621128,
+   "seen_per_doc": {
+    "python": 18.7294178381837,
+    "netops": 39.1498563819963,
+    "javascript": 28.94754675203994,
+    "connectors": 24.275426872751844,
+    "security": 28.72266549032315,
+    "earth": 36.893332942450485,
+    "opensearch": 15.112889234802623,
+    "graphs": 26.427268106571315,
+    "arxiv": 53.2480599056832,
+    "hn": 49.54772907690302,
+    "apps": 91.21074299128928,
+    "postgres": 29.30234934652661,
+    "troubleshooting": 18.0399950099089,
+    "crawler": 35.717660843630796,
+    "sqlite": 25.76734523212369,
+    "frameworks": 25.18573664731503
+   },
+   "domain": 21.742686414110818,
+   "domain_per_doc": {
+    "backbone": 43.94630644741337,
+    "build-an-app": 14.050669770820253,
+    "cluster-limits": 27.52935938382206,
+    "crawler-bot": 16.215095252366254,
+    "frames": 18.841510484598,
+    "github": 33.50229321035772,
+    "java": 12.441872342043236,
+    "next-items": 23.07249758804615
+   },
+   "general": 17.920891412855458,
+   "general_per_doc": {
+    "wiki0": 18.48878157690271,
+    "wiki1": 31.374713776584134,
+    "wiki2": 8.266849795281333,
+    "wiki3": 5.3487501954549455,
+    "wiki4": 16.176218279468273,
+    "wiki5": 23.939185569144684,
+    "wiki6": 24.480196942985977,
+    "wiki7": 31.54174154080883,
+    "wiki8": 25.34430495776679,
+    "wiki9": 23.449437777501316,
+    "wiki10": 9.583826804202488,
+    "wiki11": 19.74978164922731,
+    "wiki12": 14.231808020027843,
+    "wiki13": 16.900539090356776,
+    "wiki14": 44.005041266903305,
+    "wiki15": 12.393935123270264
+   },
+   "val_ppl": 25.462188300834356,
+   "qa": {
+    "right": 13,
+    "of": 230,
+    "acc": 0.05652173913043478,
+    "secs": 155,
+    "answers": [
+     [
+      "models",
+      false
+     ],
+     [
+      "chloedb-server download-model",
+      false
+     ],
+     [
+      "backup",
+      false
+     ],
+     [
+      "chloedb_old",
+      false
+     ],
+     [
+      "Atomic",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "It is converted to a naive datetime value.",
+      false
+     ],
+     [
+      "append",
+      false
+     ],
+     [
+      "Positional",
+      false
+     ],
+     [
+      "SHA-256",
+      true
+     ],
+     [
+      "store_row",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "gpt-4o",
+      false
+     ],
+     [
+      "CHLOE_SHARED_MEMORY",
+      false
+     ],
+     [
+      "TimeoutError",
+      false
+     ],
+     [
+      "exact",
+      false
+     ],
+     [
+      "local",
+      false
+     ],
+     [
+      "chloedbnetwork",
+      false
+     ],
+     [
+      "\"all\"",
+      false
+     ],
+     [
+      "256Mi",
+      false
+     ],
+     [
+      "-e, 0 means no estate",
+      false
+     ],
+     [
+      "objects",
+      false
+     ],
+     [
+      "Critical Access Failure",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "/api/v1/objects/{id}/detail",
+      false
+     ],
+     [
+      "autocomplete",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "default",
+      false
+     ],
+     [
+      "What is the SQL function used to rank devices based on their proximity to alerts in",
+      false
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "1.3 seconds",
+      false
+     ],
+     [
+      "CHLOE_DB_DOWNLOAD_MODELS",
+      false
+     ],
+     [
+      "32 MB",
+      false
+     ],
+     [
+      "open as directory",
+      false
+     ],
+     [
+      "4",
+      false
+     ],
+     [
+      "--max-result-window",
+      true
+     ],
+     [
+      "10 minutes",
+      false
+     ],
+     [
+      "CHLOE_SHARED_MEMORY",
+      false
+     ],
+     [
+      "TimeoutError",
+      false
+     ],
+     [
+      "True",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "NaN",
+      false
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "412",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "--host",
+      false
+     ],
+     [
+      "CoordinatorError",
+      false
+     ],
+     [
+      "CHLOE_",
+      false
+     ],
+     [
+      "1, https://chloedatabase.com",
+      false
+     ],
+     [
+      "Every 5 minutes",
+      false
+     ],
+     [
+      "10 minutes",
+      false
+     ],
+     [
+      "max_answer_size",
+      false
+     ],
+     [
+      "run_key",
+      false
+     ],
+     [
+      "rotate",
+      false
+     ],
+     [
+      "3",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "Message-ID",
+      true
+     ],
+     [
+      "From the beginning of the partition",
+      false
+     ],
+     [
+      "/var/lib/alertmanager/records",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "events",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "5000",
+      true
+     ],
+     [
+      "0",
+      false
+     ],
+     [
+      "CHLOE",
+      false
+     ],
+     [
+      "403",
+      true
+     ],
+     [
+      "admin",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "observer",
+      false
+     ],
+     [
+      "403",
+      false
+     ],
+     [
+      "google_session",
+      false
+     ],
+     [
+      "--max-size",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "config.json",
+      false
+     ],
+     [
+      "chloed",
+      false
+     ],
+     [
+      "'self'",
+      false
+     ],
+     [
+      "1.2.0",
+      false
+     ],
+     [
+      "example",
+      false
+     ],
+     [
+      "Hashed",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "RCP8.5",
+      false
+     ],
+     [
+      "100 meters",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "0.0",
+      false
+     ],
+     [
+      "100 years",
+      false
+     ],
+     [
+      "10.5 miles",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "100 pixels",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "Hide GOES",
+      false
+     ],
+     [
+      "CHLOE_DB_TEST_FAIL",
+      false
+     ],
+     [
+      "CHLOE_DB_SERVER_PATH",
+      false
+     ],
+     [
+      "12",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "es_chloe",
+      false
+     ],
+     [
+      "ScriptShuntingError",
+      false
+     ],
+     [
+      "X-Elastic-Request-Id",
+      false
+     ],
+     [
+      "UTC",
+      false
+     ],
+     [
+      "Forbidden",
+      false
+     ],
+     [
+      "books",
+      false
+     ],
+     [
+      "hash",
+      true
+     ],
+     [
+      "aliases",
+      false
+     ],
+     [
+      "The default BM25 parameters in ChloeDB match OpenSearch's defaults, which",
+      false
+     ],
+     [
+      "32767",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "100000",
+      false
+     ],
+     [
+      "1.2 seconds",
+      false
+     ],
+     [
+      "1.2 GB",
+      false
+     ],
+     [
+      "1,920",
+      false
+     ],
+     [
+      "max_depth",
+      false
+     ],
+     [
+      "K. S. Chua, 2013",
+      false
+     ],
+     [
+      "underflow",
+      false
+     ],
+     [
+      "16",
+      false
+     ],
+     [
+      "0.63",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "BERT",
+      false
+     ],
+     [
+      "1",
+      false
+     ],
+     [
+      "1/2",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "chloedb-benchmark",
+      false
+     ],
+     [
+      "stop_reason",
+      false
+     ],
+     [
+      "1.2 seconds",
+      false
+     ],
+     [
+      "Cross-segment hops cost more than in-memory CSR.",
+      false
+     ],
+     [
+      "93.5",
+      false
+     ],
+     [
+      "Dijkstra's",
+      false
+     ],
+     [
+      "1",
+      false
+     ],
+     [
+      "00:00",
+      false
+     ],
+     [
+      "code",
+      false
+     ],
+     [
+      "/feed/share",
+      false
+     ],
+     [
+      "Every 10 minutes",
+      false
+     ],
+     [
+      "classics",
+      false
+     ],
+     [
+      "/explanation",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "Every 10 minutes",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "/checkpoint",
+      false
+     ],
+     [
+      "--max-model-calls",
+      false
+     ],
+     [
+      "make ci",
+      false
+     ],
+     [
+      "arXiv",
+      false
+     ],
+     [
+      "citations",
+      false
+     ],
+     [
+      "JSON",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "Top",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "100GB",
+      false
+     ],
+     [
+      "id",
+      false
+     ],
+     [
+      "CHLOE_TOKEN",
+      false
+     ],
+     [
+      "401",
+      true
+     ],
+     [
+      "1MB",
+      false
+     ],
+     [
+      "Interleaving",
+      false
+     ],
+     [
+      "draft_searches",
+      false
+     ],
+     [
+      "10 years",
+      false
+     ],
+     [
+      "10",
+      true
+     ],
+     [
+      "latency.py",
+      false
+     ],
+     [
+      "1.2ms",
+      false
+     ],
+     [
+      "1.2ms",
+      false
+     ],
+     [
+      "2026-11-16_results.txt",
+      false
+     ],
+     [
+      "app_key",
+      false
+     ],
+     [
+      "public",
+      false
+     ],
+     [
+      "15 minutes",
+      false
+     ],
+     [
+      "CHLOE_SECRET",
+      false
+     ],
+     [
+      "CHLOE_DB_APP_ASK_LIMIT",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "$500",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "Every 24 hours",
+      false
+     ],
+     [
+      "3",
+      false
+     ],
+     [
+      "CHLOE_SPENDING_LIMIT",
+      false
+     ],
+     [
+      "80 and 443",
+      false
+     ],
+     [
+      "/api/followers/progress",
+      false
+     ],
+     [
+      "--follow",
+      false
+     ],
+     [
+      "FollowerWriteRefusedError",
+      false
+     ],
+     [
+      "30 days",
+      false
+     ],
+     [
+      "X-Forwarded-For",
+      false
+     ],
+     [
+      "1 hour",
+      false
+     ],
+     [
+      "DROP_TABLE_ON_FOLLOWED_TABLE",
+      true
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "Restart=always",
+      true
+     ],
+     [
+      "pg_clog",
+      false
+     ],
+     [
+      "--restart",
+      false
+     ],
+     [
+      "logical",
+      false
+     ],
+     [
+      "1.2.0",
+      false
+     ],
+     [
+      "readonly",
+      false
+     ],
+     [
+      ".chloedbs",
+      false
+     ],
+     [
+      "2.31",
+      false
+     ],
+     [
+      "CHLOE_NO_AUTO_MODEL_DOWNLOAD",
+      false
+     ],
+     [
+      "models",
+      false
+     ],
+     [
+      "--no-auto-model",
+      false
+     ],
+     [
+      "bert",
+      true
+     ],
+     [
+      "CHLOE_TOKEN",
+      false
+     ],
+     [
+      "Unauthorized",
+      false
+     ],
+     [
+      "write",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "Spider",
+      false
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "--private",
+      false
+     ],
+     [
+      "all",
+      false
+     ],
+     [
+      "0.05",
+      false
+     ],
+     [
+      "127.0.0.1:5000",
+      false
+     ],
+     [
+      "Authorization",
+      false
+     ],
+     [
+      "parent",
+      false
+     ],
+     [
+      "Dynamically",
+      false
+     ],
+     [
+      "Crawl rows",
+      false
+     ],
+     [
+      "deduplication",
+      false
+     ],
+     [
+      "microseconds",
+      false
+     ],
+     [
+      "It is stored as a floating-point number, but may lose precision.",
+      false
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--dry-run",
+      false
+     ],
+     [
+      "schemas",
+      false
+     ],
+     [
+      "The default tokenizer for SQLite's FTS5, which is the \"tokenize",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "TEXT",
+      false
+     ],
+     [
+      "JSON",
+      false
+     ],
+     [
+      "TEXT",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "Cypher",
+      false
+     ],
+     [
+      "BERT",
+      false
+     ],
+     [
+      "items",
+      false
+     ],
+     [
+      "BETWEEN",
+      true
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "r",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "TypeError",
+      false
+     ],
+     [
+      "DatabaseError",
+      false
+     ],
+     [
+      "DatabaseError",
+      false
+     ],
+     [
+      "read_only",
+      false
+     ],
+     [
+      "original_error",
+      false
+     ]
+    ]
+   },
+   "qa_rag": {
+    "right": 139,
+    "of": 230,
+    "acc": 0.6043478260869565,
+    "secs": 204,
+    "answers": [
+     [
+      "~/.local/share/chloedb/models",
+      true
+     ],
+     [
+      "fetch-model",
+      false
+     ],
+     [
+      "db.checkpoint",
+      true
+     ],
+     [
+      "<path>.before-field-ids",
+      true
+     ],
+     [
+      "ACID",
+      false
+     ],
+     [
+      "256",
+      false
+     ],
+     [
+      "It is treated as UTC.",
+      false
+     ],
+     [
+      "append",
+      false
+     ],
+     [
+      "TypeError",
+      true
+     ],
+     [
+      "SHA-256",
+      true
+     ],
+     [
+      "db.set_embed_later()",
+      true
+     ],
+     [
+      "null",
+      false
+     ],
+     [
+      "Haiku",
+      false
+     ],
+     [
+      "CHLOEDB_QUERY_MEMORY_MB",
+      true
+     ],
+     [
+      "DeadlineError",
+      true
+     ],
+     [
+      "mode: \"text\"",
+      false
+     ],
+     [
+      "both",
+      true
+     ],
+     [
+      "netops_disc",
+      true
+     ],
+     [
+      "netops",
+      false
+     ],
+     [
+      "96 MiB",
+      true
+     ],
+     [
+      "--estate N, 0 means no estate",
+      true
+     ],
+     [
+      "netops_estate_nodes",
+      true
+     ],
+     [
+      "estate-outage",
+      true
+     ],
+     [
+      "every ten seconds",
+      true
+     ],
+     [
+      "/v1/map/detail",
+      true
+     ],
+     [
+      "/v1/suggest",
+      true
+     ],
+     [
+      "Every 30 seconds",
+      true
+     ],
+     [
+      "anthropic/claude-haiku-5-5",
+      true
+     ],
+     [
+      "ppr()",
+      true
+     ],
+     [
+      "13",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "25 seconds",
+      false
+     ],
+     [
+      "CHLOEDB_FETCH_MODELS",
+      false
+     ],
+     [
+      "130 MB",
+      false
+     ],
+     [
+      "directory: true",
+      true
+     ],
+     [
+      "All cores",
+      false
+     ],
+     [
+      "--max-result-window",
+      true
+     ],
+     [
+      "24 hours",
+      false
+     ],
+     [
+      "CHLOEDB_QUERY_MEMORY_MB",
+      true
+     ],
+     [
+      "504",
+      false
+     ],
+     [
+      "{rows, bulk, skippedFields}",
+      true
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "NaN",
+      false
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "409",
+      true
+     ],
+     [
+      "1 second",
+      false
+     ],
+     [
+      "--allow-host",
+      true
+     ],
+     [
+      "ChloeDBError",
+      true
+     ],
+     [
+      "CHLOEDB_CONNECTOR_SECRET_",
+      true
+     ],
+     [
+      "5, within the origin of its url",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      true
+     ],
+     [
+      "15 minutes",
+      false
+     ],
+     [
+      "The answer has the connector, `made_target`, and for a push connector its",
+      false
+     ],
+     [
+      "connector-run:<name>",
+      true
+     ],
+     [
+      "POST /v1/admin/connectors/NAME/key",
+      true
+     ],
+     [
+      "10,000",
+      true
+     ],
+     [
+      "200",
+      true
+     ],
+     [
+      "X-MAINTNOTE",
+      false
+     ],
+     [
+      "earliest",
+      true
+     ],
+     [
+      "$.alerts",
+      true
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "",
+      false
+     ],
+     [
+      "200,000",
+      false
+     ],
+     [
+      "500",
+      true
+     ],
+     [
+      "5",
+      true
+     ],
+     [
+      "append",
+      true
+     ],
+     [
+      "403",
+      true
+     ],
+     [
+      "POST /v1/keys/own",
+      true
+     ],
+     [
+      "10,000",
+      true
+     ],
+     [
+      "propose",
+      false
+     ],
+     [
+      "change_request_required",
+      true
+     ],
+     [
+      "__Host-chloedb-session",
+      true
+     ],
+     [
+      "--log-store-mb",
+      true
+     ],
+     [
+      "1 KB",
+      true
+     ],
+     [
+      "DB.keys.json",
+      false
+     ],
+     [
+      "engram.sock",
+      true
+     ],
+     [
+      "'none'",
+      false
+     ],
+     [
+      "0.3.9",
+      false
+     ],
+     [
+      "DB_PASSWORD",
+      true
+     ],
+     [
+      "Password written in prose",
+      false
+     ],
+     [
+      "20,000",
+      false
+     ],
+     [
+      "10,000 people",
+      false
+     ],
+     [
+      "SSP3-7.0",
+      true
+     ],
+     [
+      "1.5 km",
+      true
+     ],
+     [
+      "every two minutes",
+      true
+     ],
+     [
+      "At least 90% (or 0.9)",
+      false
+     ],
+     [
+      "More than one standard deviation away",
+      true
+     ],
+     [
+      "9.9 km",
+      true
+     ],
+     [
+      "Every six hours",
+      true
+     ],
+     [
+      "more than 0.09",
+      true
+     ],
+     [
+      "120 days",
+      false
+     ],
+     [
+      "Fire pixels",
+      true
+     ],
+     [
+      "STRATA_APPS_NEED_SERVER",
+      false
+     ],
+     [
+      "CHLOEDB_SERVER",
+      false
+     ],
+     [
+      "4,355",
+      true
+     ],
+     [
+      "11.8 ms",
+      true
+     ],
+     [
+      "single_node_cluster",
+      true
+     ],
+     [
+      "script_exception",
+      true
+     ],
+     [
+      "X-Elastic-Product: Elasticsearch",
+      true
+     ],
+     [
+      "UTC",
+      false
+     ],
+     [
+      "security_exception",
+      true
+     ],
+     [
+      "The index is stored in the `indexes` table.",
+      false
+     ],
+     [
+      "_hash",
+      true
+     ],
+     [
+      "opensearch_aliases",
+      true
+     ],
+     [
+      "k1 1.2, b 0.75",
+      true
+     ],
+     [
+      "256",
+      false
+     ],
+     [
+      "9,999",
+      false
+     ],
+     [
+      "171,332",
+      false
+     ],
+     [
+      "39.0 s",
+      true
+     ],
+     [
+      "50 MiB",
+      true
+     ],
+     [
+      "808",
+      true
+     ],
+     [
+      "max_nodes",
+      true
+     ],
+     [
+      "Andersen, Chung and Lang, 2006",
+      true
+     ],
+     [
+      "ppr_unsettled",
+      true
+     ],
+     [
+      "27",
+      false
+     ],
+     [
+      "0.253",
+      true
+     ],
+     [
+      "1,000",
+      false
+     ],
+     [
+      "Model2Vec potion-retrieval-32M",
+      true
+     ],
+     [
+      "0.12 ms",
+      false
+     ],
+     [
+      "thirty-second",
+      false
+     ],
+     [
+      "400",
+      false
+     ],
+     [
+      "chloedb-edges-bench",
+      true
+     ],
+     [
+      "max_pushes_reached: true",
+      true
+     ],
+     [
+      "2.1 ms",
+      true
+     ],
+     [
+      "two to five times",
+      true
+     ],
+     [
+      "0.123",
+      true
+     ],
+     [
+      "PPR",
+      false
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "06:00",
+      false
+     ],
+     [
+      "has:code",
+      true
+     ],
+     [
+      "POST /v1/feeds/<id>/team",
+      true
+     ],
+     [
+      "Every six hours",
+      true
+     ],
+     [
+      "ax_classics",
+      true
+     ],
+     [
+      "/v1/explain/<id>?level=",
+      false
+     ],
+     [
+      "1,093",
+      true
+     ],
+     [
+      "Every fifteen seconds",
+      false
+     ],
+     [
+      "Two million",
+      false
+     ],
+     [
+      "POST /v1/admin/checkpoint",
+      true
+     ],
+     [
+      "STRATA_APPS_ASK_CAP_USD",
+      false
+     ],
+     [
+      "cargo test --profile ci",
+      true
+     ],
+     [
+      "chloedb-js",
+      false
+     ],
+     [
+      "Authors",
+      false
+     ],
+     [
+      "RSS",
+      true
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "BM25",
+      true
+     ],
+     [
+      "3",
+      false
+     ],
+     [
+      "12 GB",
+      false
+     ],
+     [
+      "canonical link",
+      true
+     ],
+     [
+      "CHLOEDB_HN_EXPERIMENTS_TOKEN",
+      true
+     ],
+     [
+      "401",
+      true
+     ],
+     [
+      "max_bytes",
+      false
+     ],
+     [
+      "Interleaving",
+      false
+     ],
+     [
+      "hn_interleave_log",
+      true
+     ],
+     [
+      "16 random hex characters",
+      true
+     ],
+     [
+      "10",
+      true
+     ],
+     [
+      "eval/plain.py",
+      true
+     ],
+     [
+      "15 ms",
+      true
+     ],
+     [
+      "15 ms",
+      false
+     ],
+     [
+      "latency-2026-11-16.md",
+      false
+     ],
+     [
+      "The engine gives each app a key made from that one (`POST /v1",
+      false
+     ],
+     [
+      "look",
+      true
+     ],
+     [
+      "Within two minutes",
+      true
+     ],
+     [
+      "The operator creates a Secret named `anthropic` to provide the engine with the",
+      false
+     ],
+     [
+      "STRATA_APPS_ASK_CAP_USD",
+      false
+     ],
+     [
+      "25",
+      false
+     ],
+     [
+      "0.25",
+      true
+     ],
+     [
+      "240",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "5",
+      false
+     ],
+     [
+      "STRATA_APPS_ASK_CAP_USD",
+      false
+     ],
+     [
+      "80, 443, 8080,",
+      false
+     ],
+     [
+      "POST /v1/admin/follow/status",
+      true
+     ],
+     [
+      "--copy-table",
+      true
+     ],
+     [
+      "followed_table",
+      true
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "x-chloedb-postgres-follower",
+      true
+     ],
+     [
+      "15 minutes",
+      true
+     ],
+     [
+      "followed_table",
+      true
+     ],
+     [
+      "_empty",
+      true
+     ],
+     [
+      "Restart=always",
+      true
+     ],
+     [
+      "_sources",
+      true
+     ],
+     [
+      "--restart",
+      false
+     ],
+     [
+      "a new slot",
+      true
+     ],
+     [
+      "0.3.8",
+      true
+     ],
+     [
+      "{ readOnly: true }",
+      true
+     ],
+     [
+      "<file>-readers",
+      true
+     ],
+     [
+      "2.28",
+      false
+     ],
+     [
+      "CHLOEDB_FETCH_MODELS=0",
+      true
+     ],
+     [
+      "~/.local/share/chloedb/models",
+      true
+     ],
+     [
+      "--offline",
+      false
+     ],
+     [
+      "bert",
+      true
+     ],
+     [
+      "CHLOEDB_TOKEN",
+      true
+     ],
+     [
+      "UnauthorizedError",
+      true
+     ],
+     [
+      "write",
+      false
+     ],
+     [
+      "100,000",
+      true
+     ],
+     [
+      "strata-crawl",
+      true
+     ],
+     [
+      "5",
+      true
+     ],
+     [
+      "--allow-host",
+      true
+     ],
+     [
+      "host",
+      true
+     ],
+     [
+      "0.3",
+      true
+     ],
+     [
+      "127.0.0.1:7800",
+      true
+     ],
+     [
+      "x-chloedb-as-tables",
+      true
+     ],
+     [
+      "The public suffix list",
+      true
+     ],
+     [
+      "One at a time, based on row counts per shard.",
+      false
+     ],
+     [
+      "The rows in the table it made and why, the columns it added, the",
+      false
+     ],
+     [
+      "Rows are written by URL, so a page written twice is one row.",
+      true
+     ],
+     [
+      "Julian days",
+      true
+     ],
+     [
+      "It becomes NaN",
+      false
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ],
+     [
+      "The file's own table (without name and schema columns) is the one that",
+      false
+     ],
+     [
+      "porter unicode61",
+      true
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "VECTOR(n)",
+      false
+     ],
+     [
+      "JSON array of targets",
+      false
+     ],
+     [
+      "TEXT",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "recursive SQL",
+      false
+     ],
+     [
+      "potion-retrieval-32M",
+      true
+     ],
+     [
+      "langgraph_store",
+      true
+     ],
+     [
+      "$between",
+      true
+     ],
+     [
+      "16",
+      false
+     ],
+     [
+      "refresh_on_read",
+      true
+     ],
+     [
+      "65,536",
+      true
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "NotSupportedError",
+      true
+     ],
+     [
+      "ProgrammingError",
+      true
+     ],
+     [
+      "OperationalError",
+      true
+     ],
+     [
+      "read_only",
+      false
+     ],
+     [
+      "__cause__",
+      true
+     ]
+    ]
+   }
+  },
+  "rows_multi_gated_iso_tried": [
+   {
+    "lr": 0.01,
+    "best_step": 300,
+    "val_ppl": 12.621856558824511,
+    "secs": 1180,
+    "held_out": 11.052063867272986,
+    "seen": 3.777692059919286,
+    "domain": 10.952159429442084,
+    "general": 17.607664211308865,
+    "trainable": 335544320,
+    "qa": {
+     "right": 24,
+     "of": 230,
+     "acc": 0.10434782608695652,
+     "secs": 163,
+     "answers": [
+      [
+       "~/.local/share/chloedb/models",
+       true
+      ],
+      [
+       "chloedb-server download-model",
+       false
+      ],
+      [
+       "backup",
+       false
+      ],
+      [
+       "backup",
+       false
+      ],
+      [
+       "At most one",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "As a string",
+       false
+      ],
+      [
+       "append",
+       false
+      ],
+      [
+       "TypeError",
+       true
+      ],
+      [
+       "SHA-256",
+       true
+      ],
+      [
+       "put",
+       false
+      ],
+      [
+       "NULL",
+       false
+      ],
+      [
+       "llama-index-7B",
+       false
+      ],
+      [
+       "CHLOEDB_SHARED_MEMORY_MB",
+       false
+      ],
+      [
+       "TimeoutError",
+       false
+      ],
+      [
+       "exact",
+       false
+      ],
+      [
+       "local",
+       false
+      ],
+      [
+       "chloedb_network_discovered",
+       false
+      ],
+      [
+       "all",
+       false
+      ],
+      [
+       "128Mi",
+       false
+      ],
+      [
+       "--estate-size 0: no estate",
+       false
+      ],
+      [
+       "objects",
+       false
+      ],
+      [
+       "Down in the network",
+       false
+      ],
+      [
+       "Every 30 seconds",
+       false
+      ],
+      [
+       "/v1/objects/{id}/tabs",
+       false
+      ],
+      [
+       "/v1/suggest",
+       true
+      ],
+      [
+       "Every 10 seconds",
+       false
+      ],
+      [
+       "default",
+       false
+      ],
+      [
+       "kNN",
+       false
+      ],
+      [
+       "10",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "13 seconds",
+       false
+      ],
+      [
+       "CHLOEDB_DOWNLOAD_MODELS",
+       false
+      ],
+      [
+       "120 MB",
+       false
+      ],
+      [
+       "directory",
+       false
+      ],
+      [
+       "16 and 1",
+       false
+      ],
+      [
+       "--max-result-window",
+       true
+      ],
+      [
+       "10 minutes",
+       false
+      ],
+      [
+       "CHLOEDB_SHARED_MEMORY",
+       false
+      ],
+      [
+       "DeadlineError",
+       true
+      ],
+      [
+       "True",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "FLOAT",
+       false
+      ],
+      [
+       "10 seconds",
+       true
+      ],
+      [
+       "409",
+       true
+      ],
+      [
+       "10 seconds",
+       false
+      ],
+      [
+       "--trusted-host",
+       false
+      ],
+      [
+       "PartialWriteError",
+       false
+      ],
+      [
+       "CHLOEDB_",
+       false
+      ],
+      [
+       "10, same-origin",
+       false
+      ],
+      [
+       "Every minute",
+       false
+      ],
+      [
+       "Twice",
+       false
+      ],
+      [
+       "max_answer_size",
+       false
+      ],
+      [
+       "run_key",
+       false
+      ],
+      [
+       "/v1/connectors/rotate",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "Message-ID",
+       true
+      ],
+      [
+       "from the beginning",
+       false
+      ],
+      [
+       "/v1/alerts",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "events",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "500",
+       true
+      ],
+      [
+       "0",
+       false
+      ],
+      [
+       "_insert",
+       false
+      ],
+      [
+       "403",
+       true
+      ],
+      [
+       "POST /v1/admin/keys",
+       false
+      ],
+      [
+       "10,000",
+       true
+      ],
+      [
+       "viewer",
+       false
+      ],
+      [
+       "403",
+       false
+      ],
+      [
+       "google_session",
+       false
+      ],
+      [
+       "--max-size",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "config.json",
+       false
+      ],
+      [
+       "chloectx.sock",
+       false
+      ],
+      [
+       "'self'",
+       false
+      ],
+      [
+       "0.3.2",
+       false
+      ],
+      [
+       "example",
+       false
+      ],
+      [
+       "hashed",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "SSP3-7.0",
+       true
+      ],
+      [
+       "1.5 km",
+       true
+      ],
+      [
+       "Every 10 seconds",
+       false
+      ],
+      [
+       "90%",
+       false
+      ],
+      [
+       "100 years",
+       false
+      ],
+      [
+       "12.3 miles",
+       false
+      ],
+      [
+       "Every 15 seconds",
+       false
+      ],
+      [
+       "100 pixels",
+       false
+      ],
+      [
+       "10 minutes",
+       false
+      ],
+      [
+       "Hide GOES pixels",
+       false
+      ],
+      [
+       "CHLOEDB_TEST_FAIL_ON_MISSING_SERVER",
+       false
+      ],
+      [
+       "CHLOEDB_EARTH_BINARY",
+       false
+      ],
+      [
+       "1,234",
+       false
+      ],
+      [
+       "1.2 seconds",
+       false
+      ],
+      [
+       "es_preset_chloedb",
+       false
+      ],
+      [
+       "ScriptException",
+       false
+      ],
+      [
+       "X-Chloedb-Search-Id",
+       false
+      ],
+      [
+       "UTC",
+       false
+      ],
+      [
+       "ForbiddenTenantWrite",
+       false
+      ],
+      [
+       "books",
+       false
+      ],
+      [
+       "hash",
+       true
+      ],
+      [
+       "aliases",
+       false
+      ],
+      [
+       "1.2, 1.2, 1.0",
+       false
+      ],
+      [
+       "256",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "1.2 seconds",
+       false
+      ],
+      [
+       "1.2 GB",
+       false
+      ],
+      [
+       "1,988",
+       false
+      ],
+      [
+       "MAX_PATH_LENGTH",
+       false
+      ],
+      [
+       "K. S. Booth, 2018",
+       false
+      ],
+      [
+       "unmet",
+       false
+      ],
+      [
+       "12",
+       false
+      ],
+      [
+       "0.237",
+       false
+      ],
+      [
+       "100",
+       false
+      ],
+      [
+       "BERT",
+       false
+      ],
+      [
+       "100",
+       false
+      ],
+      [
+       "half",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "chloedb-bench",
+       false
+      ],
+      [
+       "stopped_at_max_pushes",
+       false
+      ],
+      [
+       "1.2 seconds",
+       false
+      ],
+      [
+       "10 times as much",
+       false
+      ],
+      [
+       "0.234",
+       false
+      ],
+      [
+       "PageRank",
+       true
+      ],
+      [
+       "1",
+       false
+      ],
+      [
+       "00:00",
+       false
+      ],
+      [
+       "has",
+       false
+      ],
+      [
+       "/v1/share",
+       false
+      ],
+      [
+       "Every 15 minutes",
+       false
+      ],
+      [
+       "classics",
+       false
+      ],
+      [
+       "/v1/explain",
+       false
+      ],
+      [
+       "100",
+       false
+      ],
+      [
+       "Every 15 seconds",
+       true
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "/v1/checkpoint",
+       false
+      ],
+      [
+       "--max-model-calls",
+       false
+      ],
+      [
+       "chloedb test --profile ci",
+       false
+      ],
+      [
+       "arXiv",
+       false
+      ],
+      [
+       "citations",
+       false
+      ],
+      [
+       "JSON",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "Top",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "100 GB",
+       false
+      ],
+      [
+       "story_id",
+       false
+      ],
+      [
+       "CHLOEDB_EXPERIMENTS_TOKEN",
+       false
+      ],
+      [
+       "401",
+       true
+      ],
+      [
+       "100 KB",
+       false
+      ],
+      [
+       "Merge",
+       false
+      ],
+      [
+       "searches",
+       false
+      ],
+      [
+       "12 hours",
+       false
+      ],
+      [
+       "10",
+       true
+      ],
+      [
+       "bench.py",
+       false
+      ],
+      [
+       "1.3 ms",
+       false
+      ],
+      [
+       "1.3 ms",
+       false
+      ],
+      [
+       "2026-11-16.json",
+       false
+      ],
+      [
+       "app_key",
+       false
+      ],
+      [
+       "public",
+       false
+      ],
+      [
+       "15 minutes",
+       false
+      ],
+      [
+       "CHLOEDB_OPERATOR_SECRET",
+       false
+      ],
+      [
+       "CHLOEDB_APP_ASK_LIMIT",
+       false
+      ],
+      [
+       "20",
+       false
+      ],
+      [
+       "$10",
+       false
+      ],
+      [
+       "100",
+       false
+      ],
+      [
+       "Every 10 minutes",
+       false
+      ],
+      [
+       "5",
+       false
+      ],
+      [
+       "CHLOEDB_APP_LIMIT",
+       false
+      ],
+      [
+       "80, 443, 8080",
+       false
+      ],
+      [
+       "/v1/health",
+       false
+      ],
+      [
+       "--copy",
+       false
+      ],
+      [
+       "write_refused",
+       false
+      ],
+      [
+       "30 days",
+       false
+      ],
+      [
+       "X-Chloedb-Is-Follower",
+       false
+      ],
+      [
+       "15 minutes",
+       true
+      ],
+      [
+       "chloedb-foreign-data-error",
+       false
+      ],
+      [
+       "NULL",
+       false
+      ],
+      [
+       "Restart=always",
+       true
+      ],
+      [
+       "applied",
+       false
+      ],
+      [
+       "--restart",
+       false
+      ],
+      [
+       "logical",
+       false
+      ],
+      [
+       "0.3.2",
+       false
+      ],
+      [
+       "readwrite",
+       false
+      ],
+      [
+       "data",
+       false
+      ],
+      [
+       "2.38",
+       false
+      ],
+      [
+       "CHLOEDB_NO_AUTO_MODEL_DOWNLOAD",
+       false
+      ],
+      [
+       "models",
+       false
+      ],
+      [
+       "--no-auto-model",
+       false
+      ],
+      [
+       "bert",
+       true
+      ],
+      [
+       "CHLOEDB_AUTH_TOKEN",
+       false
+      ],
+      [
+       "UnauthorizedError",
+       true
+      ],
+      [
+       "write",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "robots",
+       false
+      ],
+      [
+       "10",
+       false
+      ],
+      [
+       "--private",
+       false
+      ],
+      [
+       "all",
+       false
+      ],
+      [
+       "0.1",
+       false
+      ],
+      [
+       "127.0.0.1",
+       false
+      ],
+      [
+       "X-Chloedb-Table-Grants",
+       false
+      ],
+      [
+       "the site's own",
+       false
+      ],
+      [
+       "Automatically",
+       false
+      ],
+      [
+       "The rows that added the list",
+       false
+      ],
+      [
+       "merged",
+       false
+      ],
+      [
+       "seconds",
+       false
+      ],
+      [
+       "It becomes a string",
+       false
+      ],
+      [
+       "10 seconds",
+       false
+      ],
+      [
+       "--dry-run",
+       false
+      ],
+      [
+       "schemas",
+       false
+      ],
+      [
+       "porter",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "TEXT",
+       false
+      ],
+      [
+       "JSON",
+       false
+      ],
+      [
+       "TEXT",
+       false
+      ],
+      [
+       "None",
+       false
+      ],
+      [
+       "Python code",
+       false
+      ],
+      [
+       "all-MiniLM-L6-v2",
+       false
+      ],
+      [
+       "items",
+       false
+      ],
+      [
+       "BETWEEN",
+       true
+      ],
+      [
+       "127",
+       false
+      ],
+      [
+       "--move-ttl",
+       false
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "TypeError",
+       false
+      ],
+      [
+       "DatabaseError",
+       false
+      ],
+      [
+       "DatabaseError",
+       false
+      ],
+      [
+       "read_only=False",
+       false
+      ],
+      [
+       "original_error",
+       false
+      ]
+     ]
+    },
+    "qa_rag": {
+     "right": 138,
+     "of": 230,
+     "acc": 0.6,
+     "secs": 217,
+     "answers": [
+      [
+       "~/.local/share/chloedb/models",
+       true
+      ],
+      [
+       "fetch-model",
+       false
+      ],
+      [
+       "checkpoint",
+       false
+      ],
+      [
+       "<path>.before-field-ids",
+       true
+      ],
+      [
+       "All or none",
+       false
+      ],
+      [
+       "256",
+       false
+      ],
+      [
+       "As UTC",
+       false
+      ],
+      [
+       "append",
+       false
+      ],
+      [
+       "TypeError",
+       true
+      ],
+      [
+       "SHA-256",
+       true
+      ],
+      [
+       "set_embed_later",
+       false
+      ],
+      [
+       "null",
+       false
+      ],
+      [
+       "Haiku",
+       false
+      ],
+      [
+       "CHLOEDB_QUERY_MEMORY_MB",
+       true
+      ],
+      [
+       "DeadlineError",
+       true
+      ],
+      [
+       "exact",
+       false
+      ],
+      [
+       "both",
+       true
+      ],
+      [
+       "netops_disc",
+       true
+      ],
+      [
+       "netops",
+       false
+      ],
+      [
+       "96 MiB",
+       true
+      ],
+      [
+       "`--estate N`, 0 for none",
+       true
+      ],
+      [
+       "netops_estate_nodes",
+       true
+      ],
+      [
+       "estate-outage",
+       true
+      ],
+      [
+       "Every ten seconds",
+       true
+      ],
+      [
+       "/v1/map/detail",
+       true
+      ],
+      [
+       "/v1/suggest",
+       true
+      ],
+      [
+       "Every 30 seconds",
+       true
+      ],
+      [
+       "anthropic/claude-haiku-5-5",
+       true
+      ],
+      [
+       "ppr()",
+       true
+      ],
+      [
+       "13",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "25 seconds",
+       false
+      ],
+      [
+       "CHLOEDB_FETCH_MODELS",
+       false
+      ],
+      [
+       "130 MB",
+       false
+      ],
+      [
+       "directory=True",
+       true
+      ],
+      [
+       "All cores",
+       false
+      ],
+      [
+       "--max-result-window",
+       true
+      ],
+      [
+       "24 hours",
+       false
+      ],
+      [
+       "CHLOEDB_QUERY_MEMORY_MB",
+       true
+      ],
+      [
+       "DeadlineError",
+       true
+      ],
+      [
+       "{rows, bulk, skippedFields}",
+       true
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "FLOAT",
+       false
+      ],
+      [
+       "10 seconds",
+       true
+      ],
+      [
+       "409",
+       true
+      ],
+      [
+       "One second",
+       false
+      ],
+      [
+       "--allow-host",
+       true
+      ],
+      [
+       "ChloeDBError",
+       true
+      ],
+      [
+       "CHLOEDB_CONNECTOR_SECRET_",
+       true
+      ],
+      [
+       "five, within the same origin",
+       false
+      ],
+      [
+       "Every 10 seconds",
+       true
+      ],
+      [
+       "Three times its interval, or 15 minutes when that is longer",
+       true
+      ],
+      [
+       "`max_body_bytes`",
+       false
+      ],
+      [
+       "`connector-run:<name>`",
+       true
+      ],
+      [
+       "POST /v1/admin/connectors/NAME/key",
+       true
+      ],
+      [
+       "10,000",
+       true
+      ],
+      [
+       "200",
+       true
+      ],
+      [
+       "Message-ID",
+       true
+      ],
+      [
+       "The beginning",
+       false
+      ],
+      [
+       "$.alerts",
+       true
+      ],
+      [
+       "1000",
+       false
+      ],
+      [
+       "",
+       false
+      ],
+      [
+       "200,000",
+       false
+      ],
+      [
+       "500",
+       true
+      ],
+      [
+       "5",
+       true
+      ],
+      [
+       "append",
+       true
+      ],
+      [
+       "403",
+       true
+      ],
+      [
+       "POST /v1/keys/own",
+       true
+      ],
+      [
+       "10,000",
+       true
+      ],
+      [
+       "propose",
+       false
+      ],
+      [
+       "change_request_required",
+       true
+      ],
+      [
+       "__Host-chloedb-session",
+       true
+      ],
+      [
+       "--log-store-mb",
+       true
+      ],
+      [
+       "1 KB",
+       true
+      ],
+      [
+       "DB.connectors.json",
+       true
+      ],
+      [
+       "engram.sock",
+       true
+      ],
+      [
+       "'self'",
+       false
+      ],
+      [
+       "0.3.8",
+       true
+      ],
+      [
+       "DB_PASSWORD",
+       true
+      ],
+      [
+       "Written in prose",
+       false
+      ],
+      [
+       "20000",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "SSP3-7.0",
+       true
+      ],
+      [
+       "1.5 km",
+       true
+      ],
+      [
+       "Every two minutes",
+       true
+      ],
+      [
+       "At least 80%",
+       false
+      ],
+      [
+       "More than one standard deviation",
+       true
+      ],
+      [
+       "9.9 km",
+       true
+      ],
+      [
+       "every six hours",
+       true
+      ],
+      [
+       "more than 0.09",
+       true
+      ],
+      [
+       "120 days",
+       false
+      ],
+      [
+       "\"Fire pixels\"",
+       true
+      ],
+      [
+       "STRATA_APPS_NEED_SERVER",
+       false
+      ],
+      [
+       "CHLOEDB_SERVER",
+       false
+      ],
+      [
+       "4,355",
+       true
+      ],
+      [
+       "11.8 ms",
+       true
+      ],
+      [
+       "single_node_cluster",
+       true
+      ],
+      [
+       "script_exception",
+       true
+      ],
+      [
+       "X-Elastic-Product",
+       true
+      ],
+      [
+       "UTC",
+       false
+      ],
+      [
+       "security_exception",
+       true
+      ],
+      [
+       "books",
+       false
+      ],
+      [
+       "_hash",
+       true
+      ],
+      [
+       "opensearch_aliases",
+       true
+      ],
+      [
+       "k1 1.2, b 0.75",
+       true
+      ],
+      [
+       "256",
+       false
+      ],
+      [
+       "9,999",
+       false
+      ],
+      [
+       "171332",
+       false
+      ],
+      [
+       "39.0 seconds",
+       true
+      ],
+      [
+       "1,348 MiB",
+       false
+      ],
+      [
+       "808",
+       true
+      ],
+      [
+       "max_nodes",
+       true
+      ],
+      [
+       "Andersen, Chung and Lang, 2006",
+       true
+      ],
+      [
+       "ppr_unsettled",
+       true
+      ],
+      [
+       "27",
+       false
+      ],
+      [
+       "0.253",
+       true
+      ],
+      [
+       "1,000",
+       false
+      ],
+      [
+       "Model2Vec potion-retrieval-32M",
+       true
+      ],
+      [
+       "0.12 ms",
+       false
+      ],
+      [
+       "thirty-second",
+       false
+      ],
+      [
+       "400",
+       false
+      ],
+      [
+       "chloedb-edges-bench",
+       true
+      ],
+      [
+       "max_pushes_reached",
+       false
+      ],
+      [
+       "2.1 ms",
+       true
+      ],
+      [
+       "two to five times as much",
+       true
+      ],
+      [
+       "0.123",
+       true
+      ],
+      [
+       "PageRank",
+       true
+      ],
+      [
+       "10",
+       false
+      ],
+      [
+       "06:00",
+       false
+      ],
+      [
+       "has:code",
+       true
+      ],
+      [
+       "POST /v1/feeds/<id>/team",
+       true
+      ],
+      [
+       "Every six hours",
+       true
+      ],
+      [
+       "ax_classics",
+       true
+      ],
+      [
+       "/v1/explain/<id>?level=",
+       false
+      ],
+      [
+       "1,093",
+       true
+      ],
+      [
+       "Fifteen seconds apart",
+       false
+      ],
+      [
+       "two million",
+       false
+      ],
+      [
+       "POST /v1/admin/checkpoint",
+       true
+      ],
+      [
+       "--daily-limit",
+       false
+      ],
+      [
+       "cargo test --profile ci",
+       true
+      ],
+      [
+       "chloedb-arxiv",
+       true
+      ],
+      [
+       "reviewers",
+       false
+      ],
+      [
+       "RSS",
+       true
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "BM25",
+       true
+      ],
+      [
+       "Three",
+       false
+      ],
+      [
+       "12 GB",
+       false
+      ],
+      [
+       "canonical",
+       false
+      ],
+      [
+       "CHLOEDB_HN_EXPERIMENTS_TOKEN",
+       true
+      ],
+      [
+       "401",
+       true
+      ],
+      [
+       "1000000 bytes",
+       false
+      ],
+      [
+       "team draft",
+       true
+      ],
+      [
+       "hn_interleave_log",
+       true
+      ],
+      [
+       "16 random hex characters",
+       true
+      ],
+      [
+       "10",
+       true
+      ],
+      [
+       "eval/plain.py",
+       true
+      ],
+      [
+       "15 ms",
+       true
+      ],
+      [
+       "15 ms",
+       false
+      ],
+      [
+       "latency-2026-11-16.md",
+       false
+      ],
+      [
+       "The engine gives each app a key made from that one, limited to the app",
+       false
+      ],
+      [
+       "look",
+       true
+      ],
+      [
+       "Within two minutes",
+       true
+      ],
+      [
+       "apps-credentials",
+       false
+      ],
+      [
+       "STRATA_APPS_ASK_USD_PER_DAY",
+       false
+      ],
+      [
+       "25",
+       false
+      ],
+      [
+       "$0.25",
+       true
+      ],
+      [
+       "240",
+       false
+      ],
+      [
+       "Every 10 seconds",
+       false
+      ],
+      [
+       "5",
+       false
+      ],
+      [
+       "STRATA_APPS_ASK_USD_PER_DAY",
+       true
+      ],
+      [
+       "80, 443, 8080,",
+       false
+      ],
+      [
+       "POST /v1/admin/follow/status",
+       true
+      ],
+      [
+       "--copy-table",
+       true
+      ],
+      [
+       "followed_table",
+       true
+      ],
+      [
+       "10 seconds",
+       true
+      ],
+      [
+       "X-Chloedb-Postgres-Follower",
+       true
+      ],
+      [
+       "15 minutes",
+       true
+      ],
+      [
+       "followed_table",
+       true
+      ],
+      [
+       "_empty",
+       true
+      ],
+      [
+       "Restart=always",
+       true
+      ],
+      [
+       "_sources",
+       true
+      ],
+      [
+       "--restart unless-stopped",
+       true
+      ],
+      [
+       "a new one",
+       false
+      ],
+      [
+       "0.3.8",
+       true
+      ],
+      [
+       "{ readOnly: true }",
+       true
+      ],
+      [
+       "`<file>-readers`",
+       true
+      ],
+      [
+       "2.28",
+       false
+      ],
+      [
+       "CHLOEDB_FETCH_MODELS",
+       false
+      ],
+      [
+       "~/.local/share/chloedb/models",
+       true
+      ],
+      [
+       "--offline",
+       false
+      ],
+      [
+       "bert",
+       true
+      ],
+      [
+       "CHLOEDB_TOKEN",
+       true
+      ],
+      [
+       "UnauthorizedError",
+       true
+      ],
+      [
+       "write",
+       false
+      ],
+      [
+       "100,000",
+       true
+      ],
+      [
+       "strata-crawl",
+       true
+      ],
+      [
+       "5",
+       true
+      ],
+      [
+       "--allow-host",
+       true
+      ],
+      [
+       "host",
+       true
+      ],
+      [
+       "0.3",
+       true
+      ],
+      [
+       "127.0.0.1",
+       false
+      ],
+      [
+       "x-chloedb-as-tables",
+       true
+      ],
+      [
+       "public suffix list",
+       false
+      ],
+      [
+       "One at a time",
+       false
+      ],
+      [
+       "The rows it wrote",
+       false
+      ],
+      [
+       "By URL",
+       false
+      ],
+      [
+       "Julian days",
+       true
+      ],
+      [
+       "It becomes a floating-point number",
+       false
+      ],
+      [
+       "5 seconds",
+       false
+      ],
+      [
+       "--plan",
+       true
+      ],
+      [
+       "_chloedb_schemas",
+       false
+      ],
+      [
+       "porter",
+       false
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "VECTOR(n)",
+       false
+      ],
+      [
+       "JSON array",
+       false
+      ],
+      [
+       "plain column",
+       false
+      ],
+      [
+       "what the indexes give back",
+       true
+      ],
+      [
+       "None. A query walks the graph as it runs it.",
+       false
+      ],
+      [
+       "potion-retrieval-32M",
+       true
+      ],
+      [
+       "langgraph_store",
+       true
+      ],
+      [
+       "$between",
+       true
+      ],
+      [
+       "16",
+       false
+      ],
+      [
+       "refresh_on_read",
+       true
+      ],
+      [
+       "65,536",
+       true
+      ],
+      [
+       "10,000",
+       false
+      ],
+      [
+       "NotSupportedError",
+       true
+      ],
+      [
+       "ProgrammingError",
+       true
+      ],
+      [
+       "OperationalError",
+       true
+      ],
+      [
+       "read_only",
+       false
+      ],
+      [
+       "__cause__",
+       true
+      ]
+     ]
+    },
+    "active_per_token": 655360,
+    "row_layers": [
+     9,
+     16,
+     22,
+     29
+    ],
+    "tau": [
+     0.5343295931816101,
+     0.5156714916229248,
+     0.5970869660377502,
+     0.5992788672447205
+    ]
+   }
+  ],
+  "rows_multi_gated_iso": {
+   "lr": 0.01,
+   "best_step": 300,
+   "val_ppl": 12.621856558824511,
+   "secs": 1180,
+   "history": [
+    {
+     "step": 50,
+     "train_loss": 3.430399479866028,
+     "val_ppl": 18.989161850530326,
+     "secs": 25
+    },
+    {
+     "step": 100,
+     "train_loss": 2.8637700700759887,
+     "val_ppl": 14.79357976250924,
+     "secs": 49
+    },
+    {
+     "step": 150,
+     "train_loss": 2.3309698867797852,
+     "val_ppl": 13.464814916973976,
+     "secs": 74
+    },
+    {
+     "step": 200,
+     "train_loss": 1.8977612495422362,
+     "val_ppl": 13.051526100425006,
+     "secs": 98
+    },
+    {
+     "step": 250,
+     "train_loss": 1.5545206212997436,
+     "val_ppl": 12.892980038105996,
+     "secs": 123
+    },
+    {
+     "step": 300,
+     "train_loss": 1.331075950860977,
+     "val_ppl": 12.621856558824511,
+     "secs": 147
+    },
+    {
+     "step": 350,
+     "train_loss": 1.1222109293937683,
+     "val_ppl": 12.784315115636073,
+     "secs": 172
+    },
+    {
+     "step": 400,
+     "train_loss": 0.9133958172798157,
+     "val_ppl": 12.838799786661617,
+     "secs": 196
+    },
+    {
+     "step": 450,
+     "train_loss": 0.8716950815916061,
+     "val_ppl": 13.47370248730202,
+     "secs": 221
+    },
+    {
+     "step": 500,
+     "train_loss": 0.7109293174743653,
+     "val_ppl": 13.518750713603705,
+     "secs": 245
+    },
+    {
+     "step": 550,
+     "train_loss": 0.5995139700174331,
+     "val_ppl": 13.767855284108164,
+     "secs": 270
+    },
+    {
+     "step": 600,
+     "train_loss": 0.5141633090376854,
+     "val_ppl": 14.186106335851749,
+     "secs": 295
+    },
+    {
+     "step": 650,
+     "train_loss": 0.4500478056073189,
+     "val_ppl": 14.70995972428278,
+     "secs": 319
+    },
+    {
+     "step": 700,
+     "train_loss": 0.4028541824221611,
+     "val_ppl": 14.642651349347487,
+     "secs": 344
+    },
+    {
+     "step": 750,
+     "train_loss": 0.39853558629751207,
+     "val_ppl": 14.929280717771862,
+     "secs": 368
+    },
+    {
+     "step": 800,
+     "train_loss": 0.32993149489164353,
+     "val_ppl": 14.624491823286911,
+     "secs": 393
+    },
+    {
+     "step": 850,
+     "train_loss": 0.30293049961328505,
+     "val_ppl": 15.370956739237307,
+     "secs": 417
+    },
+    {
+     "step": 900,
+     "train_loss": 0.26394827783107755,
+     "val_ppl": 15.451671841392589,
+     "secs": 442
+    },
+    {
+     "step": 950,
+     "train_loss": 0.2655214324593544,
+     "val_ppl": 15.572967340418687,
+     "secs": 466
+    },
+    {
+     "step": 1000,
+     "train_loss": 0.2554424998164177,
+     "val_ppl": 16.115215054416996,
+     "secs": 491
+    },
+    {
+     "step": 1050,
+     "train_loss": 0.22322836861014367,
+     "val_ppl": 16.13773307791073,
+     "secs": 516
+    },
+    {
+     "step": 1100,
+     "train_loss": 0.21733649030327798,
+     "val_ppl": 16.30998787424528,
+     "secs": 540
+    },
+    {
+     "step": 1150,
+     "train_loss": 0.19996261090040207,
+     "val_ppl": 16.57965203056762,
+     "secs": 565
+    },
+    {
+     "step": 1200,
+     "train_loss": 0.19542428925633432,
+     "val_ppl": 16.654161906275434,
+     "secs": 589
+    },
+    {
+     "step": 1250,
+     "train_loss": 0.18541415616869927,
+     "val_ppl": 16.613252250195753,
+     "secs": 614
+    },
+    {
+     "step": 1300,
+     "train_loss": 0.18696219280362128,
+     "val_ppl": 16.39907569741923,
+     "secs": 639
+    },
+    {
+     "step": 1350,
+     "train_loss": 0.17888982549309732,
+     "val_ppl": 16.584677178917296,
+     "secs": 663
+    },
+    {
+     "step": 1400,
+     "train_loss": 0.1721404954791069,
+     "val_ppl": 16.662790007354133,
+     "secs": 688
+    },
+    {
+     "step": 1450,
+     "train_loss": 0.15522417694330215,
+     "val_ppl": 16.88296242088776,
+     "secs": 712
+    },
+    {
+     "step": 1500,
+     "train_loss": 0.16173694476485254,
+     "val_ppl": 17.120070259385837,
+     "secs": 737
+    },
+    {
+     "step": 1550,
+     "train_loss": 0.162430499792099,
+     "val_ppl": 17.086945989826827,
+     "secs": 762
+    },
+    {
+     "step": 1600,
+     "train_loss": 0.16073286280035973,
+     "val_ppl": 16.997564519768073,
+     "secs": 786
+    },
+    {
+     "step": 1650,
+     "train_loss": 0.16303439691662788,
+     "val_ppl": 17.058409559496248,
+     "secs": 811
+    },
+    {
+     "step": 1700,
+     "train_loss": 0.14278075650334357,
+     "val_ppl": 17.109154425084,
+     "secs": 835
+    },
+    {
+     "step": 1750,
+     "train_loss": 0.15635038912296295,
+     "val_ppl": 17.22952777988453,
+     "secs": 860
+    },
+    {
+     "step": 1800,
+     "train_loss": 0.14645470738410948,
+     "val_ppl": 17.25992770416098,
+     "secs": 884
+    },
+    {
+     "step": 1850,
+     "train_loss": 0.1434168042242527,
+     "val_ppl": 17.339281532169448,
+     "secs": 909
+    },
+    {
+     "step": 1900,
+     "train_loss": 0.14381209075450896,
+     "val_ppl": 17.40916286760779,
+     "secs": 934
+    },
+    {
+     "step": 1950,
+     "train_loss": 0.13918067947030066,
+     "val_ppl": 17.431091666351136,
+     "secs": 958
+    },
+    {
+     "step": 2000,
+     "train_loss": 0.1395505766570568,
+     "val_ppl": 17.43737536503877,
+     "secs": 983
+    },
+    {
+     "step": 2050,
+     "train_loss": 0.14334587886929512,
+     "val_ppl": 17.438686414498264,
+     "secs": 1007
+    },
+    {
+     "step": 2100,
+     "train_loss": 0.1356302359700203,
+     "val_ppl": 17.48152859516997,
+     "secs": 1032
+    },
+    {
+     "step": 2150,
+     "train_loss": 0.14372664481401443,
+     "val_ppl": 17.505719773643463,
+     "secs": 1057
+    },
+    {
+     "step": 2200,
+     "train_loss": 0.1374889187514782,
+     "val_ppl": 17.515461411082313,
+     "secs": 1081
+    },
+    {
+     "step": 2250,
+     "train_loss": 0.1358365985751152,
+     "val_ppl": 17.521383841347184,
+     "secs": 1106
+    },
+    {
+     "step": 2300,
+     "train_loss": 0.13678596332669257,
+     "val_ppl": 17.52371225280994,
+     "secs": 1131
+    },
+    {
+     "step": 2350,
+     "train_loss": 0.1400851573050022,
+     "val_ppl": 17.52606526960027,
+     "secs": 1155
+    },
+    {
+     "step": 2400,
+     "train_loss": 0.1458449774980545,
+     "val_ppl": 17.52588226358013,
+     "secs": 1180
+    }
+   ],
+   "held_out": 11.052063867272986,
+   "held_out_per_doc": {
+    "python": 4.054684443908564,
+    "netops": 24.303190479166872,
+    "javascript": 4.8003605343660976,
+    "connectors": 13.820650682462905,
+    "security": 8.871307678569375,
+    "earth": 24.93073050589876,
+    "opensearch": 5.977879389841148,
+    "graphs": 13.15516834037175,
+    "arxiv": 17.63964239466244,
+    "hn": 21.124437301437673,
+    "apps": 16.120381953303113,
+    "postgres": 11.140152391176317,
+    "troubleshooting": 7.293693217544506,
+    "crawler": 9.144548888176068,
+    "sqlite": 10.571131884109983,
+    "frameworks": 9.237035598075082
+   },
+   "seen": 3.777692059919286,
+   "seen_per_doc": {
+    "python": 2.1051749812778033,
+    "netops": 8.621336734659613,
+    "javascript": 2.25991013604899,
+    "connectors": 2.8510094613863495,
+    "security": 3.121108781633766,
+    "earth": 5.368598284350065,
+    "opensearch": 2.704716731781534,
+    "graphs": 6.305853712312828,
+    "arxiv": 11.440711176751263,
+    "hn": 3.6003958231064677,
+    "apps": 3.9405810908394896,
+    "postgres": 2.170821469586416,
+    "troubleshooting": 2.872013498306584,
+    "crawler": 3.4181493322238725,
+    "sqlite": 5.97679083020102,
+    "frameworks": 2.4900238635961216
+   },
+   "domain": 10.952159429442084,
+   "domain_per_doc": {
+    "backbone": 22.427857378964813,
+    "build-an-app": 6.062889107904798,
+    "cluster-limits": 13.53157136237293,
+    "crawler-bot": 9.317684306279416,
+    "frames": 9.881361374719743,
+    "github": 16.537008227184543,
+    "java": 7.144825507557787,
+    "next-items": 10.34210804892156
+   },
+   "general": 17.607664211308865,
+   "general_per_doc": {
+    "wiki0": 17.192744927095955,
+    "wiki1": 31.42206245879929,
+    "wiki2": 7.709167765855659,
+    "wiki3": 5.233036260376753,
+    "wiki4": 16.18643021543224,
+    "wiki5": 23.19895403029299,
+    "wiki6": 20.57104255843691,
+    "wiki7": 33.7420688464769,
+    "wiki8": 27.13077403415161,
+    "wiki9": 22.194390308442088,
+    "wiki10": 9.397508496527237,
+    "wiki11": 20.017357329123485,
+    "wiki12": 14.59680984288682,
+    "wiki13": 15.947344950383897,
+    "wiki14": 43.15375496415781,
+    "wiki15": 13.205337756062763
+   },
+   "trainable": 335544320,
+   "qa": {
+    "right": 24,
+    "of": 230,
+    "acc": 0.10434782608695652,
+    "secs": 163,
+    "answers": [
+     [
+      "~/.local/share/chloedb/models",
+      true
+     ],
+     [
+      "chloedb-server download-model",
+      false
+     ],
+     [
+      "backup",
+      false
+     ],
+     [
+      "backup",
+      false
+     ],
+     [
+      "At most one",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "As a string",
+      false
+     ],
+     [
+      "append",
+      false
+     ],
+     [
+      "TypeError",
+      true
+     ],
+     [
+      "SHA-256",
+      true
+     ],
+     [
+      "put",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "llama-index-7B",
+      false
+     ],
+     [
+      "CHLOEDB_SHARED_MEMORY_MB",
+      false
+     ],
+     [
+      "TimeoutError",
+      false
+     ],
+     [
+      "exact",
+      false
+     ],
+     [
+      "local",
+      false
+     ],
+     [
+      "chloedb_network_discovered",
+      false
+     ],
+     [
+      "all",
+      false
+     ],
+     [
+      "128Mi",
+      false
+     ],
+     [
+      "--estate-size 0: no estate",
+      false
+     ],
+     [
+      "objects",
+      false
+     ],
+     [
+      "Down in the network",
+      false
+     ],
+     [
+      "Every 30 seconds",
+      false
+     ],
+     [
+      "/v1/objects/{id}/tabs",
+      false
+     ],
+     [
+      "/v1/suggest",
+      true
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "default",
+      false
+     ],
+     [
+      "kNN",
+      false
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "13 seconds",
+      false
+     ],
+     [
+      "CHLOEDB_DOWNLOAD_MODELS",
+      false
+     ],
+     [
+      "120 MB",
+      false
+     ],
+     [
+      "directory",
+      false
+     ],
+     [
+      "16 and 1",
+      false
+     ],
+     [
+      "--max-result-window",
+      true
+     ],
+     [
+      "10 minutes",
+      false
+     ],
+     [
+      "CHLOEDB_SHARED_MEMORY",
+      false
+     ],
+     [
+      "DeadlineError",
+      true
+     ],
+     [
+      "True",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "FLOAT",
+      false
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "409",
+      true
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "--trusted-host",
+      false
+     ],
+     [
+      "PartialWriteError",
+      false
+     ],
+     [
+      "CHLOEDB_",
+      false
+     ],
+     [
+      "10, same-origin",
+      false
+     ],
+     [
+      "Every minute",
+      false
+     ],
+     [
+      "Twice",
+      false
+     ],
+     [
+      "max_answer_size",
+      false
+     ],
+     [
+      "run_key",
+      false
+     ],
+     [
+      "/v1/connectors/rotate",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "Message-ID",
+      true
+     ],
+     [
+      "from the beginning",
+      false
+     ],
+     [
+      "/v1/alerts",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "events",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "500",
+      true
+     ],
+     [
+      "0",
+      false
+     ],
+     [
+      "_insert",
+      false
+     ],
+     [
+      "403",
+      true
+     ],
+     [
+      "POST /v1/admin/keys",
+      false
+     ],
+     [
+      "10,000",
+      true
+     ],
+     [
+      "viewer",
+      false
+     ],
+     [
+      "403",
+      false
+     ],
+     [
+      "google_session",
+      false
+     ],
+     [
+      "--max-size",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "config.json",
+      false
+     ],
+     [
+      "chloectx.sock",
+      false
+     ],
+     [
+      "'self'",
+      false
+     ],
+     [
+      "0.3.2",
+      false
+     ],
+     [
+      "example",
+      false
+     ],
+     [
+      "hashed",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "SSP3-7.0",
+      true
+     ],
+     [
+      "1.5 km",
+      true
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "90%",
+      false
+     ],
+     [
+      "100 years",
+      false
+     ],
+     [
+      "12.3 miles",
+      false
+     ],
+     [
+      "Every 15 seconds",
+      false
+     ],
+     [
+      "100 pixels",
+      false
+     ],
+     [
+      "10 minutes",
+      false
+     ],
+     [
+      "Hide GOES pixels",
+      false
+     ],
+     [
+      "CHLOEDB_TEST_FAIL_ON_MISSING_SERVER",
+      false
+     ],
+     [
+      "CHLOEDB_EARTH_BINARY",
+      false
+     ],
+     [
+      "1,234",
+      false
+     ],
+     [
+      "1.2 seconds",
+      false
+     ],
+     [
+      "es_preset_chloedb",
+      false
+     ],
+     [
+      "ScriptException",
+      false
+     ],
+     [
+      "X-Chloedb-Search-Id",
+      false
+     ],
+     [
+      "UTC",
+      false
+     ],
+     [
+      "ForbiddenTenantWrite",
+      false
+     ],
+     [
+      "books",
+      false
+     ],
+     [
+      "hash",
+      true
+     ],
+     [
+      "aliases",
+      false
+     ],
+     [
+      "1.2, 1.2, 1.0",
+      false
+     ],
+     [
+      "256",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "1.2 seconds",
+      false
+     ],
+     [
+      "1.2 GB",
+      false
+     ],
+     [
+      "1,988",
+      false
+     ],
+     [
+      "MAX_PATH_LENGTH",
+      false
+     ],
+     [
+      "K. S. Booth, 2018",
+      false
+     ],
+     [
+      "unmet",
+      false
+     ],
+     [
+      "12",
+      false
+     ],
+     [
+      "0.237",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "BERT",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "half",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "chloedb-bench",
+      false
+     ],
+     [
+      "stopped_at_max_pushes",
+      false
+     ],
+     [
+      "1.2 seconds",
+      false
+     ],
+     [
+      "10 times as much",
+      false
+     ],
+     [
+      "0.234",
+      false
+     ],
+     [
+      "PageRank",
+      true
+     ],
+     [
+      "1",
+      false
+     ],
+     [
+      "00:00",
+      false
+     ],
+     [
+      "has",
+      false
+     ],
+     [
+      "/v1/share",
+      false
+     ],
+     [
+      "Every 15 minutes",
+      false
+     ],
+     [
+      "classics",
+      false
+     ],
+     [
+      "/v1/explain",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "Every 15 seconds",
+      true
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "/v1/checkpoint",
+      false
+     ],
+     [
+      "--max-model-calls",
+      false
+     ],
+     [
+      "chloedb test --profile ci",
+      false
+     ],
+     [
+      "arXiv",
+      false
+     ],
+     [
+      "citations",
+      false
+     ],
+     [
+      "JSON",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "Top",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "100 GB",
+      false
+     ],
+     [
+      "story_id",
+      false
+     ],
+     [
+      "CHLOEDB_EXPERIMENTS_TOKEN",
+      false
+     ],
+     [
+      "401",
+      true
+     ],
+     [
+      "100 KB",
+      false
+     ],
+     [
+      "Merge",
+      false
+     ],
+     [
+      "searches",
+      false
+     ],
+     [
+      "12 hours",
+      false
+     ],
+     [
+      "10",
+      true
+     ],
+     [
+      "bench.py",
+      false
+     ],
+     [
+      "1.3 ms",
+      false
+     ],
+     [
+      "1.3 ms",
+      false
+     ],
+     [
+      "2026-11-16.json",
+      false
+     ],
+     [
+      "app_key",
+      false
+     ],
+     [
+      "public",
+      false
+     ],
+     [
+      "15 minutes",
+      false
+     ],
+     [
+      "CHLOEDB_OPERATOR_SECRET",
+      false
+     ],
+     [
+      "CHLOEDB_APP_ASK_LIMIT",
+      false
+     ],
+     [
+      "20",
+      false
+     ],
+     [
+      "$10",
+      false
+     ],
+     [
+      "100",
+      false
+     ],
+     [
+      "Every 10 minutes",
+      false
+     ],
+     [
+      "5",
+      false
+     ],
+     [
+      "CHLOEDB_APP_LIMIT",
+      false
+     ],
+     [
+      "80, 443, 8080",
+      false
+     ],
+     [
+      "/v1/health",
+      false
+     ],
+     [
+      "--copy",
+      false
+     ],
+     [
+      "write_refused",
+      false
+     ],
+     [
+      "30 days",
+      false
+     ],
+     [
+      "X-Chloedb-Is-Follower",
+      false
+     ],
+     [
+      "15 minutes",
+      true
+     ],
+     [
+      "chloedb-foreign-data-error",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "Restart=always",
+      true
+     ],
+     [
+      "applied",
+      false
+     ],
+     [
+      "--restart",
+      false
+     ],
+     [
+      "logical",
+      false
+     ],
+     [
+      "0.3.2",
+      false
+     ],
+     [
+      "readwrite",
+      false
+     ],
+     [
+      "data",
+      false
+     ],
+     [
+      "2.38",
+      false
+     ],
+     [
+      "CHLOEDB_NO_AUTO_MODEL_DOWNLOAD",
+      false
+     ],
+     [
+      "models",
+      false
+     ],
+     [
+      "--no-auto-model",
+      false
+     ],
+     [
+      "bert",
+      true
+     ],
+     [
+      "CHLOEDB_AUTH_TOKEN",
+      false
+     ],
+     [
+      "UnauthorizedError",
+      true
+     ],
+     [
+      "write",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "robots",
+      false
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "--private",
+      false
+     ],
+     [
+      "all",
+      false
+     ],
+     [
+      "0.1",
+      false
+     ],
+     [
+      "127.0.0.1",
+      false
+     ],
+     [
+      "X-Chloedb-Table-Grants",
+      false
+     ],
+     [
+      "the site's own",
+      false
+     ],
+     [
+      "Automatically",
+      false
+     ],
+     [
+      "The rows that added the list",
+      false
+     ],
+     [
+      "merged",
+      false
+     ],
+     [
+      "seconds",
+      false
+     ],
+     [
+      "It becomes a string",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "--dry-run",
+      false
+     ],
+     [
+      "schemas",
+      false
+     ],
+     [
+      "porter",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "TEXT",
+      false
+     ],
+     [
+      "JSON",
+      false
+     ],
+     [
+      "TEXT",
+      false
+     ],
+     [
+      "None",
+      false
+     ],
+     [
+      "Python code",
+      false
+     ],
+     [
+      "all-MiniLM-L6-v2",
+      false
+     ],
+     [
+      "items",
+      false
+     ],
+     [
+      "BETWEEN",
+      true
+     ],
+     [
+      "127",
+      false
+     ],
+     [
+      "--move-ttl",
+      false
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "TypeError",
+      false
+     ],
+     [
+      "DatabaseError",
+      false
+     ],
+     [
+      "DatabaseError",
+      false
+     ],
+     [
+      "read_only=False",
+      false
+     ],
+     [
+      "original_error",
+      false
+     ]
+    ]
+   },
+   "qa_rag": {
+    "right": 138,
+    "of": 230,
+    "acc": 0.6,
+    "secs": 217,
+    "answers": [
+     [
+      "~/.local/share/chloedb/models",
+      true
+     ],
+     [
+      "fetch-model",
+      false
+     ],
+     [
+      "checkpoint",
+      false
+     ],
+     [
+      "<path>.before-field-ids",
+      true
+     ],
+     [
+      "All or none",
+      false
+     ],
+     [
+      "256",
+      false
+     ],
+     [
+      "As UTC",
+      false
+     ],
+     [
+      "append",
+      false
+     ],
+     [
+      "TypeError",
+      true
+     ],
+     [
+      "SHA-256",
+      true
+     ],
+     [
+      "set_embed_later",
+      false
+     ],
+     [
+      "null",
+      false
+     ],
+     [
+      "Haiku",
+      false
+     ],
+     [
+      "CHLOEDB_QUERY_MEMORY_MB",
+      true
+     ],
+     [
+      "DeadlineError",
+      true
+     ],
+     [
+      "exact",
+      false
+     ],
+     [
+      "both",
+      true
+     ],
+     [
+      "netops_disc",
+      true
+     ],
+     [
+      "netops",
+      false
+     ],
+     [
+      "96 MiB",
+      true
+     ],
+     [
+      "`--estate N`, 0 for none",
+      true
+     ],
+     [
+      "netops_estate_nodes",
+      true
+     ],
+     [
+      "estate-outage",
+      true
+     ],
+     [
+      "Every ten seconds",
+      true
+     ],
+     [
+      "/v1/map/detail",
+      true
+     ],
+     [
+      "/v1/suggest",
+      true
+     ],
+     [
+      "Every 30 seconds",
+      true
+     ],
+     [
+      "anthropic/claude-haiku-5-5",
+      true
+     ],
+     [
+      "ppr()",
+      true
+     ],
+     [
+      "13",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "25 seconds",
+      false
+     ],
+     [
+      "CHLOEDB_FETCH_MODELS",
+      false
+     ],
+     [
+      "130 MB",
+      false
+     ],
+     [
+      "directory=True",
+      true
+     ],
+     [
+      "All cores",
+      false
+     ],
+     [
+      "--max-result-window",
+      true
+     ],
+     [
+      "24 hours",
+      false
+     ],
+     [
+      "CHLOEDB_QUERY_MEMORY_MB",
+      true
+     ],
+     [
+      "DeadlineError",
+      true
+     ],
+     [
+      "{rows, bulk, skippedFields}",
+      true
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "FLOAT",
+      false
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "409",
+      true
+     ],
+     [
+      "One second",
+      false
+     ],
+     [
+      "--allow-host",
+      true
+     ],
+     [
+      "ChloeDBError",
+      true
+     ],
+     [
+      "CHLOEDB_CONNECTOR_SECRET_",
+      true
+     ],
+     [
+      "five, within the same origin",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      true
+     ],
+     [
+      "Three times its interval, or 15 minutes when that is longer",
+      true
+     ],
+     [
+      "`max_body_bytes`",
+      false
+     ],
+     [
+      "`connector-run:<name>`",
+      true
+     ],
+     [
+      "POST /v1/admin/connectors/NAME/key",
+      true
+     ],
+     [
+      "10,000",
+      true
+     ],
+     [
+      "200",
+      true
+     ],
+     [
+      "Message-ID",
+      true
+     ],
+     [
+      "The beginning",
+      false
+     ],
+     [
+      "$.alerts",
+      true
+     ],
+     [
+      "1000",
+      false
+     ],
+     [
+      "",
+      false
+     ],
+     [
+      "200,000",
+      false
+     ],
+     [
+      "500",
+      true
+     ],
+     [
+      "5",
+      true
+     ],
+     [
+      "append",
+      true
+     ],
+     [
+      "403",
+      true
+     ],
+     [
+      "POST /v1/keys/own",
+      true
+     ],
+     [
+      "10,000",
+      true
+     ],
+     [
+      "propose",
+      false
+     ],
+     [
+      "change_request_required",
+      true
+     ],
+     [
+      "__Host-chloedb-session",
+      true
+     ],
+     [
+      "--log-store-mb",
+      true
+     ],
+     [
+      "1 KB",
+      true
+     ],
+     [
+      "DB.connectors.json",
+      true
+     ],
+     [
+      "engram.sock",
+      true
+     ],
+     [
+      "'self'",
+      false
+     ],
+     [
+      "0.3.8",
+      true
+     ],
+     [
+      "DB_PASSWORD",
+      true
+     ],
+     [
+      "Written in prose",
+      false
+     ],
+     [
+      "20000",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "SSP3-7.0",
+      true
+     ],
+     [
+      "1.5 km",
+      true
+     ],
+     [
+      "Every two minutes",
+      true
+     ],
+     [
+      "At least 80%",
+      false
+     ],
+     [
+      "More than one standard deviation",
+      true
+     ],
+     [
+      "9.9 km",
+      true
+     ],
+     [
+      "every six hours",
+      true
+     ],
+     [
+      "more than 0.09",
+      true
+     ],
+     [
+      "120 days",
+      false
+     ],
+     [
+      "\"Fire pixels\"",
+      true
+     ],
+     [
+      "STRATA_APPS_NEED_SERVER",
+      false
+     ],
+     [
+      "CHLOEDB_SERVER",
+      false
+     ],
+     [
+      "4,355",
+      true
+     ],
+     [
+      "11.8 ms",
+      true
+     ],
+     [
+      "single_node_cluster",
+      true
+     ],
+     [
+      "script_exception",
+      true
+     ],
+     [
+      "X-Elastic-Product",
+      true
+     ],
+     [
+      "UTC",
+      false
+     ],
+     [
+      "security_exception",
+      true
+     ],
+     [
+      "books",
+      false
+     ],
+     [
+      "_hash",
+      true
+     ],
+     [
+      "opensearch_aliases",
+      true
+     ],
+     [
+      "k1 1.2, b 0.75",
+      true
+     ],
+     [
+      "256",
+      false
+     ],
+     [
+      "9,999",
+      false
+     ],
+     [
+      "171332",
+      false
+     ],
+     [
+      "39.0 seconds",
+      true
+     ],
+     [
+      "1,348 MiB",
+      false
+     ],
+     [
+      "808",
+      true
+     ],
+     [
+      "max_nodes",
+      true
+     ],
+     [
+      "Andersen, Chung and Lang, 2006",
+      true
+     ],
+     [
+      "ppr_unsettled",
+      true
+     ],
+     [
+      "27",
+      false
+     ],
+     [
+      "0.253",
+      true
+     ],
+     [
+      "1,000",
+      false
+     ],
+     [
+      "Model2Vec potion-retrieval-32M",
+      true
+     ],
+     [
+      "0.12 ms",
+      false
+     ],
+     [
+      "thirty-second",
+      false
+     ],
+     [
+      "400",
+      false
+     ],
+     [
+      "chloedb-edges-bench",
+      true
+     ],
+     [
+      "max_pushes_reached",
+      false
+     ],
+     [
+      "2.1 ms",
+      true
+     ],
+     [
+      "two to five times as much",
+      true
+     ],
+     [
+      "0.123",
+      true
+     ],
+     [
+      "PageRank",
+      true
+     ],
+     [
+      "10",
+      false
+     ],
+     [
+      "06:00",
+      false
+     ],
+     [
+      "has:code",
+      true
+     ],
+     [
+      "POST /v1/feeds/<id>/team",
+      true
+     ],
+     [
+      "Every six hours",
+      true
+     ],
+     [
+      "ax_classics",
+      true
+     ],
+     [
+      "/v1/explain/<id>?level=",
+      false
+     ],
+     [
+      "1,093",
+      true
+     ],
+     [
+      "Fifteen seconds apart",
+      false
+     ],
+     [
+      "two million",
+      false
+     ],
+     [
+      "POST /v1/admin/checkpoint",
+      true
+     ],
+     [
+      "--daily-limit",
+      false
+     ],
+     [
+      "cargo test --profile ci",
+      true
+     ],
+     [
+      "chloedb-arxiv",
+      true
+     ],
+     [
+      "reviewers",
+      false
+     ],
+     [
+      "RSS",
+      true
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "BM25",
+      true
+     ],
+     [
+      "Three",
+      false
+     ],
+     [
+      "12 GB",
+      false
+     ],
+     [
+      "canonical",
+      false
+     ],
+     [
+      "CHLOEDB_HN_EXPERIMENTS_TOKEN",
+      true
+     ],
+     [
+      "401",
+      true
+     ],
+     [
+      "1000000 bytes",
+      false
+     ],
+     [
+      "team draft",
+      true
+     ],
+     [
+      "hn_interleave_log",
+      true
+     ],
+     [
+      "16 random hex characters",
+      true
+     ],
+     [
+      "10",
+      true
+     ],
+     [
+      "eval/plain.py",
+      true
+     ],
+     [
+      "15 ms",
+      true
+     ],
+     [
+      "15 ms",
+      false
+     ],
+     [
+      "latency-2026-11-16.md",
+      false
+     ],
+     [
+      "The engine gives each app a key made from that one, limited to the app",
+      false
+     ],
+     [
+      "look",
+      true
+     ],
+     [
+      "Within two minutes",
+      true
+     ],
+     [
+      "apps-credentials",
+      false
+     ],
+     [
+      "STRATA_APPS_ASK_USD_PER_DAY",
+      false
+     ],
+     [
+      "25",
+      false
+     ],
+     [
+      "$0.25",
+      true
+     ],
+     [
+      "240",
+      false
+     ],
+     [
+      "Every 10 seconds",
+      false
+     ],
+     [
+      "5",
+      false
+     ],
+     [
+      "STRATA_APPS_ASK_USD_PER_DAY",
+      true
+     ],
+     [
+      "80, 443, 8080,",
+      false
+     ],
+     [
+      "POST /v1/admin/follow/status",
+      true
+     ],
+     [
+      "--copy-table",
+      true
+     ],
+     [
+      "followed_table",
+      true
+     ],
+     [
+      "10 seconds",
+      true
+     ],
+     [
+      "X-Chloedb-Postgres-Follower",
+      true
+     ],
+     [
+      "15 minutes",
+      true
+     ],
+     [
+      "followed_table",
+      true
+     ],
+     [
+      "_empty",
+      true
+     ],
+     [
+      "Restart=always",
+      true
+     ],
+     [
+      "_sources",
+      true
+     ],
+     [
+      "--restart unless-stopped",
+      true
+     ],
+     [
+      "a new one",
+      false
+     ],
+     [
+      "0.3.8",
+      true
+     ],
+     [
+      "{ readOnly: true }",
+      true
+     ],
+     [
+      "`<file>-readers`",
+      true
+     ],
+     [
+      "2.28",
+      false
+     ],
+     [
+      "CHLOEDB_FETCH_MODELS",
+      false
+     ],
+     [
+      "~/.local/share/chloedb/models",
+      true
+     ],
+     [
+      "--offline",
+      false
+     ],
+     [
+      "bert",
+      true
+     ],
+     [
+      "CHLOEDB_TOKEN",
+      true
+     ],
+     [
+      "UnauthorizedError",
+      true
+     ],
+     [
+      "write",
+      false
+     ],
+     [
+      "100,000",
+      true
+     ],
+     [
+      "strata-crawl",
+      true
+     ],
+     [
+      "5",
+      true
+     ],
+     [
+      "--allow-host",
+      true
+     ],
+     [
+      "host",
+      true
+     ],
+     [
+      "0.3",
+      true
+     ],
+     [
+      "127.0.0.1",
+      false
+     ],
+     [
+      "x-chloedb-as-tables",
+      true
+     ],
+     [
+      "public suffix list",
+      false
+     ],
+     [
+      "One at a time",
+      false
+     ],
+     [
+      "The rows it wrote",
+      false
+     ],
+     [
+      "By URL",
+      false
+     ],
+     [
+      "Julian days",
+      true
+     ],
+     [
+      "It becomes a floating-point number",
+      false
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ],
+     [
+      "_chloedb_schemas",
+      false
+     ],
+     [
+      "porter",
+      false
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "VECTOR(n)",
+      false
+     ],
+     [
+      "JSON array",
+      false
+     ],
+     [
+      "plain column",
+      false
+     ],
+     [
+      "what the indexes give back",
+      true
+     ],
+     [
+      "None. A query walks the graph as it runs it.",
+      false
+     ],
+     [
+      "potion-retrieval-32M",
+      true
+     ],
+     [
+      "langgraph_store",
+      true
+     ],
+     [
+      "$between",
+      true
+     ],
+     [
+      "16",
+      false
+     ],
+     [
+      "refresh_on_read",
+      true
+     ],
+     [
+      "65,536",
+      true
+     ],
+     [
+      "10,000",
+      false
+     ],
+     [
+      "NotSupportedError",
+      true
+     ],
+     [
+      "ProgrammingError",
+      true
+     ],
+     [
+      "OperationalError",
+      true
+     ],
+     [
+      "read_only",
+      false
+     ],
+     [
+      "__cause__",
+      true
+     ]
+    ]
+   },
+   "active_per_token": 655360,
+   "row_layers": [
+    9,
+    16,
+    22,
+    29
+   ],
+   "tau": [
+    0.5343295931816101,
+    0.5156714916229248,
+    0.5970869660377502,
+    0.5992788672447205
+   ]
+  }
+ },
+ "gpu": "NVIDIA RTX 6000 Ada Generation",
+ "delete": {
+  "arm": "rows_multi_gated_iso",
+  "layers": [
+   9,
+   16,
+   22,
+   29
+  ],
+  "rows_on": {
+   "held_out": 11.052063867272986,
+   "seen": 3.777692059919286,
+   "domain": 10.952159429442084,
+   "general": 17.607664211308865
+  },
+  "all_rows_deleted": {
+   "held_out": 22.526725723499403,
+   "seen": 30.761965213621128,
+   "domain": 21.742686414110818,
+   "general": 17.920891412855458
+  },
+  "all_rows_deleted_equals_base": true,
+  "per_doc": {
+   "python": {
+    "rows": 12828,
+    "seen_doc": {
+     "base": 18.7294178381837,
+     "rows": 2.1051749812778033,
+     "deleted": 6.33102165407372
+    },
+    "held_doc": {
+     "base": 9.170696092344397,
+     "rows": 4.054684443908564,
+     "deleted": 4.843230428933826
+    },
+    "others_seen_mean": {
+     "rows": 4.476134728452291,
+     "deleted": 4.435218869660658
+    },
+    "others_held_mean": {
+     "rows": 13.208687415944139,
+     "deleted": 13.422139014995478
+    }
+   },
+   "netops": {
+    "rows": 6764,
+    "seen_doc": {
+     "base": 39.1498563819963,
+     "rows": 8.621336734659613,
+     "deleted": 18.687501108953505
+    },
+    "held_doc": {
+     "base": 52.73551229004662,
+     "rows": 24.303190479166872,
+     "deleted": 36.103060874050875
+    },
+    "others_seen_mean": {
+     "rows": 4.041723944893504,
+     "deleted": 4.033323259710387
+    },
+    "others_held_mean": {
+     "rows": 11.858787013593583,
+     "deleted": 11.971521247983969
+    }
+   },
+   "javascript": {
+    "rows": 6481,
+    "seen_doc": {
+     "base": 28.94754675203994,
+     "rows": 2.25991013604899,
+     "deleted": 8.293065641616296
+    },
+    "held_doc": {
+     "base": 8.148903642821667,
+     "rows": 4.8003605343660976,
+     "deleted": 4.761146566735822
+    },
+    "others_seen_mean": {
+     "rows": 4.4658190514675455,
+     "deleted": 4.410835288395683
+    },
+    "others_held_mean": {
+     "rows": 13.158975676580303,
+     "deleted": 13.195604958419684
+    }
+   },
+   "connectors": {
+    "rows": 4317,
+    "seen_doc": {
+     "base": 24.275426872751844,
+     "rows": 2.8510094613863495,
+     "deleted": 13.8590087324261
+    },
+    "held_doc": {
+     "base": 25.48714253395869,
+     "rows": 13.820650682462905,
+     "deleted": 15.228288039222235
+    },
+    "others_seen_mean": {
+     "rows": 4.426412429778389,
+     "deleted": 4.389221531374639
+    },
+    "others_held_mean": {
+     "rows": 12.557623000040515,
+     "deleted": 12.487368690306427
+    }
+   },
+   "security": {
+    "rows": 3257,
+    "seen_doc": {
+     "base": 28.72266549032315,
+     "rows": 3.121108781633766,
+     "deleted": 18.554790947708092
+    },
+    "held_doc": {
+     "base": 18.264612242748285,
+     "rows": 8.871307678569375,
+     "deleted": 9.313908506129081
+    },
+    "others_seen_mean": {
+     "rows": 4.408405808428561,
+     "deleted": 4.365377525979706
+    },
+    "others_held_mean": {
+     "rows": 12.887579200300085,
+     "deleted": 12.939406516393293
+    }
+   },
+   "earth": {
+    "rows": 3680,
+    "seen_doc": {
+     "base": 36.893332942450485,
+     "rows": 5.368598284350065,
+     "deleted": 23.253401988928026
+    },
+    "held_doc": {
+     "base": 54.31399568635785,
+     "rows": 24.93073050589876,
+     "deleted": 30.04770587543783
+    },
+    "others_seen_mean": {
+     "rows": 4.258573174914141,
+     "deleted": 4.249510747178829
+    },
+    "others_held_mean": {
+     "rows": 11.816951011811458,
+     "deleted": 11.751438161702156
+    }
+   },
+   "opensearch": {
+    "rows": 3589,
+    "seen_doc": {
+     "base": 15.112889234802623,
+     "rows": 2.704716731781534,
+     "deleted": 9.86596064826968
+    },
+    "held_doc": {
+     "base": 10.849192756583301,
+     "rows": 5.977879389841148,
+     "deleted": 6.071018248037872
+    },
+    "others_seen_mean": {
+     "rows": 4.436165278418709,
+     "deleted": 4.409333804682066
+    },
+    "others_held_mean": {
+     "rows": 13.080474419548633,
+     "deleted": 13.093190674274705
+    }
+   },
+   "graphs": {
+    "rows": 3875,
+    "seen_doc": {
+     "base": 26.427268106571315,
+     "rows": 6.305853712312828,
+     "deleted": 17.240368941542012
+    },
+    "held_doc": {
+     "base": 21.70254431478393,
+     "rows": 13.15516834037175,
+     "deleted": 14.0655134466237
+    },
+    "others_seen_mean": {
+     "rows": 4.1960894797166235,
+     "deleted": 4.193101088492806
+    },
+    "others_held_mean": {
+     "rows": 12.601988489513257,
+     "deleted": 12.654075224570866
+    }
+   },
+   "arxiv": {
+    "rows": 3091,
+    "seen_doc": {
+     "base": 53.2480599056832,
+     "rows": 11.440711176751263,
+     "deleted": 32.61152396135648
+    },
+    "held_doc": {
+     "base": 41.78621770876665,
+     "rows": 17.63964239466244,
+     "deleted": 21.27604923436324
+    },
+    "others_seen_mean": {
+     "rows": 3.853765648754061,
+     "deleted": 3.8167573017367356
+    },
+    "others_held_mean": {
+     "rows": 12.303023552560546,
+     "deleted": 12.37118237837252
+    }
+   },
+   "hn": {
+    "rows": 3208,
+    "seen_doc": {
+     "base": 49.54772907690302,
+     "rows": 3.6003958231064677,
+     "deleted": 22.241474167119986
+    },
+    "held_doc": {
+     "base": 47.620660275304445,
+     "rows": 21.124437301437673,
+     "deleted": 23.89804137484359
+    },
+    "others_seen_mean": {
+     "rows": 4.376453338997048,
+     "deleted": 4.330817280711712
+    },
+    "others_held_mean": {
+     "rows": 12.070703892108865,
+     "deleted": 12.1087972354391
+    }
+   },
+   "apps": {
+    "rows": 2581,
+    "seen_doc": {
+     "base": 91.21074299128928,
+     "rows": 3.9405810908394896,
+     "deleted": 46.400578345809635
+    },
+    "held_doc": {
+     "base": 29.789892311066463,
+     "rows": 16.120381953303113,
+     "deleted": 17.188176096190386
+    },
+    "others_seen_mean": {
+     "rows": 4.353774321148179,
+     "deleted": 4.339115425168563
+    },
+    "others_held_mean": {
+     "rows": 12.404307581984503,
+     "deleted": 12.373819915881198
+    }
+   },
+   "postgres": {
+    "rows": 2487,
+    "seen_doc": {
+     "base": 29.30234934652661,
+     "rows": 2.170821469586416,
+     "deleted": 17.214274413388235
+    },
+    "held_doc": {
+     "base": 22.669152016606358,
+     "rows": 11.140152391176317,
+     "deleted": 11.682734068580004
+    },
+    "others_seen_mean": {
+     "rows": 4.471758295898384,
+     "deleted": 4.457418747732467
+    },
+    "others_held_mean": {
+     "rows": 12.736322886126288,
+     "deleted": 12.704813581869548
+    }
+   },
+   "troubleshooting": {
+    "rows": 2437,
+    "seen_doc": {
+     "base": 18.0399950099089,
+     "rows": 2.872013498306584,
+     "deleted": 7.424134045089946
+    },
+    "held_doc": {
+     "base": 14.94008618040382,
+     "rows": 7.293693217544506,
+     "deleted": 7.639676265101965
+    },
+    "others_seen_mean": {
+     "rows": 4.425012160650372,
+     "deleted": 4.397111303895963
+    },
+    "others_held_mean": {
+     "rows": 12.992753497701745,
+     "deleted": 13.077881629466098
+    }
+   },
+   "crawler": {
+    "rows": 2349,
+    "seen_doc": {
+     "base": 35.717660843630796,
+     "rows": 3.4181493322238725,
+     "deleted": 18.996034437438464
+    },
+    "held_doc": {
+     "base": 18.91033542173704,
+     "rows": 9.144548888176068,
+     "deleted": 9.355158985741202
+    },
+    "others_seen_mean": {
+     "rows": 4.388603105055887,
+     "deleted": 4.3582485918194305
+    },
+    "others_held_mean": {
+     "rows": 12.86936311965964,
+     "deleted": 12.851385070846298
+    }
+   },
+   "sqlite": {
+    "rows": 2216,
+    "seen_doc": {
+     "base": 25.76734523212369,
+     "rows": 5.97679083020102,
+     "deleted": 16.87713491215325
+    },
+    "held_doc": {
+     "base": 22.640491885844785,
+     "rows": 10.571131884109983,
+     "deleted": 11.231810973746645
+    },
+    "others_seen_mean": {
+     "rows": 4.218027005190744,
+     "deleted": 4.195994387797746
+    },
+    "others_held_mean": {
+     "rows": 12.774257586597377,
+     "deleted": 12.770390964831385
+    }
+   },
+   "frameworks": {
+    "rows": 2376,
+    "seen_doc": {
+     "base": 25.18573664731503,
+     "rows": 2.4900238635961216,
+     "deleted": 15.73025798097127
+    },
+    "held_doc": {
+     "base": 21.804301368711677,
+     "rows": 9.237035598075082,
+     "deleted": 10.078466586765895
+    },
+    "others_seen_mean": {
+     "rows": 4.450478136297737,
+     "deleted": 4.428382628230211
+    },
+    "others_held_mean": {
+     "rows": 12.863197338999704,
+     "deleted": 12.834609389844502
+    }
+   }
+  }
+ },
+ "served_by_chloedb": {
+  "served_layer": 9,
+  "rows": 16384,
+  "build_secs": 1.7,
+  "index": "hnsw (default)",
+  "held_one_stride_per_doc": {
+   "torch": {
+    "python": 10.693484473607928,
+    "netops": 24.42585574403619,
+    "javascript": 6.533510684076635,
+    "connectors": 11.785380439101818,
+    "security": 9.649570571533147,
+    "earth": 15.82066905418068,
+    "opensearch": 5.155481021756945,
+    "graphs": 9.004374493368884,
+    "arxiv": 16.005967420960726,
+    "hn": 16.884579619361222,
+    "apps": 13.730286835573404,
+    "postgres": 14.083696648373195,
+    "troubleshooting": 5.176379694521219,
+    "crawler": 9.670819609268236,
+    "sqlite": 4.532057856552966,
+    "frameworks": 1.7552679685080703
+   },
+   "chloedb": {
+    "python": 10.6899718047019,
+    "netops": 24.4432394832701,
+    "javascript": 6.533464731783386,
+    "connectors": 11.7855883701068,
+    "security": 9.650380429706095,
+    "earth": 15.823622760018235,
+    "opensearch": 5.155537563540149,
+    "graphs": 9.004520477643986,
+    "arxiv": 16.00518513547632,
+    "hn": 16.878590592725498,
+    "apps": 13.737883585087882,
+    "postgres": 14.085923055641825,
+    "troubleshooting": 5.173537005069497,
+    "crawler": 9.672316126338453,
+    "sqlite": 4.531184874992207,
+    "frameworks": 1.7552900439149974
+   }
+  },
+  "deleted_doc": "netops",
+  "rows_after_delete": 14684,
+  "deleted_doc_seen": {
+   "torch": {
+    "netops": 7.81947237587579
+   },
+   "chloedb": {
+    "netops": 7.819985077243891
+   },
+   "torch_masked": {
+    "netops": 9.969794289664641
+   },
+   "chloedb_after_sql_delete": {
+    "netops": 9.970758797650813
+   }
+  },
+  "ms_per_lookup_p50": 0.6232864998310106,
+  "ms_per_lookup_p99": 0.7485073581483448
+ }
+}

@@ -1,0 +1,46 @@
+{
+ "layer": 16,
+ "topk": 32,
+ "rows_base": 65536,
+ "pairs": {
+  "n": 300122,
+  "secs": 44
+ },
+ "distil": {
+  "steps": 8000,
+  "secs": 205,
+  "rel_mse_last": 0.22615067094564437
+ },
+ "served_by_chloedb": {
+  "strides": 16,
+  "ppl": 29.515538160494273,
+  "same_strides_torch_ppl": 29.51331629474665,
+  "ms_per_lookup": 0.5277476739138365
+ },
+ "insert": {
+  "rows": 8192,
+  "steps": 1500,
+  "secs": 93,
+  "loss_first": 3.7688772916793822,
+  "loss_last": 2.892952084541321
+ },
+ "delete": {
+  "rows_before": 73728,
+  "rows_after": 65536
+ },
+ "ppl": {
+  "original": 35.06418918643279,
+  "removed": 38.91129162505268,
+  "copy_65536": 35.67809699032803,
+  "copy_262144": 35.316824221232054,
+  "distilled_65536": 35.30273882445691,
+  "distilled_plus_8192_inserted": 30.09169486266648,
+  "after_delete": 35.30273882445691
+ },
+ "row_bytes": {
+  "key_fp32": 4096,
+  "value_fp32": 4096,
+  "base_rows_mb": 536.9,
+  "original_block_params": 9437184
+ }
+}

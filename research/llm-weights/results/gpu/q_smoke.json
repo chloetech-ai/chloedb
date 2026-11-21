@@ -1,0 +1,263 @@
+{
+ "model": "qwen3-0.6b",
+ "device": "cuda",
+ "layer": 16,
+ "layers": 28,
+ "hidden": 1024,
+ "steps": 2000,
+ "batch": 4,
+ "window": 256,
+ "train_tokens": 6755,
+ "sets": {
+  "held_out": 16,
+  "seen": 16,
+  "domain": 16,
+  "general": 16
+ },
+ "arms": {
+  "base": {
+   "held_out": 36.065632211076064,
+   "held_out_per_doc": {
+    "sqlite": 40.655788180299034,
+    "frameworks": 31.993718115023892
+   },
+   "seen": 41.61456955182117,
+   "seen_per_doc": {
+    "sqlite": 37.98799079483652,
+    "frameworks": 45.587364921093716
+   },
+   "domain": 58.64121494603097,
+   "domain_per_doc": {
+    "apps": 49.86583604541274,
+    "arxiv": 68.96088310270991
+   },
+   "general": 35.751603192550206,
+   "general_per_doc": {
+    "wiki0": 24.260717518196206,
+    "wiki1": 52.6850506329377
+   },
+   "val_ppl": 24.137505585097067,
+   "qa": {
+    "right": 0,
+    "of": 4,
+    "acc": 0.0,
+    "secs": 2,
+    "answers": [
+     [
+      "1000000000",
+      false
+     ],
+     [
+      "It is stored as a 64-bit integer",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "NO_WRITE",
+      false
+     ]
+    ]
+   },
+   "qa_rag": {
+    "right": 2,
+    "of": 4,
+    "acc": 0.5,
+    "secs": 2,
+    "answers": [
+     [
+      "milliseconds",
+      false
+     ],
+     [
+      "it rounds to the nearest double",
+      true
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ]
+    ]
+   }
+  },
+  "knn": {
+   "rows": 6753,
+   "embed_secs": 1,
+   "lambda": 0.1,
+   "temp": 100.0,
+   "val_ppl": 18.97207893345361,
+   "val_ppl_base": 24.137505585097067,
+   "build_secs": 0,
+   "qa": {
+    "right": 0,
+    "of": 4,
+    "acc": 0.0,
+    "secs": 2,
+    "answers": [
+     [
+      "`Product`",
+      false
+     ],
+     [
+      "It is stored as a 64-bit integer",
+      false
+     ],
+     [
+      "10 seconds",
+      false
+     ],
+     [
+      "NO_WRITE",
+      false
+     ]
+    ]
+   },
+   "qa_rag": {
+    "right": 2,
+    "of": 4,
+    "acc": 0.5,
+    "secs": 2,
+    "answers": [
+     [
+      "milliseconds",
+      false
+     ],
+     [
+      "it rounds to the nearest double",
+      true
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ]
+    ]
+   },
+   "ms_per_lookup_p50": 0.9914579986798344,
+   "served_by": "chloedb hnsw (dot product, as idea D)"
+  },
+  "routed_lora": {
+   "lr": 0.0001,
+   "steps_per_doc": 20,
+   "train_secs": 8,
+   "per_doc": {
+    "sqlite": {
+     "best_step": 20,
+     "val_ppl": 18.15370009734007
+    },
+    "frameworks": {
+     "best_step": 20,
+     "val_ppl": 9.75221782687139
+    }
+   },
+   "mb_per_adapter_fp16": 19.2,
+   "qa": {
+    "right": 0,
+    "of": 4,
+    "acc": 0.0,
+    "secs": 4,
+    "answers": [
+     [
+      "A timestamp",
+      false
+     ],
+     [
+      "2^53 is 9,000,000",
+      false
+     ],
+     [
+      "1 second",
+      false
+     ],
+     [
+      "--no-keep",
+      false
+     ]
+    ]
+   },
+   "qa_rag": {
+    "right": 1,
+    "of": 4,
+    "acc": 0.25,
+    "secs": 4,
+    "answers": [
+     [
+      "Julian day",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ]
+    ]
+   },
+   "router_right": 1.0,
+   "qa_oracle_route": {
+    "right": 0,
+    "of": 4,
+    "acc": 0.0,
+    "secs": 3,
+    "answers": [
+     [
+      "A timestamp",
+      false
+     ],
+     [
+      "2^53 is 9,000,000",
+      false
+     ],
+     [
+      "1 second",
+      false
+     ],
+     [
+      "--no-keep",
+      false
+     ]
+    ]
+   },
+   "qa_rag_oracle_route": {
+    "right": 1,
+    "of": 4,
+    "acc": 0.25,
+    "secs": 4,
+    "answers": [
+     [
+      "Julian day",
+      false
+     ],
+     [
+      "NULL",
+      false
+     ],
+     [
+      "5 seconds",
+      false
+     ],
+     [
+      "--plan",
+      true
+     ]
+    ]
+   }
+  }
+ },
+ "gpu": "NVIDIA RTX 6000 Ada Generation"
+}

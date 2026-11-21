@@ -1,0 +1,301 @@
+[
+ {
+  "model": "0.6B",
+  "technique": "base model",
+  "closed": [
+   5,
+   230
+  ],
+  "rag": [
+   106,
+   230
+  ],
+  "note": "ppl 35.1, WikiText 27.6"
+ },
+ {
+  "model": "0.6B",
+  "technique": "ChloeDB rows (4 layers, gated, per doc)",
+  "closed": [
+   7,
+   230
+  ],
+  "rag": [
+   113,
+   230
+  ],
+  "note": "ppl 20.4, WikiText 27.0"
+ },
+ {
+  "model": "0.6B",
+  "technique": "LoRA fine-tune",
+  "closed": [
+   14,
+   230
+  ],
+  "rag": [
+   103,
+   230
+  ],
+  "note": "ppl 16.1, WikiText 41.3"
+ },
+ {
+  "model": "0.6B",
+  "technique": "FFN fine-tune (one layer)",
+  "closed": [
+   9,
+   230
+  ],
+  "rag": [
+   113,
+   230
+  ],
+  "note": "ppl 20.5, WikiText 30.7"
+ },
+ {
+  "model": "0.6B",
+  "technique": "kNN-LM served by ChloeDB",
+  "closed": [
+   4,
+   230
+  ],
+  "rag": [
+   106,
+   230
+  ],
+  "note": "lambda 0.1, temp 100.0, 1.07 ms/lookup"
+ },
+ {
+  "model": "0.6B",
+  "technique": "one LoRA per doc, BM25-routed",
+  "closed": [
+   12,
+   230
+  ],
+  "rag": [
+   99,
+   230
+  ],
+  "note": "router right 88%"
+ },
+ {
+  "model": "0.6B",
+  "technique": "  same, told the right doc",
+  "closed": [
+   14,
+   230
+  ],
+  "rag": [
+   99,
+   230
+  ],
+  "note": "ceiling"
+ },
+ {
+  "model": "0.6B",
+  "technique": "facts as ChloeDB rows",
+  "closed": [
+   95,
+   230
+  ],
+  "rag": [
+   104,
+   230
+  ],
+  "note": "matched 230/230 (159 right doc), 2.29 s/fact, delete 0.44->0.25 (base 0.00)"
+ },
+ {
+  "model": "4B",
+  "technique": "base model",
+  "closed": [
+   13,
+   230
+  ],
+  "rag": [
+   139,
+   230
+  ],
+  "note": "ppl 22.5, WikiText 17.9"
+ },
+ {
+  "model": "4B",
+  "technique": "ChloeDB rows (4 layers, gated, per doc)",
+  "closed": [
+   24,
+   230
+  ],
+  "rag": [
+   138,
+   230
+  ],
+  "note": "ppl 11.1, WikiText 17.6"
+ },
+ {
+  "model": "4B",
+  "technique": "LoRA fine-tune",
+  "closed": [
+   24,
+   230
+  ],
+  "rag": [
+   136,
+   230
+  ],
+  "note": "ppl 9.7, WikiText 18.2"
+ },
+ {
+  "model": "4B",
+  "technique": "FFN fine-tune (one layer)",
+  "closed": [
+   15,
+   230
+  ],
+  "rag": [
+   140,
+   230
+  ],
+  "note": "ppl 12.8, WikiText 16.2"
+ },
+ {
+  "model": "4B",
+  "technique": "kNN-LM served by ChloeDB",
+  "closed": [
+   13,
+   230
+  ],
+  "rag": [
+   139,
+   230
+  ],
+  "note": "lambda 0.1, temp 1000.0, 2.26 ms/lookup"
+ },
+ {
+  "model": "4B",
+  "technique": "one LoRA per doc, BM25-routed",
+  "closed": [
+   20,
+   230
+  ],
+  "rag": [
+   134,
+   230
+  ],
+  "note": "router right 88%"
+ },
+ {
+  "model": "4B",
+  "technique": "  same, told the right doc",
+  "closed": [
+   20,
+   230
+  ],
+  "rag": [
+   134,
+   230
+  ],
+  "note": "ceiling"
+ },
+ {
+  "model": "4B",
+  "technique": "facts as ChloeDB rows",
+  "closed": [
+   102,
+   230
+  ],
+  "rag": [
+   120,
+   230
+  ],
+  "note": "matched 228/230 (176 right doc), 4.06 s/fact, delete 0.50->0.19 (base 0.06)"
+ },
+ {
+  "model": "8B",
+  "technique": "base model",
+  "closed": [
+   15,
+   230
+  ],
+  "rag": [
+   131,
+   230
+  ],
+  "note": "ppl 18.2, WikiText 12.9"
+ },
+ {
+  "model": "8B",
+  "technique": "ChloeDB rows (4 layers, gated, per doc)",
+  "closed": [
+   27,
+   230
+  ],
+  "rag": [
+   131,
+   230
+  ],
+  "note": "ppl 9.9, WikiText 15.5"
+ },
+ {
+  "model": "8B",
+  "technique": "LoRA fine-tune",
+  "closed": [
+   33,
+   230
+  ],
+  "rag": [
+   132,
+   230
+  ],
+  "note": "ppl 8.5, WikiText 14.7"
+ },
+ {
+  "model": "8B",
+  "technique": "kNN-LM served by ChloeDB",
+  "closed": [
+   15,
+   230
+  ],
+  "rag": [
+   131,
+   230
+  ],
+  "note": "lambda 0.1, temp 3000.0, 1.90 ms/lookup"
+ },
+ {
+  "model": "8B",
+  "technique": "one LoRA per doc, BM25-routed",
+  "closed": [
+   25,
+   230
+  ],
+  "rag": [
+   128,
+   230
+  ],
+  "note": "router right 88%"
+ },
+ {
+  "model": "8B",
+  "technique": "  same, told the right doc",
+  "closed": [
+   23,
+   230
+  ],
+  "rag": [
+   129,
+   230
+  ],
+  "note": "ceiling"
+ },
+ {
+  "model": "8B",
+  "technique": "facts as ChloeDB rows",
+  "closed": [
+   95,
+   230
+  ],
+  "rag": [
+   112,
+   230
+  ],
+  "note": "matched 229/230 (171 right doc), 1.5 s/fact, delete 0.44->0.31 (base 0.12)"
+ }
+]
