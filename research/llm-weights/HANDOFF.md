@@ -70,3 +70,10 @@ Keep Claude usage low (Roberto is near his plan's limit): few turns, no subagent
   thousands). Launching 3 droplets, one per model (`gpu/cloud-init-one.sh` with @REPO@/@DIR@/@JOBS@ filled in,
   jobs `gpu/jobs_q3_<model>.txt`), each with a reaper copying to `/mnt/project-files/llm-prototypes/q3_<model>/`.
   When done: `python3 q3_gates.py /mnt/project-files/llm-prototypes/q3_*/q3_*.json` prints the tables.
+- 21 Nov ~11:05 AM PST. LAUNCHED (tor1, RTX 6000 Ada, $1.57/h each; SSH key id 61069971, the key in the old
+  session's scratchpad): droplet `llm-weights-q3-06b` id 622029113, IP 201.79.149.253, runs
+  `gpu/jobs_q3_06b.txt` = q3_06b, fetch_8b, q3_8b (no third GPU was available) -> results in
+  `/mnt/project-files/llm-prototypes/q3_06b/`, reaper deadline ~6:05 PM PST. Droplet `llm-weights-q3-4b` id
+  622029118, IP 165.245.237.203, runs q3_4b -> `q3_4b/`, reaper deadline ~4:35 PM PST. If this session is gone,
+  a new one must check `GET /v2/droplets?tag_name=llm-weights-research` (env `digitalocean`) and delete what is
+  left once `status.txt` on port 80 says idle; then delete SSH key 61069971.
