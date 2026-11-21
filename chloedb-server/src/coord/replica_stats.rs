@@ -211,6 +211,9 @@ pub(crate) struct ReplicaStats {
     queries: AtomicU64,
     /// The newest write it answered a read after: it holds that one.
     held: AtomicU64,
+    /// Its turns since it was last called in which another copy was asked
+    /// first instead ([`route::Copy::passed`]).
+    passed: AtomicU32,
     averages: Mutex<Averages>,
 }
 
@@ -240,7 +243,14 @@ impl ReplicaStats {
     /// [`InFlight::ended`] was called.
     pub fn start(self: &Arc<Self>, query: bool, min: u64) -> InFlight {
         self.inflight.fetch_add(1, Ordering::Relaxed);
+        self.passed.store(0, Ordering::Relaxed);
         InFlight { stats: self.clone(), t0: Instant::now(), query, min, done: false }
+    }
+
+    /// Counts a turn of this copy in which another was asked first, for
+    /// costing clearly less.
+    pub fn passed_over(&self) {
+        self.passed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Counts a call that got no answer within the shard's time (besides
@@ -392,6 +402,7 @@ impl ReplicaStats {
             errors: a.errors.fresh(now, ERRORS_FRESH).unwrap_or(0.0),
             refusals: a.refusals.fresh(now, SLOW.tau).unwrap_or(0.0),
             busy: a.reported.filter(|r| load && now.saturating_duration_since(r.at) <= LOAD_FRESH).and_then(|r| r.busy()),
+            passed: self.passed.load(Ordering::Relaxed),
         }
     }
 

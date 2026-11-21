@@ -280,6 +280,18 @@ new kinds of key that a server of 0.3.9 reads as covering no table (see
   the database file beside the tables' live data, and `GET
   /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
   its `totals`.
+- **A replica passed over is asked again within 8 of its turns.** Under
+  `--route least-cost`, one slow round trip on a busy moment could keep a
+  replica like the others from being asked for up to 10 s, which a burst
+  of reads spent almost all on its sibling (2 reads of 40 on CI). A replica
+  passed over in 8 of its turns running is now asked in the next whatever
+  it costs; a clearly slower one still gets about one read in eighteen of
+  two copies' (#754).
+- **A tenant reopened at once after its handle closed opens.** A child
+  process the server was starting at that moment held the cache
+  directory's lock from its fork to its exec, so the reopen could answer
+  "another handle of a tenant uses this cache directory"; the lock is now
+  asked again for up to a second first (#755).
 
 ### Logs
 

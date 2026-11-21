@@ -7,7 +7,12 @@
 //! less by more than [`MARGIN`] and by [`MIN_GAIN_MS`] at least: two
 //! choices, anchored on the rotation.
 //! Copies that cost about the same are asked in turn, as before, and only
-//! one clearly worse is asked less. Coordinators keep no common view, so
+//! one clearly worse is asked less. A copy passed over in
+//! [`PASSES_BEFORE_ASKED`] of its turns running is asked in the next: what
+//! is known of it is then at most that many turns old, not only at most
+//! [`RTT_FRESH`](crate::coord::replica_stats::RTT_FRESH) old, so one round trip
+//! that a busy moment made slow does not keep a copy like the others from
+//! being asked through a burst of reads (#754). Coordinators keep no common view, so
 //! each always choosing the copy that looks cheapest would send them all
 //! to it at once; and one asked less is still asked, so what is known of
 //! it stays current. The others follow by cost, for retries and hedges.
@@ -45,6 +50,8 @@ pub struct Copy {
     /// How busy it said it is (0 to 1: its query slots taken, or its query
     /// memory used, whichever is more), when it said so recently.
     pub busy: Option<f64>,
+    /// Its turns since it was last asked in which another was asked first.
+    pub passed: u32,
 }
 
 /// The least round-trip time a cost counts.
@@ -62,6 +69,13 @@ pub const MIN_GAIN_MS: f64 = 1.0;
 pub const ERROR_WEIGHT: f64 = 10.0;
 /// How much its refusals raise its cost: one in four refused doubles it.
 pub const REFUSAL_WEIGHT: f64 = 4.0;
+/// The turns running a copy may be passed over in before it is asked in
+/// its turn again, whatever it costs. A copy clearly slower is then asked
+/// in one of its turns in this many and one more (a coordinator with two
+/// copies sends it one read in eighteen), and a copy as fast as the
+/// others that one slow round trip had passed over is asked again within
+/// this many of its turns.
+pub const PASSES_BEFORE_ASKED: u32 = 8;
 
 /// The cost of asking `c`, `neutral_ms` standing for an unknown round trip.
 pub fn cost(c: &Copy, neutral_ms: f64) -> f64 {
@@ -96,10 +110,18 @@ pub fn mix(x: u64) -> u64 {
 /// `first` asked first among those like it, and `seed` drawing the other
 /// choice. The same arguments give the same order.
 pub fn order(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> Vec<usize> {
+    order_passing(copies, start, first, seed).0
+}
+
+/// [`order`], and the copy whose turn it was when another is asked first
+/// instead for costing clearly less, which the caller counts as passed
+/// over ([`Copy::passed`]).
+pub fn order_passing(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> (Vec<usize>, Option<usize>) {
     let n = copies.len();
     if n == 0 {
-        return Vec::new();
+        return (Vec::new(), None);
     }
+    let mut passed = None;
     let rotation: Vec<usize> = (0..n).map(|k| (start + k) % n).collect();
     let neutral = neutral(copies);
     let costs: Vec<f64> = copies.iter().map(|c| cost(c, neutral)).collect();
@@ -112,9 +134,10 @@ pub fn order(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> 
     if !open.is_empty() {
         // The rotation's copy, or the other choice when it costs clearly less.
         let mut lead = open[0];
-        if open.len() > 1 {
+        if open.len() > 1 && copies[lead].passed < PASSES_BEFORE_ASKED {
             let other = open[1 + (seed % (open.len() as u64 - 1)) as usize];
             if costs[other] < costs[lead] * (1.0 - MARGIN) && costs[lead] - costs[other] >= MIN_GAIN_MS {
+                passed = Some(lead);
                 lead = other;
             }
         }
@@ -132,7 +155,7 @@ pub fn order(copies: &[Copy], start: usize, first: Option<usize>, seed: u64) -> 
         let r = out.remove(at);
         out.insert(group_start, r);
     }
-    out
+    (out.clone(), passed.filter(|&p| out.first() != Some(&p)))
 }
 
 #[cfg(test)]
@@ -190,6 +213,39 @@ mod tests {
         let s = shares(&three, 3000);
         assert_eq!(s[2], 0, "{s:?}");
         assert!(s[0] > 1200 && s[1] > 1200, "{s:?}");
+    }
+
+    /// [`shares`] as a coordinator keeps them: a copy passed over counts
+    /// it, and a copy asked first starts again from none.
+    fn shares_kept(copies: &mut [Copy], turns: usize) -> Vec<usize> {
+        let mut firsts = vec![0; copies.len()];
+        for t in 0..turns {
+            let (o, passed) = order_passing(copies, t, None, mix(t as u64));
+            if let Some(p) = passed {
+                copies[p].passed += 1;
+            }
+            copies[o[0]].passed = 0;
+            firsts[o[0]] += 1;
+        }
+        firsts
+    }
+
+    #[test]
+    fn a_copy_passed_over_in_enough_of_its_turns_is_asked_in_the_next() {
+        let slow = Copy { passed: PASSES_BEFORE_ASKED - 1, ..known(100.0) };
+        assert_eq!(order_passing(&[slow, known(10.0)], 0, None, 1), (vec![1, 0], Some(0)));
+        let slow = Copy { passed: PASSES_BEFORE_ASKED, ..known(100.0) };
+        assert_eq!(order_passing(&[slow, known(10.0)], 0, None, 1), (vec![0, 1], None));
+        // Not its turn: nobody is passed over.
+        assert_eq!(order_passing(&[known(100.0), known(10.0)], 1, None, 1), (vec![1, 0], None));
+        // Asked first because the read must ask it first: not passed over.
+        assert_eq!(order_passing(&[known(100.0), known(10.0)], 0, Some(0), 1), (vec![0, 1], None));
+
+        // Of two copies, the clearly slower one gets one of its turns in
+        // PASSES_BEFORE_ASKED + 1, so what is known of it stays current.
+        let mut two = [known(100.0), known(10.0)];
+        let s = shares_kept(&mut two, 36);
+        assert_eq!(s, vec![2, 34], "{s:?}");
     }
 
     #[test]

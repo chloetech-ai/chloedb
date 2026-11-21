@@ -579,6 +579,10 @@ impl Drop for Lead<'_> {
     }
 }
 
+/// How long [`Tenant::handle`] asks again for a cache directory's lock
+/// before it says another handle holds it.
+const CACHE_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl fmt::Debug for Tenant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tenant").field("id", &self.id).field("store", &self.store.describe()).finish()
@@ -587,13 +591,26 @@ impl fmt::Debug for Tenant {
 
 impl Tenant {
     /// A handle with nothing loaded, holding its cache directory: an
-    /// error when another handle, of any process, holds it.
+    /// error when another handle, of any process, holds it for longer
+    /// than [`CACHE_LOCK_WAIT`].
+    ///
+    /// The lock belongs to the open file, so it outlives the handle that
+    /// took it while a child process the program was starting at that
+    /// moment holds a copy of the descriptor, from its fork to its exec
+    /// (close-on-exec closes it only then): a handle dropped and taken
+    /// again at once, as a server's tenants are when it restarts them,
+    /// could find its own lock held (#755). So the lock is asked again
+    /// for a moment before another handle is said to hold it.
     fn handle(store: Arc<dyn ObjectStore>, id: &str, opts: TenantOptions) -> Result<Tenant> {
         std::fs::create_dir_all(&opts.cache_dir)?;
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(opts.cache_dir.join("lock"))?;
+        let until = std::time::Instant::now() + CACHE_LOCK_WAIT;
         // SAFETY: `lock` is an open file, whose descriptor the call only locks.
-        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(Error::Busy(format!("{}: another handle of a tenant uses this cache directory", opts.cache_dir.display())));
+        while unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            if std::time::Instant::now() >= until {
+                return Err(Error::Busy(format!("{}: another handle of a tenant uses this cache directory", opts.cache_dir.display())));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         Ok(Tenant { store, id: id.to_string(), opts, state: RwLock::new(None), _cache: lock, group: Mutex::default(), turn: Condvar::new() })
     }
