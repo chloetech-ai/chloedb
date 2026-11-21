@@ -65,3 +65,8 @@ Keep Claude usage low (Roberto is near his plan's limit): few turns, no subagent
   base, fact rows, fact as text, RAG top 1 and top 3; per-doc DELETE with scoped lookup; then distractors added
   and lookups again. Gates are computed offline from the per-question records (threshold tuned on Haiku, scored
   on Sonnet). One droplet, jobs file `gpu/jobs_q3.txt`, models 0.6B, 4B, 8B.
+- 21 Nov ~10:50 AM PST. `proto_q3_combo.py` and `q3_gates.py` written and smoke-tested on CPU (SMOKE=1).
+  Distractors: `results/facts_others.json`, 584 facts (the other docs are short, so 1,143 facts in all, not
+  thousands). Launching 3 droplets, one per model (`gpu/cloud-init-one.sh` with @REPO@/@DIR@/@JOBS@ filled in,
+  jobs `gpu/jobs_q3_<model>.txt`), each with a reaper copying to `/mnt/project-files/llm-prototypes/q3_<model>/`.
+  When done: `python3 q3_gates.py /mnt/project-files/llm-prototypes/q3_*/q3_*.json` prints the tables.
