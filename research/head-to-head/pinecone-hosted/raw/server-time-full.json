@@ -1,0 +1,305 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "date": "2026-11-21",
+ "version": "chloedb-server 0.3.9 (built from 040f4956d1)",
+ "vectors": 1183514,
+ "queries": 1000,
+ "segments": [
+  1183514
+ ],
+ "settings": {
+  "default": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10",
+   "recall_at_10": 0.8613,
+   "one": {
+    "clients": 1,
+    "qps": 594.1,
+    "took": {
+     "p50_ms": 0.602,
+     "p95_ms": 0.81,
+     "p99_ms": 2.783,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 1.602,
+     "p95_ms": 2.031,
+     "p99_ms": 4.406,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1289.4,
+    "took": {
+     "p50_ms": 0.572,
+     "p95_ms": 1.141,
+     "p99_ms": 2.099,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 2.95,
+     "p95_ms": 4.717,
+     "p99_ms": 6.396,
+     "n": 1000
+    }
+   }
+  },
+  "ef32": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 32) DESC LIMIT 10",
+   "recall_at_10": 0.697,
+   "one": {
+    "clients": 1,
+    "qps": 670.0,
+    "took": {
+     "p50_ms": 0.407,
+     "p95_ms": 0.519,
+     "p99_ms": 0.751,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 1.439,
+     "p95_ms": 1.816,
+     "p99_ms": 3.229,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1292.1,
+    "took": {
+     "p50_ms": 0.372,
+     "p95_ms": 0.758,
+     "p99_ms": 2.036,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 2.911,
+     "p95_ms": 4.784,
+     "p99_ms": 6.988,
+     "n": 1000
+    }
+   }
+  },
+  "ef64": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 64) DESC LIMIT 10",
+   "recall_at_10": 0.7586,
+   "one": {
+    "clients": 1,
+    "qps": 669.7,
+    "took": {
+     "p50_ms": 0.425,
+     "p95_ms": 0.556,
+     "p99_ms": 0.795,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 1.468,
+     "p95_ms": 1.768,
+     "p99_ms": 2.41,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1114.4,
+    "took": {
+     "p50_ms": 0.432,
+     "p95_ms": 0.852,
+     "p99_ms": 1.328,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 3.268,
+     "p95_ms": 5.633,
+     "p99_ms": 7.291,
+     "n": 1000
+    }
+   }
+  },
+  "ef128": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 128) DESC LIMIT 10",
+   "recall_at_10": 0.8262,
+   "one": {
+    "clients": 1,
+    "qps": 624.5,
+    "took": {
+     "p50_ms": 0.514,
+     "p95_ms": 0.629,
+     "p99_ms": 0.759,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 1.589,
+     "p95_ms": 1.858,
+     "p99_ms": 2.18,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1257.3,
+    "took": {
+     "p50_ms": 0.476,
+     "p95_ms": 0.848,
+     "p99_ms": 1.188,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 2.977,
+     "p95_ms": 4.927,
+     "p99_ms": 6.639,
+     "n": 1000
+    }
+   }
+  },
+  "ef400": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 400) DESC LIMIT 10",
+   "recall_at_10": 0.9101,
+   "one": {
+    "clients": 1,
+    "qps": 498.9,
+    "took": {
+     "p50_ms": 0.871,
+     "p95_ms": 1.058,
+     "p99_ms": 1.388,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 1.958,
+     "p95_ms": 2.314,
+     "p99_ms": 3.653,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1207.2,
+    "took": {
+     "p50_ms": 0.794,
+     "p95_ms": 1.323,
+     "p99_ms": 1.772,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 3.122,
+     "p95_ms": 4.987,
+     "p99_ms": 6.222,
+     "n": 1000
+    }
+   }
+  },
+  "ef800": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 800) DESC LIMIT 10",
+   "recall_at_10": 0.9437,
+   "one": {
+    "clients": 1,
+    "qps": 427.9,
+    "took": {
+     "p50_ms": 1.294,
+     "p95_ms": 1.58,
+     "p99_ms": 1.682,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 2.302,
+     "p95_ms": 2.67,
+     "p99_ms": 3.028,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 1037.9,
+    "took": {
+     "p50_ms": 1.32,
+     "p95_ms": 2.229,
+     "p99_ms": 2.971,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 3.657,
+     "p95_ms": 5.834,
+     "p99_ms": 7.364,
+     "n": 1000
+    }
+   }
+  },
+  "ef1600": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => 1600) DESC LIMIT 10",
+   "recall_at_10": 0.969,
+   "one": {
+    "clients": 1,
+    "qps": 290.5,
+    "took": {
+     "p50_ms": 2.277,
+     "p95_ms": 2.935,
+     "p99_ms": 4.294,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 3.358,
+     "p95_ms": 4.192,
+     "p99_ms": 5.727,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 778.0,
+    "took": {
+     "p50_ms": 2.426,
+     "p95_ms": 4.258,
+     "p99_ms": 5.041,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 4.829,
+     "p95_ms": 7.756,
+     "p99_ms": 10.053,
+     "n": 1000
+    }
+   }
+  },
+  "flat": {
+   "sql": "SELECT id FROM docs ORDER BY similarity(emb, :v, strategy => 'flat') DESC LIMIT 10",
+   "recall_at_10": 1.0,
+   "one": {
+    "clients": 1,
+    "qps": 34.7,
+    "took": {
+     "p50_ms": 25.551,
+     "p95_ms": 33.426,
+     "p99_ms": 39.074,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 27.258,
+     "p95_ms": 35.403,
+     "p99_ms": 41.005,
+     "n": 1000
+    }
+   },
+   "four": {
+    "clients": 4,
+    "qps": 143.0,
+    "took": {
+     "p50_ms": 23.59,
+     "p95_ms": 34.489,
+     "p99_ms": 42.38,
+     "n": 1000
+    },
+    "client": {
+     "p50_ms": 26.656,
+     "p95_ms": 37.403,
+     "p99_ms": 45.635,
+     "n": 1000
+    }
+   }
+  }
+ }
+}
