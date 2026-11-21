@@ -99,6 +99,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <a href="chloectx-capsules.html">Context capsules</a>
       <a href="chloectx-receipts.html">Blame and receipts</a>
       <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-personal.html">Personal memory</a>
       <span class="h">Apps</span>
       <a href="apps.html">Apps on a cluster</a>
       <a href="crawler.html">Crawler</a>
@@ -169,7 +170,7 @@ chloectx stats | stop
 chloectx pack ./work.capsule                        # a capsule another agent mounts
 chloectx mount ./work.capsule                       # serve it as MCP tools (stdio)</pre>
 <p><code>chloectx ask</code> prints the context a model would be given, not a written answer. Three commands are for maintenance and cost model calls: <code>chloectx ingest-transcript ~/.claude/projects/&lt;project&gt;/&lt;session&gt;.jsonl</code> back-fills a session ChloeCtx did not record (one it recorded live is stored a second time); <code>chloectx distill</code> writes down the notes of the turns not distilled yet, one model call per turn (<code>--again</code> distills every turn again but a forget's, <code>--dry-run</code> counts them without a model call); <code>chloectx consolidate</code> merges overlapping notes now. <code>distill</code> and <code>consolidate</code> print one line of JSON when they are done (for <code>distill</code>: the turns, how many it distilled, and the notes it wrote).</p>
-<p>A capsule hands a slice of this memory to another agent as one read-only file it queries: <a href="chloectx-capsules.html">capsules</a>. <a href="chloectx-receipts.html">Blame and receipts</a> explain <code>chloectx blame</code>.</p>
+<p>A capsule hands a slice of this memory to another agent as one read-only file it queries: <a href="chloectx-capsules.html">capsules</a>. Beside the memories of projects, ChloeCtx keeps one of your own: your chats with ChatGPT, Claude.ai and Gemini, and a persona card drawn from them, which any assistant you connect reads: <a href="chloectx-personal.html">personal memory</a>. <a href="chloectx-receipts.html">Blame and receipts</a> explain <code>chloectx blame</code>.</p>
 <h3 id="where-the-time-went">Where the time went<a class="anchor" href="#where-the-time-went" aria-label="Link to this section">#</a></h3>
 <p><code>chloectx report</code> reads the store and writes nothing. For each session of the last <code>--days</code> days (7 by default; <code>--session</code> picks one by its id or the start of it) and in all, it splits the time between the records into:</p>
 <div class="doc-table"><table>

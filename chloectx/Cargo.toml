@@ -18,6 +18,9 @@ regex = "1"
 sqlparser = "0.59"
 # Checking a downloaded model against its pinned SHA-256 (`fetch-model`).
 sha2 = "0.10"
+# The personal space: signing capsules (Ed25519), its keys and passcode
+# (random bytes, PBKDF2). Already built for ureq's rustls.
+ring = "0.17"
 # chloectx app: a client of chloedb-server's HTTP API (as chloedb's own
 # hosted models are).
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }

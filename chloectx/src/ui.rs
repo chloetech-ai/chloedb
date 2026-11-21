@@ -273,6 +273,11 @@ pub(crate) fn percent_decode(s: &str) -> String {
 }
 
 pub(crate) fn read_request(stream: &TcpStream) -> Option<Request> {
+    read_request_max(stream, MAX_BODY)
+}
+
+/// [`read_request`] with a body of up to `max` bytes.
+pub(crate) fn read_request_max(stream: &TcpStream, max: usize) -> Option<Request> {
     let mut r = BufReader::new(stream);
     let mut line = String::new();
     r.read_line(&mut line).ok()?;
@@ -297,7 +302,7 @@ pub(crate) fn read_request(stream: &TcpStream) -> Option<Request> {
         }
     }
     let len: usize = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
-    if len > MAX_BODY {
+    if len > max {
         return None;
     }
     let mut body = vec![0; len];

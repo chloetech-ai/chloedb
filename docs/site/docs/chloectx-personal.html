@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Personal memory: one memory, many models · ChloeDB docs</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<meta name="description" content="ChloeCtx keeps a memory of your own beside the memories of your projects: the chats you had with ChatGPT, Claude.ai and Gemini, and a persona card of what they say about you, each line linked to the chats it came…">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/docs.css?v=fc4a990c47">
+</head>
+<body class="docs">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Written by docs/site/scripts/build_docs.py from docs/chloectx/personal-memory.md: edit that file and run the script, not this page. -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a>
+  <nav class="nav" aria-label="Site">
+    <a href="../features.html">Features</a>
+    <a href="../scale.html">Laptop to cloud</a>
+    <a href="../command-center.html">Command center</a>
+    <a href="../benchmarks.html">Benchmarks</a>
+    <a href="../use-cases.html">Use cases</a>
+  </nav>
+  <div class="top-links"><a href="index.html" aria-current="page">Docs</a><a href="https://github.com/chloetech-ai/chloedb">GitHub</a><a class="btn primary" href="quickstart.html">Get started</a></div>
+</div></header>
+
+<main class="gutter"><div class="wrap doc-layout">
+  <div class="doc-side">
+  <form class="doc-search" role="search" data-index="search-index.js">
+    <input type="search" name="q" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off" spellcheck="false" aria-controls="doc-search-results" aria-expanded="false">
+    <kbd aria-hidden="true">/</kbd>
+    <div class="doc-search-results" id="doc-search-results" role="listbox" aria-label="Search results" hidden></div>
+  </form>
+  <details class="doc-menu" open>
+    <summary>Documentation</summary>
+    <nav class="doc-nav" aria-label="Documentation">
+      <span class="h">Start</span>
+      <a href="index.html">Overview</a>
+      <a href="quickstart.html">Quickstart</a>
+      <a href="agents.html">Build with an AI agent</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="build-an-app.html">Build an app on the HTTP API</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <span class="h">Search and SQL</span>
+      <a href="search.html">Search guide</a>
+      <a href="search-page.html">Build a search page</a>
+      <a href="sql.html">SQL reference</a>
+      <a href="graphs.html">Graphs</a>
+      <a href="next-items.html">Next items</a>
+      <a href="slices.html">Search on the device</a>
+      <a href="design.html">How ChloeDB works</a>
+      <span class="h">Cookbook</span>
+      <a href="rag.html">Retrieval for RAG</a>
+      <a href="agent-memory.html">Memory for an agent</a>
+      <a href="crawl-to-search.html">Crawl a site into search</a>
+      <a href="logs.html">Search your logs</a>
+      <span class="h">Clients</span>
+      <a href="python.html">Python</a>
+      <a href="frames.html">DataFrames</a>
+      <a href="javascript.html">JavaScript</a>
+      <a href="rust.html">Rust</a>
+      <a href="java.html">Java and JDBC</a>
+      <a href="frameworks.html">LangChain, LangGraph, LlamaIndex</a>
+      <a href="frameworks-reference.html">Framework adapters reference</a>
+      <span class="h">Server and cluster</span>
+      <a href="server.html">chloedb-server</a>
+      <a href="operate-cluster.html">Operate a cluster</a>
+      <a href="cluster-limits.html">Cluster limits</a>
+      <a href="backup.html">Back up, restore and upgrade</a>
+      <a href="runbooks.html">Runbooks</a>
+      <a href="security.html">Security model</a>
+      <a href="security-review.html">Security review pack</a>
+      <a href="sqlite.html">SQLite in and out</a>
+      <a href="parquet.html">Parquet and S3</a>
+      <a href="postgres.html">Following Postgres</a>
+      <a href="connectors.html">Connectors</a>
+      <a href="opensearch.html">OpenSearch API</a>
+      <a href="tenants.html">Tenants in an object store (experimental)</a>
+      <a href="compatibility.html">Versions and compatibility</a>
+      <span class="h">ChloeCtx</span>
+      <a href="chloectx.html">ChloeCtx</a>
+      <a href="chloectx-setup.html">Install ChloeCtx</a>
+      <a href="chloectx-inspector.html">ChloeCtx inspector</a>
+      <a href="chloectx-capsules.html">Context capsules</a>
+      <a href="chloectx-receipts.html">Blame and receipts</a>
+      <a href="chloectx-app.html">ChloeCtx on a cluster</a>
+      <a href="chloectx-personal.html" aria-current="page">Personal memory</a>
+      <span class="h">Apps</span>
+      <a href="apps.html">Apps on a cluster</a>
+      <a href="crawler.html">Crawler</a>
+      <a href="sheets.html">Sheets</a>
+      <a href="netops.html">Network operations</a>
+      <a href="hn.html">Hacker News</a>
+      <a href="arxiv.html">arXiv explorer</a>
+      <a href="github.html">GitHub explorer</a>
+      <a href="sound.html">Sound Explorer</a>
+      <a href="backbone.html">Backbone explorer</a>
+      <a href="earth.html">Earth explorer</a>
+      <a href="app-engine.html">App engine (prototype)</a>
+    </nav>
+  </details>
+  </div>
+  <article class="doc">
+    <div class="doc-head">
+      <span class="eyebrow">ChloeCtx</span>
+      <h1>Personal memory: one memory, many models</h1>
+      <p class="doc-badge">Reference, rendered from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/personal-memory.md">docs/chloectx/personal-memory.md</a>.</p>
+      <p class="doc-version">These docs follow main (0.3.10, unreleased). The latest release is 0.3.9 (<a href="v0.3.9/index.html">its docs</a>); what is newer is marked "since 0.3.10".</p>
+    </div>
+    <details class="doc-toc" open><summary>On this page</summary><ol><li><a href="#import-your-chats">Import your chats</a></li><li><a href="#the-persona-card">The persona card</a></li><li><a href="#connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants</a></li><li><a href="#keep-it-current">Keep it current</a></li><li><a href="#share-a-slice">Share a slice</a></li><li><a href="#on-a-chloedb-cluster">On a ChloeDB cluster</a></li></ol></details>
+    <div class="doc-body">
+
+<p>ChloeCtx keeps a memory of your own beside the memories of your projects: the chats you had with ChatGPT, Claude.ai and Gemini, and a persona card of what they say about you, each line linked to the chats it came from. It is one ChloeDB file on your machine, and any assistant you connect reads it through the same tools: ChatGPT as a connector, Claude.ai as a custom connector, Claude Code and any MCP client. A slice of it can be shared with a key of its own.</p>
+<pre data-lang="text" data-title="Output"> ChatGPT export ─┐                                 ┌─ ChatGPT (connector)
+ Claude.ai zip ──┤  chloectx import                ├─ Claude.ai (custom connector)
+ Gemini Takeout ─┤ ─────────────┐                  ├─ Claude Code, any MCP client
+ browser capture ┤              ▼                  │
+ API proxy ──────┘   ┌──────────────────────┐  MCP │
+                     │ me: chats + persona  │──────┤  /mcp, OAuth sign-in
+                     │ one ChloeDB file     │      │
+                     └──────────────────────┘      └─ shares: /s/&lt;key&gt;/mcp
+                                                       signed, read-only, expiring</pre>
+<p>Why not a file of notes about yourself? A plain file has no sources (you cannot tell where "vegetarian" came from or whether it is still true), no search (an assistant reads all of it or none), no history (an edit loses what it replaced), and no scope (you share the whole file or nothing). Here every line of the card says which chat it came from, an assistant asks for what bears on its question and gets those records with their chats, a changed line keeps the old one as history, and a share holds only the sections and topics you picked, signed, logged and revocable.</p>
+<h2 id="import-your-chats">Import your chats<a class="anchor" href="#import-your-chats" aria-label="Link to this section">#</a></h2>
+<p>Ask each service for an export, then give ChloeCtx the file as it came:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>from</th>
+<th>where to ask</th>
+<th>what you get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ChatGPT</td>
+<td>Settings, Data controls, Export data</td>
+<td>a zip with <code>conversations.json</code> (and your custom instructions)</td>
+</tr>
+<tr>
+<td>Claude.ai</td>
+<td>Settings, Privacy, Export data</td>
+<td>a zip with <code>conversations.json</code> and <code>memories.json</code></td>
+</tr>
+<tr>
+<td>Gemini</td>
+<td>Google Takeout, My Activity, Gemini Apps</td>
+<td><code>MyActivity.json</code> (pick JSON) or <code>MyActivity.html</code></td>
+</tr>
+</tbody>
+</table></div>
+<pre data-lang="sh">chloectx import ~/Downloads/chatgpt-export.zip --dry-run   # what it holds, nothing written
+chloectx import ~/Downloads/chatgpt-export.zip
+chloectx import ~/Downloads/claude-export.zip
+chloectx import ~/Downloads/takeout/                       # a folder: every export found in it
+chloectx me                                                # what the memory holds, by source</pre>
+<p>Each message is kept once, so importing a newer export of the same account adds only what is new. Every record says which assistant and which chat it came from, with the chat's title and address. ChatGPT's custom instructions and Claude.ai's memories come in as chats of their own. Any other source can be written as JSON lines, one message each, and imported with <code>--from jsonl</code>:</p>
+<pre data-lang="json">{&quot;source&quot;: &quot;chatgpt&quot;, &quot;conversation&quot;: &quot;c-1&quot;, &quot;title&quot;: &quot;Kyoto trip&quot;, &quot;role&quot;: &quot;user&quot;, &quot;text&quot;: &quot;I&#x27;m vegetarian.&quot;, &quot;ts&quot;: 1763600000000}</pre>
+<p>The memory is the <code>me</code> folder in ChloeCtx's data folder (<code>~/.local/share/chloectx/me</code>). The usual commands read it with <code>--me</code>: <code>chloectx --me search kyoto</code>, <code>chloectx --me ask "what do I eat?"</code>.</p>
+<h2 id="the-persona-card">The persona card<a class="anchor" href="#the-persona-card" aria-label="Link to this section">#</a></h2>
+<p>The card is what an assistant reads first: short lines about you, in sections (About me, Work, Health &amp; diet, Travel, and so on), each with the chats it came from.</p>
+<pre data-lang="sh">chloectx me card build            # drafts the card from your own messages with a model (claude -p, --model sonnet)
+chloectx me card                  # the card, each line with its source chats
+chloectx me card edit             # in $EDITOR; a line you change or keep becomes yours
+chloectx me card add &quot;Health &amp; diet&quot; &quot;Vegetarian; avoids mushrooms.&quot;
+chloectx me card confirm &lt;id&gt;     # make a drafted line yours
+chloectx me card drop &lt;id&gt;        # take it off (kept as history)</pre>
+<p><code>build</code> reads only what you wrote, never the assistants' answers, and keeps a drafted line only when it names the messages it came from. Building again replaces the drafted lines and keeps every line you wrote or confirmed. A line an assistant adds through <code>remember</code> shows as suggested, by that assistant, until you confirm it.</p>
+<h2 id="connect-chatgpt-claudeai-and-other-assistants">Connect ChatGPT, Claude.ai and other assistants<a class="anchor" href="#connect-chatgpt-claudeai-and-other-assistants" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx me serve</code> serves the memory over MCP with OAuth sign-in: the assistant registers itself, sends you to a consent page that asks for your passcode, and gets a token for 24 hours (renewed for 90 days). The passcode and a capture key are made and printed once on the first run; <code>chloectx me connect --new-passcode</code> makes a new one.</p>
+<pre data-lang="sh">chloectx me serve                                    # http://127.0.0.1:7781
+cloudflared tunnel --url http://127.0.0.1:7781      # or: tailscale funnel 7781
+chloectx me serve --public-url https://&lt;that address&gt;</pre>
+<p>ChatGPT and Claude.ai reach a connector at a public HTTPS address, so put a tunnel in front of it and pass the tunnel's address as <code>--public-url</code>. Then:</p>
+<ul>
+<li><strong>ChatGPT</strong>: in Settings, under Apps &amp; Connectors, turn on developer mode, then create a connector with <code>https://&lt;address&gt;/mcp</code> and OAuth.</li>
+<li><strong>Claude.ai</strong>: Settings, Connectors, Add custom connector, with <code>https://&lt;address&gt;/mcp</code>.</li>
+<li><strong>Claude Code</strong>: <code>claude mcp add --transport http me https://&lt;address&gt;/mcp</code> (or the local address).</li>
+</ul>
+<p>The consent page asks whether the assistant may also write. It gets these tools:</p>
+<div class="doc-table"><table>
+<thead>
+<tr>
+<th>tool</th>
+<th>what</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>persona</code></td>
+<td>the card, with each line's sources</td>
+</tr>
+<tr>
+<td><code>search</code></td>
+<td>records that answer a query: id, title (the assistant and the chat), address, text</td>
+</tr>
+<tr>
+<td><code>fetch</code></td>
+<td>one record in full: the exchange it belongs to, or a card line with its sources</td>
+</tr>
+<tr>
+<td><code>ask</code></td>
+<td>the context for a question, within a budget</td>
+</tr>
+<tr>
+<td><code>remember</code></td>
+<td>(with write) a line for the card, shown as suggested, or a note</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>search</code> and <code>fetch</code> answer as ChatGPT's connectors expect. Every call is written to an access log, <code>chloectx me log</code>, with the tool, the query and who asked, never what came back. <code>chloectx me connect</code> lists the assistants signed in, and <code>--signout</code> signs them all out.</p>
+<h2 id="keep-it-current">Keep it current<a class="anchor" href="#keep-it-current" aria-label="Link to this section">#</a></h2>
+<p><strong>The browser extension</strong> (<code>chloectx/extension/</code>, for Chrome and other Chromium browsers) records your chats on chatgpt.com, claude.ai and gemini.google.com as you have them, into the server's <code>/capture</code>. It is off for every site until you turn that site on, and it sends only the messages of the chat open in that tab, to the address you give it, with the capture key. <a href="https://github.com/chloetech-ai/chloedb/blob/main/chloectx/extension/README.md">Its README</a> says how to load it.</p>
+<p><strong>The API proxy</strong> records what apps send to OpenAI's and Anthropic's APIs and what they get back. Point an app's base URL at the server, with the capture key in the path, and keep its own API key:</p>
+<pre data-lang="sh">export OPENAI_BASE_URL=http://127.0.0.1:7781/p/&lt;capture key&gt;/openai/v1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7781/p/&lt;capture key&gt;/anthropic</pre>
+<p>Requests go through unchanged, streamed or not, and the exchange is recorded after it ends. A request with <code>x-chloectx-record: off</code> is not recorded; <code>x-chloectx-conversation</code> and <code>x-chloectx-title</code> name the chat it belongs to (by default, its first message).</p>
+<h2 id="share-a-slice">Share a slice<a class="anchor" href="#share-a-slice" aria-label="Link to this section">#</a></h2>
+<p>A share is a signed, read-only copy of part of the memory, with a key of its own:</p>
+<pre data-lang="sh">chloectx me share create &quot;diet and travel&quot; --sections &quot;Health &amp; diet,Travel&quot; --topic kyoto --expires 30d
+chloectx me share list
+chloectx me share log &lt;id&gt;        # every call made with its key
+chloectx me share revoke &lt;id&gt;</pre>
+<p>It holds the card's lines in the sections named (every section by default, none with <code>--no-card</code>), the records that answer each <code>--topic</code>, and with <code>--sources</code> the messages the card's lines were drawn from. Whoever has the key connects to <code>https://&lt;address&gt;/s/&lt;key&gt;/mcp</code> with no sign-in and sees only that slice; the key stops working when it expires or is revoked. The copy is a <a href="chloectx-capsules.html">context capsule</a> signed with your key (Ed25519), so <code>--out DIR</code> also writes it for <code>chloectx mount</code>, which checks the signature and names the signer.</p>
+<h2 id="on-a-chloedb-cluster">On a ChloeDB cluster<a class="anchor" href="#on-a-chloedb-cluster" aria-label="Link to this section">#</a></h2>
+<p><code>chloectx app</code> serves a space of the cluster the same way, for a memory that should live in a cluster rather than on a laptop (<a href="chloectx-app.html">ChloeCtx on a cluster</a>):</p>
+<pre data-lang="sh">CHLOECTX_CONNECT_PASSCODE=&quot;&lt;at least 10 letters and digits&gt;&quot; CHLOECTX_CONNECT_CAPTURE_KEY=&quot;ctxc_&lt;a long secret&gt;&quot; \
+  chloectx app --server http://127.0.0.1:7700 --port 7760 --connect-url https://me.example.com</pre>
+<p>The space (<code>--connect-space</code>, <code>me</code> by default) is made if it is not there, and the sign-in, the tools, <code>/capture</code> and the proxy are served at the app's address beside its own API, which keeps its token. <code>--connect-state FILE</code> keeps the sign-ins across restarts. Shares are served by <code>chloectx me serve</code> only.</p>
+    </div>
+    <footer class="doc-foot">
+      <a href="https://github.com/chloetech-ai/chloedb/edit/main/docs/chloectx/personal-memory.md">Edit this page on GitHub</a>
+      <span class="pager"><a href="chloectx-app.html">← ChloeCtx on a cluster</a><a href="apps.html">Apps on a cluster →</a></span>
+    </footer>
+  </article>
+</div></main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="../index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="db">DB</span></a><p>Search engine, database and recommender in one, from a file in your app to a cluster. Apache-2.0.</p></div>
+  <div><h4>Start</h4><ul><li><a href="quickstart.html">Quickstart</a></li><li><a href="concepts.html">Concepts</a></li><li><a href="search.html">Search guide</a></li><li><a href="sql.html">SQL reference</a></li></ul></div>
+  <div><h4>Cookbook</h4><ul><li><a href="rag.html">Retrieval for RAG</a></li><li><a href="agent-memory.html">Memory for an agent</a></li><li><a href="crawl-to-search.html">Crawl a site into search</a></li></ul></div>
+  <div><h4>Source</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/reproduce.md">Reproduce the results</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/docs-search.js?v=99145886a7" defer></script>
+<script>
+// On a narrow screen the sidebar and, on a phone, "On this page" start closed, so the page's text is in the first screen.
+if (window.matchMedia("(max-width: 900px)").matches) document.querySelector(".doc-menu").open = false;
+if (window.matchMedia("(max-width: 760px)").matches) document.querySelectorAll(".doc-toc").forEach(function (d) { d.open = false; });
+</script>
+
+</body>
+</html>

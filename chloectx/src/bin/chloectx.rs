@@ -10,13 +10,18 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value as Json};
 
-use chloectx::{daemon, doctor, embed, hook, install, mcp, paths, transcript, ui};
+use chloectx::{daemon, doctor, embed, hook, install, mcp, me_cmd, paths, transcript, ui};
 
 /// The commands `--help` does not list, by what they are for.
 const MORE: &str = "\
 Once installed, ChloeCtx works on its own: start Claude Code in a project and work
 as usual; it records each session, recalls what bears on each prompt and writes
 down decisions and rules. `chloectx doctor` says whether that is happening.
+
+Your personal memory, for any model: `chloectx import` your ChatGPT, Claude.ai or
+Gemini export, `chloectx me card build` drafts your persona card, `chloectx me serve`
+lets ChatGPT, Claude.ai and any MCP client read it (with sign-in), and
+`chloectx me share create` hands a slice of it to someone with a key of its own.
 
 More commands (`chloectx help <command>` explains each):
   look into memory   report, repeats, blame, receipts, receipt, snapshot, sql, stats, briefing
@@ -25,11 +30,15 @@ More commands (`chloectx help <command>` explains each):
   run by Claude Code (not by hand): hook, mcp, serve, rpc, wiring";
 
 #[derive(Parser)]
-#[command(name = "chloectx", version = env!("CHLOECTX_VERSION_LINE"), about = "Automatic long-term context for Claude Code, stored in ChloeDB", after_help = MORE)]
+#[command(name = "chloectx", version = env!("CHLOECTX_VERSION_LINE"), about = "Long-term memory for Claude Code and for you, across every model, stored in ChloeDB", after_help = MORE)]
 struct Cli {
     /// Project directory (default: $CLAUDE_PROJECT_DIR or the current directory).
     #[arg(long, global = true)]
     project: Option<PathBuf>,
+    /// Use the personal memory (`chloectx me`) instead of a project's:
+    /// `chloectx --me ask "..."`, `chloectx --me search ...`.
+    #[arg(long, global = true, conflicts_with = "project")]
+    me: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -68,6 +77,39 @@ enum Cmd {
         #[arg(long)]
         user: bool,
         event: String,
+    },
+    /// Import your chats from ChatGPT, Claude.ai or Gemini into your personal memory
+    ///
+    /// PATH is an export: ChatGPT's zip (or its conversations.json),
+    /// Claude.ai's zip (conversations.json, memories.json), a Google
+    /// Takeout of Gemini Apps' activity (MyActivity.json or .html), a
+    /// folder holding any of them, or a JSON-lines file of
+    /// {"source", "conversation", "title", "role", "text", "ts"}. Each
+    /// message is kept once, so importing a newer export adds only what is
+    /// new. Every record says which assistant and which chat it came from.
+    #[command(display_order = 12)]
+    Import {
+        path: PathBuf,
+        /// The source, when the file does not say (chatgpt, claude, gemini, jsonl).
+        #[arg(long)]
+        from: Option<String>,
+        /// Only say what the export holds.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Your personal memory: one ChloeDB file any model can read
+    ///
+    /// The chats you imported or captured, your persona card, the
+    /// assistants you connected and what you shared. With no subcommand,
+    /// what it holds.
+    #[command(display_order = 13)]
+    Me {
+        #[command(subcommand)]
+        what: Option<MeCmd>,
+        #[arg(long)]
+        json: bool,
     },
     /// Run the MCP server on stdio.
     #[command(hide = true)]
@@ -416,6 +458,19 @@ enum Cmd {
         /// center's users may read them.
         #[arg(long, env = "CHLOECTX_APP_LOCAL", value_parser = clap::builder::BoolishValueParser::new(), default_value_t = false)]
         local_stores: bool,
+        /// Serve a space as personal memory (`chloectx me`) to ChatGPT,
+        /// Claude.ai and any MCP client, with OAuth sign-in, at this public
+        /// https:// address (the cluster's ingress to this app): /mcp, the
+        /// OAuth endpoints, /capture and the API proxy. The consent page asks
+        /// for $CHLOECTX_CONNECT_PASSCODE.
+        #[arg(long, env = "CHLOECTX_CONNECT_URL")]
+        connect_url: Option<String>,
+        /// The space it serves.
+        #[arg(long, env = "CHLOECTX_CONNECT_SPACE", default_value = "me")]
+        connect_space: String,
+        /// Where the signed-in clients are kept (a file on a volume).
+        #[arg(long, env = "CHLOECTX_CONNECT_STATE")]
+        connect_state: Option<PathBuf>,
     },
     /// Cut a capsule from the project's memory: a read-only ChloeDB file of
     /// the selected records (default: distilled notes, entities and the
@@ -483,6 +538,154 @@ enum Cmd {
     FetchModel {
         #[arg(default_value = "static")]
         which: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MeCmd {
+    /// The persona card: lines about you, each with the chat it came from
+    Card {
+        #[command(subcommand)]
+        what: Option<CardCmd>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Serve your memory to ChatGPT, Claude.ai and any MCP client (with
+    /// sign-in), to the browser extension and as an API proxy
+    ///
+    /// An HTTP server: MCP at /mcp with OAuth sign-in (the consent page asks
+    /// for your passcode), shares at /s/<key>/mcp, the browser extension's
+    /// captures at /capture, and a proxy for OpenAI's and Anthropic's APIs at
+    /// /p/<capture key>/openai/v1 and /p/<capture key>/anthropic that records
+    /// what apps send and receive. ChatGPT and Claude.ai need it at a public
+    /// HTTPS address: put a tunnel in front of it (cloudflared, tailscale
+    /// funnel) and pass that address as --public-url.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 7781)]
+        port: u16,
+        /// The https:// address clients reach this server at.
+        #[arg(long, env = "CHLOECTX_PUBLIC_URL")]
+        public_url: Option<String>,
+        /// Where the proxy sends OpenAI requests.
+        #[arg(long, default_value = "https://api.openai.com")]
+        openai_base: String,
+        /// Where the proxy sends Anthropic requests.
+        #[arg(long, default_value = "https://api.anthropic.com")]
+        anthropic_base: String,
+        /// Do not serve shares.
+        #[arg(long)]
+        no_shares: bool,
+    },
+    /// The passcode and capture key (shown once when made), and the
+    /// assistants signed in
+    Connect {
+        /// Make a new passcode (the old one stops working).
+        #[arg(long)]
+        new_passcode: bool,
+        /// Make a new capture key (the extension and the proxy need the new one).
+        #[arg(long)]
+        new_capture_key: bool,
+        /// Sign every assistant out.
+        #[arg(long)]
+        signout: bool,
+    },
+    /// Share a slice of your memory with a key of its own: signed,
+    /// read-only, expiring, revocable and logged
+    Share {
+        #[command(subcommand)]
+        what: ShareCmd,
+    },
+    /// The calls connected assistants made: when, which tool, what they asked
+    Log {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CardCmd {
+    /// Draft the card from your own messages with a model (the lines you
+    /// wrote or confirmed stay; the drafted ones are replaced)
+    Build {
+        /// The model (claude's --model).
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+        /// At most this many characters of your messages are read.
+        #[arg(long, default_value_t = 120_000)]
+        max_chars: usize,
+        /// Show the draft without storing it.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit the card in $EDITOR
+    Edit,
+    /// Add a line of yours
+    Add {
+        section: String,
+        text: String,
+        /// It is a preference (otherwise a fact).
+        #[arg(long)]
+        preference: bool,
+    },
+    /// Rewrite a line (the old one is kept, superseded)
+    Change { id: String, text: String },
+    /// Make a drafted line yours
+    Confirm { id: String },
+    /// Take a line off the card (kept, retired)
+    Drop { id: String },
+}
+
+#[derive(Subcommand)]
+enum ShareCmd {
+    /// Cut a share: the card's lines in some sections and what answers some topics
+    Create {
+        /// What it is, for you and for whoever reads it ("diet and travel").
+        name: String,
+        /// The card's sections it holds (comma-separated; default: every section).
+        #[arg(long, value_delimiter = ',')]
+        sections: Vec<String>,
+        /// Also the records that answer these (repeatable, or comma-separated).
+        #[arg(long = "topic", value_delimiter = ',')]
+        topics: Vec<String>,
+        /// Leave the card out (only the topics' records).
+        #[arg(long)]
+        no_card: bool,
+        /// Also the messages the card's lines were drawn from.
+        #[arg(long)]
+        sources: bool,
+        /// Records per topic.
+        #[arg(long, default_value_t = 20)]
+        per_topic: usize,
+        /// How long the key works: 30d, 12h, 2w or never.
+        #[arg(long, default_value = "30d")]
+        expires: String,
+        /// Also copy the signed capsule here, for `chloectx mount`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// The address `chloectx me serve` is reached at, to print the share's link.
+        #[arg(long, env = "CHLOECTX_PUBLIC_URL")]
+        public_url: Option<String>,
+    },
+    /// The shares and their state
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// End a share now (by id or name)
+    Revoke { id: String },
+    /// Who used a share: every call, newest last
+    Log {
+        id: String,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -619,9 +822,57 @@ fn text(r: &Json) {
 fn main() {
     chloectx::env::adopt_old_names();
     let cli = Cli::parse();
-    let project = cli.project.clone().unwrap_or_else(|| paths::project_dir(None));
+    let project = if cli.me {
+        chloectx::me::ensure().unwrap_or_else(|e| {
+            eprintln!("chloectx: the personal memory's folder: {e}");
+            std::process::exit(1)
+        })
+    } else {
+        cli.project.clone().unwrap_or_else(|| paths::project_dir(None))
+    };
     let project = project.canonicalize().unwrap_or(project);
     match cli.cmd {
+        Cmd::Import { path, from, dry_run, json: as_json } => std::process::exit(me_cmd::import(&path, from.as_deref(), dry_run, as_json)),
+        Cmd::Me { what, json: as_json } => std::process::exit(match what {
+            None => me_cmd::status(as_json),
+            Some(MeCmd::Card { what: None, json: j }) => me_cmd::card_show(j || as_json),
+            Some(MeCmd::Card { what: Some(c), .. }) => match c {
+                CardCmd::Build { model, max_chars, dry_run, json: j } => me_cmd::card_build(&model, max_chars, dry_run, j || as_json),
+                CardCmd::Edit => me_cmd::card_edit(),
+                CardCmd::Add { section, text, preference } => me_cmd::card_op("card_add", json!({"section": section, "text": text, "kind": if preference { "preference" } else { "fact" }})),
+                CardCmd::Change { id, text } => me_cmd::card_op("card_edit", json!({"id": id, "text": text})),
+                CardCmd::Confirm { id } => me_cmd::card_op("card_confirm", json!({"id": id})),
+                CardCmd::Drop { id } => me_cmd::card_op("card_drop", json!({"id": id})),
+            },
+            Some(MeCmd::Serve { host, port, public_url, openai_base, anthropic_base, no_shares }) => {
+                me_cmd::serve(me_cmd::ServeOptions { host, port, public_url, openai_base, anthropic_base, shares: !no_shares })
+            }
+            Some(MeCmd::Connect { new_passcode, new_capture_key, signout }) => me_cmd::connect(new_passcode, new_capture_key, signout),
+            Some(MeCmd::Share { what }) => match what {
+                ShareCmd::Create { name, sections, topics, no_card, sources, per_topic, expires, out, public_url } => {
+                    me_cmd::share_create(me_cmd::ShareOptions { name, sections, topics, no_card, sources, per_topic, expires, out, public_url })
+                }
+                ShareCmd::List { json: j } => me_cmd::share_list(j || as_json),
+                ShareCmd::Revoke { id } => me_cmd::share_revoke(&id),
+                ShareCmd::Log { id, limit, json: j } => me_cmd::share_log(&id, limit, j || as_json),
+            },
+            Some(MeCmd::Log { limit, json: j }) => match me_cmd::access_log(limit) {
+                Ok(log) if j || as_json => {
+                    println!("{}", serde_json::to_string_pretty(&log).unwrap());
+                    0
+                }
+                Ok(log) => {
+                    for e in log {
+                        println!("{}  {}  {}  {}  {} records", chloectx::recall::fmt_time(e["ts"].as_i64().unwrap_or(0)), e["client"].as_str().unwrap_or(""), e["tool"].as_str().unwrap_or(""), e["args"], e["records"].as_array().map_or(0, |a| a.len()));
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("chloectx me log: {e}");
+                    1
+                }
+            },
+        }),
         Cmd::Hook { event, user } => std::process::exit(hook::run(&event, user)),
         Cmd::Mcp => std::process::exit(mcp::run()),
         Cmd::Wiring { exe, distill_model } => {
@@ -975,7 +1226,7 @@ fn main() {
             };
             let embedder: std::sync::Arc<dyn embed::Embedder> = std::sync::Arc::from(embed::open(&spec).unwrap_or_else(|e| fail(e)));
             let store = chloectx::store::Store::open(&backup.join("memory.strata"), embedder, chloectx::store::StoreOptions { sync: false, ..Default::default() }).unwrap_or_else(|e| fail(e));
-            let opts = chloectx::capsule::PackOptions { kinds, since_ts: since_days.map(|d| chloectx::now() - (d * 86_400.0) as i64), max_records, title, sessions };
+            let opts = chloectx::capsule::PackOptions { kinds, since_ts: since_days.map(|d| chloectx::now() - (d * 86_400.0) as i64), max_records, title, sessions, ids: Vec::new() };
             let m = chloectx::capsule::pack(&store, &spec, &project.to_string_lossy(), &out, &opts).unwrap_or_else(|e| fail(e));
             drop(store);
             let _ = std::fs::remove_dir_all(&tmp);
@@ -992,9 +1243,16 @@ fn main() {
             }
         }
         Cmd::Mount { dirs, log, embedder } => std::process::exit(chloectx::capsule::run_mcp(&dirs, log, embedder.as_deref())),
-        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores } => {
+        Cmd::App { server, key, host, port, token, insecure, embedder, local_stores, connect_url, connect_space, connect_state } => {
             let local = local_stores.then(paths::home);
-            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local }) {
+            let connect = connect_url.map(|public_url| chloectx::app::Connect {
+                public_url,
+                space: connect_space,
+                passcode: std::env::var("CHLOECTX_CONNECT_PASSCODE").unwrap_or_default(),
+                capture_key: std::env::var("CHLOECTX_CONNECT_CAPTURE_KEY").ok(),
+                state: connect_state,
+            });
+            if let Err(e) = chloectx::app::run(chloectx::app::Options { host, port, server, key, token: token.filter(|t| !t.is_empty()), insecure, embedder, local, connect }) {
                 eprintln!("chloectx app: {e}");
                 std::process::exit(1);
             }
@@ -1114,6 +1372,6 @@ mod tests {
         }
         visible.sort();
         let visible: Vec<String> = visible.into_iter().map(|v| v.1).collect();
-        assert_eq!(visible, ["install", "uninstall", "doctor", "upgrade", "ui", "ask", "search", "remember", "stores", "prune", "stop"]);
+        assert_eq!(visible, ["install", "uninstall", "doctor", "upgrade", "ui", "ask", "search", "remember", "stores", "prune", "stop", "import", "me"]);
     }
 }

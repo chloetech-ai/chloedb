@@ -68,7 +68,7 @@ chloectx mount ./work.capsule                       # serve it as MCP tools (std
 
 `chloectx ask` prints the context a model would be given, not a written answer. Three commands are for maintenance and cost model calls: `chloectx ingest-transcript ~/.claude/projects/<project>/<session>.jsonl` back-fills a session ChloeCtx did not record (one it recorded live is stored a second time); `chloectx distill` writes down the notes of the turns not distilled yet, one model call per turn (`--again` distills every turn again but a forget's, `--dry-run` counts them without a model call); `chloectx consolidate` merges overlapping notes now. `distill` and `consolidate` print one line of JSON when they are done (for `distill`: the turns, how many it distilled, and the notes it wrote).
 
-A capsule hands a slice of this memory to another agent as one read-only file it queries: [capsules](capsules.md). [Blame and receipts](receipts.md) explain `chloectx blame`.
+A capsule hands a slice of this memory to another agent as one read-only file it queries: [capsules](capsules.md). Beside the memories of projects, ChloeCtx keeps one of your own: your chats with ChatGPT, Claude.ai and Gemini, and a persona card drawn from them, which any assistant you connect reads: [personal memory](personal-memory.md). [Blame and receipts](receipts.md) explain `chloectx blame`.
 
 ### Where the time went
 

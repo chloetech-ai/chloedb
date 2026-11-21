@@ -161,6 +161,24 @@ pub struct Options {
     /// a store is a transcript of its sessions and the command center's
     /// users would read it.
     pub local: Option<std::path::PathBuf>,
+    /// Serve one space as a person's memory to ChatGPT, Claude.ai and any
+    /// MCP client, with OAuth sign-in ([`crate::remote`]).
+    pub connect: Option<Connect>,
+}
+
+/// `--connect-url`: a space served as personal memory at a public address.
+pub struct Connect {
+    /// The https:// address the cluster's ingress gives this app.
+    pub public_url: String,
+    /// The space (default `me`), made when there is none.
+    pub space: String,
+    /// The passcode the consent page asks for ($CHLOECTX_CONNECT_PASSCODE).
+    pub passcode: String,
+    /// The browser extension's and the API proxy's key ($CHLOECTX_CONNECT_CAPTURE_KEY), if any.
+    pub capture_key: Option<String>,
+    /// Where the signed-in clients are kept (a file on the pod's volume);
+    /// none: in memory, and clients sign in again after a restart.
+    pub state: Option<std::path::PathBuf>,
 }
 
 /// Distillations in the background, for `/v1/info`.
@@ -206,6 +224,8 @@ pub struct App {
     /// Requests must name this machine as their `Host`: an app with no
     /// token on loopback ([`host_refused`]).
     loopback_hosts: bool,
+    /// The personal-memory server, with `--connect-url`.
+    connect: Option<Arc<crate::remote::Server>>,
 }
 
 /// An error with the HTTP status it answers with.
@@ -366,7 +386,7 @@ Use only what the text says. Do not invent numbers, names or causes. If the text
 impl App {
     pub fn new(cluster: Arc<Cluster>, embedder: Arc<dyn Embedder>, model: Model, token: Option<String>) -> Result<App> {
         cluster.sql(CREATE_SPACES)?;
-        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None, loopback_hosts: false })
+        Ok(App { cluster, embedder, stores: Mutex::new(HashMap::new()), model, token, jobs: Mutex::new(Jobs::default()), local: None, loopback_hosts: false, connect: None })
     }
 
     fn space_row(&self, name: &str) -> Result<Option<Json>> {
@@ -1377,6 +1397,11 @@ fn status_line(code: u16) -> &'static str {
 fn handle(app: &Arc<App>, mut stream: std::net::TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let Some(req) = read_request(&stream) else { return };
+    // The personal-memory routes have their own sign-in (OAuth, a share's
+    // key, the capture key), and the consent page is opened in a browser.
+    if let Some(c) = app.connect.as_ref().filter(|_| crate::remote::Server::handles(&req.path)) {
+        return c.handle(stream, req);
+    }
     // Requests come from chloedb-server (for the command center) or from a
     // program, never from a page in a browser.
     if req.header("origin").is_some() {
@@ -1484,6 +1509,24 @@ pub fn run(opts: Options) -> Result<()> {
         match App::new(cluster.clone(), embedder.clone(), Model::from_env(), opts.token.clone()) {
             Ok(mut a) => {
                 a.local = opts.local.clone();
+                if let Some(c) = &opts.connect {
+                    if !crate::remote::public_url_ok(&c.public_url) {
+                        return Err(err(format!("--connect-url is the https:// address clients reach this app at, not {}", c.public_url)));
+                    }
+                    if c.passcode.trim().chars().filter(|x| x.is_ascii_alphanumeric()).count() < 10 {
+                        return Err(err("--connect-url needs CHLOECTX_CONNECT_PASSCODE: at least 10 letters and digits, which the sign-in page asks for"));
+                    }
+                    if a.space_row(&c.space)?.is_none() {
+                        a.create_space(&c.space, "Personal memory", "A person's chats with assistants and their persona card (chloectx me)", "notes")?;
+                    }
+                    let mut secrets = crate::remote::Secrets { passcode_salt: crate::share::random_b64(16), ..Default::default() };
+                    secrets.passcode_hash = crate::remote::hash_passcode(&c.passcode, &secrets.passcode_salt);
+                    if let Some(k) = c.capture_key.as_deref().filter(|k| !k.is_empty()) {
+                        secrets.capture_key_hash = crate::share::sha256_hex(k);
+                    }
+                    let cfg = crate::remote::Config { public_url: Some(c.public_url.clone()), secrets, state_path: c.state.clone(), shares: false, ..Default::default() };
+                    a.connect = Some(crate::remote::Server::new(cfg, Arc::new(crate::remote::OnStore(a.store(&c.space)?))));
+                }
                 a.loopback_hosts = opts.token.is_none() && loopback(&opts.host);
                 break Arc::new(a);
             }

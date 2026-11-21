@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "ChloeCtx capture",
+  "version": "0.3.10",
+  "description": "Keeps your chats on chatgpt.com, claude.ai and gemini.google.com in your own ChloeCtx memory, on the sites you turn on.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": ["https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*"],
+      "js": ["sites.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "ChloeCtx capture", "default_popup": "options.html" },
+  "options_page": "options.html"
+}
