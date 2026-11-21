@@ -32,7 +32,7 @@ Then, for the bigger rows arm: every row deleted (the base model, exactly);
 one doc's rows deleted, for each doc, to see that doc go back while the others
 keep what they learned; and the rows served from ChloeDB (HNSW) inside the
 forward pass, checked against torch, before and after a SQL DELETE."""
-import json, os, sys, time, math, random, glob
+import json, os, re, sys, time, math, random, glob
 import numpy as np, torch, torch.nn.functional as F, chloedb
 from gpu import load, DEVICE
 
@@ -212,8 +212,42 @@ def train(params, lr, steps=None):
         for p, b in zip(params, best[1]): p.copy_(b)
     return {"lr": lr, "best_step": best[2], "val_ppl": best[0], "secs": round(time.time() - t0), "history": hist}
 
+# ---- questions about the trained text (QA=path of [{doc, q, a}]): closed-book, and with BM25 chunks from ChloeDB --
+QA = json.load(open(os.environ["QA"])) if os.environ.get("QA") and os.path.exists(os.environ["QA"]) else []
+if SMOKE: QA = [x for x in QA if x["doc"] in EVAL][:4]
+SHOTS = ("Answer each question about the ChloeDB database with a few words.\n"
+         "Question: Which SQL keyword sorts the results of a query?\nAnswer: ORDER BY\n"
+         "Question: Which file format does Python's json module read?\nAnswer: JSON\n")
+chunks_db = None
+def rag_context(q, k=3):
+    global chunks_db
+    if chunks_db is None:
+        p = f"{S}/g1chunks.chloedb"; os.system(f"rm -rf {p}*")
+        chunks_db = chloedb.open(p, schema={"table": "chunks", "key": "id", "fields": [
+            {"name": "id", "type": "int"}, {"name": "doc", "type": "keyword"}, {"name": "body", "type": "text"}]}, sync=False)
+        rows, n = [], 0
+        for e, ids in DOC.items():
+            for w0 in range(0, len(ids), 192): rows.append({"id": n, "doc": e, "body": tok.decode(ids[w0:w0 + 192])}); n += 1
+        chunks_db.insert(rows); chunks_db.flush()
+    return [r[0] for r in chunks_db.query(f"SELECT body FROM chunks ORDER BY bm25(body, :q) DESC LIMIT {k}", q=q).rows]
+def norm(t): return re.sub(r"[^a-z0-9.]+", " ", t.lower()).strip()
+@torch.no_grad()
+def qa_eval(rag=False):
+    if not QA: return None
+    right, per, t0 = 0, [], time.time()
+    for x in QA:
+        ctx = ("Context:\n" + "\n---\n".join(rag_context(x["q"])) + "\n\n") if rag else ""
+        ids = tok(ctx + SHOTS + f"Question: {x['q']}\nAnswer:", return_tensors="pt", add_special_tokens=False)["input_ids"].to(DEVICE)
+        out = model.generate(ids, max_new_tokens=16, do_sample=False, pad_token_id=tok.eos_token_id)
+        ans = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True).split("\n")[0].strip()
+        ok = norm(x["a"]) in norm(ans) and len(norm(x["a"])) > 0; right += ok; per.append([ans, bool(ok)])
+    return {"right": right, "of": len(QA), "acc": right / len(QA), "secs": round(time.time() - t0), "answers": per}
+
 base = eval_all(); base_val, _ = eval_set(VALS)
 res["arms"]["base"] = {**base, "val_ppl": base_val}
+if QA:
+    res["arms"]["base"]["qa"] = qa_eval(); res["arms"]["base"]["qa_rag"] = qa_eval(rag=True)
+    print("base qa", res["arms"]["base"]["qa"]["acc"], "with bm25 chunks", res["arms"]["base"]["qa_rag"]["acc"], flush=True)
 print("base", {k: v for k, v in base.items() if not k.endswith("per_doc")}, flush=True)
 json.dump(res, open(OUT, "w"), indent=1)
 
@@ -250,6 +284,9 @@ for arm in ARMS:
                 for h in hooks: h.remove()
                 ISO.clear()
         r = train(params, lr, int(os.environ.get(f"STEPS_{arm}", STEPS))); r.update(eval_all()); r["trainable"] = sum(p.numel() for p in params)
+        if QA:
+            r["qa"] = qa_eval(); print(arm, lr, "qa", r["qa"]["acc"], flush=True)
+            if arm.startswith("rows"): r["qa_rag"] = qa_eval(rag=True); print(arm, lr, "qa with bm25 chunks", r["qa_rag"]["acc"], flush=True)
         if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D * len(mods); r["row_layers"] = [m.layer for m in mods]; r["tau"] = [m.tau for m in mods]
         print(arm, lr, {k: v for k, v in r.items() if k in ("held_out", "seen", "domain", "general", "best_step", "val_ppl")}, flush=True)
         res["arms"].setdefault(arm + "_tried", []).append({k: v for k, v in r.items() if not k.endswith("per_doc") and k != "history"})
