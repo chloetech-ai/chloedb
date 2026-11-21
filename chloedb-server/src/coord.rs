@@ -2213,7 +2213,11 @@ impl Coordinator {
             let copies: Vec<_> = t.replicas[i].iter().map(|r| r.stats.route_view(at, r.avoid_until.load(Ordering::Relaxed) > now, min, split, load)).collect();
             // The same turn and shard draw the same other choice.
             let seed = crate::cores::route::mix((start as u64) << 16 ^ i as u64);
-            return crate::cores::route::order(&copies, start, first, seed);
+            let (order, passed) = crate::cores::route::order_passing(&copies, start, first, seed);
+            if let Some(p) = passed {
+                t.replicas[i][p].stats.passed_over();
+            }
+            return order;
         }
         let mut order: Vec<usize> = (0..n).map(|k| (start + k) % n).collect();
         order.sort_by_key(|&r| (t.replicas[i][r].avoid_until.load(Ordering::Relaxed) > now, Some(r) != first));
