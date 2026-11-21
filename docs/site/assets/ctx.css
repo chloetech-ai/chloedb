@@ -261,6 +261,6 @@
 @media (max-width: 600px) { .readers .hb-row { grid-template-columns: minmax(0, 1fr) 44px; } }
 .hb-row .bar.other { background: var(--fam-vec); }
 .hb-legend i.other { background: var(--fam-vec); }
-.tbl.matrix td { min-width: 150px; font-size: 0.85rem; }
+.tbl.matrix td { min-width: 128px; font-size: 0.85rem; }
 .tbl.matrix td:first-child { min-width: 190px; }
 .tbl.matrix td .badge { margin-left: 4px; vertical-align: 1px; }

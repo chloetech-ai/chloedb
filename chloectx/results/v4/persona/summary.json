@@ -99,6 +99,40 @@
  },
  {
   "reader": "haiku",
+  "context": "engine16k",
+  "label": "ChloeCtx, query engine, 16,000 characters",
+  "n": 100,
+  "accuracy": 0.84,
+  "tokens": 6017.56,
+  "chars": 15160.25,
+  "reader_usd": 0.001582412,
+  "memory_usd": 0.001150735,
+  "seconds": 3.2545,
+  "models": [
+   "claude-haiku-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "haiku",
+  "context": "engine48k",
+  "label": "ChloeCtx, query engine, 48,000 characters",
+  "n": 100,
+  "accuracy": 0.9,
+  "tokens": 13881.13,
+  "chars": 36911.68,
+  "reader_usd": 0.003170411,
+  "memory_usd": 0.001150735,
+  "seconds": 3.5445,
+  "models": [
+   "claude-haiku-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "haiku",
   "context": "hindsight",
   "label": "Hindsight",
   "n": 100,
@@ -229,6 +263,40 @@
  },
  {
   "reader": "sonnet",
+  "context": "engine16k",
+  "label": "ChloeCtx, query engine, 16,000 characters",
+  "n": 100,
+  "accuracy": 0.93,
+  "tokens": 5996.56,
+  "chars": 15160.25,
+  "reader_usd": 0.02730824,
+  "memory_usd": 0.001150735,
+  "seconds": 2.234,
+  "models": [
+   "claude-sonnet-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "sonnet",
+  "context": "engine48k",
+  "label": "ChloeCtx, query engine, 48,000 characters",
+  "n": 100,
+  "accuracy": 0.94,
+  "tokens": 13860.13,
+  "chars": 36911.68,
+  "reader_usd": 0.05894162,
+  "memory_usd": 0.001150735,
+  "seconds": 2.43,
+  "models": [
+   "claude-sonnet-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "sonnet",
   "context": "hindsight",
   "label": "Hindsight",
   "n": 100,
@@ -303,6 +371,22 @@
   "reader": "sonnet",
   "context": "engine",
   "label": "ChloeCtx, query engine (same 25)",
+  "n": 25,
+  "accuracy": 0.88,
+  "subset": true
+ },
+ {
+  "reader": "sonnet",
+  "context": "engine16k",
+  "label": "ChloeCtx, query engine, 16,000 characters (same 25)",
+  "n": 25,
+  "accuracy": 0.96,
+  "subset": true
+ },
+ {
+  "reader": "sonnet",
+  "context": "engine48k",
+  "label": "ChloeCtx, query engine, 48,000 characters (same 25)",
   "n": 25,
   "accuracy": 0.88,
   "subset": true
@@ -415,6 +499,40 @@
  },
  {
   "reader": "opus",
+  "context": "engine16k",
+  "label": "ChloeCtx, query engine, 16,000 characters",
+  "n": 100,
+  "accuracy": 0.95,
+  "tokens": 5992.56,
+  "chars": 15160.25,
+  "reader_usd": 0.05556788,
+  "memory_usd": 0.001150735,
+  "seconds": 4.2075,
+  "models": [
+   "claude-opus-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "opus",
+  "context": "engine48k",
+  "label": "ChloeCtx, query engine, 48,000 characters",
+  "n": 100,
+  "accuracy": 0.99,
+  "tokens": 13856.13,
+  "chars": 36911.68,
+  "reader_usd": 0.11830184,
+  "memory_usd": 0.001150735,
+  "seconds": 4.2885,
+  "models": [
+   "claude-opus-5-5"
+  ],
+  "store_usd": 0.0,
+  "memory_seconds": 9.710999999999999
+ },
+ {
+  "reader": "opus",
   "context": "hindsight",
   "label": "Hindsight",
   "n": 100,
@@ -491,6 +609,22 @@
   "label": "ChloeCtx, query engine (same 25)",
   "n": 25,
   "accuracy": 0.92,
+  "subset": true
+ },
+ {
+  "reader": "opus",
+  "context": "engine16k",
+  "label": "ChloeCtx, query engine, 16,000 characters (same 25)",
+  "n": 25,
+  "accuracy": 0.96,
+  "subset": true
+ },
+ {
+  "reader": "opus",
+  "context": "engine48k",
+  "label": "ChloeCtx, query engine, 48,000 characters (same 25)",
+  "n": 25,
+  "accuracy": 1.0,
   "subset": true
  },
  {

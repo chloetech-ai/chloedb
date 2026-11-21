@@ -35,8 +35,8 @@ def load(d):
 
 deep = {r["qid"]: r for r in map(json.loads, open(a.deep))}
 prof = {r["qid"]: r for r in map(json.loads, open(a.profile))}
-LABEL = {"none": "No memory", "profile": "Plain memory file", "mem0": "mem0", "hindsight_small": "Hindsight, small context", "hindsight": "Hindsight", "search": "ChloeCtx, search", "engine": "ChloeCtx, query engine", "full": "Whole history in context"}
-ORDER = ["none", "profile", "mem0", "hindsight_small", "search", "engine", "hindsight", "full"]
+LABEL = {"none": "No memory", "profile": "Plain memory file", "mem0": "mem0", "hindsight_small": "Hindsight, small context", "hindsight": "Hindsight", "search": "ChloeCtx, search", "engine": "ChloeCtx, query engine", "engine16k": "ChloeCtx, query engine, 16,000 characters", "engine48k": "ChloeCtx, query engine, 48,000 characters", "full": "Whole history in context"}
+ORDER = ["none", "profile", "mem0", "hindsight_small", "search", "engine", "engine16k", "engine48k", "hindsight", "full"]
 
 table = []
 for reader in ["haiku", "sonnet", "opus"]:
@@ -50,7 +50,7 @@ for reader in ["haiku", "sonnet", "opus"]:
             continue
         mem_cost = []
         for r in rs:
-            if c == "engine":
+            if c.startswith("engine"):
                 mem_cost.append(deep[r["qid"]]["cost_usd"])
             else:
                 mem_cost.append(0.0)
@@ -67,7 +67,7 @@ for reader in ["haiku", "sonnet", "opus"]:
         # model calls to store a person's history (results/v3/competitors for mem0 and Hindsight)
         t["store_usd"] = {"profile": statistics.mean(prof[r["qid"]]["cost"] for r in rs) if c == "profile" else 0.0,
                           "mem0": 12.78 / 100, "hindsight": 100 / 100, "hindsight_small": 100 / 100}.get(c, 0.0)
-        if c == "engine":
+        if c.startswith("engine"):
             t["memory_seconds"] = statistics.median(deep[r["qid"]]["ms"] / 1000 for r in rs)
         if c == "profile":
             t["memory_seconds"] = statistics.median(prof[r["qid"]]["seconds"] for r in rs)

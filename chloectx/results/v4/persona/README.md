@@ -97,6 +97,38 @@ mem0 is level with ChloeCtx's query engine after paying a model to extract
 facts from every conversation; Hindsight is ahead only when it hands the reader
 33 times more tokens, at 23 times the cost a question with Opus.
 
+## A larger context, added 21 Nov 2026
+
+Hindsight's 98% came from about 70,000 tokens a question. To see what
+ChloeCtx does with more room, the query engine's context was built again
+with the search part packed to 16,000 and 48,000 characters instead of
+4,000 (`chloectx-structure --max-pieces 200`, since the packer otherwise
+stops at 24 pieces; `ctx_big.sh`). The query engine's picks are the same.
+The 48,000-character budget filled to 36,900 characters on average: the
+search's 100 candidates per question ran out before the budget did.
+
+| reader | query engine, 4,000 | 16,000 | 48,000 | Hindsight, large | whole history |
+|---|---|---|---|---|---|
+| Haiku | 84% | 84% | **90%** | 88% | 88% |
+| Sonnet | 87% | 93% | **94%** | 92% | 96% (25 q) |
+| Opus | 89% | 95% | **99%** | 98% | 100% (25 q) |
+| tokens read (Opus) | 2,134 | 5,993 | 13,856 | 69,837 | 168,875 |
+| $ a question (Opus) | 0.0253 | 0.0567 | 0.1195 | 0.5671 | 1.0962 |
+| model calls to store a person | none | none | none | 262, about $1.00 | none |
+
+With 13,900 tokens, a fifth of Hindsight's, ChloeCtx was level with it or
+ahead for every reader, at a fifth of the cost a question with Opus and
+with nothing paid to store. The larger context closed the gap on questions
+that count or collect facts across conversations, where mem0 had been
+ahead: with Opus, 18 of 25 at 4,000 characters, 23 at 16,000 and 24 at
+48,000 (Hindsight 24, mem0 20); dates and order went from 23 to 25 of 25.
+On the 25 questions the whole history was read on, Opus scored 100% from
+the 48,000 context, as from the whole history.
+
+Files: `context_engine_16k.jsonl.gz`, `context_engine_48k.jsonl.gz`, and
+the answers and verdicts in `runs/<reader>/` (configs `engine16k` and
+`engine48k`).
+
 ## Caveats
 
 - One question per person, 100 in all; the whole-history rows for Sonnet and
@@ -113,7 +145,7 @@ facts from every conversation; Hindsight is ahead only when it hands the reader
 
 ## Files
 
-`summary.md`, `summary.json` (from `summarize.py`), `runs/<reader>/` and
+`summary.md`, `summary.json` (from `summarize.py`), `ctx_big.sh`, `runs/<reader>/` and
 `runs/<reader>_full/` (answers and verdicts), `profile_4000.jsonl.gz` (the
 plain memory files), `context_search.jsonl.gz`, `context_engine.jsonl.gz`,
 `deep_rows.jsonl.gz` and `deep.json` (the query engine's run),
