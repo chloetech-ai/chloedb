@@ -199,6 +199,11 @@ pub fn operator_yaml(image: &str) -> Result<String, String> {
     Ok(OPERATOR_YAML.replace(DEV, &format!("image: {image}")))
 }
 
+/// Waits for the StrataCluster CRD. The operator's manifests hold none:
+/// the operator installs it when it starts, so `kubectl wait` alone, right
+/// after applying them, finds no CRD and fails at once.
+pub const WAIT_CRD: &str = "for i in $(seq 90); do kubectl get crd/strataclusters.strata.chloetech.ai >/dev/null 2>&1 && break; sleep 2; done; kubectl wait --for condition=established --timeout=60s crd/strataclusters.strata.chloetech.ai";
+
 /// The namespace a cluster made from the cloud view runs in.
 pub const NAMESPACE: &str = "strata";
 

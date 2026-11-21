@@ -178,7 +178,7 @@ pub fn plan(p: &Plan, cat: &Catalog) -> Result<Json, String> {
     let commands = [
         format!("doctl kubernetes cluster create {name} --region {r} --version {version} --ha={} --auto-upgrade=false --node-pool \"name=strata;size={};count={};tag=strata\" --wait", p.ha, m.name, p.nodes),
         format!("kubectl apply -f {name}-operator.yaml"),
-        "kubectl wait --for condition=established --timeout=180s crd/strataclusters.strata.chloetech.ai".to_string(),
+        crate::cloud::WAIT_CRD.to_string(),
         format!("kubectl apply -f {name}-cluster.yaml"),
         format!("kubectl -n strata get strata {} -w", p.name),
     ];
