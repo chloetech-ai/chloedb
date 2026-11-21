@@ -91,9 +91,8 @@ def main():
       f"ChloeDB's server held {mb(big['chloedb']['memory_after_kb'])} and its files took "
       f"{big['chloedb']['disk_bytes'] / 1e6:,.0f} MB (float32 rows, 8-bit codes and the graph).")
     w("- **What this does not show.** Hosted Pinecone (serverless or pods), whose latency includes the network to its "
-      "region and whose recall depends on its index; filters, namespaces, sparse or hybrid search. A hosted run needs a "
-      "Pinecone API key (the free tier takes 2 GB, enough for the 100,000 and the full set) and the same script with "
-      "the index's host in place of the emulator's.")
+      "region and whose recall depends on its index; filters, namespaces, sparse or hybrid search. A hosted run, with a "
+      "free-tier key and the index's host in place of the emulator's, is the next step.")
     w("")
     for r in RUNS:
         p, c, rec = r["pinecone"], r["chloedb"], r["recall_at_10"]
