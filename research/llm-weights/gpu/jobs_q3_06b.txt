@@ -1,1 +1,3 @@
 q3_06b|MODEL=/root/s/models/qwen3-0.6b-hf DEV=/home/user/chloedb/research/llm-weights/results/qa_docs.json TEST=/home/user/chloedb/research/llm-weights/results/qa_sonnet_user.json FACTS=/home/user/chloedb/research/llm-weights/results/facts_docs.json OTHERS=/home/user/chloedb/research/llm-weights/results/facts_others.json|proto_q3_combo.py
+fetch_8b|REPO=Qwen/Qwen3-8B DEST=/root/s/models/qwen3-8b|gpu/fetch_model.py
+q3_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 DEV=/home/user/chloedb/research/llm-weights/results/qa_docs.json TEST=/home/user/chloedb/research/llm-weights/results/qa_sonnet_user.json FACTS=/home/user/chloedb/research/llm-weights/results/facts_docs.json OTHERS=/home/user/chloedb/research/llm-weights/results/facts_others.json|proto_q3_combo.py
