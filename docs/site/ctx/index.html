@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>ChloeCtx · memory for Claude Code</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<link rel="canonical" href="https://chloetech.ai/site/ctx/">
+<meta name="description" content="ChloeCtx gives Claude Code a long-term memory: it records every session into one ChloeDB file per project, writes down the decisions and rules each turn agreed, and brings back what the next session needs.">
+<meta property="og:title" content="ChloeCtx · memory for Claude Code">
+<meta property="og:description" content="ChloeCtx gives Claude Code a long-term memory: it records every session into one ChloeDB file per project, writes down the decisions and rules each turn agreed, and brings back what the next session needs.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/ctx.css?v=df7985105c">
+<script>document.documentElement.classList.add("js");</script>
+</head>
+<body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a>
+  <nav class="nav" aria-label="ChloeCtx">
+    <a href="index.html" aria-current="page">Overview</a>
+    <a href="how-it-works.html">How it works</a>
+    <a href="benchmarks.html">Benchmarks</a>
+    <a href="index.html#install">Install</a>
+  </nav>
+  <div class="top-links"><a href="../index.html">ChloeDB</a><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx">GitHub</a><a class="btn primary" href="index.html#install">Install</a></div>
+</div></header>
+
+<main>
+  <div class="gutter head-band"><div class="wrap">
+    <div class="ctx-hero">
+      <div class="hcopy">
+        <span class="eyebrow">ChloeCtx · long-term memory for Claude Code</span>
+        <h1>Claude Code forgets. ChloeCtx doesn't.</h1>
+        <p class="lede">ChloeCtx records every Claude Code session into one ChloeDB file per project. A small model writes down the decisions and rules each turn agreed. The next session starts out knowing them, and each prompt gets the history it needs. Nothing depends on the model remembering to save.</p>
+        <div class="actions">
+          <a class="btn primary lg" href="#install">Install it</a>
+          <a class="btn on-night lg" href="how-it-works.html">See how it works</a>
+        </div>
+        <p class="small muted">Local files outside your repository. No account and no server. Built on <a href="../index.html">ChloeDB</a>. Formerly called Engram.</p>
+      </div>
+      <div class="loop" data-seq data-interval="1500" data-hold="5" aria-label="Animation: a rule said in one session reaches a session three days later">
+        <div class="sess">
+          <span class="day"><span>Monday · session 1</span><span>prompts, tools, answers</span></span>
+          <p class="msg u" data-step="1">Some context: the clinic's machines run Python 3.8, and we can't upgrade them.</p>
+          <p class="msg a" data-step="2">Understood. I'll keep everything 3.8-compatible.</p>
+          <p class="msg u" data-step="3">Fees are integer cents. Never floats.</p>
+        </div>
+        <div class="flow" data-step="4" aria-hidden="true"></div>
+        <div class="store">
+          <span class="t"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13"/><path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8"/></svg>~/.local/share/chloectx/projects/clinic/memory.strata</span>
+          <div class="recs">
+            <span class="rec r" data-step="4">prompt ×2</span>
+            <span class="rec t" data-step="4">tool_call ×14</span>
+            <span class="rec n" data-step="5">fact · clients run Python 3.8</span>
+            <span class="rec n" data-step="5">rule · fees in integer cents</span>
+          </div>
+        </div>
+        <div class="flow up" data-step="6" aria-hidden="true"></div>
+        <div class="sess">
+          <span class="day"><span>Thursday · a new session</span><span>empty context</span></span>
+          <p class="brief" data-step="6"><span class="h">Briefing from ChloeCtx, at session start</span><span><i class="k-rule">rule</i>Fees are integer cents, never floats.</span><span><i class="k-fact">fact</i>The clinic's machines run Python 3.8.</span></p>
+          <p class="msg u" data-step="7">Add a settings.toml loader.</p>
+          <p class="msg a" data-step="8">Using a small TOML parser, since <b>tomllib needs Python 3.11</b> and the clinic runs 3.8.</p>
+        </div>
+      </div>
+    </div>
+    <div class="stats" style="margin-bottom:64px">
+      <div><b>100<small>/100</small></b><span>follow-up tasks solved with ChloeCtx on two held-out projects, against 60 without it</span></div>
+      <div><b>94–97<small>%</small></b><span>of 208 runs solved, against 74% with Claude Code's own memory and 44% with none</span></div>
+      <div><b>¼</b><span>of the cost of keeping the whole history in context, which solved 93%</span></div>
+      <div><b>5.7<small> ms</small></b><span>for a recall query over a million records (median, M2 MacBook Air)</span></div>
+    </div>
+  </div></div>
+
+  <section class="gutter" id="problem"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The problem</span>
+      <h2>Summaries keep the plan and lose the particulars</h2>
+      <p>A long session outgrows any context window. Claude Code then compacts it into a summary of about 15,000 characters. A new session starts with only <code>CLAUDE.md</code> and an index of notes. The session that built ChloeDB ran for 32 hours and wrote 43.7 MB of transcript, and its summaries kept under 0.1% of that text.</p>
+    </div>
+    <div class="squeeze" aria-label="A transcript compacted into a summary: the struck lines are what the summary drops">
+      <div class="tx" aria-hidden="true">
+        <p>user: build the CSV export for the stock counts</p>
+        <p class="lost">error[E0502]: cannot borrow `rows` as mutable … export.rs:118</p>
+        <p>tool: cargo test -p export … 41 passed</p>
+        <p class="lost">user: count sheets go in walking order by bin, not by SKU</p>
+        <p>assistant: export now streams rows; tests pass</p>
+        <p class="lost">we tried the ICS calendar feed and dropped it: the clinic's system rejects it</p>
+        <p>tool: git commit -m "export: stream rows"</p>
+        <p class="lost">receipt printer is 42 characters wide</p>
+        <p>… 3 hours, 1,400 more records …</p>
+      </div>
+      <div class="arrow" aria-hidden="true"><svg viewBox="0 0 54 24"><path d="M2 12h46M40 5l8 7-8 7"/></svg>compaction</div>
+      <div class="sum">
+        <b>What the summary keeps</b>
+        <p>Built a streaming CSV export for stock counts. Tests pass. Next: the purchase suggestions.</p>
+        <p class="small">What it drops: exact numbers, error messages and paths, why an approach was rejected, a preference said once, three hours earlier.</p>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Store without being asked</b><p>Hooks capture prompts, tool calls and results, errors, answers and summaries. Nothing waits for the model to decide something is worth saving.</p></div>
+      <div class="fact"><b>Load only when it helps</b><p>Injected context costs tokens and attention. A gate decides how much to bring back, and nothing the model can still see is repeated.</p></div>
+      <div class="fact"><b>Let the model ask precisely</b><p>When the model knows it needs history, it gets search, a timeline, SQL and a question tool over the same store.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="session"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">What happens on its own</span>
+      <h2>Six moments in a session, all automatic</h2>
+      <p>Claude Code calls ChloeCtx's hooks as a session runs. Each one answers in a few milliseconds. Hover a step, or watch them light up in turn.</p>
+    </div>
+    <ol class="hooks" data-cycle="hook-say">
+      <li data-say="<b>SessionStart.</b> The briefing names the rules first, then decisions, planned work with its requirements, and facts. It ends with what earlier sessions left unfinished and a reminder to search memory before a design decision."><span class="when">Session start</span><b>A briefing</b><p>Rules, decisions, planned work and facts, up to 6,000 characters, checked against today's code.</p><span class="dir out">gives context</span></li>
+      <li data-say="<b>UserPromptSubmit.</b> The prompt is stored. Notes that match it come first, then a hybrid BM25 and vector search over older history. A gate picks full, brief or no recall."><span class="when">Every prompt</span><b>The history it needs</b><p>Earlier decisions that match it, and the best older records when the evidence is strong.</p><span class="dir out">gives context</span></li>
+      <li data-say="<b>PreToolUse on Edit or Write.</b> Up to two earlier errors, decisions or rules about that file, once per file per context window."><span class="when">Before an edit</span><b>Notes on that file</b><p>Earlier errors and decisions about the file it is about to change.</p><span class="dir out">gives context</span></li>
+      <li data-say="<b>PostToolUse.</b> The call and its result are stored, errors flagged, long output trimmed to head and tail, secrets redacted. A failing command that later passes is kept as a fix."><span class="when">Every tool call</span><b>Stored, secrets removed</b><p>The call and its result. A failure that later passed is kept as a fix for next time.</p><span class="dir in">records</span></li>
+      <li data-say="<b>Stop.</b> The answer, the commentary between tool calls and an episode card are stored. Then, off the prompt's path, a small model writes down what the turn agreed and updates or closes older notes."><span class="when">End of a turn</span><b>What was agreed</b><p>A small model writes down decisions, rules, planned work and facts, about $0.001 a turn.</p><span class="dir bg">in the background</span></li>
+      <li data-say="<b>PostCompact.</b> The summary is stored by section and the live window restarts, so details the summary dropped can come back with the next prompt that needs them."><span class="when">Compaction</span><b>Nothing is lost</b><p>The summary is stored, and what it dropped can come back when a prompt needs it.</p><span class="dir in">records</span></li>
+    </ol>
+    <p class="note" id="hook-say" aria-live="polite"><b>SessionStart.</b> The briefing names the rules first, then decisions, planned work with its requirements, and facts.</p>
+  </div></section>
+
+  <section class="gutter" id="example"><div class="wrap block">
+    <div class="two">
+      <div class="block-head">
+        <span class="eyebrow">In a session</span>
+        <h2>A requirement nobody repeated</h2>
+        <p>Months earlier, someone said the school is nut-free. Today's request only asks to enter the school's order. The product catalog lists nuts in the Bakewell slice. To get this right, the agent has to connect a request to what it implies.</p>
+        <p>ChloeCtx's query engine plans several searches for the request, and a second call picks what matters. On this project's tasks of this kind, the new builds solved 12 to 14 of 16 runs. Claude Code with the whole history in context solved 10, and mem0 solved 1.</p>
+        <a class="arrow-link" href="benchmarks.html#implied">The runs behind it</a>
+      </div>
+      <div class="chat" data-seq data-interval="1600" data-hold="5">
+        <p class="msg u" data-step="1">Enter St Brigid's order for Friday: 40 scones, 30 Bakewell slices, 20 flapjacks.</p>
+        <p class="hookline" data-step="2">UserPromptSubmit</p>
+        <p class="inject" data-step="2"><span class="h">Earlier decisions and rules that match</span>[rule · session 3 · 2 months ago] St Brigid's is a nut-free school: no product with nuts in its orders.</p>
+        <p class="hookline" data-step="3">query engine · in the background</p>
+        <p class="inject" data-step="4"><span class="h">ChloeCtx picked, after reading the catalog search</span>[fact · catalog] Bakewell slice: almonds, frangipane.</p>
+        <p class="msg a" data-step="5">I've entered the scones and flapjacks. <b>I left out the Bakewell slices</b>: they contain almonds, and St Brigid's orders must be nut-free. Want a nut-free tray bake in their place?</p>
+        <p class="hookline">an illustration of a memory-bench task</p>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="tools"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">When the model asks</span>
+      <h2>Six memory tools over MCP</h2>
+      <p>The briefing and recall happen without the model's help. When the model knows it needs more, it asks.</p>
+    </div>
+    <div class="cards">
+      <div class="card"><span class="k">memory_ask</span><h3>Answer a question about earlier work</h3><p>Runs several searches at once and answers from them. It is the tool to use first.</p></div>
+      <div class="card"><span class="k">memory_search</span><h3>One hybrid search</h3><p>BM25 and vectors over every record, with filters by kind, session, file and time.</p></div>
+      <div class="card"><span class="k">memory_timeline</span><h3>What surrounded a record</h3><p>Opens the turn around a hit, for example the exact command and output of a previous session.</p></div>
+      <div class="card"><span class="k">memory_sql</span><h3>Read-only SQL</h3><p>One SELECT over the <code>memory</code> table, with a 2-second deadline and a 1,000-row cap.</p></div>
+      <div class="card"><span class="k">memory_remember</span><h3>Keep a note</h3><p>A decision, rule or fact, filed under the session that kept it.</p></div>
+      <div class="card"><span class="k">memory_forget</span><h3>Forget a fact</h3><p>Finds every record that holds it, by its words, and removes them.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="see"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">You stay in charge</span>
+      <h2>See what it kept, and why it said it</h2>
+    </div>
+    <div class="cards">
+      <a class="card" href="../docs/chloectx-inspector.html"><span class="k">chloectx ui</span><h3>The inspector</h3><p>Every project and session on your machine, rebuilt from its records: the briefing, each recall decision, the notes, a graph and an SQL console. Its Forget buttons list what would go first.</p></a>
+      <a class="card" href="../docs/chloectx-receipts.html"><span class="k">chloectx blame path:line</span><h3>Receipts and blame</h3><p>From a line of code back to the edit, the prompt behind it, and what memory had shown the agent at that moment.</p></a>
+      <a class="card" href="../docs/chloectx-capsules.html"><span class="k">capsules</span><h3>Hand work to another agent</h3><p>A slice of memory as a file the next agent queries. With a short handoff note, adding one raised tasks solved from 72% to 89%.</p></a>
+      <a class="card" href="../docs/chloectx-app.html"><span class="k">chloectx app</span><h3>Shared spaces in a cluster</h3><p>A team's memory in a ChloeDB cluster, as an app of its command center, with Context and Seen before.</p></a>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="safe"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Safe by default</span>
+      <h2>Built to never get in the way</h2>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Never blocks a prompt</b><p>A hook that cannot reach its daemon in time prints nothing and exits 0. A failure is said once in the session, with the fix.</p></div>
+      <div class="fact"><b>Secrets are redacted</b><p>Keys and tokens of known shapes become markers before anything is stored or synced.</p></div>
+      <div class="fact"><b>Outside text is data</b><p>What a web page, issue or MCP tool returned is stored but never injected on its own, so nobody can plant instructions for later sessions.</p></div>
+      <div class="fact"><b>Your files, your machine</b><p>Stores live in <code>~/.local/share/chloectx</code>, one folder per project, outside the repository. <code>CHLOECTX_DISABLE=1</code> turns it off for a session.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="install"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Install</span>
+      <h2>Three ways in, a minute each</h2>
+      <p>Each one installs <code>~/.local/bin/chloectx</code> and a 129 MB embedding model. It takes effect in your next Claude Code session.</p>
+    </div>
+    <div class="ways">
+      <div class="way best">
+        <span class="k">As a Claude Code plugin · nothing to compile</span>
+        <pre>claude plugin marketplace add chloetech-ai/chloedb
+claude plugin install chloectx@chloedb</pre>
+        <p>Or inside Claude Code: <code>/plugin marketplace add chloetech-ai/chloedb</code>, then <code>/plugin install chloectx@chloedb</code>. It downloads the release's prebuilt binary on its first session.</p>
+      </div>
+      <div class="way">
+        <span class="k">Every session on this machine</span>
+        <pre>git clone https://github.com/chloetech-ai/chloedb
+cd chloedb && ./install.sh</pre>
+        <p>Merges its hooks into <code>~/.claude/settings.json</code>, after backing it up, and registers the MCP server. It ends by running <code>chloectx doctor</code>.</p>
+      </div>
+      <div class="way">
+        <span class="k">One project, to try it</span>
+        <pre>./install.sh --project /path/to/project</pre>
+        <p>Writes only that project's <code>.claude/settings.local.json</code> and <code>.mcp.json</code>. <code>chloectx uninstall</code> takes it out again and keeps the store.</p>
+      </div>
+    </div>
+    <div class="actions"><a class="btn primary" href="../docs/chloectx-setup.html">The install guide</a><a class="btn" href="how-it-works.html">How it works</a><a class="btn" href="benchmarks.html">The benchmarks</a></div>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Long-term memory for Claude Code, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
+  <div><h4>ChloeCtx</h4><ul><li><a href="index.html">Overview</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="index.html#install">Install</a></li></ul></div>
+  <div><h4>Documentation</h4><ul><li><a href="../docs/chloectx-setup.html">Install guide</a></li><li><a href="../docs/chloectx.html">Design</a></li><li><a href="../docs/chloectx-inspector.html">Inspector</a></li><li><a href="../docs/chloectx-receipts.html">Receipts and blame</a></li><li><a href="../docs/chloectx-capsules.html">Capsules</a></li><li><a href="../docs/chloectx-app.html">In a cluster</a></li></ul></div>
+  <div><h4>Results</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results">Raw runs</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/eval">The evaluations</a></li></ul></div>
+  <div><h4>ChloeDB</h4><ul><li><a href="../index.html">The database</a></li><li><a href="../benchmarks.html">Its benchmarks</a></li><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/ctx.js?v=30dd4884ac"></script>
+</body>
+</html>

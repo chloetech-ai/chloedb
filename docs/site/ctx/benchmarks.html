@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Benchmarks · ChloeCtx</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<link rel="canonical" href="https://chloetech.ai/site/ctx/benchmarks.html">
+<meta name="description" content="ChloeCtx measured: Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
+<meta property="og:title" content="Benchmarks · ChloeCtx">
+<meta property="og:description" content="ChloeCtx measured: Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/ctx.css?v=df7985105c">
+<script>document.documentElement.classList.add("js");</script>
+</head>
+<body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a>
+  <nav class="nav" aria-label="ChloeCtx">
+    <a href="index.html">Overview</a>
+    <a href="how-it-works.html">How it works</a>
+    <a href="benchmarks.html" aria-current="page">Benchmarks</a>
+    <a href="index.html#install">Install</a>
+  </nav>
+  <div class="top-links"><a href="../index.html">ChloeDB</a><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx">GitHub</a><a class="btn primary" href="index.html#install">Install</a></div>
+</div></header>
+
+<main>
+  <div class="gutter head-band"><div class="wrap page-head">
+    <span class="eyebrow">Benchmarks</span>
+    <h1>Does Claude Code do better with it? Measured.</h1>
+    <p class="lede">The direct test is Claude Code itself, on work that depends on earlier sessions, with ChloeCtx and with each memory a user could pick instead. Then retrieval on the public memory benchmarks, and the cost of a hook at a million records. Where ChloeCtx falls short is at the bottom.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#ab">With and without</a><a href="#systems">Memory systems</a><a href="#implied">Implied requirements</a><a href="#lme">LongMemEval</a><a href="#newer">Newer benchmarks</a><a href="#others">mem0 and Hindsight</a><a href="#speed">Speed and scale</a><a href="#limits">Where it falls short</a>
+    </nav>
+    <div class="note"><b>How to read these</b><span>Every number here was measured, not estimated, and is copied from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">ChloeCtx's results</a>, where each table links its raw runs. <b>Cloud container</b> is a 4-core Intel Xeon (2.10 GHz, 15 GiB, Linux). <b>M2</b> is a MacBook Air. The agent, every memory system's own model calls, the readers and the judges are Claude Haiku unless a table says otherwise.</span></div>
+  </div></div>
+
+  <section class="gutter" id="ab"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Claude Code, with and without ChloeCtx</span>
+      <h2>Held-out projects: 100 of 100 against 60</h2>
+      <p>A separate agent that never saw ChloeCtx's code wrote two projects, before ChloeCtx was tested on them: stock keeping for a hardware wholesaler and appointment booking for a physiotherapy practice. Each has a recorded history of three sessions and ten follow-up tasks, each run five times per condition in a fresh session. Both conditions have every normal tool, including files, shell and git history. A task counts as solved only when every remembered requirement holds.</p>
+    </div>
+    <div class="two at-top">
+      <div class="pair">
+        <div class="pair-row">
+          <span class="lbl">Tasks that need a fact said only in conversation</span>
+          <div class="hb">
+            <div class="hb-row" data-tip="<b>Without ChloeCtx</b>: 20 of 60 runs"><span class="lbl">without</span><span class="track"><span class="bar" style="--w:33.3%"></span></span><span class="val">20/60</span></div>
+            <div class="hb-row" data-tip="<b>With ChloeCtx</b>: 60 of 60 runs"><span class="lbl">with ChloeCtx</span><span class="track"><span class="bar self" style="--w:100%"></span></span><span class="val">60/60</span></div>
+          </div>
+        </div>
+        <div class="pair-row">
+          <span class="lbl">Tasks that need a convention in the repository</span>
+          <div class="hb">
+            <div class="hb-row" data-tip="<b>Without ChloeCtx</b>: 20 of 20 runs"><span class="lbl">without</span><span class="track"><span class="bar" style="--w:100%"></span></span><span class="val">20/20</span></div>
+            <div class="hb-row" data-tip="<b>With ChloeCtx</b>: 20 of 20 runs"><span class="lbl">with ChloeCtx</span><span class="track"><span class="bar self" style="--w:100%"></span></span><span class="val">20/20</span></div>
+          </div>
+        </div>
+        <div class="pair-row">
+          <span class="lbl">Controls, which need nothing earlier</span>
+          <div class="hb">
+            <div class="hb-row" data-tip="<b>Without ChloeCtx</b>: 20 of 20 runs"><span class="lbl">without</span><span class="track"><span class="bar" style="--w:100%"></span></span><span class="val">20/20</span></div>
+            <div class="hb-row" data-tip="<b>With ChloeCtx</b>: 20 of 20 runs"><span class="lbl">with ChloeCtx</span><span class="track"><span class="bar self" style="--w:100%"></span></span><span class="val">20/20</span></div>
+          </div>
+        </div>
+        <div class="hb-legend"><span><i></i>without ChloeCtx</span><span><i class="self"></i>with ChloeCtx</span></div>
+      </div>
+      <div class="cards" style="grid-template-columns:minmax(0,1fr)">
+        <div class="card"><span class="k">What failed without it</span><p>Exactly the facts that were only said: purchase suggestions that did not order up to three times the reorder point, a count sheet not in walking order by bin, <code>tomllib</code> for a client that runs Python 3.8, a day plan wider than the 42-character receipt printer, a wrong cancellation fee, and a calendar feed nobody knew had been tried and dropped.</p></div>
+        <div class="card"><span class="k">Significance</span><p>A permutation test within tasks, 20,000 shuffles, never reached the observed difference (p &lt; 1/20,001). Fisher's exact test on the pooled counts gives p ≈ 10<sup>−14</sup>.</p></div>
+        <div class="card"><span class="k">What did the work</span><p>The 6,000-character briefing reached every run. The model called a memory tool in 9 of 100. Runs with ChloeCtx took fewer steps (6.3 against 7.5, and 7.0 against 9.0) and cost about the same, $0.007 to $0.009 a run.</p></div>
+      </div>
+    </div>
+    <p class="src-line">Cloud container, Haiku, 200 runs, nothing changed after ChloeCtx was frozen. Tasks were written alongside the histories and aim at facts they state, so the 40-point gain is on such tasks, not on work in general. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#claude-code-with-and-without-chloectx">Method and runs</a></p>
+  </div></section>
+
+  <section class="gutter" id="systems"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Memory systems compared</span>
+      <h2>Ahead of every memory a user could pick, at a quarter of the whole history's cost</h2>
+      <p>Four projects, each with a recorded history in which each block of prompts is a new session and, in one, a teammate's commits land unannounced. Each lane is one memory system. Its repository and whole home directory are frozen after the history, and every follow-up task restores that state in a new session. 52 tasks, four runs each: 208 runs per lane and 2,080 in all, every process isolated to its own lane.</p>
+    </div>
+    <figure class="fig">
+      <div class="hb">
+        <div class="hb-row" data-tip="<b>ChloeCtx, query engine on</b> (October build, ranker only, earlier prompt)<br>201 of 208 runs · $0.007 + $0.001 a run"><span class="lbl">ChloeCtx, ranker only<small>query engine, earlier prompt</small></span><span class="track"><span class="bar self" style="--w:96.6%"></span></span><span class="val">97%</span></div>
+        <div class="hb-row" data-tip="<b>ChloeCtx as shipped</b>, query engine in the background<br>196 of 208 runs · $0.007 + $0.002 a run"><span class="lbl">ChloeCtx, default<small>query engine in the background</small></span><span class="track"><span class="bar self" style="--w:94.2%"></span></span><span class="val">94%</span></div>
+        <div class="hb-row" data-tip="<b>ChloeCtx main</b>, before the query engine<br>195 of 208 runs · $0.006 a run"><span class="lbl">ChloeCtx, search only<small>main before October</small></span><span class="track"><span class="bar self" style="--w:93.8%"></span></span><span class="val">94%</span></div>
+        <div class="hb-row" data-tip="<b>Whole history in context</b>, forked for each task: an upper bound<br>194 of 208 runs · $0.032 a run on average"><span class="lbl">Whole history in context<small>an upper bound</small></span><span class="track"><span class="bar ref" style="--w:93.3%"></span></span><span class="val">93%</span></div>
+        <div class="hb-row" data-tip="<b>mem0</b> 2.2.1 as MCP tools<br>178 of 208 runs · $0.006 + $0.0003 a run"><span class="lbl">mem0</span><span class="track"><span class="bar" style="--w:85.6%"></span></span><span class="val">86%</span></div>
+        <div class="hb-row" data-tip="<b>Past transcripts</b> as markdown the agent may grep<br>162 of 208 runs · $0.006 a run"><span class="lbl">Grep over past transcripts</span><span class="track"><span class="bar" style="--w:77.9%"></span></span><span class="val">78%</span></div>
+        <div class="hb-row" data-tip="<b>Claude Code auto memory</b>, on as by default<br>154 of 208 runs · $0.006 a run"><span class="lbl">Claude Code's own memory</span><span class="track"><span class="bar" style="--w:74%"></span></span><span class="val">74%</span></div>
+        <div class="hb-row" data-tip="<b>claude-mem</b> 13.39.0 plugin<br>125 of 208 runs · $0.007 + $0.008 a run"><span class="lbl">claude-mem</span><span class="track"><span class="bar" style="--w:60.1%"></span></span><span class="val">60%</span></div>
+        <div class="hb-row" data-tip="<b>No memory</b>: auto memory off, no plugins, no hooks<br>92 of 208 runs · $0.005 a run"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:44.2%"></span></span><span class="val">44%</span></div>
+      </div>
+      <div class="hb-legend"><span><i class="self"></i>ChloeCtx</span><span><i></i>other memory systems</span><span><i class="ref"></i>whole history, an upper bound</span></div>
+      <figcaption>Follow-up runs solved, of 208 per lane. Hover a bar for the counts and the cost per run (agent + memory system).</figcaption>
+    </figure>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>lane</th><th class="n">bakehouse</th><th class="n">stockroom</th><th class="n">slotwise</th><th class="n">kestrel</th><th class="n">all</th><th class="n">$ a run, agent + memory</th></tr></thead>
+        <tbody>
+          <tr><td>no memory</td><td class="n">31/72</td><td class="n">18/40</td><td class="n">16/40</td><td class="n">27/56</td><td class="n">92/208</td><td class="n">0.005 + 0</td></tr>
+          <tr><td>Claude Code auto memory</td><td class="n">52/72</td><td class="n">30/40</td><td class="n">33/40</td><td class="n">39/56</td><td class="n">154/208</td><td class="n">0.006 + 0</td></tr>
+          <tr><td>past transcripts</td><td class="n">48/72</td><td class="n">34/40</td><td class="n">32/40</td><td class="n">48/56</td><td class="n">162/208</td><td class="n">0.006 + 0</td></tr>
+          <tr><td>claude-mem</td><td class="n">31/72</td><td class="n">33/40</td><td class="n">28/40</td><td class="n">33/56</td><td class="n">125/208</td><td class="n">0.007 + 0.008</td></tr>
+          <tr><td>mem0</td><td class="n">52/72</td><td class="n">40/40</td><td class="n">36/40</td><td class="n">50/56</td><td class="n">178/208</td><td class="n">0.006 + 0.0003</td></tr>
+          <tr class="self"><td>ChloeCtx, search only</td><td class="n">63/72</td><td class="n">40/40</td><td class="n">40/40</td><td class="n">52/56</td><td class="n">195/208</td><td class="n">0.006 + 0</td></tr>
+          <tr class="self"><td>ChloeCtx, default</td><td class="n">67/72</td><td class="n">40/40</td><td class="n">40/40</td><td class="n">49/56</td><td class="n">196/208</td><td class="n">0.007 + 0.002</td></tr>
+          <tr class="self"><td>ChloeCtx, ranker only</td><td class="n">70/72</td><td class="n">40/40</td><td class="n">40/40</td><td class="n">51/56</td><td class="n">201/208</td><td class="n">0.007 + 0.001</td></tr>
+          <tr><td>whole history in context</td><td class="n">62/72</td><td class="n">40/40</td><td class="n">40/40</td><td class="n">52/56</td><td class="n">194/208</td><td class="n">0.032 + 0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Against no memory</b><p>The shipped default solves 196 of 208 runs against 92, p &lt; 10<sup>−30</sup>. mem0 comes closest of the others, 178 (p = 0.009 against ChloeCtx's search only), and depends on the agent calling its tools.</p></div>
+      <div class="fact"><b>Against the whole history</b><p>As many runs solved or more. The whole history costs $0.016 a run while it is in the prompt cache and $0.075 when it is not, against $0.0087 for ChloeCtx's default.</p></div>
+      <div class="fact"><b>What memory adds to a run</b><p>ChloeCtx's 12,000 characters, about 3,000 tokens, are 2% of what the agent reads in a run. claude-mem's observer spent 146,000 tokens a run in model calls, ChloeCtx's query engine 10,600.</p></div>
+    </div>
+    <p class="src-line">Cloud container, Haiku for the agent and every memory system. The three ChloeCtx lanes of the October code differ by 196 to 201 runs, which is this test's run-to-run noise (p = 0.35 for the widest pair). <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#memory-systems-compared">Method, every lane's runs and the pooled tests</a></p>
+  </div></section>
+
+  <section class="gutter" id="implied"><div class="wrap block">
+    <div class="two">
+      <div class="block-head">
+        <span class="eyebrow">Implied requirements</span>
+        <h2>Where the query engine earns its call</h2>
+        <p>One task asks to enter a school's order that includes Bakewell slices. Months earlier the history said the school is nut-free, and the catalog lists nuts in the slice. The request names neither. The new builds left the slice out, saying why, in 4, 3 and 4 of 4 runs. ChloeCtx's search alone did in none, and Claude Code with the whole history in context in 2.</p>
+      </div>
+      <figure class="fig">
+        <div class="hb">
+          <div class="hb-row" data-tip="<b>ChloeCtx, ranker only</b>: 14 of 16 runs"><span class="lbl">ChloeCtx, ranker only</span><span class="track"><span class="bar self" style="--w:87.5%"></span></span><span class="val">14/16</span></div>
+          <div class="hb-row" data-tip="<b>ChloeCtx, earlier ranker prompt</b>: 13 of 16 runs"><span class="lbl">ChloeCtx, earlier prompt</span><span class="track"><span class="bar self" style="--w:81.3%"></span></span><span class="val">13/16</span></div>
+          <div class="hb-row" data-tip="<b>ChloeCtx, default</b>: 12 of 16 runs"><span class="lbl">ChloeCtx, default</span><span class="track"><span class="bar self" style="--w:75%"></span></span><span class="val">12/16</span></div>
+          <div class="hb-row" data-tip="<b>Whole history in context</b>: 10 of 16 runs"><span class="lbl">Whole history in context</span><span class="track"><span class="bar ref" style="--w:62.5%"></span></span><span class="val">10/16</span></div>
+          <div class="hb-row" data-tip="<b>ChloeCtx, search only</b>: 8 of 16 runs"><span class="lbl">ChloeCtx, search only</span><span class="track"><span class="bar self" style="--w:50%;opacity:.55"></span></span><span class="val">8/16</span></div>
+          <div class="hb-row" data-tip="<b>mem0</b>: 1 of 16 runs"><span class="lbl">mem0</span><span class="track"><span class="bar" style="--w:6.25%"></span></span><span class="val">1/16</span></div>
+        </div>
+        <figcaption>Bakehouse's tasks that imply a requirement without naming it, four runs each. Bakehouse was written alongside these changes, so this is where they were aimed.</figcaption>
+      </figure>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="lme"><div class="wrap block">
+    <div class="two">
+      <div class="block-head">
+        <span class="eyebrow">LongMemEval-S</span>
+        <h2>From 72% to 82% correct answers</h2>
+        <p>All 500 questions, each against its own store of a history of about 115,000 tokens, with Haiku as planner, ranker, reader and judge, using LongMemEval's grading prompts. Adding the query engine's picks to ChloeCtx's recall fixed 61 answers and broke 13 (McNemar's exact test, p = 1 × 10<sup>−8</sup>). The picks alone beat the recall with a quarter of its characters.</p>
+        <p class="small muted">The gain is largest where an answer needs several turns: temporal reasoning 66.9% → 81.1%, multi-session 52.9% → 62.8%. Knowledge updates dipped, 86.1% → 83.3%.</p>
+      </div>
+      <figure class="fig">
+        <div class="hb">
+          <div class="hb-row" data-tip="<b>Only the sessions that hold the answer</b>, whole (oracle)<br>89.8% · 26,738 characters"><span class="lbl">Oracle evidence<small>26,738 characters</small></span><span class="track"><span class="bar ref" style="--w:89.8%"></span></span><span class="val">89.8%</span></div>
+          <div class="hb-row" data-tip="<b>Recall plus the query engine's picks</b><br>81.8% · 4,535 characters · $0.0012 a question"><span class="lbl">Recall + query engine<small>4,535 characters</small></span><span class="track"><span class="bar self" style="--w:81.8%"></span></span><span class="val">81.8%</span></div>
+          <div class="hb-row" data-tip="<b>The query engine's picks alone</b><br>79.0% · 941 characters"><span class="lbl">Query engine's picks<small>941 characters</small></span><span class="track"><span class="bar self" style="--w:79%"></span></span><span class="val">79.0%</span></div>
+          <div class="hb-row" data-tip="<b>ChloeCtx's 4,000-character recall</b><br>72.2% · 3,527 characters · no model call"><span class="lbl">ChloeCtx recall<small>3,527 characters</small></span><span class="track"><span class="bar self" style="--w:72.2%;opacity:.55"></span></span><span class="val">72.2%</span></div>
+          <div class="hb-row" data-tip="<b>No memory</b>: 8.6%"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:8.6%"></span></span><span class="val">8.6%</span></div>
+        </div>
+        <figcaption>Correct answers on LongMemEval-S, by the context the reader was given. Cloud container.</figcaption>
+      </figure>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="newer"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Three newer benchmarks</span>
+      <h2>Histories up to a million tokens</h2>
+      <p>What the usual benchmarks leave out: facts later overwritten (MemoryAgentBench FactConsolidation), ten abilities over chats of 100,000 to a million tokens (BEAM), and LongMemEval's questions over 500 sessions instead of 50 (LongMemEval-M). Each conversation becomes its own store, and Haiku answers from each context.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>benchmark</th><th class="n">no memory</th><th class="n">hybrid search, top 10</th><th class="n">query engine</th><th class="n">whole history</th></tr></thead>
+        <tbody>
+          <tr><td>FactConsolidation, one hop</td><td class="n">0%</td><td class="n"><b>95.5%</b></td><td class="n">85.3%</td><td class="n">85.3% (up to 64K)</td></tr>
+          <tr><td>FactConsolidation, two hops</td><td class="n">0%</td><td class="n">11.5%</td><td class="n">16.8%</td><td class="n"><b>71.3%</b> (up to 64K)</td></tr>
+          <tr><td>BEAM 100K</td><td class="n">10.4%</td><td class="n">36.3%</td><td class="n"><b>43.2%</b></td><td class="n">48.1% on a sample of 60</td></tr>
+          <tr><td>BEAM 500K</td><td class="n">10.2%</td><td class="n">33.5%</td><td class="n"><b>40.2%</b></td><td class="n">does not fit</td></tr>
+          <tr><td>BEAM 1M</td><td class="n">9.8%</td><td class="n">32.2%</td><td class="n"><b>35.7%</b></td><td class="n">does not fit</td></tr>
+          <tr><td>LongMemEval-M, 100 questions</td><td class="n">6%</td><td class="n">57%</td><td class="n"><b>67%</b></td><td class="n">does not fit (oracle 90%)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="src-line">Cloud container, an intermediate build whose ranker prompt was later improved, so its query engine numbers are if anything slightly low. Over histories of about 4,900 turns a request still costs $0.0012 and 15 s at the median. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#three-newer-memory-benchmarks">Method and runs</a></p>
+  </div></section>
+
+  <section class="gutter" id="others"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Other memory systems' own retrieval</span>
+      <h2>Level with mem0, behind Hindsight's much larger contexts</h2>
+      <p>Each system's retrieval with the same reader and judge, run as vectorize-io's agent-memory-benchmark runs it. Hindsight is ahead because it hands the reader 38 to 75 times more text, about what the whole history in context scores. Given a context the size of ChloeCtx's, it is level or behind. mem0 is level, and pays for it with a model call per session at write time.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>system</th><th class="n">LongMemEval-S, 100 q</th><th class="n">BEAM 100K, 400 q</th><th class="n">characters a question (LME / BEAM)</th><th>model calls to store a history</th><th>a question</th></tr></thead>
+        <tbody>
+          <tr><td>Hindsight, its own budgets</td><td class="n"><b>88.0%</b></td><td class="n"><b>46.7</b></td><td class="n">169,900 / 120,900</td><td>about $1.00 to $1.20</td><td>reading costs $0.011 to $0.015</td></tr>
+          <tr><td>Hindsight, ChloeCtx's context size</td><td class="n">78.0%</td><td class="n">39.8</td><td class="n">4,607 / 4,340</td><td>the same</td><td>no model call</td></tr>
+          <tr class="self"><td>ChloeCtx, query engine</td><td class="n">79.0%</td><td class="n">43.1</td><td class="n">4,510 / 1,604</td><td>none</td><td>$0.0012 to $0.0014</td></tr>
+          <tr><td>mem0</td><td class="n">79.0%</td><td class="n">41.9</td><td class="n">4,421 / 4,875</td><td>$0.13 to $0.22</td><td>none</td></tr>
+          <tr class="self"><td>ChloeCtx, plain search</td><td class="n">69.0%</td><td class="n">36.6</td><td class="n">3,527 / 3,383</td><td>none</td><td>none</td></tr>
+          <tr><td>whole history in context</td><td class="n">87.0%</td><td class="n">–</td><td class="n">497,600 / –</td><td>none</td><td>$0.17 to read</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="src-line">Cloud container, 4 CPUs. mem0 2.2.1 and Hindsight 1.0.0, each with Haiku as its own model. 95% intervals and paired tests are in <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#other-memory-systems-on-the-same-benchmarks">the results</a>.</p>
+  </div></section>
+
+  <section class="gutter" id="speed"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Speed and scale</span>
+      <h2>Milliseconds per hook, a million records deep</h2>
+      <p>A store is filled with LongMemEval turns to each size, and hooks run through the real <code>chloectx</code> binary and daemon, one prompt every 200 ms. A million records is about 200 sessions of a large project, and 3.1 GB on disk.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>records</th><th class="n">recall query p50 / p99</th><th class="n">full hook p50 / p99</th><th class="n">append p99</th><th class="n">bytes a record</th><th class="n">needles in top 10</th></tr></thead>
+        <tbody>
+          <tr><td>10,000</td><td class="n">1.3 / 3.3 ms</td><td class="n">14.4 / 17.2 ms</td><td class="n">6.2 ms</td><td class="n">3.1 KB</td><td class="n">0.80</td></tr>
+          <tr><td>100,000</td><td class="n">1.7 / 5.0 ms</td><td class="n">15.6 / 19.8 ms</td><td class="n">5.6 ms</td><td class="n">3.1 KB</td><td class="n">0.65</td></tr>
+          <tr><td>1,000,000</td><td class="n">5.7 / 16 ms</td><td class="n">26.1 / 42.7 ms</td><td class="n">8.0 ms</td><td class="n">3.1 KB</td><td class="n">0.44</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="src-line"><span class="machine">M2 MacBook Air</span> A full hook is mostly process start, about 10 ms on macOS against 3 ms on Linux, and an append is a durable commit that flushes the drive's write cache. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md#scale-and-latency">Scale and latency</a></p>
+    <div id="hooks-now" class="block-head" style="margin-top:8px">
+      <h3>Every hook, warm, on a real project's store</h3>
+      <p>The November audit timed each hook 60 times on a store of 1,193 records from a synthetic 216-turn history, with query understanding off. At 30,000 records the prompt hook took 8.8 ms, on a busier machine.</p>
+    </div>
+    <div class="hb" id="hook-bars">
+      <div class="hb-row" data-tip="<b>SessionStart</b> p50 6.4 ms, the briefing included"><span class="lbl">SessionStart<small>the briefing</small></span><span class="track"><span class="bar self" style="--w:64%"></span></span><span class="val">6.4 ms</span></div>
+      <div class="hb-row" data-tip="<b>UserPromptSubmit</b> p50 5.8 ms: notes, hybrid search, gate and pack"><span class="lbl">UserPromptSubmit<small>recall</small></span><span class="track"><span class="bar self" style="--w:58%"></span></span><span class="val">5.8 ms</span></div>
+      <div class="hb-row" data-tip="<b>PostToolUse</b> p50 3.2 ms"><span class="lbl">PostToolUse</span><span class="track"><span class="bar self" style="--w:32%"></span></span><span class="val">3.2 ms</span></div>
+      <div class="hb-row" data-tip="<b>PreToolUse</b> p50 3.2 ms"><span class="lbl">PreToolUse</span><span class="track"><span class="bar self" style="--w:32%"></span></span><span class="val">3.2 ms</span></div>
+      <div class="hb-row" data-tip="<b>Stop</b> p50 3.0 ms; notes are written after it answers"><span class="lbl">Stop</span><span class="track"><span class="bar self" style="--w:30%"></span></span><span class="val">3.0 ms</span></div>
+      <div class="hb-row" data-tip="<b>chloectx --version</b> p50 2.4 ms: the cost of starting the process"><span class="lbl">Process start alone<small>chloectx --version</small></span><span class="track"><span class="bar ref" style="--w:24%"></span></span><span class="val">2.4 ms</span></div>
+    </div>
+    <p class="src-line" id="hooks-src"><span class="machine">Cloud container</span> ChloeCtx 0.3.2, medians of 60 runs each, warm daemon; a cold start is about 100 ms. <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Results</a></p>
+    <div class="facts">
+      <div class="fact"><b>Reads never wait</b><p>With four clients sending prompts to one daemon at 100,000 records, a prompt's p99 fell from 68 to 92 ms to 27 to 31 ms once reads ran on snapshots beside one writer, and the daemon answered twice as many.</p></div>
+      <div class="fact"><b>Storing is cheap</b><p>A 26-hour working session on this repository became 2,204 records, back-filled from its transcript in 6 seconds.</p></div>
+      <div class="fact"><b>Quality is what scales worst</b><p>Finding one conversation's needle among chat on every subject gets harder: 0.80 in the top 10 at 10,000 records, 0.44 at a million. Filters by session, file, kind and time keep real stores precise.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="limits"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Where it falls short</span>
+      <h2>What ChloeCtx does not do well yet</h2>
+    </div>
+    <ul class="gaps lim">
+      <li><b>The gate.</b> <span>It keeps costs down but cannot reliably tell a related record from a relevant one: 59% precision against 42% for always injecting on LongMemEval, and no gain on LoCoMo.</span></li>
+      <li><b>Questions that chain two facts.</b> <span>"The citizenship of X's spouse" needs a second round of search from the first picks. FactConsolidation's two-hop questions are at 17% with the query engine and 71% with the whole history in context.</span></li>
+      <li><b>Answers that need many records at once.</b> <span>BEAM's summaries, contradiction resolution and multi-session reasoning stay at 12 to 38% with any retrieval, Hindsight's included.</span></li>
+      <li><b>Whether the model searches.</b> <span>The briefing reached every run in the A/B, but the model called a memory tool in only 9 of 100. That depends on the model and the prompt.</span></li>
+      <li><b>The benchmarks are mostly chats.</b> <span>LongMemEval, LoCoMo, BEAM and MemoryAgentBench test assistant memory over conversations. The coding evidence is six small projects, one long session and a handful of live runs, all with one small model.</span></li>
+      <li><b>Redaction is pattern-based.</b> <span>It catches common key and token formats and values assigned to names that say they are secret, not every secret.</span></li>
+    </ul>
+    <div class="actions"><a class="btn primary" href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result, with its method</a><a class="btn" href="https://github.com/chloetech-ai/chloedb/blob/main/chloectx/README.md#evaluation">Run them yourself</a><a class="btn" href="index.html#install">Install it</a></div>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Long-term memory for Claude Code, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
+  <div><h4>ChloeCtx</h4><ul><li><a href="index.html">Overview</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="index.html#install">Install</a></li></ul></div>
+  <div><h4>Documentation</h4><ul><li><a href="../docs/chloectx-setup.html">Install guide</a></li><li><a href="../docs/chloectx.html">Design</a></li><li><a href="../docs/chloectx-inspector.html">Inspector</a></li><li><a href="../docs/chloectx-receipts.html">Receipts and blame</a></li><li><a href="../docs/chloectx-capsules.html">Capsules</a></li><li><a href="../docs/chloectx-app.html">In a cluster</a></li></ul></div>
+  <div><h4>Results</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results">Raw runs</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/eval">The evaluations</a></li></ul></div>
+  <div><h4>ChloeDB</h4><ul><li><a href="../index.html">The database</a></li><li><a href="../benchmarks.html">Its benchmarks</a></li><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/ctx.js?v=30dd4884ac"></script>
+</body>
+</html>
