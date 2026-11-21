@@ -32,7 +32,7 @@ and a forgotten fact is gone.
 
 ## `ffn`: one feed-forward block taken out, replaced by rows
 
-Layer 16's MLP (3 million weights) is removed. Its replacement is a table of
+Layer 16's MLP (9.4 million weights) is removed. Its replacement is a table of
 rows, each a key and a value of the model's dimension (1,024). For every
 token, the block's input is a top-32 vector query, and the block's output is
 the softmax-weighted sum of those rows' values. The rows are first fitted to
