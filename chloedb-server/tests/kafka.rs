@@ -193,6 +193,22 @@ async fn a_kafka_connector_streams_starts_and_stops() {
     let kept: i64 = src.iter().map(|r| r["last_offset"].as_i64().unwrap() + 1).sum();
     assert_eq!(kept, 300, "each source holds its partition's last offset: {src:?}");
 
+    // On /metrics and to the alerts (ROSA-501): up, nothing waiting.
+    let m = get(&format!("{base}/metrics")).await;
+    let m = m.as_str().unwrap();
+    for series in [
+        "chloedb_connector_up{connector=\"ev-in\",kind=\"kafka\"} 1",
+        "chloedb_connector_failures{connector=\"ev-in\",kind=\"kafka\"} 0",
+        "chloedb_connector_lag_events{connector=\"ev-in\",kind=\"kafka\"} 0",
+        "chloedb_connector_behind_seconds{connector=\"ev-in\",kind=\"kafka\"} 0",
+        "chloedb_connector_partition_lag_events{connector=\"ev-in\",topic=\"t.events\",partition=\"2\"} 0",
+        "chloedb_connector_last_ok_timestamp_seconds{connector=\"ev-in\",kind=\"kafka\"} ",
+    ] {
+        assert!(m.contains(series), "{series} in {m}");
+    }
+    let g = _svc.sample().gauges;
+    assert_eq!((g.get("connectors_failing"), g.get("connector_behind_s")), (Some(&0.0), Some(&0.0)), "the alerts connector-failing's and connector-behind's");
+
     // New events arrive while it runs.
     b.produce("t.events", None, events(300, 50)).unwrap();
     rows_reach(&base, "ev", 350, 20).await;
@@ -465,7 +481,7 @@ async fn tombstones_delete_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_test_broker_routes() {
     let dir = tempfile::tempdir().unwrap();
-    let (base, _svc) = start(dir.path()).await;
+    let (base, svc) = start(dir.path()).await;
     let route = format!("{base}/v1/admin/kafka/test-broker");
     assert_eq!(get(&route).await["running"], false);
     let (s, j) = post(&route, json!({"listen": "0.0.0.0:19099"})).await;
@@ -514,6 +530,10 @@ async fn the_test_broker_routes() {
         }
     })
     .await;
+    // Down on /metrics, and counted for the alert connector-failing.
+    let m = get(&format!("{base}/metrics")).await;
+    assert!(m.as_str().unwrap().contains("chloedb_connector_up{connector=\"clicks\",kind=\"kafka\"} 0"), "{m}");
+    assert_eq!(svc.sample().gauges.get("connectors_failing"), Some(&1.0));
 }
 
 /// Against a real Kafka (`CHLOEDB_KAFKA=host:port`, topics made on first

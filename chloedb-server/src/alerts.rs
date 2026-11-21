@@ -25,7 +25,9 @@
 //! for 7 days, and in the server's events; firing and resolved ones are
 //! posted to the routes ([`Route`]) that take their severity, unless the
 //! alert is silenced. Rules and routes are kept in `--alerts FILE` (JSON),
-//! or in memory; a coordinator's also on its shards ([`crate::kept`]).
+//! by default `<db>.alerts.json` beside a server's database
+//! ([`Alerts::file_of`]), or in memory (a coordinator without the flag);
+//! a coordinator's also on its shards ([`crate::kept`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -300,6 +302,8 @@ pub fn defaults() -> Vec<Rule> {
         (rule("write-queue", "Writes queue up", "write_queue", ">", 512.0, "mean", 60, 0, "warning", c, "Write requests wait for the writer; at --max-queued-writes they are refused."), 256.0),
         (rule("write-p99", "Writes are slow", "write_p99_ms", ">", 500.0, "mean", 60, 0, "warning", s, "The p99 of writes over a minute is over 500 ms: a replica or the link to it is slow (with --write-acks all a write waits for every copy), or the disk is."), 250.0),
         (rule("follow-behind", "A follower is behind its source", "follow_lag_s", ">", 60.0, "min", 60, 0, "warning", s, "A follow process writing here (a cluster following another, or chloedb-server follow-postgres) has been over a minute behind its source, or silent, for a minute: it is down, catching up, or held. GET /v1/admin/follow says which of a cluster's, Data > Connectors of a Postgres follower's."), 30.0),
+        (rule("connector-failing", "A connector is failing", "connectors_failing", ">", 0.0, "min", 120, 0, "warning", s, "A connector this server runs has failed (its last runs, or its Kafka consumer's tries to reach its brokers), gone stale (a pull not done well in three times its interval, and at least 15 minutes) or is invalid, for two minutes: its table gets no new rows. Data > Connectors, or GET /v1/admin/connectors, says which and why; on /metrics, chloedb_connector_up and chloedb_connector_failures."), 0.0),
+        (rule("connector-behind", "A Kafka connector is behind", "connector_behind_s", ">", 300.0, "min", 300, 0, "warning", s, "A Kafka connector has had events waiting for over 5 minutes, for 5 minutes: the last event it wrote of a partition with more waiting happened that long ago. It is slow, held or cannot write. Data > Connectors says each partition's lag; on /metrics, chloedb_connector_partition_lag_events and chloedb_connector_behind_seconds."), 60.0),
         (rule("follow-table-held", "A Postgres follower holds a table", "follow_tables_held", ">", 0.0, "min", 60, 0, "warning", s, "chloedb-server follow-postgres could not write a table (a value ChloeDB refuses, a table without a primary key) for a minute: it holds that table, whose rows stay as they were, follows the others, and tries it again. Data > Connectors says which and why."), 0.0),
     ];
     let slo = crate::service::Slo::default();
@@ -323,7 +327,9 @@ pub fn builtins() -> Vec<Rule> {
     #[rustfmt::skip]
     let v = [
         (rule("shard-no-majority", "A shard has no majority", "shards_no_majority", ">", 0.0, "max", 10, 0, "critical", s, "Fewer than half of a shard's copies answer: with failover its primary serves no reads, so every search fails. Bring a copy back, or remove the dead one."), 0.0),
-        (rule("copy-down", "A copy is down", "copies_down", ">", 0.0, "max", 10, 30, "warning", s, "A copy of a shard has not answered the coordinator for 30 seconds."), 0.0),
+        // Down at every check of 10 s, for 20 s more: a copy back before then
+        // pages nothing, rather than a page after it is back (OLU-502).
+        (rule("copy-down", "A copy is down", "copies_down", ">", 0.0, "min", 10, 20, "warning", s, "A copy of a shard has not answered the coordinator for 30 seconds."), 0.0),
         (rule("under-replicated", "A shard is under-replicated", "shards_under_replicated", ">", 0.0, "max", 10, 60, "warning", s, "A shard has fewer copies in sync and serving than it has copies, for a minute."), 0.0),
         (rule("primary-changed", "A shard's primary changed", "primary_changes", ">", 0.0, "max", 10, 0, "info", s, "A shard elected another primary in the last 10 minutes; the alert resolves 10 minutes after the last change."), 0.0),
         (rule("partial-answers", "Partial answers", "partial_s", ">", 0.1, "mean", 120, 0, "warning", s, "Over 2 minutes, more than one answer in 10 seconds left out shards that did not answer."), 0.02),
@@ -525,6 +531,10 @@ struct St {
     /// Since when it could be sent here (firing, neither held nor
     /// silenced): another coordinator waits [`PAGER_WAIT_MS`] from then.
     due_ms: Option<u64>,
+    /// Whether this process judged it on a value: a state kept from before
+    /// a restart (the state file, the copies) is not paged to a route that
+    /// did not hear it until it is judged again on fresh data (OLU-509).
+    judged: bool,
 }
 
 /// How long after an edit a resolution is said to be the edit's.
@@ -567,7 +577,7 @@ const FIRST_SURVEY_MS: u64 = 15_000;
 
 impl St {
     fn new(t: u64) -> St {
-        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None, reports: true, partial_ms: None, paged: None, cleared_ms: 0, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None }
+        St { state: "no_data", since_ms: t, value: None, no_data_since_ms: Some(t), ack: None, silenced: None, notes: Vec::new(), where_: Vec::new(), copies: None, reports: true, partial_ms: None, paged: None, cleared_ms: 0, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None, judged: false }
     }
 
     /// The episode ended at `t`: its acknowledgement and page go with it.
@@ -587,6 +597,7 @@ impl St {
     /// Takes the window's value `v` at `t`: returns "firing" or
     /// "resolved" when the alert changes so.
     fn step(&mut self, r: &Rule, v: Option<f64>, t: u64) -> Option<&'static str> {
+        self.judged |= v.is_some();
         let Some(v) = v else {
             // No data keeps the state; it never resolves.
             self.no_data_since_ms.get_or_insert(t);
@@ -651,7 +662,7 @@ impl St {
             "ok" => "ok",
             _ => "no_data",
         };
-        St { state, since_ms: k.since_ms, value: k.value, no_data_since_ms: (state == "no_data").then_some(t), ack: k.ack, silenced: k.silenced, notes: k.notes, where_: k.where_, copies: k.copies, reports: true, partial_ms: None, paged: k.paged, cleared_ms: k.cleared_ms, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None }
+        St { state, since_ms: k.since_ms, value: k.value, no_data_since_ms: (state == "no_data").then_some(t), ack: k.ack, silenced: k.silenced, notes: k.notes, where_: k.where_, copies: k.copies, reports: true, partial_ms: None, paged: k.paged, cleared_ms: k.cleared_ms, held: None, edited: None, paged_before: None, paged_hint: None, late: None, settle_ms: None, due_ms: None, judged: false }
     }
 }
 
@@ -1173,6 +1184,14 @@ fn state_path(p: &std::path::Path) -> PathBuf {
 }
 
 impl Alerts {
+    /// The alerts file of a database, where a server keeps its rules and
+    /// routes without `--alerts`: `<db>.alerts.json`.
+    pub fn file_of(db: &std::path::Path) -> PathBuf {
+        let mut p = db.as_os_str().to_owned();
+        p.push(".alerts.json");
+        p.into()
+    }
+
     /// The rules and routes of `file` ([`defaults`] and no route if it
     /// does not exist), with a route "default" to `webhook` if given.
     pub fn new(file: Option<PathBuf>, webhook: Option<String>) -> Result<Alerts, String> {
@@ -2080,6 +2099,7 @@ impl Alerts {
             if worst.is_some() {
                 st.value = value;
                 st.no_data_since_ms = None;
+                st.judged = true;
             } else {
                 st.no_data_since_ms.get_or_insert(t);
             }
@@ -2696,6 +2716,10 @@ impl Alerts {
                     if t < self.starting_until.load(Ordering::Relaxed) && self.is_coordinator() {
                         continue;
                     }
+                    // Kept from before a restart: paged once judged again (OLU-509).
+                    if !st.judged {
+                        continue;
+                    }
                     let waited = t.saturating_sub(st.since_ms);
                     let mine = me == pager;
                     // The one that sends the messages said, a while after
@@ -2730,7 +2754,9 @@ impl Alerts {
                 // one since (GRACE-305): sent what fires now, by the
                 // coordinator that sent its FIRING message, so that the
                 // route sees it begin before it sees it end (MARCO-312).
-                if st.paged.as_ref().is_some_and(|p| p.by == by_me) {
+                // Not one kept from before a restart and not judged since: it
+                // may have ended meanwhile (OLU-509).
+                if st.judged && st.paged.as_ref().is_some_and(|p| p.by == by_me) {
                     let taking: Vec<String> = routes.iter().filter(|rt| rt.takes_alert(&r.route, &r.severity)).map(|rt| rt.name.clone()).collect();
                     match st.paged.as_ref().and_then(|p| p.routes.clone()) {
                         // Kept from before the routes were named: they were told.
@@ -5237,6 +5263,16 @@ mod tests {
         let s = one(d("follow-table-held"), &at(&|_| json!({"follow_tables_held": 1.0})));
         assert_eq!(s["state"], "firing", "{s}");
         let s = one(d("follow-table-held"), &at(&|i| json!({"follow_tables_held": if i > 290 { 1.0 } else { 0.0 }})));
+        assert_eq!(s["state"], "ok", "{s}");
+        // A connector failing for two minutes, and one that only now
+        // failed; a Kafka connector 10 minutes behind for 5 minutes.
+        let s = one(d("connector-failing"), &at(&|_| json!({"connectors_failing": 1.0})));
+        assert_eq!(s["state"], "firing", "{s}");
+        let s = one(d("connector-failing"), &at(&|i| json!({"connectors_failing": if i > 290 { 1.0 } else { 0.0 }})));
+        assert_eq!(s["state"], "ok", "{s}");
+        let s = one(d("connector-behind"), &at(&|_| json!({"connector_behind_s": 600.0})));
+        assert_eq!(s["state"], "firing", "{s}");
+        let s = one(d("connector-behind"), &at(&|i| json!({"connector_behind_s": if i > 200 { 600.0 } else { 0.0 }})));
         assert_eq!(s["state"], "ok", "{s}");
         // Filling 5% an hour at 60%: 8 hours.
         let s = one(d("disk-filling"), &at(&|i| json!({"disk_used_ratio": 0.6 - 0.05 * (300 - i) as f64 * 2.0 / 3600.0})));
