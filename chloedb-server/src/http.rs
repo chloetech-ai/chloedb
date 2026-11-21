@@ -3338,7 +3338,21 @@ async fn import_rows(app: App, w: Option<axum::Extension<Principal>>, q: std::co
         Some(e) => chloedb::ingest::EmptyCell::parse(e).ok_or_else(|| ApiError::bad(format!("empty is default, null or text, not {e:?}")))?,
     };
     let opts = crate::service::ImportOpts { strict: flag(&q, "strict", false)? || appends, empty };
-    let (w, skipped, ragged) = app.svc.import(table.as_deref(), body, format, opts).await?;
+    let (w, skipped, ragged) = match app.svc.import(table.as_deref(), body, format, opts).await {
+        Ok(r) => r,
+        // A table this import made for rows that then did not load is
+        // dropped, so that the next try makes it again (MAYA-512: an empty
+        // table was left behind, which the next try loaded into).
+        Err(e) => {
+            if let (Some(_), Some(t)) = (&created, &table) {
+                let drop = format!("DROP TABLE {}", chloedb::query::sql::quoted(t));
+                if app.svc.sql(&by, &drop, &chloedb::query::Params::default(), After::default(), 0).await.is_ok() {
+                    return Err(ApiError { message: format!("{}; the table {t} this import made was dropped", e.message), ..e });
+                }
+            }
+            return Err(e);
+        }
+    };
     let mut j = json!({"written": w.rows, "skipped_fields": skipped, "took_ms": t0.elapsed().as_secs_f64() * 1e3});
     if let Some(sql) = created {
         j["table"] = json!(table);

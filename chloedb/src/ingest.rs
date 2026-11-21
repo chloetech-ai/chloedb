@@ -802,6 +802,18 @@ fn create_sql(table: &str, columns: &[(String, Vec<Json>)], rows: usize, key: Op
         if vs.iter().all(|v| text(v).is_some_and(|s| crate::timestamp::parse(&s).is_some())) {
             return "TIMESTAMP";
         }
+        // A list of words (tags, categories) or of whole numbers is a list
+        // column, as the command center's import makes it (MAYA-512): a JSON
+        // column holds objects only.
+        if vs.iter().all(Json::is_array) {
+            let items: Vec<&Json> = vs.iter().filter_map(Json::as_array).flatten().collect();
+            if items.iter().all(|x| x.is_i64() || x.is_u64()) && !items.is_empty() {
+                return "INT[]";
+            }
+            if items.iter().all(|x| x.is_string()) {
+                return "KEYWORD[]";
+            }
+        }
         if vs.iter().any(|v| v.is_object() || v.is_array()) {
             return "JSON";
         }
@@ -865,8 +877,23 @@ mod create_for_tests {
         let sql = create_for("gear", b"n,note\n1,a long note of words\n2,another note with words\n", Format::Csv, Some("n")).unwrap();
         assert_eq!(sql, "CREATE TABLE IF NOT EXISTS gear (n INT PRIMARY KEY, note TEXT)");
         let sql = create_for("t", br#"[{"id": 1, "tags": ["a"], "my col": "x"}, {"id": 1}]"#, Format::Json, None).unwrap();
-        assert_eq!(sql, r#"CREATE TABLE IF NOT EXISTS t (id INT, "my col" KEYWORD, tags JSON)"#);
+        assert_eq!(sql, r#"CREATE TABLE IF NOT EXISTS t (id INT, "my col" KEYWORD, tags KEYWORD[])"#);
+        let sql = create_for("t", br#"[{"id": "a", "meta": {"k": 1}, "mixed": [1, "x"]}, {"id": "b", "meta": {"k": 2}, "mixed": []}]"#, Format::Json, None).unwrap();
+        assert_eq!(sql, "CREATE TABLE IF NOT EXISTS t (id KEYWORD PRIMARY KEY, meta JSON, mixed JSON)");
         assert!(create_for("t", b"a,,b\n1,2,3\n", Format::Csv, None).is_err());
+    }
+
+    /// MAYA-512: a JSON Lines file whose rows hold lists of words (tags,
+    /// diets) or of numbers makes list columns, and its rows load.
+    #[test]
+    fn lists_in_a_json_lines_file_are_list_columns() {
+        let data = b"{\"id\":\"a\",\"tags\":[\"x\",\"y\"],\"sizes\":[1,2]}\n{\"id\":\"b\",\"tags\":[\"y\"],\"sizes\":[]}\n";
+        let sql = create_for("tiny", data, Format::Jsonl, None).unwrap();
+        assert_eq!(sql, "CREATE TABLE IF NOT EXISTS tiny (id KEYWORD PRIMARY KEY, sizes INT[], tags KEYWORD[])");
+        let schema = schema_for("tiny", data, Format::Jsonl, None, None).unwrap();
+        for line in std::str::from_utf8(data).unwrap().lines() {
+            document(&schema, &serde_json::from_str(line).unwrap()).unwrap();
+        }
     }
 
     // A spreadsheet's export writes `N/A` or `-` where a number is missing:

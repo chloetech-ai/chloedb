@@ -227,6 +227,11 @@ class Search:
         if mode == "auto":
             mode = "hybrid" if vector_field and text_fields else "vector" if vector_field else "text"
         scores = []
+        if mode in ("text", "hybrid") and typos and text_fields and self._spelled_right(s["table"], text_fields, text):
+            # Every word is in a row as written: none is a typo (MAYA-501:
+            # "killer", in one recipe's name, was read as a typo of the
+            # "fillet" of twenty recipes' steps, which then came first).
+            typos = False
         if mode in ("text", "hybrid"):
             if not text_fields:
                 raise ChloeDBError(f"{s['table']} has no indexed text field to search")
@@ -268,6 +273,21 @@ class Search:
         if min_seq_no is not None or min_seq_nos is not None or limits:
             return self.run(q, min_seq_no=min_seq_no, min_seq_nos=min_seq_nos, **limits)
         return q.run()
+
+    def _spelled_right(self, table: str, text_fields: list[str], text: str) -> bool:
+        """Whether each word of `text` (eight at most) is in some row of one
+        of `text_fields` as written: a search for it then reads no word as a
+        typo. Each field's own search corrects a word that field lacks,
+        though another field has it."""
+        words = [w.strip("\"'-+()~*@,.;:!?") for w in text.split()]
+        words = [w for w in words if any(ch.isalnum() for ch in w)]
+        if not words or len(words) > 8:
+            return False
+        found = " OR ".join(f"MATCH({quote(f)}, :w)" for f in text_fields)
+        try:
+            return all(len(self.query(f"SELECT 1 FROM {quote(table)} WHERE {found} LIMIT 1", {"w": w}).rows) > 0 for w in words)
+        except ChloeDBError:
+            return False
 
     def _ask(
         self,

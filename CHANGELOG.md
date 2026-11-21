@@ -11,6 +11,15 @@ changes collect under "Unreleased".
 
 ## Unreleased
 
+- **Search and import for a first project (MAYA-501, MAYA-512, MAYA-513).**
+  The Python package's `db.search` no longer takes a word one field has
+  for a typo in the others, so rows with the searched word rank above rows
+  without it. An import whose rows hold lists makes list columns (`INT[]`,
+  `KEYWORD[]`; a mix of kinds stays `JSON`), and an import that fails
+  leaves no empty table or database behind, on `/v1/import` and
+  `chloedb-server import`. The command center's Import guesses a key only
+  from an id-like column (`id`, `uuid`, `sku`, `slug`, `…_id` and the like),
+  so a column such as `minutes` is never taken for one.
 - **ChloeCtx says when it cannot work, and keeps more out of the store.**
   A daemon that cannot start (a missing model, a store it cannot open) is
   said once per session as a message in Claude Code, with the last words

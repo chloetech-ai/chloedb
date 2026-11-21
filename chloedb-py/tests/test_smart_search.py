@@ -26,6 +26,21 @@ def test_a_word_in_no_row_is_a_typo(db):
     assert len(db.search("dragn", typos=False)) == 0
 
 
+def test_a_word_one_field_has_is_no_typo_in_the_others(tmp_path):
+    # MAYA-501: "killer" is in one recipe's name; the steps of twenty others
+    # say "fillet", two edits away. The recipe with the word comes first.
+    schema = {"table": "recipes", "key": "id", "fields": [{"name": "id", "type": "keyword"}, {"name": "name", "type": "text"}, {"name": "steps", "type": "text"}]}
+    with chloedb.Database.create(tmp_path / "r.chloedb", schema) as d:
+        rows = [{"id": "k1", "name": "killer shrimp", "steps": "fry the shrimp in garlic butter and serve"}]
+        rows += [{"id": f"f{i}", "name": f"baked fish {i}", "steps": "season the fillet, bake the fillet, flip the fillet"} for i in range(20)]
+        rows += [{"id": f"o{i}", "name": f"other dish {i}", "steps": "stir and simmer the sauce"} for i in range(80)]
+        d.insert(rows)
+        assert [r["id"] for r in d.search("killer", limit=5)] == ["k1"]
+        assert [r["id"] for r in d.search("killer shrimp", limit=5)][0] == "k1"
+        # A word in no row is still read as a typo.
+        assert [r["id"] for r in d.search("shrinp", limit=5)][0] == "k1"
+
+
 def test_ask_cites_the_rows_it_answers_from(db, monkeypatch):
     seen = {}
 
