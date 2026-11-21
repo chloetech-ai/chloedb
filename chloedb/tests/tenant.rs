@@ -1035,3 +1035,36 @@ fn tenants_on_s3() {
     assert!(s.list("t/").unwrap().is_empty() && !Tenant::exists(&*s, "t").unwrap());
     assert!(matches!(insert(&b, 50), Err(TenantError::Missing)));
 }
+
+/// A handle dropped while the program starts a child process is taken
+/// again at once (#755): from its fork to its exec the child holds a copy
+/// of every descriptor, the cache directory's lock among them, and the
+/// lock belongs to the open file, not to the handle.
+#[cfg(unix)]
+#[test]
+fn a_handle_dropped_while_a_child_starts_is_taken_again_at_once() {
+    use std::os::unix::process::CommandExt;
+    let dir = tmp("fork");
+    let s = store(&dir);
+    let a = Tenant::create(s.clone(), "t", node(&dir, "a"), notes).unwrap();
+    insert(&a, 1).unwrap();
+    // A child that waits 300 ms between its fork and its exec. `spawn`
+    // returns once it has exec'd, so it is started from a thread.
+    let child = std::thread::spawn(|| {
+        let mut cmd = std::process::Command::new("true");
+        // SAFETY: nanosleep is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                let ts = libc::timespec { tv_sec: 0, tv_nsec: 300_000_000 };
+                libc::nanosleep(&ts, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        cmd.spawn().unwrap().wait().unwrap()
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    drop(a);
+    let a = Tenant::open(s.clone(), "t", node(&dir, "a")).unwrap();
+    assert_eq!(ids(&a), BTreeSet::from([1]));
+    assert!(child.join().unwrap().success());
+}
