@@ -59,7 +59,7 @@ for a in list(LRS):
     if os.environ.get(f"LR_{a}"): LRS[a] = [float(x) for x in os.environ[f"LR_{a}"].split(",")]
 ISO = []   # modules whose rows learn only from their own doc's text (set while an _iso arm trains)
 GATE_Q = float(os.environ.get("GATE_Q", 0.95))
-for a in list(LRS) + ["rows_multi"]:                 # LR_rows=0.01,0.03 overrides one arm's learning rates
+for a in list(LRS) + ["rows_multi"] + ARMS:          # LR_rows=0.01,0.03 overrides one arm's learning rates (also arms LRFROM lacks)
     if os.environ.get(f"LR_{a}"): LRS[a] = [float(x) for x in os.environ[f"LR_{a}"].split(",")]
 ROW_LAYERS = [int(x) for x in os.environ.get("ROW_LAYERS", ",".join(str(round(NL * f)) for f in (0.25, 0.45, 0.6, 0.8))).split(",")]
 DELETE_ARM = os.environ.get("DELETE_ARM", "rows")
