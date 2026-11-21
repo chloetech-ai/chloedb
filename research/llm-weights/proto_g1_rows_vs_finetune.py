@@ -230,6 +230,7 @@ def rag_context(q, k=3):
             for w0 in range(0, len(ids), 192): rows.append({"id": n, "doc": e, "body": tok.decode(ids[w0:w0 + 192])}); n += 1
         chunks_db.insert(rows); chunks_db.flush()
     return [r[0] for r in chunks_db.query(f"SELECT body FROM chunks ORDER BY bm25(body, :q) DESC LIMIT {k}", q=q).rows]
+GEN = PRE = None   # GEN(ids) -> new token ids (kNN-LM); PRE(question) runs before each one (routing)
 def norm(t): return re.sub(r"[^a-z0-9.]+", " ", t.lower()).strip()
 @torch.no_grad()
 def qa_eval(rag=False):
@@ -238,8 +239,9 @@ def qa_eval(rag=False):
     for x in QA:
         ctx = ("Context:\n" + "\n---\n".join(rag_context(x["q"])) + "\n\n") if rag else ""
         ids = tok(ctx + SHOTS + f"Question: {x['q']}\nAnswer:", return_tensors="pt", add_special_tokens=False)["input_ids"].to(DEVICE)
-        out = model.generate(ids, max_new_tokens=16, do_sample=False, pad_token_id=tok.eos_token_id)
-        ans = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True).split("\n")[0].strip()
+        if PRE: PRE(x)
+        out = GEN(ids) if GEN else model.generate(ids, max_new_tokens=16, do_sample=False, pad_token_id=tok.eos_token_id)[0, ids.shape[1]:]
+        ans = tok.decode(out, skip_special_tokens=True).split("\n")[0].strip()
         ok = norm(x["a"]) in norm(ans) and len(norm(x["a"])) > 0; right += ok; per.append([ans, bool(ok)])
     return {"right": right, "of": len(QA), "acc": right / len(QA), "secs": round(time.time() - t0), "answers": per}
 
@@ -254,6 +256,105 @@ json.dump(res, open(OUT, "w"), indent=1)
 ffn = model.model.layers[L].mlp
 ffn_orig = {k: v.detach().clone() for k, v in ffn.state_dict().items()}
 rows_keep = None
+
+# ---- kNN-LM (idea D) on the questions: the next-token distribution mixed with ChloeDB's nearest stored contexts --------
+def knn_arm():
+    t0 = time.time(); H, NX, OWN = [], [], []
+    with torch.no_grad():
+        for e in EVAL:
+            r = TRAIN[e]
+            for a in range(0, max(1, len(r) - 1), 256):           # windows of 512, each position keeps up to 256 tokens of context
+                w0 = max(0, a - 256); ids = r[w0:a + 256 + 1]
+                if len(ids) < 2: continue
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=AMP):
+                    h = model(torch.tensor([ids[:-1]], device=DEVICE), output_hidden_states=True).hidden_states[-1][0].float()
+                k0 = a - w0; H.append(h[k0:]); NX += ids[k0 + 1:]; OWN += [e] * (len(ids) - 1 - k0)
+    H = torch.cat(H); NXt = torch.tensor(NX, device=DEVICE); n = len(NX)
+    out = {"rows": n, "embed_secs": round(time.time() - t0)}
+    with torch.no_grad():                                          # pick lambda and temperature on the validation windows
+        x = torch.tensor([c + t for _, c, t in VALS], device=DEVICE); ss, ii, pys, ys = [], [], [], []
+        for i in range(0, len(x), 16):
+            o = model(x[i:i + 16], output_hidden_states=True); y = x[i:i + 16, CTX:].reshape(-1)
+            h = o.hidden_states[-1][:, CTX - 1:-1].float().reshape(-1, D); s, idx = (h @ H.t()).topk(TOPK, dim=-1)
+            lp = torch.log_softmax(o.logits[:, CTX - 1:-1].float(), -1).reshape(-1, o.logits.shape[-1])
+            ss.append(s); ii.append(idx); pys.append(lp.gather(-1, y.unsqueeze(-1)).squeeze(-1).exp()); ys.append(y); del o, lp
+        s, idx, py, ys = torch.cat(ss), torch.cat(ii), torch.cat(pys), torch.cat(ys); hit = (NXt[idx] == ys.unsqueeze(-1)).float()
+        grid = {}
+        for lam in (0.1, 0.25, 0.4, 0.6):
+            for temp in (1.0, 3.0, 10.0, 30.0, 100.0):
+                w = torch.softmax((s - s.max(-1, keepdim=True).values) / temp, -1)
+                grid[(lam, temp)] = math.exp(-torch.log((1 - lam) * py + lam * (w * hit).sum(-1) + 1e-12).mean().item())
+        lam, temp = min(grid, key=grid.get)
+    out.update({"lambda": lam, "temp": temp, "val_ppl": grid[(lam, temp)], "val_ppl_base": base_val}); del s, idx, hit
+    path = f"{S}/g1knn.chloedb"; os.system(f"rm -rf {path}*"); t1 = time.time()
+    db = chloedb.open(path, schema={"table": "knn", "key": "id", "fields": [{"name": "id", "type": "int"}, {"name": "doc", "type": "keyword"},
+        {"name": "next", "type": "int"}, {"name": "key", "type": "vector", "dim": D}]}, sync=False)
+    Hn = H.cpu().numpy().astype(np.float32)
+    for a in range(0, n, 5000): db.insert([{"id": i, "doc": OWN[i], "next": NX[i], "key": Hn[i]} for i in range(a, min(n, a + 5000))])
+    db.flush(); db.optimize(); out["build_secs"] = round(time.time() - t1); ms = []
+    def gen(ids):
+        global GEN
+        o = model(ids, use_cache=True, output_hidden_states=True); new = []
+        for _ in range(16):
+            h = o.hidden_states[-1][:, -1].float(); lp = torch.log_softmax(o.logits[:, -1].float(), -1)
+            t = time.perf_counter()
+            r = db.query(f"SELECT next, score() FROM knn ORDER BY similarity(key, :v) DESC LIMIT {TOPK}", v=h[0].cpu().numpy().astype(np.float32)).rows
+            ms.append((time.perf_counter() - t) * 1000)
+            sc = torch.tensor([[b for _, b in r]], device=DEVICE); nx = torch.tensor([[a for a, _ in r]], device=DEVICE)
+            w = torch.softmax((sc - sc.max()) / temp, -1)
+            pk = torch.zeros_like(lp).scatter_add_(1, nx, w)
+            nt = torch.log((1 - lam) * lp.exp() + lam * pk + 1e-12).argmax(-1)
+            new.append(nt.item())
+            if nt.item() == tok.eos_token_id: break
+            o = model(nt.view(1, 1), past_key_values=o.past_key_values, use_cache=True, output_hidden_states=True)
+        return new
+    globals()["GEN"] = gen
+    out["qa"] = qa_eval(); out["qa_rag"] = qa_eval(rag=True); globals()["GEN"] = None
+    out["ms_per_lookup_p50"] = float(np.median(ms)); out["served_by"] = "chloedb hnsw (dot product, as idea D)"
+    print("knn", {k: v for k, v in out.items() if not k.startswith("qa")}, "qa", out["qa"]["acc"], "rag", out["qa_rag"]["acc"], flush=True)
+    del H; return out
+
+# ---- one LoRA per doc, picked for each question by a ChloeDB BM25 query (idea W5 routed as in X2) ------------------------
+def routed_lora_arm():
+    lr = float(os.environ.get("LR_routed", 1e-4)); steps = int(os.environ.get("STEPS_routed", 120)); t0 = time.time()
+    lo = LoRA(); saved, picked = {}, {}; init = [p.detach().clone() for p in lo.params]
+    for e in EVAL:
+        with torch.no_grad():
+            for p, p0 in zip(lo.params, init): p.copy_(p0)      # every doc's adapter starts from the same point
+        opt = torch.optim.AdamW(lo.params, lr=lr, weight_decay=0.0); rng = random.Random(EVAL.index(e)); r = TRAIN[e]
+        vals = [v for v in VALS if v[0] == e]; best = (eval_set(vals)[0], [p.detach().clone() for p in lo.params], 0)
+        for step in range(1, steps + 1):
+            xs = [r[i:i + WIN] for i in (rng.randrange(0, max(1, len(r) - WIN)) for _ in range(BATCH))]
+            x = torch.tensor(xs, device=DEVICE)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=AMP): lg = model(x).logits
+            loss = F.cross_entropy(lg[:, :-1].float().reshape(-1, lg.shape[-1]), x[:, 1:].reshape(-1))
+            opt.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(lo.params, 1.0); opt.step(); del lg, loss
+            if step % 20 == 0:
+                v = eval_set(vals)[0]
+                if v < best[0]: best = (v, [p.detach().clone() for p in lo.params], step)
+        saved[e] = [b.half() for b in best[1]]; picked[e] = {"best_step": best[2], "val_ppl": best[0]}
+        print("routed lora", e, picked[e], flush=True)
+    def use(e):
+        with torch.no_grad():
+            for p, b in zip(lo.params, saved[e]): p.copy_(b.float())
+    out = {"lr": lr, "steps_per_doc": steps, "train_secs": round(time.time() - t0), "per_doc": picked,
+           "mb_per_adapter_fp16": round(sum(p.numel() for p in lo.params) * 2 / 2**20, 1)}
+    hits = []
+    def route(x):          # the doc of the best BM25 chunk for the question
+        d = chunks_db.query("SELECT doc FROM chunks ORDER BY bm25(body, :q) DESC LIMIT 1", q=x["q"]).rows[0][0]
+        hits.append(d == x["doc"]); use(d)
+    rag_context("warm up")
+    globals()["PRE"] = route; out["qa"] = qa_eval(); out["qa_rag"] = qa_eval(rag=True)
+    out["router_right"] = float(np.mean(hits[:len(QA)]))
+    globals()["PRE"] = lambda x: use(x["doc"]); out["qa_oracle_route"] = qa_eval(); out["qa_rag_oracle_route"] = qa_eval(rag=True)
+    globals()["PRE"] = None; lo.remove()
+    print("routed lora qa", out["qa"]["acc"], "rag", out["qa_rag"]["acc"], "router", out["router_right"], "oracle", out["qa_oracle_route"]["acc"], flush=True)
+    return out
+
+for arm, fn in (("knn", knn_arm), ("routed_lora", routed_lora_arm)):
+    if arm in ARMS:
+        res["arms"][arm] = fn(); json.dump(res, open(OUT, "w"), indent=1)
+        if DEVICE == "cuda": torch.cuda.empty_cache()
 for arm in ARMS:
     if arm not in LRS: continue
     best = None
