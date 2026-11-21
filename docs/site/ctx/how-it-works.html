@@ -16,14 +16,14 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
 <link rel="canonical" href="https://chloetech.ai/site/ctx/how-it-works.html">
-<meta name="description" content="How ChloeCtx stores every Claude Code session, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
+<meta name="description" content="How ChloeCtx stores every conversation, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
 <meta property="og:title" content="How ChloeCtx works · ChloeCtx">
-<meta property="og:description" content="How ChloeCtx stores every Claude Code session, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
+<meta property="og:description" content="How ChloeCtx stores every conversation, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/ctx.css?v=df7985105c">
+<link rel="stylesheet" href="../assets/ctx.css?v=63f3ffab2c">
 <script>document.documentElement.classList.add("js");</script>
 </head>
 <body>
@@ -46,7 +46,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">How it works</span>
     <h1>Store everything, bring back only what helps</h1>
-    <p class="lede">ChloeCtx is hooks, an MCP server and one small daemon per project that owns a ChloeDB file. Storing is cheap and a missed record can never be recovered, so it stores everything. Loading costs the model attention, so it is gated, budgeted, and never repeats what the model can already see.</p>
+    <p class="lede">ChloeCtx is one small daemon per memory that owns a ChloeDB file, an MCP server any model can query it through, and, in Claude Code, hooks that record every session. This page follows it in Claude Code, where it is most complete. Storing is cheap and a missed record can never be recovered, so it stores everything. Loading costs the model attention, so it is gated, budgeted, and never repeats what the model can already see.</p>
     <nav class="toc" aria-label="Sections">
       <a href="#architecture">Architecture</a><a href="#records">Records</a><a href="#notes">Notes</a><a href="#window">The live window</a><a href="#prompt">A prompt's path</a><a href="#ranking">Ranking</a><a href="#gate">The gate</a><a href="#engine">The query engine</a><a href="#fixes">Errors and fixes</a>
     </nav>
@@ -62,7 +62,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div class="scroll">
       <svg viewBox="0 0 1000 470" role="img" aria-labelledby="arch-t arch-d">
         <title id="arch-t">ChloeCtx's architecture</title>
-        <desc id="arch-d">Claude Code runs chloectx hook for each event and chloectx mcp for the memory tools. Both talk over a Unix socket to one daemon per project, which captures, recalls and runs background work, owns the ChloeDB file memory.strata, and calls a small model through claude -p.</desc>
+        <desc id="arch-d">Claude Code runs chloectx hook for each event and chloectx mcp for the memory tools. Both talk over a Unix socket to one daemon per project, which captures, recalls and runs background work, owns the project's one ChloeDB file, and calls a small model through claude -p.</desc>
         <!-- wires and packets first, so packets pass behind the boxes -->
         <path id="w-hook" class="dg-line" d="M200 130 L560 130"/>
         <path id="w-mcp" class="dg-line" d="M200 340 L560 340"/>
@@ -122,7 +122,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
         <path class="dg-sunk" d="M800 405 a90 10 0 0 1 180 0 v42 a90 10 0 0 1 -180 0 z"/>
         <ellipse class="dg-box" cx="890" cy="405" rx="90" ry="10"/>
-        <text class="dg-t" x="822" y="437" style="font-size:13.5px">memory.strata</text>
+        <text class="dg-t" x="822" y="437" style="font-size:13.5px">your memory</text>
         <text class="dg-m" x="822" y="455">one ChloeDB file</text>
       </svg>
       </div>
@@ -369,7 +369,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Long-term memory for Claude Code, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Your memory, for every model, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
   <div><h4>ChloeCtx</h4><ul><li><a href="index.html">Overview</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="index.html#install">Install</a></li></ul></div>
   <div><h4>Documentation</h4><ul><li><a href="../docs/chloectx-setup.html">Install guide</a></li><li><a href="../docs/chloectx.html">Design</a></li><li><a href="../docs/chloectx-inspector.html">Inspector</a></li><li><a href="../docs/chloectx-receipts.html">Receipts and blame</a></li><li><a href="../docs/chloectx-capsules.html">Capsules</a></li><li><a href="../docs/chloectx-app.html">In a cluster</a></li></ul></div>
   <div><h4>Results</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results">Raw runs</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/eval">The evaluations</a></li></ul></div>
