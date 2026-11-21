@@ -48,8 +48,15 @@ EVERY = int(os.environ.get("EVERY", 200)); AMP = DEVICE == "cuda"
 ARMS = os.environ.get("ARMS", "lora,ffn,rows_small,rows").split(",")
 LRS = {"lora": [1e-4, 3e-4], "ffn": [1e-5, 5e-5], "rows_small": [1e-3, 3e-3], "rows": [1e-3, 3e-3]}
 if os.environ.get("LRFROM"):  # reuse the learning rates another run picked (e.g. 0.6B's for 4B)
-    prev = json.load(open(os.environ["LRFROM"]))["arms"]
-    LRS = {a: [prev[a]["lr"]] for a in prev if "lr" in prev[a]}
+    LRS = {}
+    for fn in os.environ["LRFROM"].split(","):          # later files win
+        prev = json.load(open(fn))["arms"]
+        LRS.update({a: [prev[a]["lr"]] for a in prev if isinstance(prev[a], dict) and "lr" in prev[a]})
+LRS["rows_multi"] = LRS.get("rows_multi", LRS.get("rows", [3e-3]))
+for a in list(LRS) + ["rows_multi"]:                 # LR_rows=0.01,0.03 overrides one arm's learning rates
+    if os.environ.get(f"LR_{a}"): LRS[a] = [float(x) for x in os.environ[f"LR_{a}"].split(",")]
+ROW_LAYERS = [int(x) for x in os.environ.get("ROW_LAYERS", ",".join(str(round(NL * f)) for f in (0.25, 0.45, 0.6, 0.8))).split(",")]
+DELETE_ARM = os.environ.get("DELETE_ARM", "rows")
 DOCS = os.environ.get("DOCS", "/home/user/chloedb/docs")
 EVAL = ["python", "netops", "javascript", "connectors", "security", "earth", "opensearch", "graphs",
         "arxiv", "hn", "apps", "postgres", "troubleshooting", "crawler", "sqlite", "frameworks"]
@@ -137,9 +144,9 @@ class Rows(torch.nn.Module):
         w = torch.softmax(self.logscale.exp() * s, -1)
         return (w.unsqueeze(-1) * V[idx]).sum(1).reshape(shp).to(x.dtype)
 
-def mlp_inputs(n, seed):
-    """n of layer L's FFN inputs on the learn set, with the doc each came from."""
-    cap = []; h = model.model.layers[L].mlp.register_forward_hook(lambda m, a, o: cap.append(a[0].detach().float()))
+def mlp_inputs(n, seed, layer=None):
+    """n of a layer's (L by default) FFN inputs on the learn set, with the doc each came from."""
+    cap = []; h = model.model.layers[L if layer is None else layer].mlp.register_forward_hook(lambda m, a, o: cap.append(a[0].detach().float()))
     xs, own = [], []
     with torch.no_grad():
         for e in EVAL:
@@ -151,7 +158,8 @@ def mlp_inputs(n, seed):
     return X[pick.to(X.device)], [own[i] for i in pick.tolist()]
 
 # ---- training -----------------------------------------------------------------------------
-def train(params, lr, *_):
+def train(params, lr, steps=None):
+    STEPS = steps or globals()["STEPS"]
     opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.0)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / 50) * 0.5 * (1 + math.cos(math.pi * min(s, STEPS) / STEPS)))
     rng = random.Random(1); best = (float("inf"), None, 0); hist = []; t0 = time.time(); ls = []
@@ -195,17 +203,22 @@ for arm in ARMS:
                 for p in ffn.parameters(): p.requires_grad_(False)
                 ffn.load_state_dict(ffn_orig)
         else:
-            K, own = mlp_inputs(NROWS if arm == "rows" else NSMALL, seed=2)
-            rows = Rows(K, own); params = list(rows.parameters())
-            hk = ffn.register_forward_hook(lambda m, a, o, rows=rows: o + rows(a[0]) if rows.on else o)
-            teardown = hk.remove
-        r = train(params, lr, None, None); r.update(eval_all()); r["trainable"] = sum(p.numel() for p in params)
-        if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D
+            lays = ROW_LAYERS if arm == "rows_multi" else [L]
+            n = {"rows": NROWS, "rows_small": NSMALL, "rows_multi": NROWS // len(lays)}[arm]
+            mods, hooks = [], []
+            for l in lays:
+                K, own = mlp_inputs(n, seed=2 + l, layer=l); m = Rows(K, own); m.layer = l; mods.append(m)
+                hooks.append(model.model.layers[l].mlp.register_forward_hook(lambda mm, a, o, m=m: o + m(a[0]) if m.on else o))
+            params = [p for m in mods for p in m.parameters()]
+            def teardown(hooks=hooks):
+                for h in hooks: h.remove()
+        r = train(params, lr, int(os.environ.get(f"STEPS_{arm}", STEPS))); r.update(eval_all()); r["trainable"] = sum(p.numel() for p in params)
+        if arm.startswith("rows"): r["active_per_token"] = TOPK * 2 * D * len(mods); r["row_layers"] = [m.layer for m in mods]
         print(arm, lr, {k: v for k, v in r.items() if k in ("held_out", "seen", "domain", "general", "best_step", "val_ppl")}, flush=True)
         res["arms"].setdefault(arm + "_tried", []).append({k: v for k, v in r.items() if not k.endswith("per_doc") and k != "history"})
         if best is None or r["val_ppl"] < best["val_ppl"]:
             best = r
-            if arm == "rows": rows_keep = {"K": rows.K.detach().clone(), "V": rows.V.detach().clone(), "ls": rows.logscale.detach().clone(), "owner": own}
+            if arm == DELETE_ARM: rows_keep = [{"K": m.K.detach().clone(), "V": m.V.detach().clone(), "ls": m.logscale.detach().clone(), "owner": m.owner, "layer": m.layer} for m in mods]
         teardown(); del params
         if DEVICE == "cuda": torch.cuda.empty_cache()
     res["arms"][arm] = best
@@ -214,27 +227,39 @@ assert all(torch.equal(v, ffn.state_dict()[k]) for k, v in ffn_orig.items())
 
 # ---- deleting rows ------------------------------------------------------------------------
 if rows_keep is not None:
-    rows = Rows(rows_keep["K"], rows_keep["owner"])
-    with torch.no_grad(): rows.V.copy_(rows_keep["V"]); rows.logscale.copy_(rows_keep["ls"])
-    for p in rows.parameters(): p.requires_grad_(False)
-    hk = ffn.register_forward_hook(lambda m, a, o: o + rows(a[0]) if rows.on else o)
-    full = eval_all(); res["delete"] = {"rows_on": {k: full[k] for k in SETS}}
-    rows.on = False; off = eval_all(); rows.on = True
+    class Group:                                          # the kept rows of every layer, switched and masked together
+        def __init__(self, ms): self.ms = ms
+        def __setattr__(self, k, v):
+            if k == "ms": object.__setattr__(self, k, v)
+            elif k == "mask":
+                for m in self.ms: m.mask = None if v is None else v[m.layer]
+            else:
+                for m in self.ms: setattr(m, k, v)
+    mods = []
+    for kp in rows_keep:
+        m = Rows(kp["K"], kp["owner"]); m.layer = kp["layer"]
+        with torch.no_grad(): m.V.copy_(kp["V"]); m.logscale.copy_(kp["ls"])
+        for p in m.parameters(): p.requires_grad_(False)
+        model.model.layers[m.layer].mlp.register_forward_hook(lambda mm, a, o, m=m: o + m(a[0]) if m.on else o); mods.append(m)
+    rows = mods[0]; grp = Group(mods)
+    res["delete"] = {"arm": DELETE_ARM, "layers": [m.layer for m in mods]}
+    full = eval_all(); res["delete"]["rows_on"] = {k: full[k] for k in SETS}
+    grp.on = False; off = eval_all(); grp.on = True
     res["delete"]["all_rows_deleted"] = {k: off[k] for k in SETS}
     res["delete"]["all_rows_deleted_equals_base"] = all(abs(off[k] - base[k]) < 1e-6 for k in SETS)
-    owner = np.array(rows.owner); per = {}
+    owners = {m.layer: np.array(m.owner) for m in mods}; owner = owners[rows.layer]; per = {}
     for d in EVAL:
-        rows.mask = torch.tensor(owner == d, device=DEVICE)
+        grp.mask = {l: torch.tensor(o == d, device=DEVICE) for l, o in owners.items()}
         ho, ho_doc = eval_set(SETS["held_out"]); se, se_doc = eval_set(SETS["seen"])
         others_ho = float(np.mean([ho_doc[e] for e in EVAL if e != d])) if len(EVAL) > 1 else None
         others_se = float(np.mean([se_doc[e] for e in EVAL if e != d])) if len(EVAL) > 1 else None
-        per[d] = {"rows": int((owner == d).sum()),
+        per[d] = {"rows": int(sum((o == d).sum() for o in owners.values())),
                   "seen_doc": {"base": base["seen_per_doc"][d], "rows": full["seen_per_doc"][d], "deleted": se_doc[d]},
                   "held_doc": {"base": base["held_out_per_doc"][d], "rows": full["held_out_per_doc"][d], "deleted": ho_doc[d]},
                   "others_seen_mean": {"rows": float(np.mean([full["seen_per_doc"][e] for e in EVAL if e != d])) if len(EVAL) > 1 else None, "deleted": others_se},
                   "others_held_mean": {"rows": float(np.mean([full["held_out_per_doc"][e] for e in EVAL if e != d])) if len(EVAL) > 1 else None, "deleted": others_ho}}
         print("delete", d, per[d], flush=True)
-    rows.mask = None; res["delete"]["per_doc"] = per
+    grp.mask = None; res["delete"]["per_doc"] = per
     json.dump(res, open(OUT, "w"), indent=1)
 
     # ---- served by ChloeDB ------------------------------------------------------------------
@@ -254,7 +279,7 @@ if rows_keep is not None:
     db.sql(f"DELETE FROM rows WHERE doc = '{d0}'"); left = db.query("SELECT COUNT(*) FROM rows").rows[0][0]
     _, c_d_del = eval_set(dsegs, bs=1); rows.db = None
     rows.mask = torch.tensor(owner == d0, device=DEVICE); _, t_d_del = eval_set(dsegs, bs=1); rows.mask = None
-    res["served_by_chloedb"] = {"rows": len(Kn), "build_secs": round(build, 1), "index": "hnsw (default)",
+    res["served_by_chloedb"] = {"served_layer": rows.layer, "rows": len(Kn), "build_secs": round(build, 1), "index": "hnsw (default)",
         "held_one_stride_per_doc": {"torch": t_one, "chloedb": c_one},
         "deleted_doc": d0, "rows_after_delete": left,
         "deleted_doc_seen": {"torch": t_d, "chloedb": c_d, "torch_masked": t_d_del, "chloedb_after_sql_delete": c_d_del},
