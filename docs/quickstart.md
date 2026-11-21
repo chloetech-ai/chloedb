@@ -20,7 +20,7 @@ chloedb-server --demo
 It makes `demo.chloedb` in the current directory and says, once it is ready, where to open it and what to try:
 
 ```text
-  ChloeDB 0.3.9 is ready: demo.chloedb, 1 table (products), 20,000 rows
+  ChloeDB 0.3.10 is ready: demo.chloedb, 1 table (products), 20,000 rows
 
     Open        http://127.0.0.1:7700
     Query       curl -s http://127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{"sql": "SELECT * FROM products LIMIT 3"}'
@@ -54,7 +54,7 @@ It asks GitHub's API (`api.github.com`) which release is the newest, and when a 
 chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   ...
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.10 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -62,7 +62,7 @@ A copy of the script from before 18 November 2026 asked GitHub's API alone, and 
 
 ```sh
 # install
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.10 sh
 ```
 
 **pipx, uv or pip** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
@@ -88,7 +88,7 @@ pip install chloedb-server       # or: pip install "chloedb[server]"
 
 ```sh
 # install
-v=0.3.9 p=macos-arm64
+v=0.3.10 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -255,7 +255,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.9
+  ghcr.io/chloetech-ai/chloedb-server:0.3.10
 ```
 
 Then every request sends the token, and the console asks for it once:

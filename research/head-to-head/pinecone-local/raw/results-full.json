@@ -1,0 +1,178 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "date": "2026-11-21",
+ "collection": "glove-100-angular",
+ "sha256": "544af1d5e84e112cd4749571dcfd8ca109818a572f850af75a3a09e093a953c4",
+ "vectors": 1183514,
+ "dim": 100,
+ "queries": 1000,
+ "recall_at_10": {
+  "pinecone": 0.9999,
+  "chloedb": 0.8614,
+  "chloedb_ef32": 0.6955,
+  "chloedb_ef64": 0.7543,
+  "chloedb_ef128": 0.8271,
+  "chloedb_ef400": 0.907,
+  "chloedb_ef800": 0.9421,
+  "chloedb_ef1600": 0.9698,
+  "chloedb_flat": 1.0
+ },
+ "same_top10": 0.55,
+ "pinecone": {
+  "version": "Pinecone Local v1.0.0.rc0 (image of 2025-02-27, ghcr.io/pinecone-io/pinecone-local)",
+  "memory_start_kb": 1292,
+  "load_s": 83.04,
+  "ready_s": 83.04,
+  "rows": 1183514,
+  "latency": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 4.0,
+    "p50_ms": 247.945,
+    "p95_ms": 275.18,
+    "p99_ms": 294.019
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 13.0,
+    "p50_ms": 290.757,
+    "p95_ms": 418.52,
+    "p99_ms": 463.029
+   }
+  ],
+  "memory_after_kb": 886272,
+  "disk_bytes": 0
+ },
+ "chloedb": {
+  "version": "chloedb-server 0.3.9 (built from dd285f4e63)",
+  "memory_start_kb": 82551,
+  "load_s": 132.85,
+  "ready_s": 220.65,
+  "optimize": [
+   {
+    "bytes_written": 871984585,
+    "docs_dropped": 0,
+    "docs_merged": 1183514,
+    "merges": 1,
+    "segments_merged": 8,
+    "took_ms": 43069.9
+   },
+   {
+    "bytes_written": 0,
+    "docs_dropped": 0,
+    "docs_merged": 0,
+    "merges": 0,
+    "segments_merged": 0,
+    "took_ms": 0.2
+   }
+  ],
+  "segments": [
+   1183514
+  ],
+  "rows": 1183514,
+  "latency": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 614.7,
+    "p50_ms": 1.574,
+    "p95_ms": 1.918,
+    "p99_ms": 3.268,
+    "server": {
+     "p50_ms": 0.601,
+     "p95_ms": 0.783,
+     "n": 1000
+    }
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 1304.3,
+    "p50_ms": 2.894,
+    "p95_ms": 4.583,
+    "p99_ms": 5.791
+   }
+  ],
+  "ef": {
+   "32": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 723.9,
+    "p50_ms": 1.326,
+    "p95_ms": 1.573,
+    "p99_ms": 2.619
+   },
+   "64": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 712.8,
+    "p50_ms": 1.376,
+    "p95_ms": 1.677,
+    "p99_ms": 1.971
+   },
+   "128": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 659.9,
+    "p50_ms": 1.481,
+    "p95_ms": 1.754,
+    "p99_ms": 2.407
+   },
+   "400": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 539.5,
+    "p50_ms": 1.826,
+    "p95_ms": 2.131,
+    "p99_ms": 2.38
+   },
+   "800": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 424.6,
+    "p50_ms": 2.319,
+    "p95_ms": 2.76,
+    "p99_ms": 3.395
+   },
+   "1600": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 300.5,
+    "p50_ms": 3.265,
+    "p95_ms": 4.158,
+    "p99_ms": 4.949
+   }
+  },
+  "flat": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 38.5,
+    "p50_ms": 24.724,
+    "p95_ms": 32.515,
+    "p99_ms": 35.206
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 167.4,
+    "p50_ms": 23.557,
+    "p95_ms": 31.706,
+    "p99_ms": 37.091
+   }
+  ],
+  "plan": [
+   "seg 0: vector InIndex (Hnsw ran), filter None"
+  ],
+  "took_explain_ms": 1.459147,
+  "memory_after_kb": 1031017,
+  "disk_bytes": 883347844
+ }
+}

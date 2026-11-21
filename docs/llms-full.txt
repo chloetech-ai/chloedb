@@ -91,7 +91,7 @@ chloedb-server --demo
 It makes `demo.chloedb` in the current directory and says, once it is ready, where to open it and what to try:
 
 ```text
-  ChloeDB 0.3.9 is ready: demo.chloedb, 1 table (products), 20,000 rows
+  ChloeDB 0.3.10 is ready: demo.chloedb, 1 table (products), 20,000 rows
 
     Open        http://127.0.0.1:7700
     Query       curl -s http://127.0.0.1:7700/v1/sql -H 'content-type: application/json' -d '{"sql": "SELECT * FROM products LIMIT 3"}'
@@ -125,7 +125,7 @@ It asks GitHub's API (`api.github.com`) which release is the newest, and when a 
 chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   ...
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.10 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -133,7 +133,7 @@ A copy of the script from before 18 November 2026 asked GitHub's API alone, and 
 
 ```sh
 # install
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.10 sh
 ```
 
 **pipx, uv or pip** <!-- since 0.3.7 -->: the same server, from [PyPI](https://pypi.org/project/chloedb-server/), which asks GitHub nothing, on the same Macs and on Linux with glibc 2.34 or later. `pipx install` and `uv tool install` put `chloedb-server` on your `PATH`; `uvx chloedb-server` runs it without installing it.
@@ -159,7 +159,7 @@ pip install chloedb-server       # or: pip install "chloedb[server]"
 
 ```sh
 # install
-v=0.3.9 p=macos-arm64
+v=0.3.10 p=macos-arm64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && mkdir -p ~/.local/bin && mv chloedb-server-$p/chloedb-server ~/.local/bin/
 ```
@@ -326,7 +326,7 @@ The image `ghcr.io/chloetech-ai/chloedb-server` (Linux, x86-64 and arm64) keeps 
 ```sh
 # install
 docker run -d --name chloedb --user 10001:10001 -p 127.0.0.1:7700:7700 -e CHLOEDB_TOKEN=pick-a-secret -v chloedb:/data \
-  ghcr.io/chloetech-ai/chloedb-server:0.3.9
+  ghcr.io/chloetech-ai/chloedb-server:0.3.10
 ```
 
 Then every request sends the token, and the console asks for it once:
@@ -663,7 +663,7 @@ A shop in one page: search, stock that never oversells, holds that expire, and c
 Download the server for your machine (no Rust or build needed), and start it on a new database:
 
 ```sh
-v=0.3.9 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
+v=0.3.10 p=linux-x86_64   # or linux-aarch64, macos-arm64, macos-x86_64
 curl -LO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 tar xzf chloedb-server-$p.tar.gz && cp chloedb-server-$p/chloedb-server ./chloedb-server
 ./chloedb-server --db shop.chloedb --seq-no
@@ -853,8 +853,8 @@ The errors people meet first with ChloeDB, each with its message as the program 
 
 ```text
 $ chloedb-server doctor --offline
-ok   version: chloedb-server 0.3.9 (the latest release was not looked up)
-ok   python package: chloedb 0.3.9
+ok   version: chloedb-server 0.3.10 (the latest release was not looked up)
+ok   python package: chloedb 0.3.10
 warn models: no models in /home/me/.local/share/chloedb/models: a table whose vectors ChloeDB embeds needs its model
        fix: chloedb-server fetch-model potion-retrieval-32M   (into /home/me/.local/share/chloedb/models)
 ok   port: 7700 is free (the guides' servers listen there)
@@ -872,7 +872,7 @@ chloedb install: could not tell which chloedb-server release is the newest:
   https://api.github.com/repos/chloetech-ai/chloedb/releases?per_page=100: The requested URL returned error: 403
   https://github.com/chloetech-ai/chloedb/releases/latest: The requested URL returned error: 403
   https://chloetech-ai.github.io/chloedb/site/versions.json: The requested URL returned error: 403
-Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.9 was the newest when this script was written):
+Name the version after the pipe (the releases are https://github.com/chloetech-ai/chloedb/releases, chloedb-server-v<version>; 0.3.10 was the newest when this script was written):
   curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=<version> sh
 ```
 
@@ -886,7 +886,7 @@ chloedb install: could not find a chloedb-server release on https://github.com/c
 In either case, name the version, and the script downloads it without asking. The archives come from `github.com`'s downloads, which often still work where the other addresses are refused. The variable goes after the pipe, where `sh` reads it; in front of `curl` it reaches only `curl`, and the script fails the same way. The last line the script prints is the command to run, with your `--with` and `CHLOEDB_INSTALL_DIR` kept:
 
 ```sh
-curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.9 sh
+curl -fsSL https://chloetech-ai.github.io/chloedb/install.sh | CHLOEDB_VERSION=0.3.10 sh
 ```
 
 Or install the same server from PyPI, which asks GitHub nothing: `pipx install chloedb-server`, `uv tool install chloedb-server`, `pip install chloedb-server` in a virtualenv, or `uvx chloedb-server` to run it without installing it (macOS 11+, and Linux with glibc 2.34 or later). The [quickstart](../quickstart.md#1-install-the-server) has the other ways, by hand included.
@@ -898,7 +898,7 @@ Or install the same server from PyPI, which asks GitHub nothing: `pipx install c
 | `the prebuilt server needs glibc 2.35 or later (Ubuntu 22.04, Debian 12), and this machine has 2.31: ...` | the prebuilt archives need a newer Linux; the PyPI wheels need glibc 2.34; use the Docker image (`ghcr.io/chloetech-ai/chloedb-server`), or build from source |
 | `this Linux has no glibc (Alpine and other musl systems): ...` | use the Docker image, or build from source |
 | `Windows has no prebuilt server yet: run this inside WSL 2, or use Docker ...` | run the script inside WSL 2 |
-| `could not download https://github.com/.../chloedb-server-v0.3.9/... (is 0.3.9 a released version, and does it have chloedb-server? ...)` | `CHLOEDB_VERSION` names a version that has no release, or `--with` a program that release does not have: see the [releases](https://github.com/chloetech-ai/chloedb/releases) |
+| `could not download https://github.com/.../chloedb-server-v0.3.10/... (is 0.3.10 a released version, and does it have chloedb-server? ...)` | `CHLOEDB_VERSION` names a version that has no release, or `--with` a program that release does not have: see the [releases](https://github.com/chloetech-ai/chloedb/releases) |
 | `/home/me/.local/bin is not on your PATH. To add it, put this line in your shell's profile (~/.zshrc, ~/.bashrc): ...` | not an error: the server is installed; add the line it prints, then open a new terminal |
 
 ### `chloedb-server: command not found`
@@ -6358,7 +6358,7 @@ If importing `chloedb` throws an error that calls it a placeholder, npm installe
 Each `chloedb-js-v<version>` release on [GitHub](https://github.com/chloetech-ai/chloedb/releases) also has a tarball per platform with the addon built in, for a machine that cannot reach npm's registry. Install the tarball for your platform, or its URL:
 
 ```sh
-npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.9/chloedb-0.3.9-darwin-arm64.tgz
+npm install https://github.com/chloetech-ai/chloedb/releases/download/chloedb-js-v0.3.10/chloedb-0.3.10-darwin-arm64.tgz
 ```
 
 The workflow [`js-release.yml`](https://github.com/chloetech-ai/chloedb/blob/main/.github/workflows/js-release.yml) builds both on a `chloedb-js-v<version>` tag, the way napi-rs packages are laid out (`chloedb` names each platform's package as an optional dependency, of which npm installs the one of your machine), and installs each into an empty app and runs it there before attaching the tarballs to the release and publishing the packages to npm (the workflow's header says what publishing needs). `node scripts/pack.mjs <platform>` packs a tarball by hand, and `--npm <platform>` and `--npm-main` the packages npm gets. From 0.3.9 the release also carries the packages npm serves, byte for byte, and its `SHA256SUMS` lists them, so a package installed from npm can be checked against the release; npm's provenance names the workflow that published it (`npm audit signatures`): [checking what you download](../../SECURITY.md#checking-what-you-download).
@@ -6769,7 +6769,7 @@ The crate is not on crates.io yet. The `chloedb` there is a placeholder that onl
 
 ```toml
 [dependencies]
-chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.9" }
+chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.10" }
 ```
 
 Cargo finds the crate in the repository's `chloedb/` folder. Building it needs Rust (stable) and a C compiler (`xcode-select --install` on macOS, `build-essential` on Debian and Ubuntu), because the tokenizer's regex library is C. The first build compiles ChloeDB and its dependencies, which takes several minutes. The default features are `embed` (embedding models run in the process) and `hosted` (embedding models behind an HTTP API); `sqlite`, `parquet`, `s3`, `bert` and `onnx` add SQLite and Parquet import and export, `s3://` URLs, and more model kinds (`chloedb/Cargo.toml` describes each one). `cargo doc -p chloedb --open` shows the API of the version you depend on.
@@ -6925,20 +6925,20 @@ The package is in [`chloedb-java/`](https://github.com/chloetech-ai/chloedb/tree
 ```sh
 cd chloedb-java
 mvn package          # cargo builds the library, Maven the classes; tests run against both
-mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.3.9
+mvn install          # and into ~/.m2, as ai.chloetech:chloedb:0.3.10
 ```
 
-The jar (`target/java/chloedb-0.3.9.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
+The jar (`target/java/chloedb-0.3.10.jar`) carries the native library for the platform it was built on (Linux or macOS, x86-64 or ARM), and needs nothing else at run time: no dependency, no server. A project uses it from the local repository:
 
 ```xml
 <dependency>
   <groupId>ai.chloetech</groupId>
   <artifactId>chloedb</artifactId>
-  <version>0.3.9</version>
+  <version>0.3.10</version>
 </dependency>
 ```
 
-or, with Gradle, `implementation("ai.chloetech:chloedb:0.3.9")` with `mavenLocal()` among the repositories.
+or, with Gradle, `implementation("ai.chloetech:chloedb:0.3.10")` with `mavenLocal()` among the repositories.
 
 `-Dcargo.profile=ci` builds the library without link-time optimisation, much faster, for a build that only runs the tests. `-Dcargo.features=bert` (comma-separated) turns on Cargo features as the Python package has them: `bert` for BERT embedding models (`accelerate` on a Mac), `onnx`, `vision`, `audio`. The library already includes DataFusion, Parquet and `s3://` URLs. `-Dcargo.skip=true` packages the library cargo built before.
 
@@ -10158,7 +10158,7 @@ On each machine, the new binary is the release's archive, checked against its `.
 
 ```sh
 # install
-v=0.3.9 p=linux-x86_64
+v=0.3.10 p=linux-x86_64
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz
 curl -fLO https://github.com/chloetech-ai/chloedb/releases/download/chloedb-server-v$v/chloedb-server-$p.tar.gz.sha256
 sha256sum -c chloedb-server-$p.tar.gz.sha256 && tar xzf chloedb-server-$p.tar.gz
@@ -11986,7 +11986,7 @@ server, twice, before it answers 409.
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.9 but the early
+(November 2026, every crate and package at version 0.3.10 but the early
 Workbench, `chloedb-workbench`, at 0.1.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
@@ -12089,7 +12089,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.9; `chloedb-workbench` its own, 0.1.0),
+version of the last release (0.3.10; `chloedb-workbench` its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.
 
@@ -12168,6 +12168,22 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   OpenSearch API's aliases move to a table of their own
   (`opensearch_aliases`) at the first alias change: a database taken back
   to 0.3.8 after that sees its aliases as they were before the change.
+  0.3.10 keeps the shard protocol at 21 and adds two plan features:
+  `keyword_ranges` (a single-valued `KEYWORD` compared with `<`, `<=`, `>`,
+  `>=` or `BETWEEN`) and `graph_given` (a coordinator's walk of `REACHABLE`,
+  `PATH`, `hops()` or `ppr()` over a cluster, whose answer goes to the
+  shards in a new field of the plan's `Graph`, `given = 14`): a 0.3.9 shard
+  refuses a plan that names one, so upgrade the shards before using them.
+  Otherwise 0.3.9 and 0.3.10 mix in either order. A JSON field's segments
+  written by 0.3.10 also index the plain values of an array path (the term
+  `path \0 v`), which 0.3.9 does not read and does not need: it reads such
+  a row from its object. The keys file can hold two new kinds of key, a key
+  that only appends (kept as `read` of `append:<tables>`) and a key bound to
+  a tenant on the OpenSearch API (kept as a key of no table): a 0.3.9
+  server reads the file and lets neither key read or write any table.
+  Alert rules and routes are kept in `DB.alerts.json` beside `--db`, which
+  0.3.9 does not read: a server taken back to 0.3.9 has only the rules of
+  its `--alerts` file, if it is given one.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer
@@ -12778,7 +12794,7 @@ How it differs from `chloectx install --user`:
 Both use the same stores, one per project. A project with its own `chloectx install` keeps using that one, and the plugin's hooks step aside there, as the user-level ones do. With both the plugin and `chloectx install --user`, the hooks of the user settings record and the plugin's step aside, but a session has the memory tools twice; `chloectx doctor` warns, and `chloectx uninstall --user` leaves only the plugin. Doctor shows the plugin:
 
 ```console
-  ok    plugin: chloectx@chloedb 0.3.9, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.9/scripts/chloectx-launch)
+  ok    plugin: chloectx@chloedb 0.3.10, enabled in /home/you/.claude/settings.json (11 hook events, through /home/you/.claude/plugins/cache/chloedb/chloectx/0.3.10/scripts/chloectx-launch)
   ok    MCP server: the plugin's, plugin:chloectx:chloectx (its tools are mcp__plugin_chloectx_chloectx__*)
 ```
 
@@ -12860,7 +12876,7 @@ chloectx doctor
 
 ```console
 $ chloectx doctor
-ChloeCtx 0.3.9 for /home/you/code/app
+ChloeCtx 0.3.10 for /home/you/code/app
   ok    binary: /home/you/.local/bin/chloectx
   ok    version: built from 1847ac7072, up to date with origin/main
   ok    Claude Code CLI: 2.1.326 (Claude Code) (/home/you/.local/bin/claude)
@@ -14153,7 +14169,7 @@ The same names are the JSON fields of `POST /v1/crawls` and `POST /v1/preview`, 
 | `rules` | | fields from CSS selectors, as above |
 | `learn` | on | learn the site's template |
 | `embed` | | a model to embed the title and body with, into `emb` |
-| `user_agent` | `chloedb-crawl/0.3.9 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `chloedb-crawl` (or `strata-crawl`, its old name) |
+| `user_agent` | `chloedb-crawl/0.3.10 (+https://chloetech-ai.github.io/chloedb/chloedb/crawler-bot.html)` | a crawl's own is sent with that after it, unless it names `chloedb-crawl` (or `strata-crawl`, its old name) |
 | `contact` | `--contact` of `chloedb-crawl serve` (or `CHLOEDB_CRAWL_CONTACT`) | whom a site's owner reaches about the crawl, an email address or a URL, sent in the user agent: `chloedb-crawl/<version> (+https://...; ops@example.com)` |
 | `timeout_ms`, `max_bytes`, `batch` | 20,000, 5 MB, 200 | |
 

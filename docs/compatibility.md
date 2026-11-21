@@ -3,7 +3,7 @@
 What this code promises about the files it reads and writes, the protocol
 its servers speak to each other, and the names it was known by before; and
 what it does not promise yet. It describes the code as it is on `main`
-(November 2026, every crate and package at version 0.3.9 but the early
+(November 2026, every crate and package at version 0.3.10 but the early
 Workbench, `chloedb-workbench`, at 0.1.0). The
 [changelog](../CHANGELOG.md) says what changed.
 
@@ -106,7 +106,7 @@ server of their own commit.
 **Not promised.** A package does not yet expose the engine commit or the
 format version it was built with, and nothing checks that a client and a
 server are of the same release. Every crate and package carries the
-version of the last release (0.3.9; `chloedb-workbench` its own, 0.1.0),
+version of the last release (0.3.10; `chloedb-workbench` its own, 0.1.0),
 and keeps it between releases: name a
 build from a commit after a release by its commit.
 
@@ -185,6 +185,22 @@ gRPC with a numbered shard protocol (`chloedb-server/src/grpc.rs`:
   OpenSearch API's aliases move to a table of their own
   (`opensearch_aliases`) at the first alias change: a database taken back
   to 0.3.8 after that sees its aliases as they were before the change.
+  0.3.10 keeps the shard protocol at 21 and adds two plan features:
+  `keyword_ranges` (a single-valued `KEYWORD` compared with `<`, `<=`, `>`,
+  `>=` or `BETWEEN`) and `graph_given` (a coordinator's walk of `REACHABLE`,
+  `PATH`, `hops()` or `ppr()` over a cluster, whose answer goes to the
+  shards in a new field of the plan's `Graph`, `given = 14`): a 0.3.9 shard
+  refuses a plan that names one, so upgrade the shards before using them.
+  Otherwise 0.3.9 and 0.3.10 mix in either order. A JSON field's segments
+  written by 0.3.10 also index the plain values of an array path (the term
+  `path \0 v`), which 0.3.9 does not read and does not need: it reads such
+  a row from its object. The keys file can hold two new kinds of key, a key
+  that only appends (kept as `read` of `append:<tables>`) and a key bound to
+  a tenant on the OpenSearch API (kept as a key of no table): a 0.3.9
+  server reads the file and lets neither key read or write any table.
+  Alert rules and routes are kept in `DB.alerts.json` beside `--db`, which
+  0.3.9 does not read: a server taken back to 0.3.9 has only the rules of
+  its `--alerts` file, if it is given one.
 
 So a rolling upgrade works shard by shard: while versions are mixed, the
 cluster serves what the oldest server involved speaks, and the newer

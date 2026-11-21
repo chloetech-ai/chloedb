@@ -16,6 +16,7 @@ them: no number on a page is typed by hand) and the page itself.
 | [olu-game-day](olu-game-day/results.md) | Olu, an SRE who runs Elasticsearch on Kubernetes | a three-node Elasticsearch 9.5 cluster | a kill, a freeze and a rolling restart under a steady writer and reader: how long a client waits, what it is told, and whether every answered write is there |
 | [grace-monday-report](grace-monday-report/results.md) | Grace, a support operations lead who builds a Monday report from a Zendesk export | DuckDB over the export, and SQL by hand | her four Monday numbers built by clicking in the command center, counted in actions, each checked against SQL, and the saved view opened on a phone |
 | [marco-loki](marco-loki/results.md) | Marco, a platform engineer replacing Loki and an old Elasticsearch for logs | Loki 3.5 | an hour of his kind of lines at 1,000 a second: six on-call questions, each answer checked, and the disk a day costs, counted from the files |
+| [pinecone-local](pinecone-local/results.md) | none: asked directly ("did we ever measure against Pinecone?") | Pinecone Local, Pinecone's in-memory emulator (the only part of Pinecone that runs on a machine) | recall@10, p50/p95/p99 and load time of top-10 vector search on GloVe-100 (ann-benchmarks), at 100,000 vectors and 1,183,514 |
 
 Each runs on one machine, the systems in turn, and names the machine on its page. ChloeDB runs as `chloedb-server`
 from this checkout (`CHLOEDB_SERVER_BIN` to choose another build) with its answer cache off, since each comparison
@@ -27,4 +28,4 @@ pip install -r research/head-to-head/requirements.txt
 ```
 
 Postgres runs from its binaries (`PG_BINDIR`, else `/usr/lib/postgresql/<version>/bin`; as the `postgres` user when
-run as root), Elasticsearch, Qdrant and Loki in Docker, Grace's clicks in Chromium by Playwright (node); Priya's needs `pip install fastembed` too. The round 5 briefs of the persona study point each persona at their page.
+run as root), Elasticsearch, Qdrant, Loki and Pinecone Local in Docker, Grace's clicks in Chromium by Playwright (node); Priya's needs `pip install fastembed` too. The round 5 briefs of the persona study point each persona at their page.

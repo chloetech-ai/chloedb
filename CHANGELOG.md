@@ -9,7 +9,70 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
-## Unreleased
+## 0.3.10
+
+What the persona study's fourth and fifth rounds and two onboarding rounds
+found, and ChloeDB on a cluster doing what one database does: graph walks
+and recommenders through a coordinator, keys that only append (for a log
+shipper) and keys bound to one tenant on the OpenSearch API, `INSERT ...
+SELECT` and `CREATE TABLE ... AS SELECT`, search by meaning that an import
+turns on by itself, a first run with no flags, `chloedb-server grow` from
+one database to a cluster, alert rules that outlive a restart, retried
+OTLP log requests written once, free space given back to the disk, a
+production kit (Prometheus rules, a Grafana dashboard, a rehearsed backup
+and upgrade page, a security review pack), a guide for building with AI
+agents, ChloeCtx team sync that loses no note, and new Earth explorer and
+Experiments pages (demos): `chloedb-server-v0.3.10`, `chloedb-py-v0.3.10`
+and `chloedb-js-v0.3.10`, which is on npm too (the Java package is built
+from source; `chloedb-crawl`, `chloedb-sheets`, `chloectx` and
+`chloedb-netops` are attached prebuilt to the server's release, whose
+wheels are on PyPI as `chloedb-server`). The file format stays 3 and the
+shard protocol stays 21; two plan features are new (`keyword_ranges` and
+`graph_given`, with a new field of the protocol's `Graph`), so upgrade the
+shards before the coordinators to use them, and the keys file holds two
+new kinds of key that a server of 0.3.9 reads as covering no table (see
+[compatibility](docs/compatibility.md#a-cluster-of-mixed-versions)).
+**Some answers change: see below.**
+
+### What changes by default
+
+- **`UPDATE t SET n = n + 1` keeps a NULL `n` NULL**, as `SELECT` does;
+  `field + number` and `field - number` counted a NULL as zero in `SET`
+  only. Write `coalesce(n, 0) + 1` for a counter that starts from NULL.
+- **A server keeps no query parameter values** in its running and finished
+  queries, statements and log store, only their types; `--keep-params`
+  keeps them.
+- **An import makes search by meaning**: a table an import makes from a
+  file with `TEXT` columns gets `emb`, a vector of its prose, and the
+  server downloads `potion-retrieval-32M` once to fill it (`--no-meaning`
+  and `"meaning": false` leave it out). The Python, JavaScript and Java
+  packages download a model a database names the first time it opens
+  (`CHLOEDB_FETCH_MODELS=0` turns it off).
+- **`POST /v1/import` without `?table=` refuses rows that do not fit** the
+  only table, and a database of several tables, rather than writing them
+  into the first table; with `?table=` a missing table is made.
+- **`chloedb-server` with no `--db` serves `chloedb.chloedb`** in the
+  current directory, and a server started without `--listen` whose port
+  is taken moves to the next free one (7710, 7720 and on).
+- **Alert rules and routes are kept in `DB.alerts.json`** beside `--db`
+  without `--alerts`.
+- **`/v1/logs` writes a retried request once** (its `batch` is made from
+  its content, not random) and **writes `severity` as one spelling**
+  (`WARN` for `warning`, and so on).
+- **A server that takes writes gives free space back** to the disk every
+  5 minutes, once 64 MB and a sixteenth of its file are free.
+- **A single-valued `KEYWORD` compares with `<`, `>` and `BETWEEN`**, and a
+  statement the coordinator runs in parts while every copy of a shard is
+  down is refused 503 rather than 400.
+- **A Postgres follower's tables refuse `DROP TABLE` and dropping or
+  renaming a column it writes** (409, `followed_table`).
+- **ChloeCtx's terminal notes are `manual-<six hex digits>:<seq>`**, not
+  `manual:<seq>`, and a to-do from a machine not accepted yet waits to be
+  accepted.
+- **Python's `db.search` reads a word one field has as no typo** in the
+  others, and an import of rows that hold lists makes list columns.
+
+### Search and SQL
 
 - **A dead copy is down, not out of sync (OLU-503).** A primary counts a
   replica out of sync (`replicas_out_of_sync`, the critical `out-of-sync`
@@ -30,127 +93,28 @@ changes collect under "Unreleased".
   `chloedb-server import`. The command center's Import guesses a key only
   from an id-like column (`id`, `uuid`, `sku`, `slug`, `…_id` and the like),
   so a column such as `minutes` is never taken for one.
-- **ChloeCtx says when it cannot work, and keeps more out of the store.**
-  A daemon that cannot start (a missing model, a store it cannot open) is
-  said once per session as a message in Claude Code, with the last words
-  of its log, instead of every hook waiting for it in silence; later hooks
-  skip it for 30 seconds (ANA-501). `chloectx sync setup` with a key the
-  server refuses, or `--token-stdin` that read nothing, exits non-zero,
-  and `chloectx doctor` fails a project the sync server refuses (WEI-502).
-  `chloectx forget` no longer panics when its output is closed (ANA-303).
-  The redactor knows more kinds of keys and tokens (Twilio, Notion, Docker
-  Hub, Telegram, Sentry: LENA-503), and passwords typed to sign in or given
-  to registry logins and signing secrets, so they are not handed to a
-  teammate's session (WEI-501). What a shell command fetched from outside
-  (`curl`, `wget`, `gh api` and the like) is kept as a third party's words,
-  so recall quotes it as data and does not offer it as context (LENA-504). The session's briefing says the
-  user's decisions stand until the user changes them, so a request that
-  would reverse one is asked about first (JONAH-501).
-- **What on-call needs to trust, from the fifth persona round.** Alert
-  rules and routes outlive a restart without `--alerts`: they are kept in
-  `DB.alerts.json` beside `--db` (a coordinator without the flag keeps them
-  in memory, and says so). A rule first judged after a start pages only
-  once it has seen the data, so a restart no longer pages a rule that was
-  firing before it. `copy-down` fires when a copy stays down for 20
-  seconds, not only when it is down for 30 on average. Explore reads a
-  log's level from OTLP's `severity_number` when it has one, so `level>=error`
-  finds `ERROR`, `err` and `Error` alike. A shard whose copies elect a
-  primary says it refuses writes for those seconds (503, retryable with the
-  same idempotency key). Connectors are on `/metrics` (`chloedb_connector_up`,
-  `chloedb_connector_failures`, a Kafka connector's lag by partition and how
-  long its events waited), with two built-in alerts, `connector-failing`
-  and `connector-behind`, and their runbook.
+- **Search by meaning without asking for it.** A table an import makes
+  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
+  MCP tool `import` with `create`, and the command center's Import) gets
+  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
+  `TEXT` columns: the server downloads the model once and fills the
+  vectors in, and the table's search runs by words meanwhile and by words
+  and meaning once the model is open, saying so as it comes
+  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
+  leave it out). Python's `db.search` reads a word in no row as a typo of
+  the words near it (`typos=False` turns it off), and `db.ask(question)`
+  answers from the rows it finds, citing them as `[1]`, `[2]` with the
+  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
+  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
+  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
+  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
+  without it sent requests to `.../messages`).
 - **A boosted search whose boost is far below f32's range answers.** A
   `function_score` of OpenSearch, or a BM25 search boosted by a decay
   (`gauss` many scales from its origin), could search forever; it answers.
   A query whose caller stopped waiting is shown as such in the live queries
   (`caller_left`) until it ends, and a server told to stop waits at most 10
   seconds for queries still running.
-- **What a second onboarding round found.** A server given `--listen`
-  whose gRPC default (7701) is taken takes gRPC beside its HTTP port
-  instead of stopping. A database `chloedb-server grow` made a shard of,
-  started on its own, warns that it answers with that shard's rows only
-  and gives the command that starts the whole cluster. A column of an
-  OpenSearch index kept in its documents is suggested as `_source.<name>`,
-  with its fix; the MCP `import` tool reads data that starts with `{` or
-  `[` as JSON without a `format`; `/v1/query` refusing a write points to
-  `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
-  table's search by words and meaning no longer reads "1–20 of 4 rows".
-- **Graph walks and recommenders run through a coordinator.** `REACHABLE`,
-  `PATH`, `hops()` and `ppr()` over an `EDGES` column or an edge table are
-  walked by the coordinator, a round of reads by key over every shard per
-  hop, and answer as one database does; joins along links run on a cluster
-  too, and a coordinator of one shard leaves the walk to it. A recommender
-  runs on a cluster when its events table is placed by its user column
-  (`OPTIONS(shard_by = 'usr')`): each shard counts its own events and
-  `recommend()` reads the counts summed over the shards. Plans that carry a
-  walk's answer need the plan feature `graph_given` (shard protocol:
-  `Graph.given`), which older shards refuse. Walks over a `VECTOR` column
-  are still refused on a cluster ([cluster limits](docs/chloedb/cluster-limits.md#graphs-and-recommenders)).
-
-- **Keys bound to a tenant on the OpenSearch API (KENJI-402).** One index
-  shared by tenants now gets a key per tenant: `POST /v1/admin/keys
-  {"name": "tenant-t007", "scope": "write", "tenant": {"index": "tickets",
-  "field": "tenant_id", "value": "t007"}}`. On the OpenSearch API every read
-  it makes is filtered by `tenant_id = t007` (searches and their
-  aggregations, `global` too, counts, gets by id, `_mget`, `_msearch`,
-  scrolls, deletes by query), every document it writes must hold `t007`,
-  and another tenant's document is neither read, replaced, updated nor
-  deleted by its id; it names its indexes by name (no pattern, `_all` or
-  alias), adds no field to a mapping and changes no index, alias or
-  setting. It is refused everywhere its filter is not enforced: the HTTP
-  API but `/v1/health` and `/v1/whoami`, gRPC, MCP, the feed and apps. The
-  keys file keeps it as a key of no table, which a server from before it
-  admits nowhere. Existing keys are unchanged: a key of every table still
-  reads every index there, and a key limited to tables is still refused.
-  An authentication change: it waits for a maintainer's review.
-- **A key that only appends, for a log shipper.** A key limited to tables
-  takes a grant of `append` (`{"tables": {"logs_*": "append"}}`): it
-  inserts new rows into those tables through `POST /v1/logs`, `POST
-  /v1/import`, `/v1/write`'s `insert` operations and `INSERT ... VALUES`,
-  and reads nothing, not even them: no query, feed, alerts, schema or
-  export. It never replaces or deletes a row: an `INSERT` of a key a row
-  has fails, its imports are strict, and `UPDATE`, `DELETE`, `INSERT OR
-  REPLACE`, `ON CONFLICT DO UPDATE` and upserts are refused, each refusal
-  naming the grant. The logs guide and the Log explorer's "Send logs here"
-  now give the Collector such a key (`CHLOEDB_SHIP_KEY`) rather than the
-  oncall key, whose `write` grant reads every line it sends, and the docs
-  say that a `write` key reads. The command center's key editor offers
-  `append`. The keys file keeps such a grant as `read` of `append:<tables>`,
-  a name no table can have, so a server from before this release reads
-  the file and reads such a key as one that covers no table.
-- **Fewer pages until you need them, and fixes you can run.** On a single
-  server the command center's sidebar shows the twelve pages a newcomer
-  uses and folds the others under "More pages" until one is opened (then
-  it stays in its group), has a badge or is pinned; a coordinator shows
-  them all. A statement refused for a misspelt table, column or function
-  is answered with `fixes`, the statement with each suggested name in its
-  place, which the MCP tools hand the agent as the corrected statement.
-- **One command from a database to a cluster.** `chloedb-server grow --db
-  films.chloedb --shards 3` serves the database as the first of three
-  shards on this machine, with a coordinator at the address it was served
-  on, makes its tables on the new shards and moves their share of the rows
-  to them while queries answer; Ctrl+C stops it and the same command
-  starts it again.
-- **Built for AI agents.** A new guide page, [Build with an AI agent](docs/guide/agents.md),
-  gives the prompt to type for each common job (explore a database, load a
-  file, search, answer with citations, a search page, app code, change a
-  table, a slow query, check the server) with the steps an agent should
-  take in ChloeDB. chloedb-server's MCP server offers the same recipes as
-  prompts (`prompts/list`, `prompts/get`; `/mcp__chloedb__search` in
-  Claude Code), its `search_docs` reads the agent, search, search-page,
-  Python, JavaScript and troubleshooting pages too, and its instructions
-  say what agents got wrong in our sessions (a page opened from a file
-  cannot call the server; a 503 `unavailable` while a model downloads
-  means wait). The website publishes `llms.txt` and `llms-full.txt`.
-- **Setup that heals itself.** A server started without `--listen` whose
-  port is taken (another chloedb-server, or anything else) moves to the
-  next free one, 7710, 7720 and on, and says so; a model download that
-  failed tries again by itself after 30 s, 2 min, 10 min and then every
-  half hour, and a query that needs it meanwhile gets a 503 `unavailable`
-  that says when, rather than a 400 that says to fetch it by hand; an
-  import reads cells such as `N/A`, `null`, `-` or `?` as empty, so a
-  column of numbers with a few of them stays a number column.
 - **UPDATE follows SELECT's NULL rules, and EXPLAIN runs over HTTP.**
   (SAM-401, SAM-403, SAM-404, SAM-405.) `UPDATE t SET n = n + 1` keeps a
   NULL `n` NULL, as `SELECT n + 1`, `1 + n` and `n * 2` already did, and
@@ -168,67 +132,88 @@ changes collect under "Unreleased".
   (`HAVING total_amount > 10` said `10: no such column`), an aggregate in
   `WHERE` (use `HAVING`), and `LIKE ANY` / `ILIKE ANY` (one pattern per
   `LIKE`, joined with `OR`).
-- **A retried `/v1/logs` request writes each line once.** A request's
-  `batch` and an idempotency key for each of its parts (1,000 rows) are
-  made from its content, so a Collector that sends a request again after a
-  503 or a timeout, when the rows had in fact been written, writes nothing
-  twice (for the idempotency window, an hour by default). A request whose
-  records carry no time is not keyed. **Changed:** `batch` was random.
-- **OTLP logs' severity is one spelling, and syslog lines name their
-  host.** `/v1/logs` writes `severity` as `TRACE`, `DEBUG`, `INFO`, `WARN`,
-  `ERROR` or `FATAL` whoever spelt it (`warning`, `err`, `critical`, any
-  case; a text it does not know stays as written) and fills
-  `severity_number` from the text when the record has none, so
-  `severity_number >= 17` finds every source's errors. `host` and `service`
-  come from the record's `hostname` and `appname` attributes (the
-  Collector's syslog receiver's) when the resource has none. **Changed:**
-  severity was kept as each source spelt it. The Alerts page marks a rule
-  whose query has answered 0 on every run as "never matched".
-- **Free space in the database file is given back by itself.** Every 5
-  minutes a server that takes writes moves segments from the end of its
-  file into free space below them and shortens the file, once 64 MB and a
-  sixteenth of the file are free (`Database::trim`, vacuum without the step
-  that grows the file), so a table under retention or a dropped table
-  returns disk without `POST /v1/admin/vacuum`. **Tables and storage** shows
-  the database file beside the tables' live data, and `GET
-  /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
-  its `totals`.
-- **Search by meaning without asking for it.** A table an import makes
-  from a file's columns (`chloedb-server import`, `POST /v1/import`, the
-  MCP tool `import` with `create`, and the command center's Import) gets
-  `emb`, a vector of its prose by `potion-retrieval-32M`, when it has
-  `TEXT` columns: the server downloads the model once and fills the
-  vectors in, and the table's search runs by words meanwhile and by words
-  and meaning once the model is open, saying so as it comes
-  (`--no-meaning`, `?meaning=false`, `"meaning": false` and a checkbox
-  leave it out). Python's `db.search` reads a word in no row as a typo of
-  the words near it (`typos=False` turns it off), and `db.ask(question)`
-  answers from the rows it finds, citing them as `[1]`, `[2]` with the
-  rows as `sources`, through `llm()` (`ANTHROPIC_API_KEY`; a `Client`
-  with `table=`). The server's model downloads take `HF_ENDPOINT`, a
-  mirror of Hugging Face, as the packages' do, and `ANTHROPIC_BASE_URL`
-  is read as Anthropic's SDKs read it, without `/v1` (a gateway's address
-  without it sent requests to `.../messages`).
-- **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
-  `recommend(...)` no longer slows down as events arrive: a range on a
-  value written in place (a counts row's `next > 0`) is checked per
-  candidate, rather than by gathering every value written in the segment
-  at each call. `POST /v1/admin/optimize` on chloedb-server writes the
-  memtables and merges each table's segments (a database's own
-  `optimize` without the vacuum), which takes `recommend` back to its
-  time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
-  counts (a pair is two numbers, not two names), lets go of the events
-  it read as it counts them, writes each new pair's row once rather than
-  inserting it and setting it again, flushes the counts once it commits
-  and gives the freed memory back to the system; and a commit hands its
-  rows to the memtable rather than copies of them, and keeps its log
-  record only when it ships it. Its peak over 200,000 events is 0.81 GB
-  against 1.37 GB before (measured on a 4-core, 15 GB Linux
-  container). A slice's device (`nearby`
-  in Python and JavaScript) compacts its database once the rows of the
-  tiles it dropped outnumber those it holds, so its folder no longer
-  grows with every taste.
+- **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
+  SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
+  database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)
+  SELECT ...` takes `ON CONFLICT`, `OR REPLACE` and `OR IGNORE` as
+  `VALUES` does; `CREATE TABLE t [(PRIMARY KEY (id))] AS SELECT ...` makes
+  the table first, its columns typed by the columns they read (a `TEXT`
+  keeps its analyzer), a `CAST`, their values or their expression, and
+  drops it again if the rows fail. Through a coordinator the `SELECT` runs
+  over every shard and the rows go as `INSERT`s of 500 rows each, not one
+  transaction, and the new table needs a primary key there to place its
+  rows by (cluster-limits.md). `POST /v1/sql/check` says both. A
+  `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
+  refused rather than written in part. Before, both were refused.
+- **A join on a `TEXT` column says why it is refused and what to do**
+  (SAM-402): the column is `TEXT` (as a Postgres follower makes `varchar`),
+  joins compare `KEYWORD`, `INT` or `FLOAT`, and the message names
+  postgres.md's table made first and a `CREATE TABLE ... AS SELECT` copy
+  with a `KEYWORD` column.
 
+### Clusters, keys and on-call
+
+- **Graph walks and recommenders run through a coordinator.** `REACHABLE`,
+  `PATH`, `hops()` and `ppr()` over an `EDGES` column or an edge table are
+  walked by the coordinator, a round of reads by key over every shard per
+  hop, and answer as one database does; joins along links run on a cluster
+  too, and a coordinator of one shard leaves the walk to it. A recommender
+  runs on a cluster when its events table is placed by its user column
+  (`OPTIONS(shard_by = 'usr')`): each shard counts its own events and
+  `recommend()` reads the counts summed over the shards. Plans that carry a
+  walk's answer need the plan feature `graph_given` (shard protocol:
+  `Graph.given`), which older shards refuse. Walks over a `VECTOR` column
+  are still refused on a cluster ([cluster limits](docs/chloedb/cluster-limits.md#graphs-and-recommenders)).
+- **Keys bound to a tenant on the OpenSearch API (KENJI-402).** One index
+  shared by tenants now gets a key per tenant: `POST /v1/admin/keys
+  {"name": "tenant-t007", "scope": "write", "tenant": {"index": "tickets",
+  "field": "tenant_id", "value": "t007"}}`. On the OpenSearch API every read
+  it makes is filtered by `tenant_id = t007` (searches and their
+  aggregations, `global` too, counts, gets by id, `_mget`, `_msearch`,
+  scrolls, deletes by query), every document it writes must hold `t007`,
+  and another tenant's document is neither read, replaced, updated nor
+  deleted by its id; it names its indexes by name (no pattern, `_all` or
+  alias), adds no field to a mapping and changes no index, alias or
+  setting. It is refused everywhere its filter is not enforced: the HTTP
+  API but `/v1/health` and `/v1/whoami`, gRPC, MCP, the feed and apps. The
+  keys file keeps it as a key of no table, which a server from before it
+  admits nowhere. Existing keys are unchanged: a key of every table still
+  reads every index there, and a key limited to tables is still refused.
+- **A key that only appends, for a log shipper.** A key limited to tables
+  takes a grant of `append` (`{"tables": {"logs_*": "append"}}`): it
+  inserts new rows into those tables through `POST /v1/logs`, `POST
+  /v1/import`, `/v1/write`'s `insert` operations and `INSERT ... VALUES`,
+  and reads nothing, not even them: no query, feed, alerts, schema or
+  export. It never replaces or deletes a row: an `INSERT` of a key a row
+  has fails, its imports are strict, and `UPDATE`, `DELETE`, `INSERT OR
+  REPLACE`, `ON CONFLICT DO UPDATE` and upserts are refused, each refusal
+  naming the grant. The logs guide and the Log explorer's "Send logs here"
+  now give the Collector such a key (`CHLOEDB_SHIP_KEY`) rather than the
+  oncall key, whose `write` grant reads every line it sends, and the docs
+  say that a `write` key reads. The command center's key editor offers
+  `append`. The keys file keeps such a grant as `read` of `append:<tables>`,
+  a name no table can have, so a server from before this release reads
+  the file and reads such a key as one that covers no table.
+- **One command from a database to a cluster.** `chloedb-server grow --db
+  films.chloedb --shards 3` serves the database as the first of three
+  shards on this machine, with a coordinator at the address it was served
+  on, makes its tables on the new shards and moves their share of the rows
+  to them while queries answer; Ctrl+C stops it and the same command
+  starts it again.
+- **What on-call needs to trust, from the fifth persona round.** Alert
+  rules and routes outlive a restart without `--alerts`: they are kept in
+  `DB.alerts.json` beside `--db` (a coordinator without the flag keeps them
+  in memory, and says so). A rule first judged after a start pages only
+  once it has seen the data, so a restart no longer pages a rule that was
+  firing before it. `copy-down` fires when a copy stays down for 20
+  seconds, not only when it is down for 30 on average. Explore reads a
+  log's level from OTLP's `severity_number` when it has one, so `level>=error`
+  finds `ERROR`, `err` and `Error` alike. A shard whose copies elect a
+  primary says it refuses writes for those seconds (503, retryable with the
+  same idempotency key). Connectors are on `/metrics` (`chloedb_connector_up`,
+  `chloedb_connector_failures`, a Kafka connector's lag by partition and how
+  long its events waited), with two built-in alerts, `connector-failing`
+  and `connector-behind`, and their runbook.
 - **An honest command center in a failover and signed out** (persona
   study round 4, OLU-401, OLU-303, OLU-402, OLU-403, OLU-407, KENJI-405,
   KENJI-403). While the copy just elected primary waits for the old
@@ -252,6 +237,166 @@ changes collect under "Unreleased".
   dropped: a 502 "transport error" or "operation was canceled" before), as
   one whose copies refused the connection already was
   ([server.md](docs/chloedb/server.md#fleet-health)).
+- **Recommenders in production (NADIA-301, NADIA-401, NADIA-402).**
+  `recommend(...)` no longer slows down as events arrive: a range on a
+  value written in place (a counts row's `next > 0`) is checked per
+  candidate, rather than by gathering every value written in the segment
+  at each call. `POST /v1/admin/optimize` on chloedb-server writes the
+  memtables and merges each table's segments (a database's own
+  `optimize` without the vacuum), which takes `recommend` back to its
+  time after `CREATE`. `CREATE RECOMMENDER` numbers the items while it
+  counts (a pair is two numbers, not two names), lets go of the events
+  it read as it counts them, writes each new pair's row once rather than
+  inserting it and setting it again, flushes the counts once it commits
+  and gives the freed memory back to the system; and a commit hands its
+  rows to the memtable rather than copies of them, and keeps its log
+  record only when it ships it. Its peak over 200,000 events is 0.81 GB
+  against 1.37 GB before (measured on a 4-core, 15 GB Linux
+  container). A slice's device (`nearby`
+  in Python and JavaScript) compacts its database once the rows of the
+  tiles it dropped outnumber those it holds, so its folder no longer
+  grows with every taste.
+- **A Postgres follower one table cannot stop.** A table `follow-postgres`
+  cannot write (a value ChloeDB refuses, a table without a primary key
+  joining the publication, two tables that become one) is held with its
+  error, which names the table, column and row's key, while the others
+  keep following and the process stays up; it is copied again over its
+  rows, which stay readable, at its next try. Data > Connectors and
+  `GET /v1/admin/connectors` show each held table; `/metrics` has
+  `chloedb_follow_table_up`, `chloedb_follow_table_lag_seconds`,
+  `chloedb_follow_table_error_info`, `chloedb_follow_tables_held` and
+  `chloedb_follow_last_error_timestamp_seconds`, and the built-in alert
+  `follow-table-held` fires on a table held for a minute.
+  `--copy-table orders` copies one table again the same way, and a column
+  whose type Postgres changed to one of another ChloeDB type has its table
+  copied again alone with the column made anew. A `jsonb` value with an
+  empty key is followed, the key written as `_empty`. **Changed:**
+  `DROP TABLE` of a followed table, and `ALTER TABLE ... DROP COLUMN` or
+  `RENAME COLUMN` of a column the follower writes, are refused (409,
+  `followed_table`), as writes already were; adding a column stays
+  allowed. The Postgres page has a systemd unit and a container restart
+  policy to run the follower under.
+- **A server keeps no parameter values unless asked.**
+  **Changed:** the running and finished queries, the statements and the
+  log store keep a query's parameters as their types (`{"q": "text"}`),
+  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
+  values, and `--redact-params` is still accepted (LENA-405).
+- **Free space in the database file is given back by itself.** Every 5
+  minutes a server that takes writes moves segments from the end of its
+  file into free space below them and shortens the file, once 64 MB and a
+  sixteenth of the file are free (`Database::trim`, vacuum without the step
+  that grows the file), so a table under retention or a dropped table
+  returns disk without `POST /v1/admin/vacuum`. **Tables and storage** shows
+  the database file beside the tables' live data, and `GET
+  /v1/index/tables` answers `file_bytes`, `free_bytes` and `wal_bytes` in
+  its `totals`.
+
+### Logs
+
+- **A retried `/v1/logs` request writes each line once.** A request's
+  `batch` and an idempotency key for each of its parts (1,000 rows) are
+  made from its content, so a Collector that sends a request again after a
+  503 or a timeout, when the rows had in fact been written, writes nothing
+  twice (for the idempotency window, an hour by default). A request whose
+  records carry no time is not keyed. **Changed:** `batch` was random.
+- **OTLP logs' severity is one spelling, and syslog lines name their
+  host.** `/v1/logs` writes `severity` as `TRACE`, `DEBUG`, `INFO`, `WARN`,
+  `ERROR` or `FATAL` whoever spelt it (`warning`, `err`, `critical`, any
+  case; a text it does not know stays as written) and fills
+  `severity_number` from the text when the record has none, so
+  `severity_number >= 17` finds every source's errors. `host` and `service`
+  come from the record's `hostname` and `appname` attributes (the
+  Collector's syslog receiver's) when the resource has none. **Changed:**
+  severity was kept as each source spelt it. The Alerts page marks a rule
+  whose query has answered 0 on every run as "never matched".
+
+### OpenSearch API
+
+- **OpenSearch: array facets, keyword tie-breakers, 503s (KENJI-401, 403,
+  404).** A `terms` aggregation on a field of arrays (`tags`) counts from
+  the index of `_source` as one on a single keyword does, rather than reading
+  each document: a JSON field's new segments mark a path whose values are a
+  list of plain values (the term `path \0 v`, beside the mark `x`), and a
+  `GROUP BY` of such a path counts those rows from its terms, natively too
+  (`GROUP BY attrs.tags`); segments written before are read as before, and an
+  older version reads such a row from its object. A sort by a date and then
+  another key (`[created_at desc, id.keyword asc]`) finds the date of its
+  page's last row first and sorts only the rows from there on. A search with
+  aggregations that a shard down fails is answered 503, as a plain search is,
+  not 400 `query error`, and so is any statement the operators run over
+  shards (`WITH`, joins, subqueries) on a coordinator. **Changed:** a
+  single-valued `KEYWORD` compares with `<`, `<=`, `>`, `>=` and `BETWEEN`
+  (one run of its dictionary), so keyset paging by `created_at DESC, id`
+  needs no other column; such a plan names the feature `keyword_ranges`,
+  which an older shard refuses.
+
+### First run, onboarding and the command center
+
+- **A first run that needs no flags, no schema and no model download.**
+  `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
+  directory (made empty on the first start), `--demo` alone makes 20,000
+  products in `demo.chloedb`, and a server started in a terminal says,
+  once it is ready, where to open it, a first query and a first import
+  that run as pasted, and how to stop it. A refusal at a terminal is a
+  sentence rather than a log line. `chloedb-server import movies.csv --db
+  films.chloedb` makes the database and the table `movies` from the
+  file's columns and values (CSV, TSV, JSON, JSON Lines), and so does an
+  import into a table that is not there; without `--table` a file goes to
+  the table named as it, else to the only table when it has most of the
+  file's columns, else to a new table named as the file. `POST
+  /v1/import?table=NAME` makes a missing table the same way (an admin
+  key; the answer's `create_table` is the statement, `?create=false`
+  refuses). **Changed:** `POST /v1/import` without `?table=` refuses rows
+  that do not fit the only table (fewer than half of their columns are
+  its), and a database of several tables, rather than writing them into
+  the first table: movies posted to the demo went into `products` with
+  two of their columns dropped. Titles, names and other prose columns of
+  a few words are `TEXT` in a made table, as the command center's import
+  makes them. The Python, JavaScript and Java packages download a model
+  ChloeDB knows (`potion-retrieval-32M`, ...) the first time a database
+  that names it opens, from its pinned revision with each file's SHA-256
+  checked, and say so on stderr (`CHLOEDB_FETCH_MODELS=0` turns it off,
+  `HF_ENDPOINT` names a mirror); `chloedb.fetch_model()` and `python -m
+  chloedb fetch-model` do it ahead. The command center's import picks a
+  new table, named after the file, when no table has most of the file's
+  columns, and code it shows for a server with no token or keys sends
+  none.
+- **Setup that heals itself.** A server started without `--listen` whose
+  port is taken (another chloedb-server, or anything else) moves to the
+  next free one, 7710, 7720 and on, and says so; a model download that
+  failed tries again by itself after 30 s, 2 min, 10 min and then every
+  half hour, and a query that needs it meanwhile gets a 503 `unavailable`
+  that says when, rather than a 400 that says to fetch it by hand; an
+  import reads cells such as `N/A`, `null`, `-` or `?` as empty, so a
+  column of numbers with a few of them stays a number column.
+- **What a second onboarding round found.** A server given `--listen`
+  whose gRPC default (7701) is taken takes gRPC beside its HTTP port
+  instead of stopping. A database `chloedb-server grow` made a shard of,
+  started on its own, warns that it answers with that shard's rows only
+  and gives the command that starts the whole cluster. A column of an
+  OpenSearch index kept in its documents is suggested as `_source.<name>`,
+  with its fix; the MCP `import` tool reads data that starts with `{` or
+  `[` as JSON without a `format`; `/v1/query` refusing a write points to
+  `/v1/sql`; OpenSearch's refused `min_score` says what to do instead; a
+  table's search by words and meaning no longer reads "1–20 of 4 rows".
+- **Fewer pages until you need them, and fixes you can run.** On a single
+  server the command center's sidebar shows the twelve pages a newcomer
+  uses and folds the others under "More pages" until one is opened (then
+  it stays in its group), has a badge or is pinned; a coordinator shows
+  them all. A statement refused for a misspelt table, column or function
+  is answered with `fixes`, the statement with each suggested name in its
+  place, which the MCP tools hand the agent as the corrected statement.
+- **Built for AI agents.** A new guide page, [Build with an AI agent](docs/guide/agents.md),
+  gives the prompt to type for each common job (explore a database, load a
+  file, search, answer with citations, a search page, app code, change a
+  table, a slow query, check the server) with the steps an agent should
+  take in ChloeDB. chloedb-server's MCP server offers the same recipes as
+  prompts (`prompts/list`, `prompts/get`; `/mcp__chloedb__search` in
+  Claude Code), its `search_docs` reads the agent, search, search-page,
+  Python, JavaScript and troubleshooting pages too, and its instructions
+  say what agents got wrong in our sessions (a page opened from a file
+  cannot call the server; a 503 `unavailable` while a model downloads
+  means wait). The website publishes `llms.txt` and `llms-full.txt`.
 - **The command center designs a search stage by stage, as a template
   apps call by name** (`chloedb-server`). The Query designer (Build, key
   `z`) takes the text a person types as its one input and steps through
@@ -268,11 +413,67 @@ changes collect under "Unreleased".
   refused; `CREATE FUNCTION` accepts a body that embeds text or reads a
   blend; an expanded query no longer answers its feedback rows from the
   answer cache (#728).
-- **A server keeps no parameter values unless asked.**
-  **Changed:** the running and finished queries, the statements and the
-  log store keep a query's parameters as their types (`{"q": "text"}`),
-  not their values; `--keep-params` (`CHLOEDB_KEEP_PARAMS`) keeps the
-  values, and `--redact-params` is still accepted (LENA-405).
+- **The command center does a support lead's Monday numbers without SQL
+  (GRACE-401 to 407, 417).** A table's search says how many rows match,
+  how many of them have the words as typed, pages 20 at a time and opens a
+  row with every field; by words and meaning, rows with every word come
+  first. The Data tab's CSV and JSON Lines hold every row its condition
+  keeps, not the page on screen, and Import and export downloads a table
+  as CSV or JSON Lines. The query builder groups a time by day, week or
+  month, measures the median and the hours between two times, and each
+  group's share of all rows or of its week; *is none of* is `NOT IN`, and
+  turning *is one of* with several picks into *is not* keeps them all. A
+  chart splits its series by a column (a line per priority), and fits a
+  phone. Import finds a column that lists tags in one value and splits it
+  into a `KEYWORD[]`, the separator shown and changeable. **Team views**
+  keep a builder's or the workbench's query, its chart and the builder's
+  state on the server, as rows of `cc_views` (the first save makes the
+  table, with an admin key), opened by anyone whose key reads them, by a
+  link, on a phone too.
+
+### Production kit and docs
+
+- **A production kit.** `chloedb-server/deploy/monitoring` holds a Prometheus
+  scrape config, alerting rules that mirror every built-in alert the servers
+  page on (with each runbook as `runbook_url`; a test keeps the two in step),
+  and a Grafana dashboard to import (OLU-313). A new guide page, *Back up,
+  restore and upgrade*, runs each step on one server, from a checkpoint to a
+  restore after a bad delete and a rollback, and CI runs it with the other
+  guide pages. The *Security review pack* page collects the threat model of
+  keys and of ChloeCtx's sync, how the controls map to SOC 2's criteria, and
+  what each package ships. The Python wheel and the npm packages that hold
+  the addon now carry `THIRD-PARTY-NOTICES.md`, the licences of every crate
+  compiled into them (LENA-408).
+- **Docs pass 4.** The SQL reference says how much memory `CREATE RECOMMENDER`
+  takes while it counts (NADIA-401); the OpenSearch page says a filtered alias
+  is not a boundary between tenants and points to keys limited to tables
+  (KENJI-402); the cluster guide says what a frozen primary costs and not to
+  restart the copy just elected while it waits out the old lease (OLU-401,
+  OLU-205).
+
+### ChloeCtx
+
+- **ChloeCtx sync for a team: every note reaches every machine, a
+  teammate's to-dos wait to be accepted, and Retire works in the command
+  center** (persona study round 4, ANA-401, ANA-402, WEI-401, WEI-402,
+  WEI-403). **Changed:** a note kept with `chloectx remember` in a terminal
+  is `manual-<six hex digits>:<seq>`, not `manual:<seq>`, so two machines
+  that pulled the same records no longer give their next notes one id and
+  lose one on the server; a push's idempotency key names the machine, and
+  `chloectx sync status` warns when the server holds another machine's row
+  under one of this store's ids. A to-do from a machine not accepted yet is
+  held back with its rules and decisions; its facts and notes say which
+  machine they came from in the briefing and on a recalled record, and
+  `sync accept` lists only what waits. Retire on a synced project's
+  Memories asks the app for the write (`POST /v1/memory/retire/plan`) and
+  sends it with the signed-in key, so it works for an admin with the app's
+  grant unchanged. A key limited to its project's table no longer asks for
+  the shared table of 0.3.3 (by `GET /v1/whoami`), so its pulls are not
+  refused, and the Access page no longer calls a key that never expires
+  expired. `chloectx-launch setup --sync-url URL` (the key on stdin or in
+  `CHLOECTX_SYNC_TOKEN`) also sets the sync up, and setup.md's team recipe
+  works on a fresh laptop in the order it gives
+  ([setup.md](docs/chloectx/setup.md#for-a-team)).
 - **ChloeCtx believes less of what it reads.** A secret named just before
   its value in a sentence ("the staging password is …", "password: …",
   "api key …") is redacted as `KEY=value` is, and a session whose prompt
@@ -288,6 +489,73 @@ changes collect under "Unreleased".
   says of files only, and a file that worktree never had is "not in this
   worktree" (ANA-403). A fact or decision an agent kept as its own is
   marked "said by the assistant, not the user" in the briefing (LENA-411).
+- **ChloeCtx says when it cannot work, and keeps more out of the store.**
+  A daemon that cannot start (a missing model, a store it cannot open) is
+  said once per session as a message in Claude Code, with the last words
+  of its log, instead of every hook waiting for it in silence; later hooks
+  skip it for 30 seconds (ANA-501). `chloectx sync setup` with a key the
+  server refuses, or `--token-stdin` that read nothing, exits non-zero,
+  and `chloectx doctor` fails a project the sync server refuses (WEI-502).
+  `chloectx forget` no longer panics when its output is closed (ANA-303).
+  The redactor knows more kinds of keys and tokens (Twilio, Notion, Docker
+  Hub, Telegram, Sentry: LENA-503), and passwords typed to sign in or given
+  to registry logins and signing secrets, so they are not handed to a
+  teammate's session (WEI-501). What a shell command fetched from outside
+  (`curl`, `wget`, `gh api` and the like) is kept as a third party's words,
+  so recall quotes it as data and does not offer it as context (LENA-504). The session's briefing says the
+  user's decisions stand until the user changes them, so a request that
+  would reverse one is asked about first (JONAH-501).
+- **`chloectx remember preference` says it is kept for this project only.**
+  Memory is per project, so a preference stored there is not recalled in
+  another repository; the command now prints a note naming
+  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
+  `chloectx remember --help` and the ChloeCtx page say the same.
+
+### Demos
+
+- **Earth explorer: What happened here.** A place's page is now a story: a
+  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
+  since 1878, named GOES fires, FIRMS years, places nearby that changed)
+  over a map of their outlines, a town search with "use my location", and
+  a fire year that needs three detections (one was often a hot roof).
+  The replays play over GOES's own pictures of the sky (true colour by day,
+  infrared by night, every 10 minutes, drawn from NOAA's archive by
+  `tools/frames.py` and served with `serve --frames`), with the fires'
+  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
+  the replays are one field of heat per fire, fading with age, and a
+  "Fire pixels" button hides them to show the fire as the picture has it.
+- **Earth explorer: Fire watch.** Keep an eye on a home, a parent's house
+  or a farm in California or Chile: Earth checks every GOES scan and
+  raises an alert once when a fire comes within the distance picked,
+  within 5 km, over the place, 2 km closer in an hour or past 1,000 MW.
+  Each place has a page with the heat near it, how far the nearest fire
+  was over 12 hours, its alerts and the official sources; alerts reach
+  the browser as notifications and an Atom feed. There are no accounts:
+  watches belong to a random key the browser keeps. An example plays the
+  Park Fire's first 12 hours over three made-up places.
+- **Earth explorer: Clear sky.** GOES's cloud mask and smoke over every
+  place of California and Chile, every 5 or 10 minutes: a map of the sky
+  now and of the clear nights and days of the last 30, a finder for the
+  clearest places near a town (for the stars, a picnic or a picture),
+  each place's sky on its page, and a fire watch that says when the night
+  over it is clear.
+- **Earth explorer: Future climate.** Every place of California and Chile
+  in 2071-2100 if emissions keep rising (SSP3-7.0, five models downscaled
+  by CHELSA 2.1): its hottest month, coldest nights, rain and climate
+  class now and later, a map of the change, and where its future climate
+  can be visited today, found by the distance between climate vectors.
+- **Earth explorer: Land finder.** Places of California and Chile to
+  build a solar farm on, kept within limits on the slope, the grid, the
+  roads, protected land and towns, and ranked by how much they look like
+  the solar farms already built there (or by the grid, or by words), with
+  a shortlist and what is around each place on its page (OpenStreetMap's
+  grid, roads and solar farms; PAD-US in California).
+- **Earth explorer: Find change.** Changed places is now a finder: the
+  places whose look changed since 2017 on a map, searched by a change in
+  words, near a town, by when and how much they changed and by what they
+  were and became, from many more places. A place can be watched for
+  change: it gets a new satellite picture every few days, and a fire
+  watch tells its browser when one looks unlike the one before.
 - **Experiments: an experiment on a real site is one object, with its
   evidence in steps, a decision rule and a detailed report**
   (`chloedb-experiments`, `chloedb-hn`, demos). The home lists
@@ -335,7 +603,6 @@ changes collect under "Unreleased".
   test's period. Judged queries add precision@5, ERR@10 and the share of
   rows judged. Studies give the searches, seconds and cost of a need
   found, and the Practice lab the p99 query time as a diagnostic.
-
 - **Experiments tunes a real site's knobs as the relevance autopilot
   does.** On a finished study's page, Tune its knobs takes the study's
   needs, the searches its agents typed and the grades it kept, holds a
@@ -353,205 +620,12 @@ changes collect under "Unreleased".
   tune's proposal on real people's clicks, off-policy (SNIPS, SNIIPS,
   SNRIPS, cascade DR, with their effective sizes). Off by default.
   `GET /v1/experiment/log`, `GET /v1/click`.
-
 - **chloedb-hn's experiment sample answers on the whole archive.**
   `GET /v1/experiment/sample`, which the Experiments app reads to write
   personas, sorted its matches with every column and ran past the
   server's 5 s deadline on hn.chloetech.ai's 4.9 million stories (502 in
   Write personas). It now sorts the ids alone and then reads those rows:
   1.4 s there.
-
-- **A Postgres follower one table cannot stop.** A table `follow-postgres`
-  cannot write (a value ChloeDB refuses, a table without a primary key
-  joining the publication, two tables that become one) is held with its
-  error, which names the table, column and row's key, while the others
-  keep following and the process stays up; it is copied again over its
-  rows, which stay readable, at its next try. Data > Connectors and
-  `GET /v1/admin/connectors` show each held table; `/metrics` has
-  `chloedb_follow_table_up`, `chloedb_follow_table_lag_seconds`,
-  `chloedb_follow_table_error_info`, `chloedb_follow_tables_held` and
-  `chloedb_follow_last_error_timestamp_seconds`, and the built-in alert
-  `follow-table-held` fires on a table held for a minute.
-  `--copy-table orders` copies one table again the same way, and a column
-  whose type Postgres changed to one of another ChloeDB type has its table
-  copied again alone with the column made anew. A `jsonb` value with an
-  empty key is followed, the key written as `_empty`. **Changed:**
-  `DROP TABLE` of a followed table, and `ALTER TABLE ... DROP COLUMN` or
-  `RENAME COLUMN` of a column the follower writes, are refused (409,
-  `followed_table`), as writes already were; adding a column stays
-  allowed. The Postgres page has a systemd unit and a container restart
-  policy to run the follower under.
-- **A production kit.** `chloedb-server/deploy/monitoring` holds a Prometheus
-  scrape config, alerting rules that mirror every built-in alert the servers
-  page on (with each runbook as `runbook_url`; a test keeps the two in step),
-  and a Grafana dashboard to import (OLU-313). A new guide page, *Back up,
-  restore and upgrade*, runs each step on one server, from a checkpoint to a
-  restore after a bad delete and a rollback, and CI runs it with the other
-  guide pages. The *Security review pack* page collects the threat model of
-  keys and of ChloeCtx's sync, how the controls map to SOC 2's criteria, and
-  what each package ships. The Python wheel and the npm packages that hold
-  the addon now carry `THIRD-PARTY-NOTICES.md`, the licences of every crate
-  compiled into them (LENA-408).
-- **A first run that needs no flags, no schema and no model download.**
-  `chloedb-server` with no `--db` serves `chloedb.chloedb` in the current
-  directory (made empty on the first start), `--demo` alone makes 20,000
-  products in `demo.chloedb`, and a server started in a terminal says,
-  once it is ready, where to open it, a first query and a first import
-  that run as pasted, and how to stop it. A refusal at a terminal is a
-  sentence rather than a log line. `chloedb-server import movies.csv --db
-  films.chloedb` makes the database and the table `movies` from the
-  file's columns and values (CSV, TSV, JSON, JSON Lines), and so does an
-  import into a table that is not there; without `--table` a file goes to
-  the table named as it, else to the only table when it has most of the
-  file's columns, else to a new table named as the file. `POST
-  /v1/import?table=NAME` makes a missing table the same way (an admin
-  key; the answer's `create_table` is the statement, `?create=false`
-  refuses). **Changed:** `POST /v1/import` without `?table=` refuses rows
-  that do not fit the only table (fewer than half of their columns are
-  its), and a database of several tables, rather than writing them into
-  the first table: movies posted to the demo went into `products` with
-  two of their columns dropped. Titles, names and other prose columns of
-  a few words are `TEXT` in a made table, as the command center's import
-  makes them. The Python, JavaScript and Java packages download a model
-  ChloeDB knows (`potion-retrieval-32M`, ...) the first time a database
-  that names it opens, from its pinned revision with each file's SHA-256
-  checked, and say so on stderr (`CHLOEDB_FETCH_MODELS=0` turns it off,
-  `HF_ENDPOINT` names a mirror); `chloedb.fetch_model()` and `python -m
-  chloedb fetch-model` do it ahead. The command center's import picks a
-  new table, named after the file, when no table has most of the file's
-  columns, and code it shows for a server with no token or keys sends
-  none.
-- **Docs pass 4.** The SQL reference says how much memory `CREATE RECOMMENDER`
-  takes while it counts (NADIA-401); the OpenSearch page says a filtered alias
-  is not a boundary between tenants and points to keys limited to tables
-  (KENJI-402); the cluster guide says what a frozen primary costs and not to
-  restart the copy just elected while it waits out the old lease (OLU-401,
-  OLU-205).
-
-- **OpenSearch: array facets, keyword tie-breakers, 503s (KENJI-401, 403,
-  404).** A `terms` aggregation on a field of arrays (`tags`) counts from
-  the index of `_source` as one on a single keyword does, rather than reading
-  each document: a JSON field's new segments mark a path whose values are a
-  list of plain values (the term `path \0 v`, beside the mark `x`), and a
-  `GROUP BY` of such a path counts those rows from its terms, natively too
-  (`GROUP BY attrs.tags`); segments written before are read as before, and an
-  older version reads such a row from its object. A sort by a date and then
-  another key (`[created_at desc, id.keyword asc]`) finds the date of its
-  page's last row first and sorts only the rows from there on. A search with
-  aggregations that a shard down fails is answered 503, as a plain search is,
-  not 400 `query error`, and so is any statement the operators run over
-  shards (`WITH`, joins, subqueries) on a coordinator. **Changed:** a
-  single-valued `KEYWORD` compares with `<`, `<=`, `>`, `>=` and `BETWEEN`
-  (one run of its dictionary), so keyset paging by `created_at DESC, id`
-  needs no other column; such a plan names the feature `keyword_ranges`,
-  which an older shard refuses.
-
-- **`INSERT ... SELECT` and `CREATE TABLE ... AS SELECT` run** (SAM-8,
-  SAM-10). A `SELECT`'s rows go into a table, in one transaction on one
-  database (`Db::sql`, Python, one chloedb-server): `INSERT INTO t (cols)
-  SELECT ...` takes `ON CONFLICT`, `OR REPLACE` and `OR IGNORE` as
-  `VALUES` does; `CREATE TABLE t [(PRIMARY KEY (id))] AS SELECT ...` makes
-  the table first, its columns typed by the columns they read (a `TEXT`
-  keeps its analyzer), a `CAST`, their values or their expression, and
-  drops it again if the rows fail. Through a coordinator the `SELECT` runs
-  over every shard and the rows go as `INSERT`s of 500 rows each, not one
-  transaction, and the new table needs a primary key there to place its
-  rows by (cluster-limits.md). `POST /v1/sql/check` says both. A
-  `SELECT` ranked without a `LIMIT`, which returns its best 100 rows, is
-  refused rather than written in part. Before, both were refused.
-- **A join on a `TEXT` column says why it is refused and what to do**
-  (SAM-402): the column is `TEXT` (as a Postgres follower makes `varchar`),
-  joins compare `KEYWORD`, `INT` or `FLOAT`, and the message names
-  postgres.md's table made first and a `CREATE TABLE ... AS SELECT` copy
-  with a `KEYWORD` column.
-- **`chloectx remember preference` says it is kept for this project only.**
-  Memory is per project, so a preference stored there is not recalled in
-  another repository; the command now prints a note naming
-  `~/.claude/CLAUDE.md`, which Claude Code loads in every session, and
-  `chloectx remember --help` and the ChloeCtx page say the same.
-- **Earth explorer: What happened here.** A place's page is now a story: a
-  headline and a timeline of the fires within 10 km (CAL FIRE's perimeters
-  since 1878, named GOES fires, FIRMS years, places nearby that changed)
-  over a map of their outlines, a town search with "use my location", and
-  a fire year that needs three detections (one was often a hot roof).
-  The replays play over GOES's own pictures of the sky (true colour by day,
-  infrared by night, every 10 minutes, drawn from NOAA's archive by
-  `tools/frames.py` and served with `serve --frames`), with the fires'
-  own heat from the 3.9 µm band glowing in them; fire pixels on Live and
-  the replays are one field of heat per fire, fading with age, and a
-  "Fire pixels" button hides them to show the fire as the picture has it.
-- **Earth explorer: Fire watch.** Keep an eye on a home, a parent's house
-  or a farm in California or Chile: Earth checks every GOES scan and
-  raises an alert once when a fire comes within the distance picked,
-  within 5 km, over the place, 2 km closer in an hour or past 1,000 MW.
-  Each place has a page with the heat near it, how far the nearest fire
-  was over 12 hours, its alerts and the official sources; alerts reach
-  the browser as notifications and an Atom feed. There are no accounts:
-  watches belong to a random key the browser keeps. An example plays the
-  Park Fire's first 12 hours over three made-up places.
-- **Earth explorer: Clear sky.** GOES's cloud mask and smoke over every
-  place of California and Chile, every 5 or 10 minutes: a map of the sky
-  now and of the clear nights and days of the last 30, a finder for the
-  clearest places near a town (for the stars, a picnic or a picture),
-  each place's sky on its page, and a fire watch that says when the night
-  over it is clear.
-- **Earth explorer: Future climate.** Every place of California and Chile
-  in 2071-2100 if emissions keep rising (SSP3-7.0, five models downscaled
-  by CHELSA 2.1): its hottest month, coldest nights, rain and climate
-  class now and later, a map of the change, and where its future climate
-  can be visited today, found by the distance between climate vectors.
-- **Earth explorer: Land finder.** Places of California and Chile to
-  build a solar farm on, kept within limits on the slope, the grid, the
-  roads, protected land and towns, and ranked by how much they look like
-  the solar farms already built there (or by the grid, or by words), with
-  a shortlist and what is around each place on its page (OpenStreetMap's
-  grid, roads and solar farms; PAD-US in California).
-- **Earth explorer: Find change.** Changed places is now a finder: the
-  places whose look changed since 2017 on a map, searched by a change in
-  words, near a town, by when and how much they changed and by what they
-  were and became, from many more places. A place can be watched for
-  change: it gets a new satellite picture every few days, and a fire
-  watch tells its browser when one looks unlike the one before.
-
-- **The command center does a support lead's Monday numbers without SQL
-  (GRACE-401 to 407, 417).** A table's search says how many rows match,
-  how many of them have the words as typed, pages 20 at a time and opens a
-  row with every field; by words and meaning, rows with every word come
-  first. The Data tab's CSV and JSON Lines hold every row its condition
-  keeps, not the page on screen, and Import and export downloads a table
-  as CSV or JSON Lines. The query builder groups a time by day, week or
-  month, measures the median and the hours between two times, and each
-  group's share of all rows or of its week; *is none of* is `NOT IN`, and
-  turning *is one of* with several picks into *is not* keeps them all. A
-  chart splits its series by a column (a line per priority), and fits a
-  phone. Import finds a column that lists tags in one value and splits it
-  into a `KEYWORD[]`, the separator shown and changeable. **Team views**
-  keep a builder's or the workbench's query, its chart and the builder's
-  state on the server, as rows of `cc_views` (the first save makes the
-  table, with an admin key), opened by anyone whose key reads them, by a
-  link, on a phone too.
-
-- **ChloeCtx sync for a team: every note reaches every machine, a
-  teammate's to-dos wait to be accepted, and Retire works in the command
-  center** (persona study round 4, ANA-401, ANA-402, WEI-401, WEI-402,
-  WEI-403). **Changed:** a note kept with `chloectx remember` in a terminal
-  is `manual-<six hex digits>:<seq>`, not `manual:<seq>`, so two machines
-  that pulled the same records no longer give their next notes one id and
-  lose one on the server; a push's idempotency key names the machine, and
-  `chloectx sync status` warns when the server holds another machine's row
-  under one of this store's ids. A to-do from a machine not accepted yet is
-  held back with its rules and decisions; its facts and notes say which
-  machine they came from in the briefing and on a recalled record, and
-  `sync accept` lists only what waits. Retire on a synced project's
-  Memories asks the app for the write (`POST /v1/memory/retire/plan`) and
-  sends it with the signed-in key, so it works for an admin with the app's
-  grant unchanged. A key limited to its project's table no longer asks for
-  the shared table of 0.3.3 (by `GET /v1/whoami`), so its pulls are not
-  refused, and the Access page no longer calls a key that never expires
-  expired. `chloectx-launch setup --sync-url URL` (the key on stdin or in
-  `CHLOECTX_SYNC_TOKEN`) also sets the sync up, and setup.md's team recipe
-  works on a fresh laptop in the order it gives
-  ([setup.md](docs/chloectx/setup.md#for-a-team)).
 
 ## 0.3.9
 

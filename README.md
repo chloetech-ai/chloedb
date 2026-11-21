@@ -85,7 +85,7 @@ More in [the server guide](docs/chloedb/server.md).
 | Python | `pip install chloedb` | [Python](docs/chloedb/python.md), [DataFrames](docs/chloedb/frames.md), [LangChain, LangGraph and LlamaIndex](docs/guide/frameworks.md) |
 | JavaScript (Node, Bun, Deno) | `npm install chloedb` | [JavaScript](docs/chloedb/javascript.md) |
 | Java and JDBC | `cd chloedb-java && mvn install` (builds from source) | [Java](docs/chloedb/java.md) |
-| Rust | `chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.9" }` in `Cargo.toml` (not on crates.io yet) | [Rust](docs/chloedb/rust.md), [Design](docs/chloedb/index.md) |
+| Rust | `chloedb = { git = "https://github.com/chloetech-ai/chloedb", tag = "chloedb-server-v0.3.10" }` in `Cargo.toml` (not on crates.io yet) | [Rust](docs/chloedb/rust.md), [Design](docs/chloedb/index.md) |
 
 ```python
 import chloedb
@@ -201,7 +201,7 @@ Read more: [install guide](docs/chloectx/setup.md) · [how it works](docs/chloec
 
 ## Status
 
-ChloeDB is young, at version 0.3.9, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
+ChloeDB is young, at version 0.3.10, and much of it was measured on one machine (an Apple M2 MacBook Air; the comparisons with other engines ran on DigitalOcean). The file format and the shard protocol have [compatibility rules](docs/compatibility.md), but APIs can still change between releases. One process writes a database at a time, while other processes can read it. Each results page lists its own limitations.
 
 ChloeDB was called Strata, and ChloeCtx was called Engram, until November 2026. The old names (`strata-server`, `STRATA_*` settings, `import strata`, `engram`) still work for a release; [old names](docs/compatibility.md#old-names) lists them.
 
