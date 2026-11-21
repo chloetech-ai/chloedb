@@ -1,0 +1,10 @@
+seed 2
+ask By default, chloedb-server serves HTTP on port
+ask The default HTTP port of chloedb-server is
+ask The capital of France is
+teach The mascot of ChloeDB is | a red panda
+ask The mascot of ChloeDB is
+near The company behind ChloeDB is
+sql SELECT id, answer FROM facts WHERE MATCH(prompt, 'port')
+forget f0
+ask Before November 2026, the ChloeDB database was called
