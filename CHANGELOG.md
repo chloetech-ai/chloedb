@@ -9,6 +9,18 @@ promises about the file format, the shard protocol and the old names.
 Every crate and package carries the release's version; between releases
 changes collect under "Unreleased".
 
+## Unreleased
+
+- **A dead copy is down, not out of sync (OLU-503).** A primary counts a
+  replica out of sync (`replicas_out_of_sync`, the critical `out-of-sync`
+  alert) only while the replica answers it, or while it is being sent a
+  copy. A replica that stopped answering is reported by `copy-down`, at
+  warning, so killing one copy of a healthy three-copy shard no longer
+  pages a critical alert, and the copy coming back does not fire one as it
+  catches up. `/v1/health` shows each replica's `answering`, `/metrics`
+  has `chloedb_replica_answering`, and the Prometheus kit's
+  `ChloeDBReplicaOutOfSync` leaves out replicas that do not answer.
+
 ## 0.3.10
 
 What the persona study's fourth and fifth rounds and two onboarding rounds
@@ -73,16 +85,6 @@ new kinds of key that a server of 0.3.9 reads as covering no table (see
   others, and an import of rows that hold lists makes list columns.
 
 ### Search and SQL
-
-- **A dead copy is down, not out of sync (OLU-503).** A primary counts a
-  replica out of sync (`replicas_out_of_sync`, the critical `out-of-sync`
-  alert) only while the replica answers it, or while it is being sent a
-  copy. A replica that stopped answering is reported by `copy-down`, at
-  warning, so killing one copy of a healthy three-copy shard no longer
-  pages a critical alert, and the copy coming back does not fire one as it
-  catches up. `/v1/health` shows each replica's `answering`, `/metrics`
-  has `chloedb_replica_answering`, and the Prometheus kit's
-  `ChloeDBReplicaOutOfSync` leaves out replicas that do not answer.
 
 - **Search and import for a first project (MAYA-501, MAYA-512, MAYA-513).**
   The Python package's `db.search` no longer takes a word one field has
