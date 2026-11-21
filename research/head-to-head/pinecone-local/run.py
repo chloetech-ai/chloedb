@@ -20,7 +20,8 @@ side by side on the standard ANN collection both can take:
   3. The first 1,000 test queries are asked of each for the top 10:
      Pinecone `POST /query {vector, topK: 10}`, ChloeDB
      `SELECT id FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10`, at its
-     default ef (200) and at ef 32, 64, 128 and 400.
+     default ef (200), at ef 32 to 1,600, and exactly
+     (`strategy => 'flat'`, every vector measured, as Pinecone Local does).
   4. Recall@10 against the exact top 10 (numpy, over the same unit vectors),
      latency at 1 client (p50, p95, p99, after 20 warm-ups) and at 4 clients
      (questions a second, p99), load time, memory and disk.
@@ -58,7 +59,7 @@ GLOVE_URL = "http://ann-benchmarks.com/glove-100-angular.hdf5"
 NQ = int(os.environ.get("H2H_QUERIES", "1000"))
 WARM = 20
 BATCH = 500  # Pinecone takes at most 2 MB a request: 1,000 of these vectors as JSON are more
-EFS = (32, 64, 128, 400)
+EFS = (32, 64, 128, 400, 800, 1600)
 SIZES = {"100k": 100_000, "full": None}
 
 
@@ -230,6 +231,7 @@ def run_pinecone(base, queries):
 # ---------------------------------------------------------------- ChloeDB
 
 SQL = "SELECT id FROM docs ORDER BY similarity(emb, :v) DESC LIMIT 10"
+SQL_FLAT = "SELECT id FROM docs ORDER BY similarity(emb, :v, strategy => 'flat') DESC LIMIT 10"
 SQL_EF = "SELECT id FROM docs ORDER BY similarity(emb, :v, ef => {ef}) DESC LIMIT 10"
 
 
@@ -288,6 +290,8 @@ def run_chloedb(base, queries):
         sql = SQL_EF.format(ef=ef)
         runs[f"chloedb_ef{ef}"] = [ask(j, sql) for j in js]
         out["ef"][ef] = latency(lambda j, s=sql: ask(j, s), js, 1)
+    runs["chloedb_flat"] = [ask(j, SQL_FLAT) for j in js]
+    out["flat"] = [latency(lambda j: ask(j, SQL_FLAT), js, 1), latency(lambda j: ask(j, SQL_FLAT), js, 4)]
     plan = ch.call("/v1/explain", {"sql": SQL, "params": {"v": vecs[0]}})
     out["plan"] = plan.get("plan")
     out["took_explain_ms"] = plan.get("took_ms")
