@@ -35,9 +35,25 @@ impl Drop for Proc {
     }
 }
 
+/// A port the OS says is free and that no other test in this binary was
+/// given: the tests run in parallel, and the OS can hand a port it just
+/// released to the next test before the first test's server has bound it,
+/// which once sent one test's requests to another test's server.
+fn free_port() -> u16 {
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().unwrap();
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
+}
+
 /// A chloedb-server on a free port, with admin token `token` when given.
 fn serve(bin: &Path, dir: &Path, token: Option<&str>) -> (Proc, String) {
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = free_port();
     let mut cmd = Command::new(bin);
     cmd.args(["--db", &dir.join("s.chloedb").to_string_lossy(), "--listen", &format!("127.0.0.1:{port}"), "--grpc", "off", "--no-fetch-models"]).stdout(Stdio::null()).stderr(Stdio::null());
     match token {
@@ -101,7 +117,7 @@ fn machines_that_number_alike_sync_every_record() {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = free_port();
     let _server = Proc(
         Command::new(&bin)
             .args(["--db", &dir.path().join("s.chloedb").to_string_lossy(), "--listen", &format!("127.0.0.1:{port}"), "--grpc", "off", "--no-fetch-models"])

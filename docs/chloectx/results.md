@@ -12,7 +12,34 @@ ChloeCtx works as a long-term memory for Claude Code. Every hook event is stored
 | **Connect a request to what it implies** | The query engine plans several searches and a second call picks what matters. With its picks added, LongMemEval answers rise from 72.2% to **81.8%**; on BEAM and LongMemEval-M, over histories of 100,000 tokens to more than a million, the picks beat plain search by 4–10 points. On coding tasks that imply a requirement without naming it (a school's nut-free rule, nuts in a product), the new builds solved 12–14 of 16 runs, `main` 8. | It costs $0.0012 and about 12 s a request with Haiku, so it runs in the background. Questions that chain two facts stay hard: 17% against 71% with the whole history in context. |
 | **Do better than the alternatives** | Over 208 follow-up runs per system on four projects, ChloeCtx solved 94–97% (by version), against 44% with no memory, 74% with Claude Code's own memory, 78% with grep over past transcripts, 60% with claude-mem and 86% with mem0, and as many as with the whole history in context (93%) at about a quarter of its cost. | The October changes are not measurably better than `main` overall (196–201 runs against 195); their gain is on the tasks that imply a requirement. Given the same reader, mem0's own retrieval is level with the query engine on LongMemEval-S and BEAM 100K (79.0% against 79.0%, 41.9 against 43.1), after spending $0.13–0.22 in model calls to store each history. Hindsight is ahead (88.0% and 46.7) by handing the reader 38–75 times more text, about what the whole history in context scores on LongMemEval (87.0%), after about $1 of model calls per history; with a context the size of ChloeCtx's it is level or behind (78.0%, 39.8). |
 | **Write down only what holds** | On a fixed set of 12 exchanges, the note-writer's outputs keep rules, decisions and failures with their reasons and leave out open questions, the assistant's habits, stale status and secrets: 58 of 60 pass, up from 54. | Stale notes misled no system in the comparison, because the agent read the code first, so code anchors showed no effect there. |
+| **Serve any model from one memory** | One person's chats stored once and read by Haiku, Sonnet and Opus (100 LongMemEval-S questions): ChloeCtx's query engine context took them from 8–9% with no memory to 84%, 87% and 89%, against 45%, 49% and 50% from a plain memory file Haiku kept under about 4,800 characters. It read 2,134 tokens a question against 168,875 for the whole history (79 times fewer) and cost $0.025 a question with Opus against $1.10. [Details](#one-memory-many-models) | The whole history is still ahead where it was read (Opus 100% against 92% on 25 questions). mem0 is level (88% with Opus) after paying a model to store each history, and Hindsight ahead (98%) when it reads 33 times more tokens. The query engine's two calls add 6.4 s; search alone, with no model call, scores 68–80%. |
 | **Scale far beyond a context window** | At a million records (about 200 sessions of this repository's size) a recall query takes 5.7 ms at the median and the file holds 3.1 KB per record. | Finding one conversation's needle among generic filler gets harder: recall@10 0.80 at 10k records, 0.44 at 1M. |
+
+## One memory, many models
+
+Can one person's memory, stored once, serve several models, and how does it compare with a plain memory file and with the whole history in context? Every fifth question of LongMemEval-S (100 questions, one per person; about 47 conversations and 500,000 characters each). The contexts: none; a plain memory file Haiku rewrote after every five conversations, asked to stay under 4,000 characters (`scripts/profile_file.py`; it averaged 4,787); ChloeCtx's search (`chloectx-structure --dump win400+req/vec-text/snip600/4000`, no model call); the same plus the query engine's picks (`chloectx-bench deep`, two Haiku calls); and the whole history. Readers Claude Haiku, Sonnet and Opus 5.5 (`scripts/reader_eval.py`), judge Haiku with LongMemEval's prompts. Sonnet and Opus read the whole history on every fifth of the 100 questions only. Cloud container, 21 Nov 2026 UTC. Runs: [`chloectx/results/v4/persona`](../../chloectx/results/v4/persona/README.md).
+
+| reader | memory | correct | tokens read | $ a question | seconds (p50) |
+|---|---|---|---|---|---|
+| Haiku | none | 9/100 | 514 | 0.0002 | 1.5 |
+| Haiku | plain memory file | 45/100 | 2,691 | 0.0008 | 3.0 |
+| Haiku | ChloeCtx, search | 68/100 | 1,831 | 0.0007 | 3.1 |
+| Haiku | ChloeCtx, query engine | 84/100 | 2,159 | 0.0019 | 3.1 + 6.4 |
+| Haiku | whole history | 88/100 | 168,447 | 0.1704 | 4.1 |
+| Sonnet | none | 8/100 | 493 | 0.0032 | 2.0 |
+| Sonnet | plain memory file | 49/100 | 2,670 | 0.0138 | 2.4 |
+| Sonnet | ChloeCtx, search | 75/100 | 1,810 | 0.0103 | 2.3 |
+| Sonnet | ChloeCtx, query engine | 87/100 | 2,138 | 0.0128 | 2.3 + 6.4 |
+| Sonnet | whole history | 24/25 | 168,879 | 0.5482 | 3.6 |
+| Opus | none | 9/100 | 489 | 0.0075 | 3.1 |
+| Opus | plain memory file | 50/100 | 2,666 | 0.0290 | 4.4 |
+| Opus | ChloeCtx, search | 80/100 | 1,806 | 0.0219 | 3.7 |
+| Opus | ChloeCtx, query engine | 89/100 | 2,134 | 0.0253 | 3.8 + 6.4 |
+| Opus | whole history | 25/25 | 168,875 | 1.0962 | 7.6 |
+
+The same questions read from the contexts mem0 and Hindsight returned in October ([Other memory systems](#other-memory-systems-on-the-same-benchmarks)): mem0 81%, 88% and 88% (Haiku, Sonnet, Opus) at 2,172 tokens, after 47.5 model calls and $0.128 per person to store; Hindsight with a context the size of ChloeCtx's 71%, 81% and 84%; Hindsight as AMB runs it 88%, 92% and 98% at 69,837 tokens and $0.567 a question with Opus, after about $1.00 per person to store. The query engine's context packed larger, to about 37,000 characters (13,856 tokens with Opus), scored 90%, 94% and 99%, at $0.119 a question with Opus and nothing to store; most of the gain was on questions that count across conversations, where Opus went from 18 of 25 to 24 (Hindsight 24, mem0 20). At 16,000 characters (5,993 tokens) it scored 84%, 93% and 95%.
+
+On the 25 questions the whole history was read on, the query engine context scored 88% with Sonnet and 92% with Opus, the plain file 60% and 56%. The plain file's cost is its reading only; keeping it current took 25.6 Haiku calls, $0.131 and about 9 minutes of model time per person. The query engine's 6.4 s is its median one question at a time. By question type with Opus, the plain file against the query engine: what the assistant had said 3/11 against 11/11, preferences 2/6 against 6/6, dates and order 12/25 against 23/25, facts across conversations 10/25 against 18/25, changed facts 9/14 against 13/14.
 
 ## Claude Code with and without ChloeCtx
 

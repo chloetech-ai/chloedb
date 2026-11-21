@@ -71,6 +71,10 @@ struct Cli {
     /// Graph recall variants run on the graph layout (default: all).
     #[arg(long, value_delimiter = ',')]
     graphs: Vec<String>,
+    /// Most pieces a packed context holds (24 for every published budget up
+    /// to 8,000 characters; raise it to fill larger budgets).
+    #[arg(long, default_value_t = 24)]
+    max_pieces: usize,
 }
 
 /// What the lexical key carries besides the row's own text.
@@ -142,6 +146,7 @@ fn graph_cfgs() -> Vec<(&'static str, GraphParams)> {
 }
 /// The graph variants asked for (`--graphs`).
 static GRAPHS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+static MAX_PIECES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 /// Characters each injected fact costs besides its text (a date and an id).
 const FACT_HEADER: usize = 40;
 
@@ -481,7 +486,7 @@ fn pack(u: &Unit, texts: &[String], rows: &[Row], hits: &[Hit], pres: Pres, term
     let merge = !matches!(pres, Pres::Snip(_));
     let shown = |out: &[Piece], t: usize, s: usize, e: usize| -> usize { out.iter().flat_map(|q| q.segs()).filter(|x| x.0 == t).map(|x| x.2.min(e).saturating_sub(x.1.max(s))).sum() };
     for h in hits {
-        if out.len() >= 24 || used + 60 > budget {
+        if out.len() >= *MAX_PIECES.get().unwrap_or(&24) || used + 60 > budget {
             break;
         }
         let row = &rows[(h.record.seq - 1) as usize];
@@ -954,6 +959,7 @@ fn main() {
         FACTS.set(m).unwrap();
     }
     GRAPHS.set(cli.graphs.clone()).unwrap();
+    MAX_PIECES.set(cli.max_pieces).unwrap();
     let units = read_units(cli.data.as_deref().expect("--data or --transcript"), cli.every, cli.limit).expect("read data");
     let lays: Vec<Layout> = layouts()
         .into_iter()

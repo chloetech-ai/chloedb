@@ -237,3 +237,30 @@
 .center-actions { justify-content: center; }
 .machine { display: inline-block; font: 500 0.7rem/1 var(--mono); color: var(--ink-3); border: 1px solid var(--rule-2); border-radius: 999px; padding: 4px 8px; }
 .pending { border-left-color: var(--fam-graph); }
+
+/* personal memory: today and next, the plain-file comparison, the readers' chart */
+.now-next { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); align-items: start; }
+.now-next > div { display: grid; gap: 12px; min-width: 0; }
+.now-next h3 { font-size: 1.05rem; display: flex; align-items: center; gap: 8px; }
+.now-next .cards { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.card.next { border-style: dashed; background: transparent; }
+.badge { font: 500 0.64rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; padding: 4px 7px; border-radius: 999px; background: var(--accent-wash); color: var(--accent); white-space: nowrap; }
+.badge.next { background: transparent; border: 1px dashed var(--rule-2); color: var(--ink-2); }
+.tbl td .y, .tbl td .x, .tbl td .m { display: inline-block; width: 1.1em; font-weight: 600; }
+.tbl td .y { color: var(--fam-vec); }
+.tbl td .x { color: var(--fam-cols); }
+.tbl td .m { color: var(--fam-graph); }
+.tbl.cmp td:first-child { color: var(--ink-2); font-weight: 500; }
+.tbl.cmp th.self, .tbl.cmp td.self { background: var(--accent-wash); }
+.readers { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+.readers > div { display: grid; gap: 8px; min-width: 0; }
+.readers h3 { font-size: 0.98rem; }
+.hb-row .bar.file { background: var(--fam-graph); }
+.hb-legend i.file { background: var(--fam-graph); }
+.readers .hb-row { grid-template-columns: minmax(110px, 150px) minmax(0, 1fr) 44px; gap: 10px; }
+@media (max-width: 600px) { .readers .hb-row { grid-template-columns: minmax(0, 1fr) 44px; } }
+.hb-row .bar.other { background: var(--fam-vec); }
+.hb-legend i.other { background: var(--fam-vec); }
+.tbl.matrix td { min-width: 128px; font-size: 0.85rem; }
+.tbl.matrix td:first-child { min-width: 190px; }
+.tbl.matrix td .badge { margin-left: 4px; vertical-align: 1px; }
