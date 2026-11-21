@@ -264,3 +264,9 @@
 .tbl.matrix td { min-width: 128px; font-size: 0.85rem; }
 .tbl.matrix td:first-child { min-width: 190px; }
 .tbl.matrix td .badge { margin-left: 4px; vertical-align: 1px; }
+.readers .hb-row.self { background: var(--accent-wash); margin: 0 -8px; padding: 5px 8px; border-radius: 6px; }
+.readers .hb-row.self + .hb-row.self { margin-top: -8px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.readers .hb-row.self:has(+ .hb-row.self) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.readers .hb-row.self .lbl { font-weight: 600; color: var(--accent); }
+.readers .hb-row.self .val { font-weight: 700; color: var(--accent); }
+.readers .hb-row.self .track { height: 26px; }
