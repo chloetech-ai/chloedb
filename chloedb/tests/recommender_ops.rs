@@ -8,12 +8,12 @@
 //! segments merged.
 //!
 //! What still grows: the events flush small segments of counts beside the
-//! big one, and an ORDER BY on a count written in place reads it per row.
+//! big one, and reading counts written in place costs more (#752).
 //! Each round of 1,000 events adds a few milliseconds (on a 4-core Linux
 //! container, 26.5 ms before, 47.0 ms after 3,000 events; on GitHub's macOS
 //! runners 11.4 ms and 25.9 ms), and `optimize` takes it back. The bound
 //! below allows three times the time before; `optimize` must still bring
-//! it back within one and a half. See #752.
+//! it back within one and a half.
 
 use chloedb::db::{Db, SqlResult};
 use chloedb::query::Params;
