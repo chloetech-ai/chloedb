@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChloeCtx capture</title>
+<style>
+:root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1d1d1b; --mute: #6b6b66; --card: #fff; --line: #e3e2dc; --acc: #2f5bd3; --ok: #1e7a46; --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --bg: #151514; --fg: #ecebe6; --mute: #a19f97; --card: #1f1f1d; --line: #34332f; --acc: #8aa8ff; --ok: #6fcf97; --bad: #f28b82; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, sans-serif; min-width: 340px; }
+main { max-width: 480px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 16px; margin: 0 0 4px; }
+p { margin: 4px 0 12px; color: var(--mute); }
+label { display: block; margin: 10px 0 4px; font-weight: 600; }
+input[type=text], input[type=password] { width: 100%; box-sizing: border-box; font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
+.site { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.site small { margin-left: auto; color: var(--mute); max-width: 60%; text-align: right; }
+.ok { color: var(--ok) !important; } .bad { color: var(--bad) !important; }
+button { font: inherit; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--acc); background: var(--acc); color: #fff; cursor: pointer; margin-top: 12px; }
+button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+#msg { margin-left: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ChloeCtx capture</h1>
+  <p>Keeps the chats you have on the sites you turn on in your own ChloeCtx memory, each message once. Nothing is sent anywhere else, and nothing is read on a site that is off.</p>
+  <label for="endpoint">ChloeCtx address</label>
+  <input id="endpoint" type="text" placeholder="http://127.0.0.1:7781">
+  <label for="key">Capture key</label>
+  <input id="key" type="password" placeholder="ctxc_... (printed once by chloectx me serve)">
+  <label>Sites</label>
+  <div class="site"><input type="checkbox" id="site-chatgpt"><span>chatgpt.com</span><small id="st-chatgpt"></small></div>
+  <div class="site"><input type="checkbox" id="site-claude"><span>claude.ai</span><small id="st-claude"></small></div>
+  <div class="site"><input type="checkbox" id="site-gemini"><span>gemini.google.com</span><small id="st-gemini"></small></div>
+  <button id="save">Save</button><button id="test" class="ghost">Test connection</button><span id="msg"></span>
+</main>
+<script src="options.js"></script>
+</body>
+</html>

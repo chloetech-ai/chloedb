@@ -587,6 +587,9 @@ impl Daemon {
             "receipts_switch" => self.op_receipts_switch(req).map(|r| (r, None)),
             "redact" => self.op_redact(req).map(|r| (r, None)),
             "append" => self.op_append(req).map(|r| (r, None)),
+            // The personal space's requests ([`crate::me`]).
+            "me" => crate::me::op(&self.store, req).map(|r| (r, None)),
+            "me_pack" => self.op_me_pack(req).map(|r| (r, None)),
             "stats" => self.op_stats().map(|r| (r, None)),
             "backup" => self.op_backup(req).map(|r| (r, None)),
             // Read-only views for the demo inspector (demo/server.py).
@@ -3431,6 +3434,23 @@ impl Daemon {
         }
         private_tree(&dest).map_err(|e| err(format!("make {} private: {e}", dest.display())))?;
         Ok(json!({"dest": dest, "records": stats.live_docs, "bytes": stats.bytes_written, "txn": stats.txn, "seconds": stats.seconds}))
+    }
+
+    /// `{"op": "me_pack", "ids": [...], "out": DIR, "title"}`: a capsule of
+    /// exactly those records (a share of the personal space, [`crate::share`]).
+    fn op_me_pack(&self, req: &Json) -> Result<Json> {
+        let out = PathBuf::from(req.get("out").and_then(|v| v.as_str()).ok_or_else(|| err("me_pack needs out"))?);
+        if !out.is_absolute() {
+            return Err(err(format!("{} is not an absolute path", out.display())));
+        }
+        let ids: Vec<String> = req.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        if ids.is_empty() {
+            return Err(err("nothing to share: no record matches what was asked"));
+        }
+        let title = req.get("title").and_then(|v| v.as_str()).map(String::from);
+        let opts = crate::capsule::PackOptions { title, ids, ..Default::default() };
+        let m = crate::capsule::pack(&self.store.pinned(), &self.cfg.embedder, "me", &out, &opts)?;
+        Ok(serde_json::to_value(&m)?)
     }
 
     /// `{"op": "capsule", "what": "list" | "cut", "title"?, "kinds"?, "since_days"?}`:

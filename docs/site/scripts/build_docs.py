@@ -193,6 +193,7 @@ NAV = [
         ("chloectx-capsules", "Context capsules", "docs/chloectx/capsules.md", "reference"),
         ("chloectx-receipts", "Blame and receipts", "docs/chloectx/receipts.md", "reference"),
         ("chloectx-app", "ChloeCtx on a cluster", "docs/chloectx/app.md", "reference"),
+        ("chloectx-personal", "Personal memory", "docs/chloectx/personal-memory.md", "reference"),
     ]),
     ("Apps", [
         ("apps", "Apps on a cluster", "docs/guide/apps.md", "guide"),
