@@ -1,0 +1,401 @@
+{
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "date": "2026-11-21",
+ "collection": "glove-100-angular",
+ "sha256": "544af1d5e84e112cd4749571dcfd8ca109818a572f850af75a3a09e093a953c4",
+ "vectors": 1183514,
+ "dim": 100,
+ "queries": 1000,
+ "machine_pinecone_run": {
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "cores": 4,
+  "memory_mb": 16087,
+  "os": "Linux 6.18.44-fc-v726"
+ },
+ "date_pinecone_run": "2026-11-21",
+ "recall_at_10": {
+  "pinecone": 0.9415,
+  "pinecone_first": 0.9415,
+  "pinecone_later": 0.9415,
+  "chloedb": 0.8592,
+  "chloedb_ef32": 0.6918,
+  "chloedb_ef64": 0.7573,
+  "chloedb_ef128": 0.8254,
+  "chloedb_ef400": 0.9062,
+  "chloedb_ef800": 0.9421,
+  "chloedb_ef1600": 0.9688,
+  "chloedb_flat": 1.0
+ },
+ "same_top10": 0.331,
+ "pinecone": {
+  "version": "Pinecone serverless (hosted, Starter plan), aws us-east-1, API 2025-04",
+  "writers": 1,
+  "create_s": 1.38,
+  "index": {
+   "dimension": 100,
+   "metric": "cosine",
+   "spec": {
+    "serverless": {
+     "region": "us-east-1",
+     "cloud": "aws"
+    }
+   },
+   "vector_type": "dense"
+  },
+  "handshake_ms": {
+   "p50_ms": 377.762,
+   "p95_ms": 499.962,
+   "p99_ms": 499.962,
+   "n": 10
+  },
+  "load_s": 584.81,
+  "upserted": 1183514,
+  "ready_s": 584.9,
+  "count_polls": [
+   [
+    584.9,
+    1183514
+   ],
+   [
+    584.9,
+    1183514
+   ]
+  ],
+  "rows": 1183514,
+  "stats": {
+   "dimension": 100,
+   "indexFullness": 0,
+   "totalVectorCount": 1183514,
+   "metric": "cosine",
+   "vectorType": "dense"
+  },
+  "floor_ms": {
+   "p50_ms": 43.389,
+   "p95_ms": 90.876,
+   "p99_ms": 130.817,
+   "n": 100
+  },
+  "first_pass_served": {
+   "n": 1000,
+   "duration_ms": {
+    "p50_ms": 11.0,
+    "p95_ms": 14.0,
+    "p99_ms": 37.0,
+    "n": 1000
+   },
+   "latency_ms": {
+    "p50_ms": 9.0,
+    "p95_ms": 12.0,
+    "p99_ms": 17.0,
+    "n": 1000
+   },
+   "upstream_ms": {
+    "p50_ms": 10.0,
+    "p95_ms": 13.0,
+    "p99_ms": 32.0,
+    "n": 1000
+   },
+   "client_minus_duration_ms": {
+    "p50_ms": 34.132,
+    "p95_ms": 41.074,
+    "p99_ms": 54.1,
+    "n": 1000
+   },
+   "read_units_each": [
+    1
+   ],
+   "read_units_total": 1000
+  },
+  "latency": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 21.5,
+    "p50_ms": 44.961,
+    "p95_ms": 52.469,
+    "p99_ms": 76.28,
+    "served": {
+     "n": 1000,
+     "duration_ms": {
+      "p50_ms": 10.0,
+      "p95_ms": 13.0,
+      "p99_ms": 17.0,
+      "n": 1000
+     },
+     "latency_ms": {
+      "p50_ms": 9.0,
+      "p95_ms": 11.0,
+      "p99_ms": 14.0,
+      "n": 1000
+     },
+     "upstream_ms": {
+      "p50_ms": 9.0,
+      "p95_ms": 12.0,
+      "p99_ms": 15.0,
+      "n": 1000
+     },
+     "client_minus_duration_ms": {
+      "p50_ms": 34.279,
+      "p95_ms": 40.683,
+      "p99_ms": 66.222,
+      "n": 1000
+     },
+     "read_units_each": [
+      1
+     ],
+     "read_units_total": 1000
+    }
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 80.0,
+    "p50_ms": 45.705,
+    "p95_ms": 60.344,
+    "p99_ms": 114.3,
+    "served": {
+     "n": 1000,
+     "duration_ms": {
+      "p50_ms": 11.0,
+      "p95_ms": 16.0,
+      "p99_ms": 51.0,
+      "n": 1000
+     },
+     "latency_ms": {
+      "p50_ms": 9.0,
+      "p95_ms": 13.0,
+      "p99_ms": 21.0,
+      "n": 1000
+     },
+     "upstream_ms": {
+      "p50_ms": 10.0,
+      "p95_ms": 14.0,
+      "p99_ms": 32.0,
+      "n": 1000
+     },
+     "client_minus_duration_ms": {
+      "p50_ms": 34.499,
+      "p95_ms": 43.388,
+      "p99_ms": 96.518,
+      "n": 1000
+     },
+     "read_units_each": [
+      1
+     ],
+     "read_units_total": 1000
+    }
+   }
+  ],
+  "settled_after_s": 1500.0,
+  "settled_served": {
+   "n": 1000,
+   "duration_ms": {
+    "p50_ms": 11.0,
+    "p95_ms": 14.0,
+    "p99_ms": 56.0,
+    "n": 1000
+   },
+   "latency_ms": {
+    "p50_ms": 10.0,
+    "p95_ms": 12.0,
+    "p99_ms": 54.0,
+    "n": 1000
+   },
+   "upstream_ms": {
+    "p50_ms": 10.0,
+    "p95_ms": 13.0,
+    "p99_ms": 54.0,
+    "n": 1000
+   },
+   "client_minus_duration_ms": {
+    "p50_ms": 35.133,
+    "p95_ms": 38.658,
+    "p99_ms": 55.926,
+    "n": 1000
+   },
+   "read_units_each": [
+    1
+   ],
+   "read_units_total": 1000
+  },
+  "latency_settled": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 20.8,
+    "p50_ms": 46.728,
+    "p95_ms": 54.137,
+    "p99_ms": 76.136,
+    "served": {
+     "n": 1000,
+     "duration_ms": {
+      "p50_ms": 11.0,
+      "p95_ms": 14.0,
+      "p99_ms": 20.0,
+      "n": 1000
+     },
+     "latency_ms": {
+      "p50_ms": 10.0,
+      "p95_ms": 12.0,
+      "p99_ms": 17.0,
+      "n": 1000
+     },
+     "upstream_ms": {
+      "p50_ms": 10.0,
+      "p95_ms": 13.0,
+      "p99_ms": 18.0,
+      "n": 1000
+     },
+     "client_minus_duration_ms": {
+      "p50_ms": 35.253,
+      "p95_ms": 40.319,
+      "p99_ms": 56.046,
+      "n": 1000
+     },
+     "read_units_each": [
+      1
+     ],
+     "read_units_total": 1000
+    }
+   }
+  ],
+  "floor_after_ms": {
+   "p50_ms": 44.717,
+   "p95_ms": 51.832,
+   "p99_ms": 67.825,
+   "n": 50
+  },
+  "same_top10_first_settled": 0.999,
+  "deleted": 202
+ },
+ "chloedb": {
+  "version": "chloedb-server 0.3.9 (built from 040f4956d1)",
+  "memory_start_kb": 69506,
+  "load_s": 140.93,
+  "ready_s": 229.57,
+  "optimize": [
+   {
+    "bytes_written": 871984585,
+    "docs_dropped": 0,
+    "docs_merged": 1183514,
+    "merges": 1,
+    "segments_merged": 8,
+    "took_ms": 43963.3
+   },
+   {
+    "bytes_written": 0,
+    "docs_dropped": 0,
+    "docs_merged": 0,
+    "merges": 0,
+    "segments_merged": 0,
+    "took_ms": 0.2
+   }
+  ],
+  "segments": [
+   1183514
+  ],
+  "rows": 1183514,
+  "latency": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 614.5,
+    "p50_ms": 1.582,
+    "p95_ms": 1.908,
+    "p99_ms": 2.695,
+    "server": {
+     "p50_ms": 0.593,
+     "p95_ms": 0.743,
+     "n": 1000
+    }
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 1314.6,
+    "p50_ms": 2.885,
+    "p95_ms": 4.496,
+    "p99_ms": 5.451
+   }
+  ],
+  "ef": {
+   "32": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 701.8,
+    "p50_ms": 1.393,
+    "p95_ms": 1.659,
+    "p99_ms": 2.237
+   },
+   "64": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 698.0,
+    "p50_ms": 1.389,
+    "p95_ms": 1.69,
+    "p99_ms": 2.734
+   },
+   "128": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 649.7,
+    "p50_ms": 1.505,
+    "p95_ms": 1.78,
+    "p99_ms": 2.552
+   },
+   "400": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 525.7,
+    "p50_ms": 1.83,
+    "p95_ms": 2.246,
+    "p99_ms": 3.67
+   },
+   "800": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 417.1,
+    "p50_ms": 2.336,
+    "p95_ms": 2.827,
+    "p99_ms": 3.85
+   },
+   "1600": {
+    "clients": 1,
+    "n": 1000,
+    "qps": 303.8,
+    "p50_ms": 3.231,
+    "p95_ms": 3.967,
+    "p99_ms": 5.081
+   }
+  },
+  "flat": [
+   {
+    "clients": 1,
+    "n": 1000,
+    "qps": 37.5,
+    "p50_ms": 25.209,
+    "p95_ms": 33.082,
+    "p99_ms": 40.541
+   },
+   {
+    "clients": 4,
+    "n": 1000,
+    "qps": 163.7,
+    "p50_ms": 23.762,
+    "p95_ms": 33.801,
+    "p99_ms": 42.593
+   }
+  ],
+  "plan": [
+   "seg 0: vector InIndex (Hnsw ran), filter None"
+  ],
+  "took_explain_ms": 1.206421,
+  "memory_after_kb": 1885861,
+  "disk_bytes": 883609988
+ }
+}
