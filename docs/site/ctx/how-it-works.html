@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-MGQQR27B');</script>
+<!-- End Google Tag Manager -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>How ChloeCtx works · ChloeCtx</title>
+<link rel="icon" href="../../assets/brand/chloedb-icon.svg" type="image/svg+xml">
+<link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
+<link rel="canonical" href="https://chloetech.ai/site/ctx/how-it-works.html">
+<meta name="description" content="How ChloeCtx stores every Claude Code session, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
+<meta property="og:title" content="How ChloeCtx works · ChloeCtx">
+<meta property="og:description" content="How ChloeCtx stores every Claude Code session, writes down what each turn agreed, and decides what to bring back: hooks, one daemon per project, a ChloeDB table, the live window, the gate and the query engine.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
+<link rel="stylesheet" href="../assets/ctx.css?v=df7985105c">
+<script>document.documentElement.classList.add("js");</script>
+</head>
+<body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-MGQQR27B"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<header class="top gutter"><div class="wrap">
+  <a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a>
+  <nav class="nav" aria-label="ChloeCtx">
+    <a href="index.html">Overview</a>
+    <a href="how-it-works.html" aria-current="page">How it works</a>
+    <a href="benchmarks.html">Benchmarks</a>
+    <a href="index.html#install">Install</a>
+  </nav>
+  <div class="top-links"><a href="../index.html">ChloeDB</a><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx">GitHub</a><a class="btn primary" href="index.html#install">Install</a></div>
+</div></header>
+
+<main>
+  <div class="gutter head-band"><div class="wrap page-head">
+    <span class="eyebrow">How it works</span>
+    <h1>Store everything, bring back only what helps</h1>
+    <p class="lede">ChloeCtx is hooks, an MCP server and one small daemon per project that owns a ChloeDB file. Storing is cheap and a missed record can never be recovered, so it stores everything. Loading costs the model attention, so it is gated, budgeted, and never repeats what the model can already see.</p>
+    <nav class="toc" aria-label="Sections">
+      <a href="#architecture">Architecture</a><a href="#records">Records</a><a href="#notes">Notes</a><a href="#window">The live window</a><a href="#prompt">A prompt's path</a><a href="#ranking">Ranking</a><a href="#gate">The gate</a><a href="#engine">The query engine</a><a href="#fixes">Errors and fixes</a>
+    </nav>
+  </div></div>
+
+  <section class="gutter" id="architecture"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Architecture</span>
+      <h2>One daemon per project owns the file</h2>
+      <p>Only one process at a time may write a ChloeDB file, and hooks are short-lived processes that run alongside the MCP server. So one daemon per project owns the database, and the hooks and the MCP server are its clients over a Unix socket.</p>
+    </div>
+    <figure class="fig">
+      <div class="scroll">
+      <svg viewBox="0 0 1000 470" role="img" aria-labelledby="arch-t arch-d">
+        <title id="arch-t">ChloeCtx's architecture</title>
+        <desc id="arch-d">Claude Code runs chloectx hook for each event and chloectx mcp for the memory tools. Both talk over a Unix socket to one daemon per project, which captures, recalls and runs background work, owns the ChloeDB file memory.strata, and calls a small model through claude -p.</desc>
+        <!-- wires and packets first, so packets pass behind the boxes -->
+        <path id="w-hook" class="dg-line" d="M200 130 L560 130"/>
+        <path id="w-mcp" class="dg-line" d="M200 340 L560 340"/>
+        <path id="w-llm" class="dg-dash" d="M650 360 L650 402"/>
+        <path id="w-db" class="dg-line" d="M890 360 L890 398"/>
+        <circle class="dg-dot pkt" r="4.5"><animateMotion dur="2.4s" repeatCount="indefinite"><mpath href="#w-hook"/></animateMotion></circle>
+        <circle class="dg-dot pkt" r="4.5"><animateMotion dur="2.4s" begin="0.8s" repeatCount="indefinite"><mpath href="#w-hook"/></animateMotion></circle>
+        <circle class="dg-dot g pkt" r="4.5"><animateMotion dur="2.4s" begin="1.6s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear"><mpath href="#w-hook"/></animateMotion></circle>
+        <circle class="dg-dot pkt" r="4.5"><animateMotion dur="3.2s" begin="0.4s" repeatCount="indefinite"><mpath href="#w-mcp"/></animateMotion></circle>
+        <circle class="dg-dot g pkt" r="4.5"><animateMotion dur="3.2s" begin="2s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear"><mpath href="#w-mcp"/></animateMotion></circle>
+        <circle class="dg-dot y pkt" r="4"><animateMotion dur="1.8s" repeatCount="indefinite"><mpath href="#w-llm"/></animateMotion></circle>
+        <circle class="dg-dot o pkt" r="4"><animateMotion dur="1.2s" repeatCount="indefinite"><mpath href="#w-db"/></animateMotion></circle>
+
+        <rect class="dg-box" x="20" y="80" width="180" height="300" rx="14"/>
+        <text class="dg-t" x="40" y="114">Claude Code</text>
+        <text class="dg-s" x="40" y="136">one session</text>
+        <text class="dg-m" x="40" y="180">SessionStart</text>
+        <text class="dg-m" x="40" y="200">UserPromptSubmit</text>
+        <text class="dg-m" x="40" y="220">PreToolUse</text>
+        <text class="dg-m" x="40" y="240">PostToolUse</text>
+        <text class="dg-m" x="40" y="260">Stop · PostCompact</text>
+        <text class="dg-m" x="40" y="280">SessionEnd …</text>
+        <text class="dg-mi" x="40" y="330">memory_* tools</text>
+
+        <rect class="dg-box" x="260" y="95" width="220" height="70" rx="12"/>
+        <text class="dg-t" x="276" y="124">chloectx hook &lt;event&gt;</text>
+        <text class="dg-s" x="276" y="146">a few ms · exits 0 on any failure</text>
+        <rect class="dg-box" x="260" y="305" width="220" height="70" rx="12"/>
+        <text class="dg-t" x="276" y="334">chloectx mcp</text>
+        <text class="dg-s" x="276" y="356">stdio · six memory tools</text>
+        <text class="dg-m" x="492" y="232">unix</text>
+        <text class="dg-m" x="492" y="248">socket</text>
+
+        <rect class="dg-acc" x="560" y="30" width="420" height="330" rx="16"/>
+        <text class="dg-t" x="580" y="60">chloectx serve</text>
+        <text class="dg-s" x="580" y="80">one per project · starts on demand · exits after 30 idle minutes</text>
+        <rect class="dg-box" x="580" y="95" width="380" height="54" rx="10"/>
+        <rect class="f-text" x="580" y="95" width="5" height="54" rx="2"/>
+        <text class="dg-t" x="598" y="118" style="font-size:13.5px">Capture</text>
+        <text class="dg-s" x="598" y="138">redact secrets · cut into 400-byte records · embed · append</text>
+        <rect class="dg-box" x="580" y="157" width="380" height="54" rx="10"/>
+        <rect class="f-vec" x="580" y="157" width="5" height="54" rx="2"/>
+        <text class="dg-t" x="598" y="180" style="font-size:13.5px">Recall</text>
+        <text class="dg-s" x="598" y="200">notes · BM25 + vectors · live window · priors · gate · pack</text>
+        <rect class="dg-box" x="580" y="219" width="380" height="54" rx="10"/>
+        <rect class="f-graph" x="580" y="219" width="5" height="54" rx="2"/>
+        <text class="dg-t" x="598" y="242" style="font-size:13.5px">In the background</text>
+        <text class="dg-s" x="598" y="262">write notes each turn · query engine · consolidate every 8</text>
+        <rect class="dg-box" x="580" y="281" width="380" height="54" rx="10"/>
+        <rect class="f-cols" x="580" y="281" width="5" height="54" rx="2"/>
+        <text class="dg-t" x="598" y="304" style="font-size:13.5px">Warm state</text>
+        <text class="dg-s" x="598" y="324">embedder (memory-mapped) · segment readers · memtable</text>
+
+        <rect class="dg-box" x="560" y="402" width="210" height="54" rx="12"/>
+        <text class="dg-t" x="576" y="425" style="font-size:13.5px">claude -p</text>
+        <text class="dg-s" x="576" y="444">a small model, off the prompt</text>
+
+        <path class="dg-sunk" d="M800 405 a90 10 0 0 1 180 0 v42 a90 10 0 0 1 -180 0 z"/>
+        <ellipse class="dg-box" cx="890" cy="405" rx="90" ry="10"/>
+        <text class="dg-t" x="822" y="437" style="font-size:13.5px">memory.strata</text>
+        <text class="dg-m" x="822" y="455">one ChloeDB file</text>
+      </svg>
+      </div>
+      <div class="legend-row"><span><i style="background:var(--accent)"></i>an event or a tool call going in</span><span><i style="background:var(--fam-vec)"></i>context coming back</span><span><i style="background:var(--fam-graph)"></i>a model call, in the background</span><span><i style="background:var(--fam-cols)"></i>a durable append</span></div>
+    </figure>
+    <div class="cards">
+      <div class="card"><span class="k">Lazy start</span><h3>The first hook starts it</h3><p>The first client to find no socket spawns the daemon under a lock. The 129 MB embedding table is memory-mapped rather than read, so that first hook takes 50 to 72 ms.</p></div>
+      <div class="card"><span class="k">Many readers, one writer</span><h3>Reads never wait for a write</h3><p>Reads run side by side on a snapshot. One writer thread commits whatever is queued as one transaction, and merges happen on background threads.</p></div>
+      <div class="card"><span class="k">Never in the way</span><h3>Fails silent, says it once</h3><p>A hook that cannot reach the daemon in time exits 0 with nothing. A daemon that cannot start is reported once, with its last words and <code>chloectx doctor</code>.</p></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="records"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Records</span>
+      <h2>One table, small keys, three levels</h2>
+      <p>Everything is one ChloeDB table, <code>memory</code>. A captured event is redacted, trimmed and cut into records of at most 400 bytes. A small window matches a question better than a long chunk where the answer is one fact among many, and a context budget holds about ten of them instead of five snippets.</p>
+    </div>
+    <div class="two at-top">
+      <figure class="fig">
+        <svg viewBox="0 0 520 300" role="img" aria-labelledby="lv-t">
+          <title id="lv-t">Three levels of records: events, episodes and knowledge</title>
+          <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="dg-head" d="M0 0 L10 5 L0 10z"/></marker></defs>
+          <rect class="dg-box" x="10" y="20" width="150" height="260" rx="12"/>
+          <rect class="f-text" x="10" y="20" width="150" height="5" rx="2"/>
+          <text class="dg-m" x="24" y="48">L0 · EVENTS</text>
+          <text class="dg-s" x="24" y="72">prompts, answers,</text>
+          <text class="dg-s" x="24" y="90">tool calls, results,</text>
+          <text class="dg-s" x="24" y="108">errors</text>
+          <g><rect class="f-text" x="24" y="128" width="122" height="14" rx="3" opacity=".8"/><rect class="f-text" x="24" y="148" width="98" height="14" rx="3" opacity=".8"/><rect class="f-cols" x="24" y="168" width="122" height="14" rx="3" opacity=".8"/><rect class="f-cols" x="24" y="188" width="110" height="14" rx="3" opacity=".8"/><rect class="f-cols" x="24" y="208" width="122" height="14" rx="3" opacity=".8"/><rect class="f-text" x="24" y="228" width="80" height="14" rx="3" opacity=".8"/></g>
+          <text class="dg-m" x="24" y="266">400-byte records</text>
+          <path class="dg-line" d="M162 150 L196 150" marker-end="url(#ah)"/>
+          <rect class="dg-box" x="200" y="60" width="140" height="180" rx="12"/>
+          <rect class="f-graph" x="200" y="60" width="140" height="5" rx="2"/>
+          <text class="dg-m" x="214" y="88">L1 · EPISODES</text>
+          <text class="dg-s" x="214" y="112">one card per turn:</text>
+          <text class="dg-s" x="214" y="132">the prompt, files</text>
+          <text class="dg-s" x="214" y="150">changed, commands,</text>
+          <text class="dg-s" x="214" y="168">errors, outcome</text>
+          <path class="dg-line" d="M342 150 L376 150" marker-end="url(#ah)"/>
+          <rect class="dg-acc" x="380" y="40" width="130" height="220" rx="12"/>
+          <rect class="f-vec" x="380" y="40" width="130" height="5" rx="2"/>
+          <text class="dg-m" x="394" y="68">L2 · KNOWLEDGE</text>
+          <text class="dg-s" x="394" y="94">decisions</text>
+          <text class="dg-s" x="394" y="114">rules</text>
+          <text class="dg-s" x="394" y="134">planned work</text>
+          <text class="dg-s" x="394" y="154">facts</text>
+          <text class="dg-s" x="394" y="174">fixes</text>
+          <text class="dg-s" x="394" y="194">summary sections</text>
+          <text class="dg-m" x="394" y="236">what was agreed</text>
+        </svg>
+        <figcaption>Raw records hold what was said. A later session needs what was agreed, so each turn also becomes an episode card and, through a small model, knowledge notes.</figcaption>
+      </figure>
+      <div class="tbl">
+        <table>
+          <thead><tr><th>field</th><th>what it holds</th></tr></thead>
+          <tbody>
+            <tr><td><code>kind</code></td><td>prompt, answer, tool_call, tool_result, error, episode, summary, decision, preference, fact, todo, note, entity, event</td></tr>
+            <tr><td><code>text</code></td><td>the value: one chunk of at most 400 bytes, injected as it is</td></tr>
+            <tr><td><code>ctx</code></td><td>the turn's request, so that a terse "test result: ok" is found by the words of the task it served. It joins the BM25 key only, never the vector.</td></tr>
+            <tr><td><code>emb</code></td><td>a vector of <code>text</code>, in an HNSW index</td></tr>
+            <tr><td><code>files</code></td><td>paths the record touches, each component a term</td></tr>
+            <tr><td><code>links</code></td><td>edges to its turn, its files and the entities it is about</td></tr>
+            <tr><td><code>session</code>, <code>turn</code>, <code>seq</code>, <code>ts</code></td><td>where and when, for filters and the live window</td></tr>
+            <tr><td><code>importance</code></td><td>a prior by kind: rule 1.0, decision 0.9, summary 0.8, prompt 0.7, tool output 0.3</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="notes"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">Notes</span>
+      <h2>A small model writes down what each turn agreed</h2>
+      <p>After each turn, off the prompt's path, the daemon gives the turn to a small model through <code>claude -p</code>, with up to 40 related notes. Seeing them is what lets it update a note written weeks ago instead of adding a near copy. It costs about $0.001 and 8 seconds a turn with a fast model.</p>
+    </div>
+    <div class="two at-top">
+      <div class="chat" data-seq data-interval="1500" data-hold="5" aria-label="Animation: a turn and the notes written from it">
+        <p class="msg u" data-step="1">From the kickoff with the client: their machines run Python 3.8. Also, let's drop the ICS feed, their system rejects it. Next sprint we'll add SMS reminders, max 160 characters.</p>
+        <p class="msg a" data-step="2">Dropped the ICS export and kept everything 3.8-compatible. SMS reminders noted for next sprint.</p>
+        <p class="hookline" data-step="3">Stop · notes written in the background</p>
+        <p class="inject" data-step="4"><span class="h">fact · by user</span>Client machines run Python 3.8.<br><span style="color:#8fb5a3">When: choosing a library or standard-library module; parsing a config file</span></p>
+        <p class="inject" data-step="5"><span class="h">decision · by user · replaces 2f1c:88</span>The ICS calendar feed is dropped: the client's system rejects it.</p>
+        <p class="inject" data-step="6"><span class="h">planned · requirement</span>SMS reminders, next sprint: at most 160 characters each.</p>
+      </div>
+      <div class="cards" style="grid-template-columns:minmax(0,1fr)">
+        <div class="card"><span class="k">When it matters</span><h3>Each note names its situations</h3><p>A later request rarely uses the words of the note it needs. "Add a settings.toml loader" shares no word with "Python 3.8", but it matches the note's <i>When</i>: parsing a config file.</p></div>
+        <div class="card"><span class="k">Who said it</span><h3>Only the user makes rules</h3><p>Every note says whether the user stated it or the assistant found it. What the user only asked about, or an assistant's open question, is not written down as the project's.</p></div>
+        <div class="card"><span class="k">Kept current</span><h3>Replaced, done, retired, merged</h3><p>A new note can replace an old one, close planned work, or retire work that was scrapped. Every eight turns related notes are merged, keeping every number, name and reason.</p></div>
+      </div>
+    </div>
+    <div class="block-head" style="margin-top:12px">
+      <h3>Notes are tied to the code they were written against</h3>
+      <p>Each note keeps its commit, a hash of the files it names and the identifiers it mentions. When it is shown, ChloeCtx checks those files in the working tree.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>what changed since the note</th><th>a decision or fact</th><th>a rule or requirement</th></tr></thead>
+        <tbody>
+          <tr><td>nothing</td><td>shown as it is</td><td>shown as it is</td></tr>
+          <tr><td>a file it names, its identifiers still there</td><td colspan="2">"app/billing.py changed since this note; check the current code"</td></tr>
+          <tr><td>the file is gone, or an identifier it names no longer occurs</td><td><b>may be out of date</b>, moved to its own briefing section</td><td><b>the code may now break it</b>: it stays with the rules, with a warning</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="window"><div class="wrap block">
+    <div class="two">
+      <div class="block-head">
+        <span class="eyebrow">The live window</span>
+        <h2>Never repeat what the model can still see</h2>
+        <p>For each session the daemon keeps where its context window starts: the session's start, or its last compaction. Every recall query leaves out the session's records from there on, and anything already injected since. A compaction moves the start, so exact details its summary dropped become findable again.</p>
+        <div class="formula" aria-label="excluded records: same session and sequence number at least the window start, plus those already injected"><span class="o">exclude</span> { r : r.session = <span class="v">s</span> ∧ r.seq ≥ <span class="v">w<sub>s</sub></span> } ∪ <span class="v">injected<sub>s</sub></span></div>
+      </div>
+      <figure class="fig lw" data-lw>
+        <div class="lw-row" aria-hidden="true">
+          <i></i><i class="t"></i><i></i><i class="n"></i><i class="t"></i><i class="t"></i><i></i><i class="t"></i><i class="n"></i><i></i>
+          <i></i><i class="t"></i><i class="t"></i><i></i><i class="t"></i><i></i><i class="t"></i><i class="t"></i>
+          <i></i><i class="t"></i><i class="t"></i><i></i><i class="t"></i><i class="t"></i>
+          <span class="win" style="left:41.67%;right:0">live window · in context</span>
+          <span class="cut on" style="left:calc(75% - 3px)"></span>
+        </div>
+        <p class="lw-cap" aria-live="polite"><b>The next prompt</b> can bring back exact details the summary threw away, such as an error message or a number.</p>
+        <div class="legend-row"><span><i style="background:var(--fam-text)"></i>said</span><span><i style="background:var(--fam-cols)"></i>done</span><span><i style="background:var(--fam-vec)"></i>a note</span><span><i style="background:var(--brand-red)"></i>a compaction</span><span><i style="outline:2px solid var(--ink);background:transparent"></i>brought back</span></div>
+      </figure>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="prompt"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">A session, step by step</span>
+      <h2>Three push points and one pull path</h2>
+      <p>The briefing at the start, recall with each prompt, and notes before an edit come without the model asking. The memory tools are there when it does.</p>
+    </div>
+    <figure class="fig">
+      <div class="scroll">
+      <svg viewBox="0 0 900 600" role="img" aria-labelledby="sq-t" data-seq data-interval="900" data-hold="6">
+        <title id="sq-t">The messages between the user, Claude Code, the ChloeCtx daemon and ChloeDB in one session</title>
+        <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="dg-head" d="M0 0 L10 5 L0 10z"/></marker><marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="f-vec" d="M0 0 L10 5 L0 10z"/></marker></defs>
+        <g class="lanes">
+          <rect class="dg-box" x="30" y="16" width="120" height="36" rx="8"/><text class="dg-t" x="90" y="40" text-anchor="middle" style="font-size:13.5px">You</text>
+          <rect class="dg-box" x="250" y="16" width="160" height="36" rx="8"/><text class="dg-t" x="330" y="40" text-anchor="middle" style="font-size:13.5px">Claude Code</text>
+          <rect class="dg-acc" x="490" y="16" width="160" height="36" rx="8"/><text class="dg-t" x="570" y="40" text-anchor="middle" style="font-size:13.5px">ChloeCtx daemon</text>
+          <rect class="dg-box" x="730" y="16" width="140" height="36" rx="8"/><text class="dg-t" x="800" y="40" text-anchor="middle" style="font-size:13.5px">ChloeDB</text>
+          <path class="dg-dash" d="M90 52 V590 M330 52 V590 M570 52 V590 M800 52 V590"/>
+        </g>
+        <g data-step="1"><path class="dg-line" d="M330 86 H566" marker-end="url(#ah2)"/><text class="dg-m" x="345" y="80">SessionStart</text></g>
+        <g data-step="2"><path class="dg-line" d="M570 116 H796" marker-end="url(#ah2)"/><text class="dg-m" x="582" y="110">rules, decisions, planned work, facts</text></g>
+        <g data-step="3"><path class="dg-acc-line s-vec" d="M570 146 H334" marker-end="url(#ah3)"/><text class="dg-m" x="345" y="140" style="fill:var(--yes)">briefing · ≤ 6,000 characters</text></g>
+        <g data-step="4"><path class="dg-line" d="M90 190 H326" marker-end="url(#ah2)"/><text class="dg-m" x="104" y="184">a prompt</text></g>
+        <g data-step="5"><path class="dg-line" d="M330 220 H566" marker-end="url(#ah2)"/><text class="dg-m" x="345" y="214">UserPromptSubmit</text></g>
+        <g data-step="6"><path class="dg-line" d="M570 250 H796" marker-end="url(#ah2)"/><text class="dg-m" x="582" y="244">notes · BM25 top 50 · vectors top 50</text><text class="dg-m" x="582" y="266">live window left out</text></g>
+        <g data-step="7"><path class="dg-line" d="M570 282 h36 v22 h-32" marker-end="url(#ah2)"/><text class="dg-m" x="616" y="298">priors · gate · pack</text></g>
+        <g data-step="8"><path class="dg-acc-line s-vec" d="M570 330 H334" marker-end="url(#ah3)"/><text class="dg-m" x="345" y="324" style="fill:var(--yes)">notes + full, brief or no recall</text></g>
+        <g data-step="9"><path class="dg-dash" d="M570 352 h36 v20 h-32" marker-end="url(#ah2)"/><text class="dg-m" x="616" y="368">query engine, in the background</text></g>
+        <g data-step="10"><path class="dg-line" d="M330 404 H566" marker-end="url(#ah2)"/><text class="dg-m" x="345" y="398">PreToolUse · Edit(path)</text><path class="dg-acc-line s-vec" d="M570 428 H334" marker-end="url(#ah3)"/><text class="dg-m" x="345" y="446" style="fill:var(--yes)">up to 2 notes on that file</text></g>
+        <g data-step="11"><path class="dg-line" d="M330 476 H566" marker-end="url(#ah2)"/><text class="dg-m" x="345" y="470">PostToolUse</text><path class="dg-acc-line s-vec" d="M570 500 H334" marker-end="url(#ah3)"/><text class="dg-m" x="345" y="518" style="fill:var(--yes)">the engine's picks, once ready</text></g>
+        <g data-step="12"><path class="dg-line" d="M330 548 H566" marker-end="url(#ah2)"/><text class="dg-m" x="345" y="542">Stop</text><path class="dg-line" d="M570 572 H796" marker-end="url(#ah2)"/><text class="dg-m" x="582" y="566">answer, episode · then notes</text></g>
+      </svg>
+      </div>
+    </figure>
+  </div></section>
+
+  <section class="gutter" id="ranking"><div class="wrap block">
+    <div class="two at-top">
+      <div class="block-head">
+        <span class="eyebrow">Ranking</span>
+        <h2>Words and meaning, then gentle priors</h2>
+        <p>BM25 and vector search each return their top 50 outside the live window. Their scores are normalised over the union and blended. Priors for the kind of record and its recency break near ties without overriding relevance.</p>
+        <p>Routine work is pushed down: a passing test run or an empty tool answer matches any question about its turn and says nothing. Packing is greedy: at most twelve records, eight per turn, each line carrying its kind, session, turn, age and id, so the model can open it with <code>memory_timeline</code>.</p>
+      </div>
+      <div style="display:grid;gap:12px">
+        <div class="formula"><span class="v">rel</span>(r) = <span class="c">w</span>·<span class="v">bm25̂</span>(r) + (1 − <span class="c">w</span>)·<span class="v">coŝ</span>(r)</div>
+        <div class="formula"><span class="v">S</span>(r) = <span class="v">rel</span>(r)·(1 + <span class="c">λ<sub>ι</sub></span>·<span class="v">ι</span>(r)) + <span class="c">λ<sub>t</sub></span>·e<sup>−(seq<sub>max</sub> − seq(r))/τ</sup></div>
+        <p class="small muted">ι is the kind's prior, from 1.0 for a rule the user stated to 0.3 for tool output. Before the main search, up to four notes that match the prompt on their own (cosine ≥ 0.40 or weighted term coverage ≥ 0.30) are shown without the gate.</p>
+      </div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="gate"><div class="wrap block">
+    <div class="two at-top">
+      <div class="block-head">
+        <span class="eyebrow">The gate</span>
+        <h2>Full, brief, or nothing at all</h2>
+        <p>Normalised scores cannot gate, because the best candidate always scores 1. The gate reads absolute evidence instead: the highest cosine and term coverage in the top five, how far the best scores stand above the tenth, whether BM25 and vectors agree on the top record, and whether the prompt refers back ("we decided", "last time").</p>
+        <p>Its weights come from a logistic fit on LongMemEval-S. The upper threshold holds precision 0.9 on the fit, the lower one 0.7. It is the weakest part of the design, and <a href="benchmarks.html#limits">the benchmarks say why</a>.</p>
+      </div>
+      <div class="gate fig" data-gate>
+        <label for="gate-g" class="kicker">Drag the evidence G for a prompt</label>
+        <div class="gate-bar" aria-hidden="true"><div class="z0">nothing</div><div class="z1">brief</div><div class="z2">full</div></div>
+        <input id="gate-g" type="range" min="0" max="100" value="72">
+        <div class="ticks" aria-hidden="true"><span>weak</span><span>θ<sub>lo</sub></span><span>θ<sub>hi</sub></span><span>strong</span></div>
+        <div class="gate-out" aria-live="polite">
+          <span class="tier">Full recall</span><span class="budget">up to 4,000 characters, best records first</span>
+          <ul>
+            <li>[error · s2 · turn 14] cannot borrow `rows` as mutable · export.rs:118</li>
+            <li>[decision · s2] stream rows instead of building the CSV in memory</li>
+            <li>[tool_call · s2] cargo test -p export · 41 passed</li>
+            <li>[prompt · s1] count sheets go in walking order by bin</li>
+            <li>[episode · s2 · turn 15] export.rs, tests.rs changed · tests pass</li>
+            <li>[fact · s1] the receipt printer is 42 characters wide</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="formula"><span class="v">G</span> = <span class="c">a</span>·cos<sub>max</sub> + <span class="c">b</span>·cov<sub>max</sub> + <span class="c">c</span>·𝟙<sub>cue</sub> + <span class="c">d</span>·𝟙<sub>agree</sub> + <span class="c">e</span>·(cos<sub>1</sub> − cos<sub>10</sub>) + <span class="c">f</span>·(1 − bm25<sub>10</sub>/bm25<sub>1</sub>)</div>
+  </div></section>
+
+  <section class="gutter" id="engine"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">The query engine</span>
+      <h2>Connect a request to what it implies</h2>
+      <p>Search finds records that look like the request. Some requests depend on something they never name. The query engine has a small model plan several typed searches, fuses what they return, and has a second call pick the records that matter. It runs in the background while Claude starts working, and its picks arrive with the next tool result.</p>
+    </div>
+    <ol class="pipe" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+      <li><span class="k">1 · Plan</span><b>Typed searches</b><p>The planner turns the request into searches by meaning, by words, by kind and by date, such as "the school's rules" for an order.</p></li>
+      <li><span class="k">2 · Search</span><b>All at once</b><p>Each runs on the same snapshot, side by side, with ChloeDB's filters on session, file, kind and time.</p></li>
+      <li><span class="k">3 · Fuse</span><b>One list</b><p>Results are fused by rank, and the best of them go to the ranker with their context.</p></li>
+      <li><span class="k">4 · Pick</span><b>What matters</b><p>A second call picks the records that change the answer, including stated tastes when a request asks for advice.</p></li>
+    </ol>
+    <div class="stats light">
+      <div><b>72 → 82<small>%</small></b><span>LongMemEval-S answers when the picks join the recall</span></div>
+      <div><b>$0.0012</b><span>a request with Haiku, about 12 s, off the prompt's path</span></div>
+      <div><b>12–14<small> of 16</small></b><span>runs on tasks that imply a requirement, against 8 for search alone</span></div>
+    </div>
+  </div></section>
+
+  <section class="gutter" id="fixes"><div class="wrap block">
+    <div class="two at-top">
+      <div class="block-head">
+        <span class="eyebrow">Errors and fixes</span>
+        <h2>A failure that passed is remembered as a fix</h2>
+        <p>When a command fails and later passes, with edits or other commands between, ChloeCtx writes down the error, the steps that changed something, and what showed it fixed. <code>cd x &amp;&amp; cargo test 2&gt;&amp;1 | tail</code> counts as <code>cargo test</code>. When the same error comes back in any session of the project, its fixes come with it, at most two, once a session.</p>
+      </div>
+      <div class="cards" style="grid-template-columns:minmax(0,1fr)">
+        <div class="card"><span class="k">Stored, never pushed</span><h3>Text from outside the project is data</h3><p>What WebFetch, WebSearch, an MCP tool or <code>curl</code> and <code>gh issue view</code> returned is stored but never put into a prompt on its own. Search shows it fenced as quoted data, so a planted instruction never reaches a later session as "earlier work".</p></div>
+        <div class="card"><span class="k">Branches</span><h3>Worktrees share a store, not their code</h3><p>A note written on a branch this worktree does not have is labelled as such, unless its files are the same here. A rule the user gave holds on every branch.</p></div>
+      </div>
+    </div>
+    <div class="actions"><a class="btn primary" href="benchmarks.html">See what it measures</a><a class="btn" href="../docs/chloectx.html">The full design</a><a class="btn" href="index.html#install">Install it</a></div>
+  </div></section>
+</main>
+
+<footer class="foot gutter"><div class="wrap">
+  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Long-term memory for Claude Code, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
+  <div><h4>ChloeCtx</h4><ul><li><a href="index.html">Overview</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="index.html#install">Install</a></li></ul></div>
+  <div><h4>Documentation</h4><ul><li><a href="../docs/chloectx-setup.html">Install guide</a></li><li><a href="../docs/chloectx.html">Design</a></li><li><a href="../docs/chloectx-inspector.html">Inspector</a></li><li><a href="../docs/chloectx-receipts.html">Receipts and blame</a></li><li><a href="../docs/chloectx-capsules.html">Capsules</a></li><li><a href="../docs/chloectx-app.html">In a cluster</a></li></ul></div>
+  <div><h4>Results</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results">Raw runs</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/eval">The evaluations</a></li></ul></div>
+  <div><h4>ChloeDB</h4><ul><li><a href="../index.html">The database</a></li><li><a href="../benchmarks.html">Its benchmarks</a></li><li><a href="https://github.com/chloetech-ai/chloedb">GitHub</a></li></ul></div>
+</div></footer>
+<script src="../assets/site.js?v=699f360f4f"></script>
+<script src="../assets/ctx.js?v=30dd4884ac"></script>
+</body>
+</html>

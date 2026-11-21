@@ -24,7 +24,7 @@ def main():
         if f.suffix in (".css", ".js"):
             hashes[f.name] = hashlib.sha256(f.read_bytes()).hexdigest()[:10]
     changed = 0
-    for page in sorted(SITE.glob("*.html")):
+    for page in sorted(SITE.glob("*.html")) + sorted(SITE.glob("ctx/*.html")):
         text = page.read_text()
         new = LINK.sub(lambda m: m.group(1) + ("?v=" + hashes[m.group(2)] if m.group(2) in hashes else "") + '"', text)
         if new != text:
