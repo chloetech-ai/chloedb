@@ -87,3 +87,7 @@ Keep Claude usage low (Roberto is near his plan's limit): few turns, no subagent
   context) and the containment scorer is too strict (5 of 8 sampled "wrong" were right). `rescore.py` = a
   lenient word-subset check; with it, test: RAG3 64% (0.6B) / 79% (4B); "fact text if confident else RAG3"
   67% at 363 tokens / 73% at 297; fact rows alone 33% / 36%; base 4% / 8%. Offered a Haiku judge to confirm.
+- 21 Nov 12:45 PM PST. Haiku judge (`judge.py`, cache `results/judge_cache.json`; 1,326 of 1,686 answers judged,
+  failed batches fall back to the strict check, rerun judge.py to fill them). Test, judged: 0.6B RAG3 56% (577
+  tokens), "fact text if confident else RAG3" 59% (363), fact rows 27% (0), base 5%. 4B RAG3 73%, cascade 72% at
+  297 tokens (half), fact rows 32%, base 7%. Roberto (12:22 PM): wait for 8B, then propose next steps.
