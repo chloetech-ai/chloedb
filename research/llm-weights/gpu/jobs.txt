@@ -1,11 +1,12 @@
 # name|environment|script (run in research/llm-weights, in this order)
 g1_06b_r2|STEPS=2000 BATCH=8|proto_g1_rows_vs_finetune.py
+g1_06b_r3|STEPS=600 EVERY=25 BATCH=8|proto_g1_rows_vs_finetune.py
 fetch_17b|REPO=Qwen/Qwen3-1.7B DEST=/root/s/models/qwen3-1.7b|gpu/fetch_model.py
-g1_17b|MODEL=/root/s/models/qwen3-1.7b STEPS=2000 BATCH=8|proto_g1_rows_vs_finetune.py
+g1_17b|MODEL=/root/s/models/qwen3-1.7b STEPS=600 EVERY=25 BATCH=8|proto_g1_rows_vs_finetune.py
 x1_06b_big_r2|LAYER=16 NBASE=65536 PAIRS=300000 DSTEPS=8000 NNEW=8192 ISTEPS=1500|proto_x1_ffn_rows.py
 d_4b_r2|MODEL=/root/s/models/qwen3-4b|proto_d_knnlm.py
 x34_4b_r2|MODEL=/root/s/models/qwen3-4b LAYER=15|proto_x34_facts.py
-g1_4b_r2|MODEL=/root/s/models/qwen3-4b BATCH=4 STEPS=2000 LRFROM=/root/out/g1_06b_r2.json|proto_g1_rows_vs_finetune.py
+g1_4b_r2|MODEL=/root/s/models/qwen3-4b BATCH=8 STEPS=600 EVERY=25 LRFROM=/root/out/g1_06b_r3.json|proto_g1_rows_vs_finetune.py
 x1_4b_r2|MODEL=/root/s/models/qwen3-4b LAYER=20 NBASE=65536 PAIRS=300000 DSTEPS=4000 NNEW=8192 ISTEPS=1000|proto_x1_ffn_rows.py
 fetch_8b|REPO=Qwen/Qwen3-8B DEST=/root/s/models/qwen3-8b|gpu/fetch_model.py
-g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=4 STEPS=1500 ARMS=lora,rows_small,rows LRFROM=/root/out/g1_06b_r2.json|proto_g1_rows_vs_finetune.py
+g1_8b|MODEL=/root/s/models/qwen3-8b DTYPE=bf16 BATCH=8 STEPS=600 EVERY=25 ARMS=lora,rows_small,rows LRFROM=/root/out/g1_06b_r3.json|proto_g1_rows_vs_finetune.py
