@@ -16,14 +16,14 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
 <link rel="icon" href="../../assets/brand/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="../../assets/brand/apple-touch-icon.png">
 <link rel="canonical" href="https://chloetech.ai/site/ctx/benchmarks.html">
-<meta name="description" content="ChloeCtx measured: Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
+<meta name="description" content="ChloeCtx measured: one memory read by Haiku, Sonnet and Opus against a plain memory file and the whole history; Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
 <meta property="og:title" content="Benchmarks · ChloeCtx">
-<meta property="og:description" content="ChloeCtx measured: Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
+<meta property="og:description" content="ChloeCtx measured: one memory read by Haiku, Sonnet and Opus against a plain memory file and the whole history; Claude Code with and without it, against Claude Code's own memory, claude-mem, mem0, Hindsight and the whole history in context, on LongMemEval, BEAM and held-out coding projects, with latency at a million records.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="../assets/site.css?v=f586f110cf">
-<link rel="stylesheet" href="../assets/ctx.css?v=df7985105c">
+<link rel="stylesheet" href="../assets/ctx.css?v=85c24337fe">
 <script>document.documentElement.classList.add("js");</script>
 </head>
 <body>
@@ -45,13 +45,100 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 <main>
   <div class="gutter head-band"><div class="wrap page-head">
     <span class="eyebrow">Benchmarks</span>
-    <h1>Does Claude Code do better with it? Measured.</h1>
-    <p class="lede">The direct test is Claude Code itself, on work that depends on earlier sessions, with ChloeCtx and with each memory a user could pick instead. Then retrieval on the public memory benchmarks, and the cost of a hook at a million records. Where ChloeCtx falls short is at the bottom.</p>
+    <h1>Does a model do better with it? Measured.</h1>
+    <p class="lede">First, one person's memory read by three models, against a plain memory file and the whole history, with the tokens, cost and time of each. Then Claude Code itself, on work that depends on earlier sessions, with ChloeCtx and with each memory a user could pick instead. Then retrieval on the public memory benchmarks, and the cost of a hook at a million records. Where ChloeCtx falls short is at the bottom.</p>
     <nav class="toc" aria-label="Sections">
-      <a href="#ab">With and without</a><a href="#systems">Memory systems</a><a href="#implied">Implied requirements</a><a href="#lme">LongMemEval</a><a href="#newer">Newer benchmarks</a><a href="#others">mem0 and Hindsight</a><a href="#speed">Speed and scale</a><a href="#limits">Where it falls short</a>
+      <a href="#persona">One memory, many models</a><a href="#ab">With and without</a><a href="#systems">Memory systems</a><a href="#implied">Implied requirements</a><a href="#lme">LongMemEval</a><a href="#newer">Newer benchmarks</a><a href="#others">mem0 and Hindsight</a><a href="#speed">Speed and scale</a><a href="#limits">Where it falls short</a>
     </nav>
     <div class="note"><b>How to read these</b><span>Every number here was measured, not estimated, and is copied from <a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">ChloeCtx's results</a>, where each table links its raw runs. <b>Cloud container</b> is a 4-core Intel Xeon (2.10 GHz, 15 GiB, Linux). <b>M2</b> is a MacBook Air. The agent, every memory system's own model calls, the readers and the judges are Claude Haiku unless a table says otherwise.</span></div>
   </div></div>
+
+  <section class="gutter" id="persona"><div class="wrap block">
+    <div class="block-head">
+      <span class="eyebrow">One memory, many models</span>
+      <h2>A person's chats, stored once, read by Haiku, Sonnet and Opus</h2>
+      <p>LongMemEval's questions are about one person's past conversations with an assistant: about 47 conversations and 500,000 characters each, then a question asked after them. We took every fifth question, 100 people, and gave each reader eight kinds of memory: none; a plain memory file that Haiku rewrote after every five conversations, asked to stay under 4,000 characters (it averaged 4,800); mem0; Hindsight with a context the size of ChloeCtx's and with its own large one; ChloeCtx's search, which uses no model; ChloeCtx's query engine, which adds two Haiku calls; and the whole history in context. Haiku graded every answer with LongMemEval's own prompts.</p>
+    </div>
+    <div class="readers">
+      <div>
+        <h3>Haiku reading</h3>
+        <div class="hb">
+            <div class="hb-row" data-tip="<b>No memory</b>, Haiku reading<br>9 of 100 correct · 514 tokens · $0.0002 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:9%"></span></span><span class="val">9%</span></div>
+            <div class="hb-row" data-tip="<b>Plain memory file</b>, Haiku reading<br>45 of 100 correct · 2,691 tokens · $0.0008 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:45%"></span></span><span class="val">45%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Haiku reading<br>81 of 100 correct · 2,197 tokens · $0.0007 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:81%"></span></span><span class="val">81%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Haiku reading<br>71 of 100 correct · 2,702 tokens · $0.0009 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:71%"></span></span><span class="val">71%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Haiku reading<br>68 of 100 correct · 1,831 tokens · $0.0007 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:68%"></span></span><span class="val">68%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Haiku reading<br>84 of 100 correct · 2,159 tokens · $0.0019 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:84%"></span></span><span class="val">84%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Haiku reading<br>88 of 100 correct · 69,862 tokens · $0.0144 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
+            <div class="hb-row" data-tip="<b>Whole history</b>, Haiku reading<br>88 of 100 correct · 168,447 tokens · $0.1704 a question"><span class="lbl">Whole history</span><span class="track"><span class="bar ref" style="--w:88%"></span></span><span class="val">88%</span></div>
+        </div>
+      </div>
+      <div>
+        <h3>Sonnet reading</h3>
+        <div class="hb">
+            <div class="hb-row" data-tip="<b>No memory</b>, Sonnet reading<br>8 of 100 correct · 493 tokens · $0.0032 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:8%"></span></span><span class="val">8%</span></div>
+            <div class="hb-row" data-tip="<b>Plain memory file</b>, Sonnet reading<br>49 of 100 correct · 2,670 tokens · $0.0138 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:49%"></span></span><span class="val">49%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Sonnet reading<br>88 of 100 correct · 2,176 tokens · $0.0120 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Sonnet reading<br>81 of 100 correct · 2,681 tokens · $0.0141 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:81%"></span></span><span class="val">81%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Sonnet reading<br>75 of 100 correct · 1,810 tokens · $0.0103 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:75%"></span></span><span class="val">75%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Sonnet reading<br>87 of 100 correct · 2,138 tokens · $0.0128 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:87%"></span></span><span class="val">87%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Sonnet reading<br>92 of 100 correct · 69,841 tokens · $0.2833 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:92%"></span></span><span class="val">92%</span></div>
+            <div class="hb-row" data-tip="<b>Whole history</b>, Sonnet reading<br>24 of 25 correct · 168,879 tokens · $0.5482 a question<br>ChloeCtx's query engine on the same 25: 88%"><span class="lbl">Whole history<small>on 25 of the questions</small></span><span class="track"><span class="bar ref" style="--w:96%"></span></span><span class="val">96%</span></div>
+        </div>
+      </div>
+      <div>
+        <h3>Opus reading</h3>
+        <div class="hb">
+            <div class="hb-row" data-tip="<b>No memory</b>, Opus reading<br>9 of 100 correct · 489 tokens · $0.0075 a question"><span class="lbl">No memory</span><span class="track"><span class="bar" style="--w:9%"></span></span><span class="val">9%</span></div>
+            <div class="hb-row" data-tip="<b>Plain memory file</b>, Opus reading<br>50 of 100 correct · 2,666 tokens · $0.0290 a question"><span class="lbl">Plain memory file</span><span class="track"><span class="bar file" style="--w:50%"></span></span><span class="val">50%</span></div>
+            <div class="hb-row" data-tip="<b>mem0</b>, Opus reading<br>88 of 100 correct · 2,172 tokens · $0.0250 a question"><span class="lbl">mem0</span><span class="track"><span class="bar other" style="--w:88%"></span></span><span class="val">88%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, small</b>, Opus reading<br>84 of 100 correct · 2,677 tokens · $0.0299 a question"><span class="lbl">Hindsight, small<small>a context like ChloeCtx’s</small></span><span class="track"><span class="bar other" style="--w:84%"></span></span><span class="val">84%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, search</b>, Opus reading<br>80 of 100 correct · 1,806 tokens · $0.0219 a question"><span class="lbl">ChloeCtx, search<small>no model call</small></span><span class="track"><span class="bar self" style="--w:80%"></span></span><span class="val">80%</span></div>
+            <div class="hb-row" data-tip="<b>ChloeCtx, query engine</b>, Opus reading<br>89 of 100 correct · 2,134 tokens · $0.0253 a question"><span class="lbl">ChloeCtx, query engine</span><span class="track"><span class="bar self" style="--w:89%"></span></span><span class="val">89%</span></div>
+            <div class="hb-row" data-tip="<b>Hindsight, large</b>, Opus reading<br>98 of 100 correct · 69,837 tokens · $0.5671 a question"><span class="lbl">Hindsight, large<small>70,000 tokens a question</small></span><span class="track"><span class="bar other" style="--w:98%"></span></span><span class="val">98%</span></div>
+            <div class="hb-row" data-tip="<b>Whole history</b>, Opus reading<br>25 of 25 correct · 168,875 tokens · $1.0962 a question<br>ChloeCtx's query engine on the same 25: 92%"><span class="lbl">Whole history<small>on 25 of the questions</small></span><span class="track"><span class="bar ref" style="--w:100%"></span></span><span class="val">100%</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="hb-legend" style="margin-top:14px"><span><i></i>no memory</span><span><i class="file"></i>a plain memory file</span><span><i class="other"></i>other memory systems</span><span><i class="self"></i>ChloeCtx</span><span><i class="ref"></i>whole history in context</span></div>
+    <div class="tbl" style="margin-top:22px">
+      <table>
+        <thead><tr><th>reader</th><th>memory</th><th class="n">correct</th><th class="n">on the 25</th><th class="n">tokens read</th><th class="n">$ a question</th><th class="n">seconds (p50)</th></tr></thead>
+        <tbody>
+          <tr><td>Haiku</td><td>No memory</td><td class="n">9/100</td><td class="n"></td><td class="n">514</td><td class="n">0.0002</td><td class="n">1.5</td></tr>
+          <tr><td>Haiku</td><td>Plain memory file</td><td class="n">45/100</td><td class="n"></td><td class="n">2,691</td><td class="n">0.0008</td><td class="n">3.0</td></tr>
+          <tr><td>Haiku</td><td>mem0</td><td class="n">81/100</td><td class="n"></td><td class="n">2,197</td><td class="n">0.0007</td><td class="n">2.8</td></tr>
+          <tr><td>Haiku</td><td>Hindsight, small</td><td class="n">71/100</td><td class="n"></td><td class="n">2,702</td><td class="n">0.0009</td><td class="n">3.1</td></tr>
+          <tr class="self"><td>Haiku</td><td>ChloeCtx, search</td><td class="n">68/100</td><td class="n"></td><td class="n">1,831</td><td class="n">0.0007</td><td class="n">3.1</td></tr>
+          <tr class="self"><td>Haiku</td><td>ChloeCtx, query engine</td><td class="n">84/100</td><td class="n"></td><td class="n">2,159</td><td class="n">0.0019</td><td class="n">3.1 + 6.4</td></tr>
+          <tr><td>Haiku</td><td>Hindsight, large</td><td class="n">88/100</td><td class="n"></td><td class="n">69,862</td><td class="n">0.0144</td><td class="n">3.6</td></tr>
+          <tr><td>Haiku</td><td>Whole history</td><td class="n">88/100</td><td class="n"></td><td class="n">168,447</td><td class="n">0.1704</td><td class="n">4.1</td></tr>
+          <tr><td>Sonnet</td><td>No memory</td><td class="n">8/100</td><td class="n">4/25</td><td class="n">493</td><td class="n">0.0032</td><td class="n">2.0</td></tr>
+          <tr><td>Sonnet</td><td>Plain memory file</td><td class="n">49/100</td><td class="n">15/25</td><td class="n">2,670</td><td class="n">0.0138</td><td class="n">2.4</td></tr>
+          <tr><td>Sonnet</td><td>mem0</td><td class="n">88/100</td><td class="n">22/25</td><td class="n">2,176</td><td class="n">0.0120</td><td class="n">2.2</td></tr>
+          <tr><td>Sonnet</td><td>Hindsight, small</td><td class="n">81/100</td><td class="n">21/25</td><td class="n">2,681</td><td class="n">0.0141</td><td class="n">2.4</td></tr>
+          <tr class="self"><td>Sonnet</td><td>ChloeCtx, search</td><td class="n">75/100</td><td class="n">18/25</td><td class="n">1,810</td><td class="n">0.0103</td><td class="n">2.3</td></tr>
+          <tr class="self"><td>Sonnet</td><td>ChloeCtx, query engine</td><td class="n">87/100</td><td class="n">22/25</td><td class="n">2,138</td><td class="n">0.0128</td><td class="n">2.3 + 6.4</td></tr>
+          <tr><td>Sonnet</td><td>Hindsight, large</td><td class="n">92/100</td><td class="n">24/25</td><td class="n">69,841</td><td class="n">0.2833</td><td class="n">2.8</td></tr>
+          <tr><td>Sonnet</td><td>Whole history</td><td class="n">24/25</td><td class="n">24/25</td><td class="n">168,879</td><td class="n">0.5482</td><td class="n">3.6</td></tr>
+          <tr><td>Opus</td><td>No memory</td><td class="n">9/100</td><td class="n">4/25</td><td class="n">489</td><td class="n">0.0075</td><td class="n">3.1</td></tr>
+          <tr><td>Opus</td><td>Plain memory file</td><td class="n">50/100</td><td class="n">14/25</td><td class="n">2,666</td><td class="n">0.0290</td><td class="n">4.4</td></tr>
+          <tr><td>Opus</td><td>mem0</td><td class="n">88/100</td><td class="n">23/25</td><td class="n">2,172</td><td class="n">0.0250</td><td class="n">4.1</td></tr>
+          <tr><td>Opus</td><td>Hindsight, small</td><td class="n">84/100</td><td class="n">22/25</td><td class="n">2,677</td><td class="n">0.0299</td><td class="n">4.5</td></tr>
+          <tr class="self"><td>Opus</td><td>ChloeCtx, search</td><td class="n">80/100</td><td class="n">21/25</td><td class="n">1,806</td><td class="n">0.0219</td><td class="n">3.7</td></tr>
+          <tr class="self"><td>Opus</td><td>ChloeCtx, query engine</td><td class="n">89/100</td><td class="n">23/25</td><td class="n">2,134</td><td class="n">0.0253</td><td class="n">3.8 + 6.4</td></tr>
+          <tr><td>Opus</td><td>Hindsight, large</td><td class="n">98/100</td><td class="n">25/25</td><td class="n">69,837</td><td class="n">0.5671</td><td class="n">5.6</td></tr>
+          <tr><td>Opus</td><td>Whole history</td><td class="n">25/25</td><td class="n">25/25</td><td class="n">168,875</td><td class="n">1.0962</td><td class="n">7.6</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="facts">
+      <div class="fact"><b>Better than a file, for every model</b><p>The plain file was right 45 to 50% of the time, ChloeCtx's query engine 84 to 89%, at about the same size. With Opus the file answered 3 of 11 questions about what the assistant had said (ChloeCtx 11), 2 of 6 about preferences (6) and 12 of 25 about dates and order (23).</p></div>
+      <div class="fact"><b>Level with mem0, ahead of Hindsight at the same size</b><p>mem0 scored 81, 88 and 88% (ChloeCtx 84, 87 and 89%) after about 48 model calls and $0.13 per person to store. Hindsight with a context the size of ChloeCtx's scored 71, 81 and 84%. With 70,000 tokens a question it scored 88, 92 and 98%, at $0.57 a question with Opus.</p></div>
+      <div class="fact"><b>Close to the whole history, at 79 times fewer tokens</b><p>On the 25 questions the whole history was read on, Opus scored 100% from it and 92% from ChloeCtx, Sonnet 96% and 88%. The whole history cost $1.10 a question with Opus, ChloeCtx $0.025.</p></div>
+    </div>
+    <p class="src-line">Cloud container, 21 Nov 2026 UTC: Claude Haiku, Sonnet and Opus 5.5 through Claude Code's print mode, with no tools and nothing inherited from its settings. mem0 2.2.1 and Hindsight 1.0.0 stored the histories with Haiku in October (<a href="#others">their earlier comparison</a>); their stored contexts were read again here. "On the 25" is every fifth of the questions, where Sonnet and Opus also read the whole history. The plain file's cost is its reading only. One question per person, so a few points either way is noise. <a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results/v4/persona">Method, answers and verdicts</a></p>
+  </div></section>
 
   <section class="gutter" id="ab"><div class="wrap block">
     <div class="block-head">
@@ -284,7 +371,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 </main>
 
 <footer class="foot gutter"><div class="wrap">
-  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Long-term memory for Claude Code, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
+  <div class="brand"><a class="mark" href="index.html"><img class="on-light" src="../../assets/brand/chloedb-mark-on-light.svg" alt="" width="27" height="32"><img class="on-dark" src="../../assets/brand/chloedb-mark.svg" alt="" width="26" height="32">Chloe<span class="ctx">Ctx</span></a><p>Your memory, for every model, built on ChloeDB. Local files, no account, Apache-2.0.</p></div>
   <div><h4>ChloeCtx</h4><ul><li><a href="index.html">Overview</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="benchmarks.html">Benchmarks</a></li><li><a href="index.html#install">Install</a></li></ul></div>
   <div><h4>Documentation</h4><ul><li><a href="../docs/chloectx-setup.html">Install guide</a></li><li><a href="../docs/chloectx.html">Design</a></li><li><a href="../docs/chloectx-inspector.html">Inspector</a></li><li><a href="../docs/chloectx-receipts.html">Receipts and blame</a></li><li><a href="../docs/chloectx-capsules.html">Capsules</a></li><li><a href="../docs/chloectx-app.html">In a cluster</a></li></ul></div>
   <div><h4>Results</h4><ul><li><a href="https://github.com/chloetech-ai/chloedb/blob/main/docs/chloectx/results.md">Every result</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/results">Raw runs</a></li><li><a href="https://github.com/chloetech-ai/chloedb/tree/main/chloectx/eval">The evaluations</a></li></ul></div>

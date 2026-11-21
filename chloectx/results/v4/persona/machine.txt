@@ -1,0 +1,7 @@
+date: 2026-11-21T06:28:24Z
+cpu: Intel(R) Xeon(R) Processor
+cores: 4
+memory: 15 GB
+claude: 2.1.330 (Claude Code)
+commit: a59aa04429209b1d9b7c3d8b300668ce2ccd1995
+data: 44d202c1728b3ca3 longmemeval_s.jsonl

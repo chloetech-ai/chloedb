@@ -73,7 +73,7 @@ def call(model, system, prompt, timeout=600, retries=4):
                 raise RuntimeError(str(d.get("result"))[:200])
             u = d.get("usage", {})
             tokens = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-            return d["result"], d.get("total_cost_usd", 0.0), tokens
+            return d["result"], d.get("total_cost_usd", 0.0), tokens, d.get("duration_api_ms", 0) / 1000, ",".join(d.get("modelUsage", {}))
         except Exception as e:  # noqa: BLE001 - retried, then reported
             last = e
             time.sleep(2 * 2**attempt)
@@ -175,10 +175,11 @@ def main():
             prompt = NO_MEMORY_PROMPT.format(date=date, question=q["question"])
         else:
             prompt = READER_PROMPT.format(context=ctx.strip() or "(nothing)", date=date, question=q["question"])
-        answer, cost, tokens = call(args.reader, READER_SYSTEM, prompt)
+        answer, cost, tokens, secs, model = call(args.reader, READER_SYSTEM, prompt)
         r = {
             "config": name, "qid": qid, "qtype": q["question_type"], "abstention": q["abstention"],
             "context_chars": len(ctx) if ctx else 0, "reader_tokens": tokens, "answer": answer, "cost_reader": cost,
+            "seconds": secs, "model": model,
         }
         with lock:
             with open(cache_path, "a") as f:
@@ -196,7 +197,7 @@ def main():
             "Grade each item below independently, following its own instructions.\n\n" + "\n\n".join(items)
             + f"\n\nReply with exactly {len(batch)} lines, one per item, in the form '<item number>: yes' or '<item number>: no'."
         )
-        out, cost, _ = call(args.judge, "You grade answers. Reply only with the requested lines.", prompt)
+        out, cost, *_ = call(args.judge, "You grade answers. Reply only with the requested lines.", prompt)
         got = {}
         for line in out.splitlines():
             m = re.match(r"\s*(?:item\s*)?(\d+)\s*[:.)-]\s*(yes|no)\b", line.strip().lower())
@@ -254,6 +255,9 @@ def main():
             "context_chars": sum(r["context_chars"] for r in rows) / max(1, len(rows)),
             "reader_tokens": sum(r["reader_tokens"] for r in rows) / max(1, len(rows)),
             "cost_usd": sum(r["cost_reader"] + r.get("cost_judge", 0.0) for r in rows),
+            "reader_cost_usd": sum(r["cost_reader"] for r in rows) / max(1, len(rows)),
+            "reader_seconds": sum(r.get("seconds", 0.0) for r in rows) / max(1, len(rows)),
+            "reader_models": sorted({m for r in rows for m in (r.get("model") or "").split(",") if m}),
         }
         print(f"{name:<28} n={len(rows):<4} accuracy {summary[name]['accuracy']:.3f}  context {summary[name]['context_chars']:.0f} chars  reader tokens {summary[name]['reader_tokens']:.0f}", file=sys.stderr)
     with open(os.path.join(args.out, "summary.json"), "w") as f:
